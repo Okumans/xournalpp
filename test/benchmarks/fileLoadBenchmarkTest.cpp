@@ -9,8 +9,21 @@
  * @license GNU GPLv2 or later
  */
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <numeric>
+#include <optional>
+#include <stdexcept>
+#include <string_view>
+#include <vector>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#endif
 
 #include <config-test.h>
 #include <glib-2.0/glib.h>
@@ -26,22 +39,109 @@
 #include "filesystem.h"
 
 
-static void benchLoadFile(const fs::path& filename, int iterations) {
-    const auto start = g_get_monotonic_time();
-    for (int i = 0; i < iterations; ++i) {
-        LoadHandler{}.loadDocument(filename);
+namespace {
+
+struct BenchmarkSummary {
+    double firstMs;
+    double medianMs;
+    double p95Ms;
+    double meanMs;
+    double minMs;
+    double maxMs;
+};
+
+auto getIterationCount(int defaultIterations) -> int {
+    const char* value = g_getenv("XOPP_BENCHMARK_ITERATIONS");
+    if (value == nullptr) {
+        return defaultIterations;
     }
-    const auto stop = g_get_monotonic_time();
-    std::cout << "Loaded " << filename << ' ' << iterations << " times in " << (stop - start) / 1000 << "ms.\n";
+
+    char* end = nullptr;
+    const gint64 parsed = g_ascii_strtoll(value, &end, 10);
+    if (end == value || *end != '\0' || parsed <= 0 || parsed > G_MAXINT) {
+        throw std::invalid_argument{"XOPP_BENCHMARK_ITERATIONS must be a positive integer"};
+    }
+    return static_cast<int>(parsed);
 }
+
+auto summarize(std::vector<gint64> samplesUs) -> BenchmarkSummary {
+    const double firstMs = static_cast<double>(samplesUs.front()) / 1000.0;
+    const double meanMs = static_cast<double>(std::accumulate(samplesUs.begin(), samplesUs.end(), gint64{0})) /
+                          static_cast<double>(samplesUs.size()) / 1000.0;
+
+    std::ranges::sort(samplesUs);
+    const auto medianIndex = samplesUs.size() / 2;
+    const double medianUs = samplesUs.size() % 2 == 0 ?
+                                    static_cast<double>(samplesUs[medianIndex - 1] + samplesUs[medianIndex]) / 2.0 :
+                                    static_cast<double>(samplesUs[medianIndex]);
+    const auto p95Index = static_cast<size_t>(std::ceil(0.95 * static_cast<double>(samplesUs.size()))) - 1;
+
+    return {
+            firstMs,
+            medianUs / 1000.0,
+            static_cast<double>(samplesUs[p95Index]) / 1000.0,
+            meanMs,
+            static_cast<double>(samplesUs.front()) / 1000.0,
+            static_cast<double>(samplesUs.back()) / 1000.0,
+    };
+}
+
+auto getPeakRssKiB() -> std::optional<long> {
+#if defined(__unix__) || defined(__APPLE__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return std::nullopt;
+    }
+#if defined(__APPLE__)
+    return usage.ru_maxrss / 1024;
+#else
+    return usage.ru_maxrss;
+#endif
+#else
+    return std::nullopt;
+#endif
+}
+
+void benchLoadFile(std::string_view name, const fs::path& filename, int defaultIterations) {
+    const int iterations = getIterationCount(defaultIterations);
+    std::vector<gint64> samplesUs;
+    samplesUs.reserve(static_cast<size_t>(iterations));
+    size_t loadedPages = 0;
+
+    for (int i = 0; i < iterations; ++i) {
+        const auto start = g_get_monotonic_time();
+        const auto doc = LoadHandler{}.loadDocument(filename);
+        const auto stop = g_get_monotonic_time();
+        samplesUs.emplace_back(stop - start);
+        loadedPages += doc->getPageCount();
+    }
+
+    const auto summary = summarize(std::move(samplesUs));
+    const auto peakRssKiB = getPeakRssKiB();
+    std::cout << std::fixed << std::setprecision(3) << "XOPP_BENCHMARK_RESULT {\"name\":\"" << name
+              << "\",\"file_bytes\":" << fs::file_size(filename) << ",\"iterations\":" << iterations
+              << ",\"first_ms\":" << summary.firstMs << ",\"median_ms\":" << summary.medianMs
+              << ",\"p95_ms\":" << summary.p95Ms << ",\"mean_ms\":" << summary.meanMs << ",\"min_ms\":" << summary.minMs
+              << ",\"max_ms\":" << summary.maxMs << ",\"peak_rss_kib\":";
+    if (peakRssKiB) {
+        std::cout << *peakRssKiB;
+    } else {
+        std::cout << "null";
+    }
+    std::cout << ",\"loaded_pages\":" << loadedPages << "}\n";
+}
+
+}  // namespace
 
 TEST(FileLoadBenchmark, benchmarkHandwrittenText) {
-    benchLoadFile(GET_TESTFILE(u8"benchmark/handwritten-text.xopp"), 25);
+    benchLoadFile("handwritten-text", GET_TESTFILE(u8"benchmark/handwritten-text.xopp"), 25);
 }
 
-TEST(FileLoadBenchmark, benchmarkTypedText) { benchLoadFile(GET_TESTFILE(u8"benchmark/typed-text.xopp"), 5'000); }
+TEST(FileLoadBenchmark, benchmarkTypedText) {
+    benchLoadFile("typed-text", GET_TESTFILE(u8"benchmark/typed-text.xopp"), 5'000);
+}
 
-TEST(FileLoadBenchmark, benchmarkLatex) { benchLoadFile(GET_TESTFILE(u8"benchmark/latex.xopp"), 50); }
+TEST(FileLoadBenchmark, benchmarkLatex) { benchLoadFile("latex", GET_TESTFILE(u8"benchmark/latex.xopp"), 50); }
 
 static auto createTemporaryFile(void (*buildDoc)(Document&), const fs::path& filename) -> fs::path {
     // Build file
@@ -68,7 +168,7 @@ TEST(FileLoadBenchmark, benchmarkEmpty) {
             u8"empty.xopp");
 
     // Benchmark loading time
-    benchLoadFile(tmp_path, 100'000);
+    benchLoadFile("empty", tmp_path, 100'000);
 
     // Clean up test file
     fs::remove(tmp_path);
@@ -86,7 +186,7 @@ TEST(FileLoadBenchmark, benchmarkManyPages) {
             u8"many-pages.xopp");
 
     // Benchmark loading time
-    benchLoadFile(tmp_path, 1000);
+    benchLoadFile("many-pages", tmp_path, 1000);
 
     // Clean up test file
     fs::remove(tmp_path);
