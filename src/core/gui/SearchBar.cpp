@@ -12,6 +12,7 @@
 #include "control/ScrollHandler.h"      // for ScrollHandler
 #include "control/zoom/ZoomControl.h"  // for ZoomControl
 #include "gui/MainWindow.h"            // for MainWindow
+#include "gui/XournalView.h"           // for XournalView
 #include "model/Document.h"            // for Document
 #include "util/PlaceholderString.h"    // for PlaceholderString
 #include "util/i18n.h"                 // for _, FC, _F
@@ -196,6 +197,7 @@ void SearchBar::showSearchBar(bool show) {
     } else {
         searchActive = false;
         gtk_widget_hide(searchBar);
+        win->getXournal()->requestFocus();
         const size_t pageCount = control->getDocument()->getPageCount();
         for (size_t i = pageCount - 1; i < pageCount; i--) {
             control->searchTextOnPage("", i, 0, nullptr, nullptr);
