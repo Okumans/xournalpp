@@ -119,6 +119,7 @@ public:
     bool actionDelete();
 
     void deleteViewBuffer() override;
+    bool tryDeleteViewBuffer();
 
     /**
      * Returns whether this PageView contains the

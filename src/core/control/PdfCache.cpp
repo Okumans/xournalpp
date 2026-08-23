@@ -51,10 +51,21 @@ void PdfCache::setRefreshThreshold(double threshold) { this->zoomRefreshThreshol
 
 void PdfCache::setMaxSize(size_t newSize) {
     this->maxSize = newSize;
-    if (this->data.size() > this->maxSize) {
-        this->data.resize(this->maxSize);
+    while (this->data.size() > this->maxSize) {
+        this->currentBytes -= this->data.back()->buffer.getEstimatedMemoryBytes();
+        this->data.pop_back();
     }
 }
+
+void PdfCache::setMaxBytes(size_t newMaxBytes) {
+    this->maxBytes = newMaxBytes;
+    while (this->data.size() > 1 && this->currentBytes > this->maxBytes) {
+        this->currentBytes -= this->data.back()->buffer.getEstimatedMemoryBytes();
+        this->data.pop_back();
+    }
+}
+
+void PdfCache::setMinimumRenderZoom(double minimumZoom) { this->minimumRenderZoom = minimumZoom; }
 
 void PdfCache::updateSettings(Settings* settings) {
     if (settings) {
@@ -64,7 +75,10 @@ void PdfCache::updateSettings(Settings* settings) {
 }
 
 void PdfCache::evictAllExcept(const std::unordered_set<size_t>& retainedPdfPages) {
-    std::lock_guard<std::mutex> lock(this->renderMutex);
+    std::unique_lock<std::mutex> lock(this->renderMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;
+    }
 
     for (auto& entry: this->data) {
         xoj_assert(entry);
@@ -72,6 +86,7 @@ void PdfCache::evictAllExcept(const std::unordered_set<size_t>& retainedPdfPages
 
         const size_t pdfPageNo = static_cast<size_t>(entry->popplerPage->getPageId());
         if (retainedPdfPages.find(pdfPageNo) == retainedPdfPages.end()) {
+            this->currentBytes -= entry->buffer.getEstimatedMemoryBytes();
             entry.reset();
         }
     }
@@ -97,15 +112,20 @@ auto PdfCache::cache(XojPdfPageSPtr popplerPage, xoj::view::Mask&& buffer) -> co
     auto existingIt = std::find_if(this->data.begin(), this->data.end(),
                                    [pageId](const auto& entry) { return entry->popplerPage->getPageId() == pageId; });
     if (existingIt != this->data.end()) {
+        this->currentBytes -= (*existingIt)->buffer.getEstimatedMemoryBytes();
         this->data.erase(existingIt);
     }
 
-    if (this->data.size() >= this->maxSize) {
-        this->data.resize(this->maxSize - 1);
+    const size_t bufferBytes = buffer.getEstimatedMemoryBytes();
+    while (!this->data.empty() &&
+           (this->data.size() >= this->maxSize || this->currentBytes + bufferBytes > this->maxBytes)) {
+        this->currentBytes -= this->data.back()->buffer.getEstimatedMemoryBytes();
+        this->data.pop_back();
     }
 
     this->data.emplace_front(
             std::make_unique<PdfCacheEntry>(std::move(popplerPage), std::forward<xoj::view::Mask>(buffer)));
+    this->currentBytes += bufferBytes;
 
     return this->data.front().get();
 }
@@ -120,12 +140,14 @@ void PdfCache::render(cairo_t* cr, size_t pdfPageNo, double zoom, double pageWid
     if (!needsRefresh) {
         // If we do have a cached result, is its rendering quality
         // acceptable for our current zoom?
-        needsRefresh =
-                (zoom > 1.0 && getPercentZoomChange(cacheResult->buffer.getZoom(), zoom) > this->zoomRefreshThreshold);
+        const double desiredRenderZoom = std::max(zoom, this->minimumRenderZoom);
+        needsRefresh = desiredRenderZoom > cacheResult->buffer.getZoom() &&
+                       getPercentZoomChange(cacheResult->buffer.getZoom(), desiredRenderZoom) >
+                               this->zoomRefreshThreshold;
     }
 
     if (needsRefresh) {
-        double renderZoom = std::max(zoom, 1.0);
+        double renderZoom = std::max(zoom, this->minimumRenderZoom);
 
         auto popplerPage = cacheResult ? cacheResult->popplerPage : pdfDocument.getPage(pdfPageNo);
 

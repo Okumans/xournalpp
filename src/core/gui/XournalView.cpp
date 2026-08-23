@@ -137,7 +137,7 @@ auto XournalView::cleanupBufferCache() -> void {
             }
             continue;
         } else if (page->hasBuffer()) {
-            page->deleteViewBuffer();
+            page->tryDeleteViewBuffer();
         }
     }
 

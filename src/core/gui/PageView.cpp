@@ -131,6 +131,15 @@ void XojPageView::deleteViewBuffer() {
     this->buffer.reset();
 }
 
+bool XojPageView::tryDeleteViewBuffer() {
+    std::unique_lock lock(this->drawingMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+    this->buffer.reset();
+    return true;
+}
+
 auto XojPageView::containsPoint(int x, int y, bool local) const -> bool {
     if (!local) {
         auto p = this->getPixelPosition();

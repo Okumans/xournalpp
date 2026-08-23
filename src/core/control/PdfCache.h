@@ -58,11 +58,16 @@ public:
     void setRefreshThreshold(double percentDifference);
 
     void setMaxSize(size_t newSize);
+    void setMaxBytes(size_t newMaxBytes);
+    void setMinimumRenderZoom(double minimumZoom);
 
     void updateSettings(Settings* settings);
 
     /**
      * @brief Remove cached renderings for PDF pages that are not retained.
+     *
+     * Cleanup is opportunistic: if a render currently owns the cache lock, this
+     * returns immediately so callers on the GUI thread never wait for Poppler.
      */
     void evictAllExcept(const std::unordered_set<size_t>& retainedPdfPages);
 
@@ -88,6 +93,9 @@ private:
 
     std::deque<std::unique_ptr<PdfCacheEntry>> data;
     decltype(data)::size_type maxSize = 0;
+    size_t currentBytes = 0;
+    size_t maxBytes = 128U * 1024U * 1024U;
 
     double zoomRefreshThreshold;
+    double minimumRenderZoom = 1.0;
 };

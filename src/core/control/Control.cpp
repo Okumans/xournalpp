@@ -1573,7 +1573,9 @@ void Control::replaceDocument(std::unique_ptr<Document> doc, int scrollToPage) {
     fs::path filepath = doc->getFilepath();
 
     if (this->guiLoadBenchmark) {
-        if (filepath == this->guiLoadBenchmark->filepath) {
+        // Opening a PDF creates a new unsaved annotation document, so its
+        // document filepath intentionally differs from the source PDF.
+        if (filepath == this->guiLoadBenchmark->filepath || Util::hasPdfFileExt(this->guiLoadBenchmark->filepath)) {
             this->guiLoadBenchmark->documentInstalled = true;
         } else {
             this->guiLoadBenchmark.reset();
