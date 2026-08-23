@@ -1,8 +1,8 @@
 #include "Control.h"
 
-#include <algorithm>  // for max
-#include <cstdlib>    // for size_t
-#include <exception>  // for exce...
+#include <algorithm>   // for max
+#include <cstdlib>     // for size_t
+#include <exception>   // for exce...
 #include <functional>  // for bind
 #include <iterator>    // for end
 #include <memory>      // for make...
@@ -10,6 +10,10 @@
 #include <regex>       // for regex
 #include <string>      // for string
 #include <utility>     // for move
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#endif
 
 #include "control/AudioController.h"                             // for Audi...
 #include "control/ClipboardHandler.h"                            // for Clip...
@@ -120,6 +124,26 @@
 #include "config.h"                          // for PROJ...
 
 using std::string;
+
+namespace {
+
+auto getPeakRssKiBForBenchmark() -> std::optional<long> {
+#if defined(__unix__) || defined(__APPLE__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return std::nullopt;
+    }
+#if defined(__APPLE__)
+    return usage.ru_maxrss / 1024;
+#else
+    return usage.ru_maxrss;
+#endif
+#else
+    return std::nullopt;
+#endif
+}
+
+}  // namespace
 
 Control::Control(GApplication* gtkApp, GladeSearchpath* gladeSearchPath, bool disableAudio): gtkApp(gtkApp) {
     this->undoRedo = new UndoRedoHandler(this);
@@ -1548,6 +1572,14 @@ void Control::replaceDocument(std::unique_ptr<Document> doc, int scrollToPage) {
 
     fs::path filepath = doc->getFilepath();
 
+    if (this->guiLoadBenchmark) {
+        if (filepath == this->guiLoadBenchmark->filepath) {
+            this->guiLoadBenchmark->documentInstalled = true;
+        } else {
+            this->guiLoadBenchmark.reset();
+        }
+    }
+
     this->doc->lock();
     *this->doc = *doc;  // This calls fireDocumentChanged(DOCUMENT_CHANGE_COMPLETE). No need to fire it again
     this->doc->unlock();
@@ -1753,6 +1785,13 @@ bool Control::openXoptFile(fs::path filepath) {
 
 void Control::openFileWithoutSavingTheCurrentDocument(fs::path filepath, bool attachToDocument, int scrollToPage,
                                                       std::function<void(bool)> callback) {
+    if (const char* mode = g_getenv("XOPP_BENCHMARK_GUI_LOAD"); !filepath.empty() && mode != nullptr && *mode != '\0') {
+        this->guiLoadBenchmark =
+                GuiLoadBenchmark{g_get_monotonic_time(), filepath, false, g_strcmp0(mode, "quit") == 0};
+    } else {
+        this->guiLoadBenchmark.reset();
+    }
+
     if (filepath.empty()) {
         this->replaceDocument(createNewDocument(this, fs::path(), std::nullopt), -1);
         callback(true);
@@ -1799,6 +1838,38 @@ void Control::openFileWithoutSavingTheCurrentDocument(fs::path filepath, bool at
     }
 
     this->openXoppFile(std::move(filepath), scrollToPage, std::move(callback));
+}
+
+void Control::reportFirstPageRendered() {
+    if (!this->guiLoadBenchmark || !this->guiLoadBenchmark->documentInstalled) {
+        return;
+    }
+
+    const double durationMs = static_cast<double>(g_get_monotonic_time() - this->guiLoadBenchmark->startedUs) / 1000.0;
+    const bool quitAfterReport = this->guiLoadBenchmark->quitAfterReport;
+    const auto peakRssKiB = getPeakRssKiBForBenchmark();
+    std::error_code error;
+    const auto fileBytes = fs::file_size(this->guiLoadBenchmark->filepath, error);
+
+    this->doc->lock_shared();
+    const auto pageCount = this->doc->getPageCount();
+    this->doc->unlock_shared();
+
+    const std::string peakRss = peakRssKiB ? std::to_string(*peakRssKiB) : "null";
+    const std::string bytes = error ? "null" : std::to_string(fileBytes);
+    g_message("XOPP_GUI_LOAD_RESULT {\"duration_ms\":%.3f,\"peak_rss_kib\":%s,\"file_bytes\":%s,"
+              "\"page_count\":%" G_GSIZE_FORMAT "}",
+              durationMs, peakRss.c_str(), bytes.c_str(), static_cast<gsize>(pageCount));
+    this->guiLoadBenchmark.reset();
+
+    if (quitAfterReport) {
+        g_idle_add(
+                +[](gpointer application) -> gboolean {
+                    g_application_quit(G_APPLICATION(application));
+                    return G_SOURCE_REMOVE;
+                },
+                this->gtkApp);
+    }
 }
 
 void Control::openFile(fs::path filepath, std::function<void(bool)> callback, int scrollToPage, bool forceOpen) {
