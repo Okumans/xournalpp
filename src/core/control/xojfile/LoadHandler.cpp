@@ -566,7 +566,9 @@ void LoadHandler::parseXml(std::unique_ptr<xoj::util::InputStream> xmlContentStr
         }
     };
 
-    std::array<char, 1024> buffer{};
+    // Large chunks substantially reduce calls into both the decompressor and GMarkup while keeping loading
+    // streaming and memory bounded. A typical handwritten document can expand to several megabytes of XML.
+    std::array<char, 64 * 1024> buffer{};
     int len{};
     xoj::util::GErrorGuard error;
     while (true) {
