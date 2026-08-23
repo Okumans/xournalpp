@@ -32,7 +32,12 @@ ToolHandler::ToolHandler(ToolListener* stateChangeListener, ActionDatabase* acti
 
 class ToolSelectPDFText: public Tool {
 public:
-    ToolSelectPDFText(std::string name, ToolType type, Color color): Tool(name, type, color, std::nullopt) {}
+    ToolSelectPDFText(std::string name, ToolType type, Color color): Tool(name, type, color, std::nullopt) {
+        // The base constructor cannot dispatch the virtual setter. Apply it
+        // once more so a marker color without an alpha component gets the
+        // default marker opacity.
+        setColor(color);
+    }
 
     ~ToolSelectPDFText() override{};
 
@@ -127,6 +132,9 @@ void ToolHandler::initTools() {
 
     tools[TOOL_SELECT_PDF_TEXT_RECT - TOOL_PEN] =
             std::make_unique<ToolSelectPDFText>("selectPdfTextRect", TOOL_SELECT_PDF_TEXT_RECT, Colors::black);
+
+    tools[TOOL_SMART_SELECT - TOOL_PEN] =
+            std::make_unique<ToolSelectPDFText>("smartSelect", TOOL_SMART_SELECT, Colors::black);
 
     thickness[TOOL_SIZE_VERY_FINE] = .7;
     thickness[TOOL_SIZE_FINE] = 1.41;
@@ -303,6 +311,7 @@ void ToolHandler::setSelectPDFTextMarkerOpacity(int alpha) {
     // Use same marker opacity for 'select linear pdf text' or 'select pdf text in rectangle'
     setColorAlpha(this->getTool(TOOL_SELECT_PDF_TEXT_LINEAR), alpha);
     setColorAlpha(this->getTool(TOOL_SELECT_PDF_TEXT_RECT), alpha);
+    setColorAlpha(this->getTool(TOOL_SMART_SELECT), alpha);
 }
 
 auto ToolHandler::getSelectPDFTextMarkerOpacity() const -> int {
@@ -625,9 +634,20 @@ void ToolHandler::setSelectionEditTools(bool setColor, bool setSize, bool setFil
         t->setFill(false);
     }
 
+    Tool* smartSelect = tools[TOOL_SMART_SELECT - TOOL_PEN].get();
+    // Smart Select always keeps its PDF marker color capability.  Its other
+    // editing capabilities follow the currently selected objects.
+    smartSelect->setCapability(TOOL_CAP_COLOR, true);
+    smartSelect->setCapability(TOOL_CAP_SIZE, setSize);
+    smartSelect->setCapability(TOOL_CAP_FILL, setFill);
+    smartSelect->setCapability(TOOL_CAP_LINE_STYLE, setLineStyle);
+    smartSelect->setSize(TOOL_SIZE_NONE);
+    smartSelect->setFill(false);
+
     if (this->activeTool->type == TOOL_SELECT_RECT || this->activeTool->type == TOOL_SELECT_REGION ||
         this->activeTool->type == TOOL_SELECT_MULTILAYER_RECT || this->activeTool->type == TOOL_SELECT_MULTILAYER_REGION ||
-        this->activeTool->type == TOOL_SELECT_OBJECT || this->activeTool->type == TOOL_PLAY_OBJECT) {
+        this->activeTool->type == TOOL_SELECT_OBJECT || this->activeTool->type == TOOL_PLAY_OBJECT ||
+        this->activeTool->type == TOOL_SMART_SELECT) {
         this->stateChangeListener->toolColorChanged();
         this->stateChangeListener->toolSizeChanged();
         this->stateChangeListener->toolFillChanged();
@@ -649,7 +669,8 @@ auto ToolHandler::isSinglePageTool() const -> bool {
            toolType == TOOL_SELECT_MULTILAYER_REGION || toolType == TOOL_SELECT_OBJECT || toolType == TOOL_DRAW_RECT ||
            toolType == TOOL_DRAW_ELLIPSE || toolType == TOOL_DRAW_COORDINATE_SYSTEM || toolType == TOOL_DRAW_ARROW ||
            toolType == TOOL_DRAW_DOUBLE_ARROW || toolType == TOOL_FLOATING_TOOLBOX || toolType == TOOL_DRAW_SPLINE ||
-           toolType == TOOL_SELECT_PDF_TEXT_LINEAR || toolType == TOOL_SELECT_PDF_TEXT_RECT || toolType == TOOL_LINK;
+           toolType == TOOL_SELECT_PDF_TEXT_LINEAR || toolType == TOOL_SELECT_PDF_TEXT_RECT ||
+           toolType == TOOL_SMART_SELECT || toolType == TOOL_LINK;
 }
 
 auto ToolHandler::acceptsOutOfPageEvents() const -> bool {

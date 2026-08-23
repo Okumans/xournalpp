@@ -131,7 +131,7 @@ auto PenInputHandler::actionStart(InputEvent const& event) -> bool {
             changeSelection = false;
         }
         // Selection tools does not change selection with Shift pressed
-        if (isSelectToolTypeSingleLayer(toolType)) {
+        if (isSelectToolTypeSingleLayer(toolType) && !isSmartSelectToolType(toolType)) {
             changeSelection = false;
         }
     }
@@ -154,8 +154,10 @@ auto PenInputHandler::actionStart(InputEvent const& event) -> bool {
             return true;
         }
 
-        xournal->view->clearSelection();
-        changeTool(event);
+        if (!isSmartSelectToolType(toolHandler->getToolType())) {
+            xournal->view->clearSelection();
+            changeTool(event);
+        }
         // stop early to prevent drawing when clicking outside of the selection with the intention of deselecting
         if (toolHandler->isDrawingTool()) {
             return true;
@@ -302,6 +304,15 @@ auto PenInputHandler::actionMotion(InputEvent const& event) -> bool {
 
     bool isShiftDown = (event.state & GDK_SHIFT_MASK);
     bool handleSelectionMove = xournal->selection != nullptr;
+
+    // Smart Select uses an existing selection only when the press actually
+    // hit one of its handles.  Otherwise the selection is retained for a
+    // Shift-aggregate rectangle (or discarded when the Smart gesture commits
+    // another route), and page routing must receive the motion.
+    if (xournal->selection && isSmartSelectToolType(toolHandler->getToolType()) &&
+        !xournal->selection->isMoving()) {
+        handleSelectionMove = false;
+    }
 
     if (xournal->selection && isSelectToolTypeSingleLayer(toolHandler->getToolType()) &&
         !xournal->selection->isMoving()) {

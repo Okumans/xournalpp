@@ -649,6 +649,11 @@
      <attribute name="accel">&lt;Ctrl&gt;&lt;Shift&gt;o</attribute>
     </item>
     <item>
+     <attribute name="label" translatable="yes">Smart Select</attribute>
+     <attribute name="action">win.select-tool</attribute>
+     <attribute name="target" type="t">27</attribute> <!-- TOOL_SMART_SELECT -->
+    </item>
+    <item>
      <attribute name="label" translatable="yes">_Vertical Space</attribute>
      <attribute name="action">win.select-tool</attribute>
      <attribute name="target" type="t">12</attribute> <!-- TOOL_VERTICAL_SPACE -->

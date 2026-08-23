@@ -77,6 +77,11 @@ public:
 
     virtual std::vector<XojPdfRectangle> findText(const std::string& text) = 0;
 
+    /// Return whether a text glyph occupies the given page coordinate.
+    /// Implementations should use their existing text-layout representation;
+    /// this is intentionally not a separate text parser.
+    virtual bool hasTextAt(double x, double y) { return false; }
+
     /// Retrieve the text contained in the provided rectangle using the given
     /// selection style.
     /// @param rect start and end points

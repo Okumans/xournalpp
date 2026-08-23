@@ -96,8 +96,8 @@ function app.openDialog(message, options, cb, error) end
 
 --- Allow to register menupoints and toolbar buttons. This needs to be called from initUi
 --- 
---- @param opts {menu: string, callback: string, toolbarID: string, mode:integer, accelerator:string, parentPath:string}
----   options (`mode`, `toolbarID`, `accelerator` and `parentPath` are optional)
+--- @param opts {menu: string, callback: string, toolbarID: string, mode:integer, accelerator:string, shortcut:string, parentPath:string}
+---   options (`mode`, `toolbarID`, `accelerator`, `shortcut` and `parentPath` are optional)
 --- @return {menuId:integer}
 --- 
 --- Example 1: app.registerUi({["menu"] = "HelloWorld", callback="printMessage", mode=1, accelerator="<Control>a"})
@@ -115,6 +115,10 @@ function app.openDialog(message, options, cb, error) end
 --- 
 --- The mode and accelerator are optional. When specifying the mode, the callback function should have one parameter
 ---    that receives the mode. This is useful for callback functions that are shared among multiple menu entries.
+---
+--- The optional shortcut is a canvas-scoped key binding. It is dispatched after the active page/input handler gets
+--- first chance to consume the key and is suppressed while a text editor is active. Unlike accelerator, it does not
+--- install a window-wide GTK accelerator, so it is safe for one-letter tool shortcuts.
 --- 
 --- The parentPath parameter creates submenu hierarchy. Without it, the menu item appears directly in the Plugins menu.
 --- With parentPath, the item is placed under a nested submenu path. For example, parentPath="Tools/Custom"
@@ -1311,6 +1315,7 @@ app.C = {
     Tool_laserPointerHighlighter = 24,
     Tool_link = 25,
     Tool_latex = 26,
+    Tool_smartSelect = 27,
     EraserType_none = 0,
     EraserType_default = 1,
     EraserType_whiteout = 2,

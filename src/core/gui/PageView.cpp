@@ -3,6 +3,7 @@
 #include <algorithm>  // for max, find_if
 #include <cinttypes>  // for int64_t
 #include <cstdint>    // for int64_t
+#include <cmath>      // for abs
 #include <cstdlib>    // for size_t
 #include <iomanip>    // for operator<<, quoted
 #include <memory>     // for unique_ptr, make_...
@@ -190,6 +191,167 @@ void XojPageView::startText(double x, double y) {
     }
 }
 
+bool XojPageView::smartSelectTextAtPress() const {
+    const size_t pdfPageNr = this->page->getPdfPageNr();
+    if (pdfPageNr == npos) {
+        return false;
+    }
+
+    Document* doc = this->xournal->getControl()->getDocument();
+    doc->lock_shared();
+    auto pdf = doc->getPdfPage(pdfPageNr);
+    doc->unlock_shared();
+    return pdf && pdf->hasTextAt(this->smartSelectStartX, this->smartSelectStartY);
+}
+
+void XojPageView::startSmartSelectDelegate(double x, double y) {
+    xoj_assert(this->smartSelectActive);
+    xoj_assert(this->smartSelectState == SmartSelectState::Undecided);
+
+    auto* control = this->xournal->getControl();
+    auto* pdfToolbox = control->getWindow()->getPdfToolbox();
+
+    const bool selectPdf = this->smartSelectAlt || (!this->smartSelectShift && this->smartSelectTextAtPress());
+    if (selectPdf) {
+        this->smartSelectState = SmartSelectState::PdfText;
+        this->xournal->clearSelection();
+        if (pdfToolbox->hasSelection()) {
+            pdfToolbox->userCancelSelection();
+        }
+
+        if (this->page->getPdfPageNr() != npos) {
+            pdfToolbox->selectionStyle = XojPdfPageSelectionStyle::Linear;
+            auto selection = pdfToolbox->newSelection(this->smartSelectStartX, this->smartSelectStartY);
+            this->overlayViews.emplace_back(std::make_unique<xoj::view::PdfElementSelectionView>(
+                    selection, this, this->settings->getSelectionColor()));
+            pdfToolbox->getSelection()->setToolType(TOOL_SELECT_PDF_TEXT_LINEAR);
+            pdfToolbox->getSelection()->currentPos(x, y, XojPdfPageSelectionStyle::Linear);
+        }
+        return;
+    }
+
+    this->smartSelectState = SmartSelectState::Rectangle;
+    if (!this->smartSelectShift) {
+        this->xournal->clearSelection();
+    }
+    if (pdfToolbox->hasSelection()) {
+        pdfToolbox->userCancelSelection();
+    }
+
+    this->selector = std::make_unique<RectangularSelector>(this->smartSelectStartX, this->smartSelectStartY);
+    this->overlayViews.emplace_back(std::make_unique<xoj::view::SelectorView>(
+            this->selector.get(), this, this->settings->getSelectionColor()));
+    this->selector->currentPos(x, y);
+}
+
+void XojPageView::finalizeSmartSelect(const PositionInputData& pos) {
+    if (!this->smartSelectActive) {
+        return;
+    }
+
+    Control* control = this->xournal->getControl();
+    auto* pdfToolbox = control->getWindow()->getPdfToolbox();
+    const double zoom = this->xournal->getZoom();
+    const double x = pos.x / zoom;
+    const double y = pos.y / zoom;
+
+    switch (this->smartSelectState) {
+        case SmartSelectState::Undecided:
+            this->xournal->clearSelection();
+            if (pdfToolbox->hasSelection()) {
+                pdfToolbox->userCancelSelection();
+                this->repaintPage();
+            }
+            break;
+
+        case SmartSelectState::ObjectMove:
+            // PenInputHandler normally calls mouseUp() before this page event;
+            // keep direct callers from leaving a selection in a moving state.
+            if (auto* selection = this->xournal->getSelection(); selection && selection->isMoving()) {
+                selection->mouseUp();
+            }
+            break;
+
+        case SmartSelectState::Rectangle: {
+            if (this->selector) {
+                const bool aggregate = this->smartSelectShift && this->xournal->getSelection();
+                const size_t layerOfFinalizedSel =
+                        this->selector->finalize(this->page, aggregate, control->getDocument());
+
+                if (layerOfFinalizedSel) {
+                    this->xournal->setSelection([&]() {
+                        if (aggregate) {
+                            auto selected = this->selector->releaseElements();
+                            return SelectionFactory::addElementsFromActiveLayer(control,
+                                                                                  this->xournal->getSelection(),
+                                                                                  selected);
+                        }
+
+                        control->getLayerController()->switchToLay(layerOfFinalizedSel);
+                        return SelectionFactory::createFromElementsOnActiveLayer(
+                                control, this->page, this, this->selector->releaseElements());
+                    }()
+                                                                  .release());
+                } else if (this->selector->userTapped(zoom)) {
+                    if (aggregate) {
+                        SelectObject(this).atAggregate(x, y);
+                    } else {
+                        SelectObject(this).at(x, y);
+                    }
+                }
+                this->selector.reset();
+            }
+            break;
+        }
+
+        case SmartSelectState::PdfText:
+            if (auto* selection = pdfToolbox->getSelection(); selection && !selection->isFinalized()) {
+                if (selection->finalizeSelectionAndRepaint(pdfToolbox->selectionStyle)) {
+                    // The toolbox is only useful when text was actually selected.
+                    this->showPdfToolbox(pos);
+                } else {
+                    pdfToolbox->userCancelSelection();
+                    this->repaintPage();
+                }
+            }
+            break;
+    }
+
+    this->smartSelectActive = false;
+    this->smartSelectState = SmartSelectState::Undecided;
+    this->smartSelectShift = false;
+    this->smartSelectAlt = false;
+}
+
+void XojPageView::cancelSmartSelect() {
+    if (!this->smartSelectActive) {
+        return;
+    }
+
+    if (this->selector) {
+        this->selector->getViewPool()->dispatchAndClear(
+                xoj::view::SelectorView::DELETE_VIEWS_REQUEST, Range(0, 0, this->getWidth(), this->getHeight()));
+        this->selector.reset();
+    }
+
+    auto* pdfToolbox = this->xournal->getControl()->getWindow()->getPdfToolbox();
+    if (pdfToolbox->hasSelection() && !pdfToolbox->getSelection()->isFinalized()) {
+        pdfToolbox->userCancelSelection();
+        this->repaintPage();
+    }
+
+    if (this->smartSelectState == SmartSelectState::ObjectMove) {
+        if (auto* selection = this->xournal->getSelection(); selection && selection->isMoving()) {
+            selection->mouseUp();
+        }
+    }
+
+    this->smartSelectActive = false;
+    this->smartSelectState = SmartSelectState::Undecided;
+    this->smartSelectShift = false;
+    this->smartSelectAlt = false;
+}
+
 void XojPageView::startLink() {
     this->xournal->endLinkAllPages(this);
     if (this->linkHandler == nullptr) {
@@ -327,8 +489,44 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
     } else if (h->getToolType() == TOOL_SELECT_RECT || h->getToolType() == TOOL_SELECT_REGION ||
                h->getToolType() == TOOL_SELECT_MULTILAYER_RECT || h->getToolType() == TOOL_SELECT_MULTILAYER_REGION ||
                h->getToolType() == TOOL_PLAY_OBJECT || h->getToolType() == TOOL_SELECT_OBJECT ||
-               h->getToolType() == TOOL_SELECT_PDF_TEXT_LINEAR || h->getToolType() == TOOL_SELECT_PDF_TEXT_RECT) {
-        if (h->getToolType() == TOOL_SELECT_RECT) {
+               h->getToolType() == TOOL_SELECT_PDF_TEXT_LINEAR || h->getToolType() == TOOL_SELECT_PDF_TEXT_RECT ||
+               h->getToolType() == TOOL_SMART_SELECT) {
+        if (h->getToolType() == TOOL_SMART_SELECT) {
+            if (this->textEditor) {
+                if (this->textEditor->getContentBoundingBox().contains(x, y)) {
+                    // While Smart Select has opened a text editor, clicks in
+                    // that text must continue to place the editor cursor
+                    // rather than start a new selection gesture.
+                    this->textEditor->mousePressed(x, y);
+                    return true;
+                }
+                // Clicking elsewhere commits the current text edit before
+                // Smart Select handles the new gesture.
+                this->endText();
+            }
+            this->smartSelectActive = true;
+            this->smartSelectState = SmartSelectState::Undecided;
+            this->smartSelectStartX = x;
+            this->smartSelectStartY = y;
+            this->smartSelectShift = pos.isShiftDown();
+            this->smartSelectAlt = pos.isAltDown();
+
+            // Modifiers explicitly reserve the gesture for rectangle/PDF
+            // routing.  A normal press first tries the existing object hit
+            // testing rules, then starts moving immediately when it succeeds.
+            if (!this->smartSelectShift && !this->smartSelectAlt) {
+                SelectObject select(this);
+                if (select.at(x, y)) {
+                    this->smartSelectState = SmartSelectState::ObjectMove;
+                    if (auto* selection = this->xournal->getSelection(); selection) {
+                        selection->mouseDown(CURSOR_SELECTION_MOVE, x, y);
+                    }
+                    if (auto* pdfToolbox = control->getWindow()->getPdfToolbox(); pdfToolbox->hasSelection()) {
+                        pdfToolbox->userCancelSelection();
+                    }
+                }
+            }
+        } else if (h->getToolType() == TOOL_SELECT_RECT) {
             if (!selector) {
                 this->selector = std::make_unique<RectangularSelector>(x, y);
                 this->overlayViews.emplace_back(std::make_unique<xoj::view::SelectorView>(
@@ -478,12 +676,31 @@ auto XojPageView::onButtonDoublePressEvent(const PositionInputData& pos) -> bool
             const Element* object = *it;
             ElementType elemType = object->getType();
             if (elemType == ELEMENT_TEXT) {
+                const bool keepSmartSelect = toolType == TOOL_SMART_SELECT;
+                if (keepSmartSelect) {
+                    // The second press started a Smart Select gesture and may
+                    // have put the object selection into move mode.  End that
+                    // gesture before entering the text editor, but keep Smart
+                    // Select as the active toolbar tool.
+                    this->cancelSmartSelect();
+                }
                 this->xournal->clearSelection();
-                toolHandler->selectTool(TOOL_TEXT);
-                toolHandler->fireToolChanged();
-                // Simulate a button press; there's too many things that we
-                // could forget to do if we manually call startText
-                this->onButtonPressEvent(pos);
+                if (keepSmartSelect) {
+                    this->startText(x, y);
+                    // startText constructs an editor for an existing text
+                    // object, whose initialization simulates a press.  This
+                    // Smart Select double-click is not a text drag, so clear
+                    // that synthetic press before hover motion is delivered.
+                    if (this->textEditor) {
+                        this->textEditor->mouseReleased();
+                    }
+                } else {
+                    toolHandler->selectTool(TOOL_TEXT);
+                    toolHandler->fireToolChanged();
+                    // Simulate a button press; there's too many things that we
+                    // could forget to do if we manually call startText
+                    this->onButtonPressEvent(pos);
+                }
             } else if (elemType == ELEMENT_TEXIMAGE) {
                 // Open latex dialog... but only after the buttonReleaseEvent
                 this->inLatexDoubleClick = true;
@@ -556,6 +773,26 @@ auto XojPageView::onMotionNotifyEvent(const PositionInputData& pos) -> bool {
 
     if (this->inputHandler && this->inputHandler->onMotionNotifyEvent(pos, zoom)) {
         // input handler used this event
+    } else if (this->smartSelectActive) {
+        if (this->smartSelectState == SmartSelectState::Undecided) {
+            const double maxDist = std::max(std::abs(x - this->smartSelectStartX),
+                                            std::abs(y - this->smartSelectStartY));
+            if (maxDist >= 10.0 / zoom) {
+                this->startSmartSelectDelegate(x, y);
+            }
+        } else if (this->smartSelectState == SmartSelectState::Rectangle) {
+            if (this->selector) {
+                this->selector->currentPos(x, y);
+            }
+        } else if (this->smartSelectState == SmartSelectState::PdfText) {
+            if (auto* selection = pdfToolbox->getSelection(); selection && !selection->isFinalized()) {
+                selection->currentPos(x, y, pdfToolbox->selectionStyle);
+            }
+        } else if (this->smartSelectState == SmartSelectState::ObjectMove) {
+            if (auto* selection = this->xournal->getSelection(); selection && selection->isMoving()) {
+                selection->mouseMove(x, y, pos.isAltDown());
+            }
+        }
     } else if (this->imageSizeSelection) {
         this->imageSizeSelection->updatePosition(x, y);
     } else if (this->selector) {
@@ -587,6 +824,8 @@ void XojPageView::onSequenceCancelEvent(DeviceId deviceId) {
         return;
     }
     currentSequenceDeviceId.reset();
+
+    this->cancelSmartSelect();
 
     if (this->inputHandler) {
         this->inputHandler->onSequenceCancelEvent();
@@ -730,6 +969,11 @@ auto XojPageView::onButtonReleaseEvent(const PositionInputData& pos) -> bool {
     if (this->verticalSpace) {
         control->getUndoRedoHandler()->addUndoAction(this->verticalSpace->finalize());
         this->verticalSpace.reset();
+    }
+
+    if (this->smartSelectActive) {
+        this->finalizeSmartSelect(pos);
+        return false;
     }
 
     auto* pdfToolbox = control->getWindow()->getPdfToolbox();

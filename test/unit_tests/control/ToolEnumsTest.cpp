@@ -43,3 +43,23 @@ TEST(ToolEnumsTest, testToolTypeSerialization) {
         EXPECT_EQ(toolType, toolTypeFromString(s));
     }
 }
+
+TEST(ToolEnumsTest, smartSelectKeepsExistingToolIds) {
+    EXPECT_EQ(TOOL_SELECT_PDF_TEXT_LINEAR, 21);
+    EXPECT_EQ(TOOL_SELECT_PDF_TEXT_RECT, 22);
+    EXPECT_EQ(TOOL_LASER_POINTER_PEN, 23);
+    EXPECT_EQ(TOOL_LASER_POINTER_HIGHLIGHTER, 24);
+    EXPECT_EQ(TOOL_LINK, 25);
+    EXPECT_EQ(TOOL_LATEX, 26);
+    EXPECT_EQ(TOOL_SMART_SELECT, 27);
+    EXPECT_EQ(toolTypeToString(TOOL_SMART_SELECT), "smartSelect");
+}
+
+TEST(ToolEnumsTest, smartSelectPredicatesAndCapabilities) {
+    EXPECT_TRUE(isSelectToolType(TOOL_SMART_SELECT));
+    EXPECT_TRUE(isSelectToolTypeSingleLayer(TOOL_SMART_SELECT));
+    EXPECT_TRUE(isSmartSelectToolType(TOOL_SMART_SELECT));
+    EXPECT_FALSE(xoj::tool::isPdfSelectionTool(TOOL_SMART_SELECT));
+    EXPECT_FALSE(requiresClearedSelection(TOOL_SMART_SELECT));
+    EXPECT_EQ(xoj::tool::typeToCapabilities(TOOL_SMART_SELECT), TOOL_CAP_COLOR);
+}
