@@ -19,6 +19,7 @@
 
 #include "gui/toolbarMenubar/PluginPlaceholderLabel.h"  // for the PlaceholderLabel Plugin
 #include "gui/toolbarMenubar/ToolMenuHandler.h"         // for ToolMenuHandler
+#include "gui/inputdevices/InputEvents.h"                // for KeyEvent
 #include "util/i18n.h"                                  // for _
 #include "util/raii/GObjectSPtr.h"
 
@@ -31,6 +32,7 @@ extern "C" {
 }
 
 #include "luapi_application.h"  // for luaopen_app
+#include "PluginShortcut.h"      // for parseShortcut, matchesShortcut
 
 /*
  ** these libs are loaded by lua.c and are readily available to any Lua
@@ -173,10 +175,38 @@ size_t Plugin::populateMenuSection(GtkApplicationWindow* win, size_t startId) {
 
 void Plugin::executeMenuEntry(MenuEntry* entry) { callFunction(entry->callback, entry->mode); }
 
+bool Plugin::handleKeyPress(const KeyEvent& event) {
+    if (!this->enabled) {
+        return false;
+    }
+
+    for (auto& entry: menuEntries) {
+        if (entry.shortcutKeyval == 0 ||
+            !xoj::plugin::matchesShortcut({entry.shortcutKeyval, entry.shortcutModifiers}, event.keyval,
+                                           event.state)) {
+            continue;
+        }
+
+        // Consume a matched shortcut even if the Lua callback reports an error. Otherwise the key could fall through
+        // to an unrelated built-in action after the plugin has already shown its error dialog.
+        callFunction(entry.callback, entry.mode);
+        return true;
+    }
+
+    return false;
+}
+
 auto Plugin::registerMenu(std::string label, std::string callback, ptrdiff_t mode, std::string accelerator,
-                          std::string parentPath) -> size_t {
+                          std::string parentPath, std::string shortcut) -> size_t {
     menuEntries.emplace_back(this, std::move(label), std::move(callback), mode, std::move(accelerator),
-                             std::move(parentPath));
+                             std::move(parentPath), std::move(shortcut));
+
+    auto& entry = menuEntries.back();
+    if (auto parsed = xoj::plugin::parseShortcut(entry.shortcut)) {
+        entry.shortcutKeyval = parsed->keyval;
+        entry.shortcutModifiers = parsed->modifiers;
+    }
+
     return menuEntries.size() - 1;
 }
 

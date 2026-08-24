@@ -92,6 +92,7 @@ ButtonConfigGui::ButtonConfigGui(GladeSearchpath* gladeSearchPath, GtkBox* box, 
     addTypeCB("floating-toolbox", _("Floating Toolbox (experimental)"), TOOL_FLOATING_TOOLBOX);
     addTypeCB("select-pdf-text-ht", _("Select Text from pdf"), TOOL_SELECT_PDF_TEXT_LINEAR);
     addTypeCB("select-pdf-text-area", _("Select Area Text from pdf"), TOOL_SELECT_PDF_TEXT_RECT);
+    addTypeCB("combo-selection", _("Smart Select"), TOOL_SMART_SELECT);
 
     this->cbTool = builder.get("cbTool");
     gtk_combo_box_set_model(GTK_COMBO_BOX(this->cbTool), GTK_TREE_MODEL(typeModel));

@@ -35,6 +35,7 @@
 #include "model/PageRef.h"                       // for PageRef
 #include "model/Stroke.h"                        // for Stroke, StrokeTool::E...
 #include "model/XojPage.h"                       // for XojPage
+#include "plugin/PluginController.h"             // for PluginController
 #include "undo/DeleteUndoAction.h"               // for DeleteUndoAction
 #include "undo/UndoRedoHandler.h"                // for UndoRedoHandler
 #include "util/Assert.h"                         // for xoj_assert
@@ -156,6 +157,13 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
         if (v->onKeyPressEvent(event)) {
             return true;
         }
+    }
+
+    // Let enabled plugins handle canvas-scoped shortcuts after text/input editing but before built-in navigation.
+    // This keeps one-letter shortcuts out of text entry and allows plugins to override layout-relative keys such as
+    // Shift+J/K without changing the fallback behavior when the plugin is disabled.
+    if (control->getPluginController()->handleKeyPress(event)) {
+        return true;
     }
 
     auto keyval = event.keyval;

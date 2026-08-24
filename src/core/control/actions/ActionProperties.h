@@ -997,7 +997,7 @@ struct ActionProperties<Action::TOOL_FILL_OPACITY> {
             ctrl->selectAlpha(OPACITY_FILL_PEN);
         } else if (tt == TOOL_HIGHLIGHTER) {
             ctrl->selectAlpha(OPACITY_FILL_HIGHLIGHTER);
-        } else if (tt == TOOL_SELECT_PDF_TEXT_LINEAR || tt == TOOL_SELECT_PDF_TEXT_RECT) {
+        } else if (tt == TOOL_SELECT_PDF_TEXT_LINEAR || tt == TOOL_SELECT_PDF_TEXT_RECT || tt == TOOL_SMART_SELECT) {
             ctrl->selectAlpha(OPACITY_SELECT_PDF_TEXT_MARKER);
         }
     }

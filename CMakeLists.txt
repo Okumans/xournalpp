@@ -365,6 +365,33 @@ endif ()
 ## Source building ##
 add_subdirectory(src)
 
+# Keep the build-tree executable runnable without requiring a system install.
+# XournalMain searches next to the executable first, so mirror the runtime
+# resources into the build directory for developer builds.  The generated
+# toolbar and page-template files are produced by the translations target.
+add_custom_target(xournalpp-dev-resources
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${PROJECT_SOURCE_DIR}/ui" "${CMAKE_BINARY_DIR}/ui"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${PROJECT_SOURCE_DIR}/plugins" "${CMAKE_BINARY_DIR}/plugins"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${PROJECT_SOURCE_DIR}/resources" "${CMAKE_BINARY_DIR}/resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${PROJECT_SOURCE_DIR}/palettes" "${CMAKE_BINARY_DIR}/palettes"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_BINARY_DIR}/resources-templates/toolbar.ini"
+                "${CMAKE_BINARY_DIR}/ui/toolbar.ini"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_BINARY_DIR}/resources-templates/pagetemplates.ini"
+                "${CMAKE_BINARY_DIR}/ui/pagetemplates.ini"
+        COMMENT "Staging runtime resources for the build-tree executable"
+        VERBATIM
+        )
+if (TARGET translations)
+    add_dependencies(xournalpp-dev-resources translations)
+endif ()
+add_dependencies(xournalpp xournalpp-dev-resources)
+
 ## Tests ##
 option (ENABLE_GTEST "Enable gtest build for xournalpp application" OFF)
 if (ENABLE_GTEST)
