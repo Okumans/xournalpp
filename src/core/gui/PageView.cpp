@@ -528,7 +528,11 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
                 if (select.at(x, y)) {
                     this->smartSelectState = SmartSelectState::ObjectMove;
                     if (auto* selection = this->xournal->getSelection(); selection) {
-                        selection->mouseDown(CURSOR_SELECTION_MOVE, x, y);
+                        // EditSelection::mouseDown() expects display pixels and
+                        // performs the zoom conversion itself.  x/y are already
+                        // document coordinates here, so pass the original press
+                        // position to preserve the grab offset.
+                        selection->mouseDown(CURSOR_SELECTION_MOVE, pos.x, pos.y);
                     }
                     if (auto* pdfToolbox = control->getWindow()->getPdfToolbox(); pdfToolbox->hasSelection()) {
                         pdfToolbox->userCancelSelection();
