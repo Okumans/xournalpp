@@ -342,7 +342,7 @@ auto findResourcePath(const fs::path& searchFile) -> fs::path {
             return *path;
         }*/
     /// real execution path
-    if (auto path = search_for(Util::getExePath().parent_path()); path) {
+    if (auto path = search_for(Util::getExePath()); path) {
         return *path;
     }
     // Not found

@@ -25,11 +25,19 @@ std::string getSurfaceTypeName(cairo_surface_t*);
 Mask::Mask(cairo_surface_t* target, const Range& extent, double zoom, cairo_content_t contentType):
         xOffset(floor_cast<int>(extent.minX * zoom)), yOffset(floor_cast<int>(extent.minY * zoom)), zoom(zoom) {
     constructorImpl(target, extent, zoom, contentType);
+    const auto width = static_cast<size_t>(ceil_cast<int>(extent.getWidth() * zoom));
+    const auto height = static_cast<size_t>(ceil_cast<int>(extent.getHeight() * zoom));
+    this->estimatedMemoryBytes = width * height * (contentType == CAIRO_CONTENT_ALPHA ? 1U : 4U);
 }
 
 Mask::Mask(int DPIScaling, const Range& extent, double zoom, cairo_content_t contentType):
         xOffset(floor_cast<int>(extent.minX * zoom)), yOffset(floor_cast<int>(extent.minY * zoom)), zoom(zoom) {
     constructorImpl(DPIScaling, extent, zoom, contentType);
+    const auto width = static_cast<size_t>(ceil_cast<int>(extent.getWidth() * zoom));
+    const auto height = static_cast<size_t>(ceil_cast<int>(extent.getHeight() * zoom));
+    const auto scale = static_cast<size_t>(DPIScaling);
+    this->estimatedMemoryBytes = width * height * scale * scale *
+                                 (contentType == CAIRO_CONTENT_ALPHA ? 1U : 4U);
 }
 
 template <typename DPIInfoType>
@@ -145,7 +153,10 @@ void Mask::wipeRange(const Range& rg) {
     wipe();
 }
 
-void Mask::reset() { cr.reset(); }
+void Mask::reset() {
+    cr.reset();
+    estimatedMemoryBytes = 0;
+}
 
 #ifdef DEBUG_MASKS
 namespace {

@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include <cairo.h>
 #include <gdk/gdk.h>
 
@@ -78,6 +80,7 @@ public:
     void reset();
 
     inline double getZoom() const { return zoom; }
+    [[nodiscard]] size_t getEstimatedMemoryBytes() const { return estimatedMemoryBytes; }
 
 private:
     template <typename DPIInfoType>
@@ -87,5 +90,6 @@ private:
     int xOffset = 0;
     int yOffset = 0;
     double zoom = 1.0;
+    size_t estimatedMemoryBytes = 0;
 };
 };  // namespace xoj::view

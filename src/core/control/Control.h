@@ -114,6 +114,9 @@ public:
     void openFileWithoutSavingTheCurrentDocument(fs::path filepath, bool attachToDocument, int scrollToPage,
                                                  std::function<void(bool)> callback);
 
+    /** Report the first fully rendered page for the opt-in GUI load benchmark. */
+    void reportFirstPageRendered();
+
     void print();
     void exportAsPdf();
     void exportAs();
@@ -171,7 +174,7 @@ public:
     void selectTool(ToolType type);
     void selectDefaultTool();
 
-    void fontChanged(const XojFont& font);      ///< Set the font after the user selected a font
+    void fontChanged(const XojFont& font);  ///< Set the font after the user selected a font
 
     void updatePageNumbers(size_t page, size_t pdfPage);
 
@@ -398,6 +401,13 @@ protected:
     void saveImpl(bool saveAs, std::function<void(bool)> callback);
 
 private:
+    struct GuiLoadBenchmark {
+        gint64 startedUs;
+        fs::path filepath;
+        bool documentInstalled = false;
+        bool quitAfterReport = false;
+    };
+
     /**
      * @brief Creates the specified geometric tool if it's not on the current page yet. Deletes it if it already exists.
      * @return true if a geometric tool was created
@@ -566,6 +576,7 @@ private:
     PluginController* pluginController;
 
     std::unique_ptr<ActionDatabase> actionDB;
+    std::optional<GuiLoadBenchmark> guiLoadBenchmark;
     template <Action a>
     friend struct ActionProperties;
 

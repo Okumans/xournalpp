@@ -315,6 +315,7 @@ static auto gtk_xournal_draw(GtkWidget* widget, cairo_t* cr) -> gboolean {
     xournal->layout->forEachEntriesIntersectingRange(
             clip, [&](size_t index, const Range&, xoj::util::Point<int> pos) { pages.emplace_back(index, pos); });
 
+    bool renderedPage = false;
     for (auto [index, pos]: pages) {
         const auto& pv = views[index];
         int pw = pv->getDisplayWidth();
@@ -326,6 +327,7 @@ static auto gtk_xournal_draw(GtkWidget* widget, cairo_t* cr) -> gboolean {
         cairo_translate(cr, pos.x, pos.y);
 
         pv->paintPage(cr, nullptr);
+        renderedPage = renderedPage || pv->hasBuffer();
         cairo_restore(cr);
     }
 
@@ -346,6 +348,10 @@ static auto gtk_xournal_draw(GtkWidget* widget, cairo_t* cr) -> gboolean {
 
     if (recolor) {
         recolor->recolorCurrentCairoRegion(cr);
+    }
+
+    if (renderedPage) {
+        xournal->view->getControl()->reportFirstPageRendered();
     }
 
     return true;

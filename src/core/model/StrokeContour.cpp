@@ -94,15 +94,26 @@ static inline std::vector<ReturnOp> addSideToCairo(cairo_t* cr, It begin, It end
     std::vector<ReturnOp> ops;
     ops.reserve(static_cast<size_t>(std::distance(begin, end)));
 
+    MathVect2 incoming(*(begin + 1), *begin);
+    double incomingNorm = incoming.norm();
+    double incomingAngle = incoming.argument();
+
     for (auto it1 = begin, it2 = it1 + 1, it3 = it2 + 1; it3 != end; it1++, it2++, it3++) {
         const auto& p1 = *it1;
         const auto& p2 = *it2;
         const auto& p3 = *it3;
 
-        MathVect2 v1(p2, p1);
-        MathVect2 v3(p2, p3);
+        MathVect2 outgoing(p2, p3);
+        const double outgoingNorm = outgoing.norm();
+        const double outgoingAngle = outgoing.argument();
 
-        drawCoupling(cr, ops, p2, v1.norm(), v3.norm(), v1.argument(), v3.argument(), p1.z);
+        drawCoupling(cr, ops, p2, incomingNorm, outgoingNorm, incomingAngle, outgoingAngle, p1.z);
+
+        // The next incoming segment is this outgoing segment in reverse. Reuse
+        // its length and derive the reverse angle instead of repeating hypot()
+        // and atan2() for every interior point.
+        incomingNorm = outgoingNorm;
+        incomingAngle = inMinusPiPiInterval(outgoingAngle + M_PI);
     }
     return ops;
 }

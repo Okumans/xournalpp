@@ -34,6 +34,7 @@ SidebarPreviewBase::SidebarPreviewBase(Control* control, const char* menuId, con
     doc->lock_shared();
     if (doc->getPdfPageCount() != 0) {
         this->cache = std::make_unique<PdfCache>(doc->getPdfDocument(), control->getSettings());
+        this->cache->setMinimumRenderZoom(0.05);
     }
     doc->unlock_shared();
 
@@ -100,6 +101,7 @@ void SidebarPreviewBase::documentChanged(DocumentChangeType type) {
         doc->lock_shared();
         if (doc->getPdfPageCount() != 0) {
             this->cache = std::make_unique<PdfCache>(doc->getPdfDocument(), control->getSettings());
+            this->cache->setMinimumRenderZoom(0.05);
         }
         doc->unlock_shared();
         updatePreviews();
