@@ -56,6 +56,7 @@ using xoj::util::Rectangle;
 constexpr int REGULAR_MOVE_AMOUNT = 3;
 constexpr int SMALL_MOVE_AMOUNT = 1;
 constexpr int LARGE_MOVE_AMOUNT = 10;
+constexpr double KEYBOARD_SCALE_STEP = 1.1;
 constexpr guint PRELOAD_DEBOUNCE_MILLISECONDS = 150;
 
 std::pair<size_t, size_t> XournalView::preloadPageBounds(size_t page, size_t maxPage) {
@@ -255,6 +256,19 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
         }
     }
 
+    auto keyval = event.keyval;
+    auto state = event.state;
+    if (keyval == GDK_KEY_Escape) {
+        if (auto* tool = getControl()->getWindow()->getPdfToolbox(); tool->hasSelection()) {
+            tool->userCancelSelection();
+            return true;
+        }
+        if (auto* selection = getSelection(); selection) {
+            clearSelection();
+            return true;
+        }
+    }
+
     // Let enabled plugins handle canvas-scoped shortcuts after text/input editing but before built-in navigation.
     // This keeps one-letter shortcuts out of text entry and allows plugins to override layout-relative keys such as
     // Shift+J/K without changing the fallback behavior when the plugin is disabled.
@@ -262,8 +276,6 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
         return true;
     }
 
-    auto keyval = event.keyval;
-    auto state = event.state;
     if (auto* tool = getControl()->getWindow()->getPdfToolbox(); tool->hasSelection()) {
         if ((keyval == GDK_KEY_c && state == GDK_CONTROL_MASK) || keyval == GDK_KEY_Copy) {
             // Shortcut to get selected PDF text.
@@ -273,8 +285,11 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
     }
 
     if (auto* selection = getSelection(); selection) {
-        if (keyval == GDK_KEY_Escape) {
-            clearSelection();
+        if (state == GDK_CONTROL_MASK &&
+            (keyval == GDK_KEY_equal || keyval == GDK_KEY_KP_Add || keyval == GDK_KEY_minus ||
+             keyval == GDK_KEY_KP_Subtract)) {
+            const bool increase = keyval == GDK_KEY_equal || keyval == GDK_KEY_KP_Add;
+            selection->scaleSelection(increase ? KEYBOARD_SCALE_STEP : 1.0 / KEYBOARD_SCALE_STEP);
             return true;
         }
 
