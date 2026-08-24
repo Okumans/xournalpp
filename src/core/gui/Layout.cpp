@@ -287,6 +287,10 @@ void Layout::updateVisibility() {
     if (mostPageNr) {
         this->view->getControl()->firePageSelected(*mostPageNr);
     }
+
+    // Keep preload work behind the current scroll burst, including movement within one page where
+    // firePageSelected() is intentionally suppressed.
+    this->view->scrollChanged();
 }
 
 auto Layout::getVisiblePages() const -> std::vector<size_t> {

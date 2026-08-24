@@ -166,8 +166,13 @@ private:
     std::pair<size_t, size_t> preloadPageBounds(size_t page, size_t maxPage);
 
     static auto clearMemoryTimer(XournalView* widget) -> gboolean;
+    static auto preloadPagesTimer(XournalView* widget) -> gboolean;
 
     void cleanupBufferCache();
+    void preloadVisiblePages();
+    void preloadSurroundingPages();
+    void schedulePreloadPages();
+    void scrollChanged();
 
 private:
     /**
@@ -195,6 +200,12 @@ private:
      * Memory cleanup timeout
      */
     guint cleanupTimeout = std::numeric_limits<guint>::max();
+
+    /**
+     * Debounced preload timeout. Surrounding pages are rendered after scrolling settles so that
+     * the render worker does not compete with the pages currently entering the viewport.
+     */
+    guint preloadTimeout = 0;
 
     friend class Layout;
 };
