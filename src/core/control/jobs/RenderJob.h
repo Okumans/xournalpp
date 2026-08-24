@@ -11,7 +11,10 @@
 
 #pragma once
 
-#include <cairo.h>    // for cairo_surface_t
+#include <cstdint>   // for uint64_t
+#include <optional>  // for optional
+
+#include <cairo.h>   // for cairo_surface_t
 #include <gtk/gtk.h>  // for GtkWidget
 
 #include "Job.h"  // for Job, JobType
@@ -25,6 +28,7 @@ class Rectangle;
 class RenderJob: public Job {
 public:
     RenderJob(XojPageView* view);
+    RenderJob(XojPageView* view, std::uint64_t preloadGeneration);
 
 protected:
     ~RenderJob() override = default;
@@ -35,6 +39,9 @@ public:
     void* getSource() override;
 
     void run() override;
+
+    bool isPreload() const;
+    std::optional<std::uint64_t> getPreloadGeneration() const;
 
 private:
     void repaintPage() const;
@@ -47,4 +54,5 @@ private:
 
 private:
     XojPageView* view;
+    std::optional<std::uint64_t> preloadGeneration;
 };

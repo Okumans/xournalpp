@@ -3,6 +3,7 @@
 #include <array>   // for array
 #include <deque>   // for _Deque_iterator, deque, operator!=
 #include <mutex>   // for lock_guard
+#include <optional>  // for optional
 #include <string>  // for string
 
 #include "control/jobs/Scheduler.h"  // for JOB_PRIORITY_URGENT, JOB_PRIORIT...
@@ -98,6 +99,44 @@ auto XournalScheduler::existsSource(void* source, JobType type, JobPriority prio
     return exists;
 }
 
+void XournalScheduler::removeQueuedPreloadPage(XojPageView* view) {
+    std::lock_guard lock{this->jobQueueMutex};
+    std::deque<Job*>& queue = *this->jobQueue[JOB_PRIORITY_URGENT];
+
+    for (auto it = queue.begin(); it != queue.end();) {
+        Job* job = *it;
+        auto* renderJob = dynamic_cast<RenderJob*>(job);
+        if (renderJob != nullptr && renderJob->getSource() == view && renderJob->isPreload()) {
+            it = queue.erase(it);
+            job->deleteJob();
+            job->unref();
+            job = nullptr;
+        } else {
+            ++it;
+        }
+    }
+}
+
+void XournalScheduler::cancelStalePreloadPages(std::uint64_t preloadGeneration) {
+    std::lock_guard lock{this->jobQueueMutex};
+    std::deque<Job*>& queue = *this->jobQueue[JOB_PRIORITY_URGENT];
+
+    for (auto it = queue.begin(); it != queue.end();) {
+        Job* job = *it;
+        auto* renderJob = dynamic_cast<RenderJob*>(job);
+        const auto jobGeneration = renderJob != nullptr ? renderJob->getPreloadGeneration()
+                                                         : std::optional<std::uint64_t>{};
+        if (jobGeneration && *jobGeneration != preloadGeneration) {
+            it = queue.erase(it);
+            job->deleteJob();
+            job->unref();
+            job = nullptr;
+        } else {
+            ++it;
+        }
+    }
+}
+
 void XournalScheduler::addRepaintSidebar(SidebarPreviewBaseEntry* preview) {
     if (existsSource(preview, JOB_TYPE_PREVIEW, JOB_PRIORITY_HIGH)) {
         return;
@@ -109,11 +148,23 @@ void XournalScheduler::addRepaintSidebar(SidebarPreviewBaseEntry* preview) {
 }
 
 void XournalScheduler::addRerenderPage(XojPageView* view) {
+    removeQueuedPreloadPage(view);
     if (existsSource(view, JOB_TYPE_RENDER, JOB_PRIORITY_URGENT)) {
         return;
     }
 
     auto* job = new RenderJob(view);
+    addJob(job, JOB_PRIORITY_URGENT);
+    job->unref();
+}
+
+void XournalScheduler::addPreloadPage(XojPageView* view, std::uint64_t preloadGeneration) {
+    removeQueuedPreloadPage(view);
+    if (existsSource(view, JOB_TYPE_RENDER, JOB_PRIORITY_URGENT)) {
+        return;
+    }
+
+    auto* job = new RenderJob(view, preloadGeneration);
     addJob(job, JOB_PRIORITY_URGENT);
     job->unref();
 }

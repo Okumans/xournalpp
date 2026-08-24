@@ -33,7 +33,14 @@ using xoj::util::Rectangle;
 
 RenderJob::RenderJob(XojPageView* view): view(view) {}
 
+RenderJob::RenderJob(XojPageView* view, std::uint64_t preloadGeneration):
+        view(view), preloadGeneration(preloadGeneration) {}
+
 auto RenderJob::getSource() -> void* { return this->view; }
+
+bool RenderJob::isPreload() const { return this->preloadGeneration.has_value(); }
+
+std::optional<std::uint64_t> RenderJob::getPreloadGeneration() const { return this->preloadGeneration; }
 
 void RenderJob::rerenderRectangle(Rectangle<double> const& rect) {
     /**
@@ -61,6 +68,11 @@ void RenderJob::rerenderRectangle(Rectangle<double> const& rect) {
 }
 
 void RenderJob::run() {
+    if (this->preloadGeneration &&
+        !this->view->getXournal()->isPreloadGenerationCurrent(*this->preloadGeneration)) {
+        return;
+    }
+
     this->view->repaintRectMutex.lock();
 
     bool rerenderComplete = std::exchange(this->view->rerenderComplete, false);

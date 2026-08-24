@@ -11,7 +11,9 @@
 
 #pragma once
 
+#include <atomic>   // for atomic
 #include <cstddef>  // for size_t
+#include <cstdint>  // for uint64_t
 #include <limits>   // for numeric_limits
 #include <memory>   // for unique_ptr
 #include <string>   // for string
@@ -114,6 +116,8 @@ public:
     XournalppCursor* getCursor() const;
     Layout* getLayout() const;
 
+    bool isPreloadGenerationCurrent(std::uint64_t generation) const;
+
 
     /// Return the rectangle (if any) which is visible on screen in page cooordinates
     xoj::util::Rectangle<double>* getVisibleRect(size_t page) const;
@@ -169,8 +173,8 @@ private:
     static auto preloadPagesTimer(XournalView* widget) -> gboolean;
 
     void cleanupBufferCache();
-    void preloadVisiblePages();
-    void preloadSurroundingPages();
+    void preloadVisiblePages(std::uint64_t generation);
+    void preloadSurroundingPages(std::uint64_t generation);
     void schedulePreloadPages();
     void scrollChanged();
 
@@ -206,6 +210,17 @@ private:
      * the render worker does not compete with the pages currently entering the viewport.
      */
     guint preloadTimeout = 0;
+
+    /**
+     * Generation of the latest scroll/preload request. Jobs from an older generation are speculative and can be
+     * discarded when the user changes direction before they reach the render worker.
+     */
+    std::atomic<std::uint64_t> preloadGeneration = 0;
+
+    /**
+     * Direction of the latest page transition: 1 for forward/downward, -1 for backward/upward.
+     */
+    int preloadDirection = 1;
 
     friend class Layout;
 };

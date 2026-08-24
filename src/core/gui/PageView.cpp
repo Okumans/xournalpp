@@ -1109,6 +1109,12 @@ void XojPageView::rerenderPage(bool sizeChanged) {
     this->xournal->getControl()->getScheduler()->addRerenderPage(this);
 }
 
+void XojPageView::rerenderPageForPreload(std::uint64_t generation) {
+    this->rerenderComplete = true;
+    this->sizeChanged = false;
+    this->xournal->getControl()->getScheduler()->addPreloadPage(this, generation);
+}
+
 void XojPageView::repaintPage() const { xournal->getRepaintHandler()->repaintPage(this); }
 
 void XojPageView::repaintArea(double x1, double y1, double x2, double y2) const {
