@@ -835,6 +835,39 @@ void EditSelection::moveSelection(double dx, double dy, bool addMoveUndo) {
     this->view->getXournal()->repaintSelection();
 }
 
+bool EditSelection::scaleSelection(double factor) {
+    if (!std::isfinite(factor) || factor <= 0.0 || factor == 1.0 || this->width == 0.0 || this->height == 0.0) {
+        return false;
+    }
+
+    const double zoom = this->view->getXournal()->getZoom();
+    const double minimumSize = MINPIXSIZE / zoom;
+    if (factor < 1.0) {
+        const double smallestDimension = std::min(std::abs(this->width), std::abs(this->height));
+        factor = std::min(1.0, std::max(factor, minimumSize / smallestDimension));
+    }
+
+    if (factor == 1.0) {
+        return false;
+    }
+
+    const double centerX = this->snappedBounds.x + this->snappedBounds.width / 2.0;
+    const double centerY = this->snappedBounds.y + this->snappedBounds.height / 2.0;
+
+    // scaleShift() contains the existing rotation/matrix bookkeeping used by
+    // handle-based resizing. Move the result back so keyboard resizing stays
+    // centered instead of behaving like a top-left handle drag.
+    this->scaleShift(factor, factor, false, false);
+    const double newCenterX = this->snappedBounds.x + this->snappedBounds.width / 2.0;
+    const double newCenterY = this->snappedBounds.y + this->snappedBounds.height / 2.0;
+    this->moveSelection(centerX - newCenterX, centerY - newCenterY);
+
+    PageRef page = this->view->getPage();
+    this->contents->updateContent(this->getRect(), this->snappedBounds, this->rotation, this->preserveAspectRatio,
+                                  page->getSelectedLayer(), page, this->undo, CURSOR_SELECTION_NONE);
+    return true;
+}
+
 void EditSelection::setEdgePan(bool pan) {
     if (pan && !this->edgePanHandler) {
         this->edgePanHandler =

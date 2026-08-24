@@ -4,16 +4,20 @@
 -- editing/input handling, so one-letter shortcuts do not steal characters from a text object.
 
 local toolShortcuts = {
-  { menu = "Text (T)", shortcut = "t", tool = app.C.Tool_text },
-  { menu = "Smart Select (S)", shortcut = "s", tool = app.C.Tool_smartSelect },
+  { menu = "Image (Shift+I)", shortcut = "<Shift>i", tool = app.C.Tool_image },
+  { menu = "Text (I)", shortcut = "i", tool = app.C.Tool_text },
+  { menu = "Smart Select (V)", shortcut = "v", tool = app.C.Tool_smartSelect },
   { menu = "Pen (P)", shortcut = "p", tool = app.C.Tool_pen },
   { menu = "Eraser (E)", shortcut = "e", tool = app.C.Tool_eraser },
   { menu = "Highlighter (H)", shortcut = "h", tool = app.C.Tool_highlighter },
-  { menu = "Image (I)", shortcut = "i", tool = app.C.Tool_image },
 }
 
 function selectTool(tool)
   app.changeActionState("select-tool", tool)
+end
+
+function selectDefaultTool()
+  app.activateAction("select-default-tool")
 end
 
 function nextPage()
@@ -70,5 +74,10 @@ function initUi()
     menu = "Search (/)",
     callback = "search",
     shortcut = "slash",
+  })
+  app.registerUi({
+    menu = "Default Tool (Esc)",
+    callback = "selectDefaultTool",
+    shortcut = "Escape",
   })
 end

@@ -246,6 +246,13 @@ public:
     void moveSelection(double dx, double dy, bool addMoveUndo = false);
 
     /**
+     * Scale the selection around its center and add an undo action.
+     *
+     * @param factor uniform scale factor; values below one shrink the selection
+     */
+    bool scaleSelection(double factor);
+
+    /**
      * Get the cursor type for the current position (if 0 then the default cursor should be used)
      */
     CursorSelectionType getSelectionTypeForPos(double x, double y, double zoom);

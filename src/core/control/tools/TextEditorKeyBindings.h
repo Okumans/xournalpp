@@ -132,6 +132,7 @@ const TextEditor::KeyBindings TextEditor::keyBindings(
          {KeyBindings::hash(CTRL, GDK_KEY_B), wrap<&TextEditor::toggleBoldFace>},
 
          {KeyBindings::hash(CTRL, GDK_KEY_plus), wrap<&TextEditor::increaseFontSize>},
+         {KeyBindings::hash(CTRL, GDK_KEY_equal), wrap<&TextEditor::increaseFontSize>},
          {KeyBindings::hash(CTRL, GDK_KEY_KP_Add), wrap<&TextEditor::increaseFontSize>},
 
          {KeyBindings::hash(CTRL, GDK_KEY_minus), wrap<&TextEditor::decreaseFontSize>},
