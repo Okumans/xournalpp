@@ -3,6 +3,62 @@
 
 [![Build Status](https://dev.azure.com/xournalpp/xournalpp/_apis/build/status/CI?branchName=master)](https://dev.azure.com/xournalpp/xournalpp/_build/latest?definitionId=1&branchName=master)
 
+## About this fork
+
+This is a development fork of [upstream Xournal++](https://github.com/xournalpp/xournalpp).
+It keeps the upstream application and documentation while focusing on
+keyboard-first quality-of-life improvements for writing and text editing, with
+a smaller PDF page-loading performance improvement. This fork is not an
+official Xournal++ release; use the upstream
+[Releases](https://github.com/xournalpp/xournalpp/releases) page for stable
+versions.
+
+### Fork-specific improvements
+
+Compared with the upstream `master` branch, this fork currently includes:
+
+- Keyboard-first tool, page-navigation, undo/redo, and search shortcuts that
+  are handled by the canvas without stealing one-letter shortcuts while typing
+  in a text object.
+- Text-editing shortcuts for changing font size, including `Ctrl+=` without
+  requiring `Shift`.
+- A Smart Select tool that can select or move objects, select regions, and
+  select text from a PDF background depending on the gesture.
+- Keyboard resizing for selected objects with `Ctrl+=` and `Ctrl+-`.
+- A modest PDF page-loading improvement through background scheduling and cache
+  work.
+
+### Keyboard shortcuts
+
+Enable `ToolShortcuts` from `Plugin > Plugin Manager` before using the
+canvas-scoped shortcuts. The plugin is disabled by default.
+
+The layout is intentionally inspired by familiar Vim keybindings: `I` enters
+text/insert mode, `V` enters visual-style selection, `Esc` returns to the
+default tool, `U` undoes, and `/` opens search. `J`/`K` page navigation and
+`Ctrl+R` redo extend that keyboard-oriented workflow for Xournal++. This is an
+adaptation for a drawing and note-taking application, not a full Vim mode.
+
+| Action | Shortcut |
+| --- | --- |
+| Text tool | `I` |
+| Image tool | `Shift+I` |
+| Smart Select | `V` |
+| Pen | `P` |
+| Eraser | `E` |
+| Highlighter | `H` |
+| Next page | `Shift+J` |
+| Previous page | `Shift+K` |
+| Undo | `U` |
+| Redo | `Ctrl+R` |
+| Search | `/` |
+| Clear selection or return to the default tool | `Esc` |
+| Increase selected-object size | `Ctrl+=` |
+| Decrease selected-object size | `Ctrl+-` |
+
+When a text object is being edited, `Ctrl+=` and `Ctrl+-` change its font size
+instead of scaling the selected object.
+
 <img src="readme/main.png" width=550px% title="Xournal++ on GNU/Linux"/>
 
 ## Translations
