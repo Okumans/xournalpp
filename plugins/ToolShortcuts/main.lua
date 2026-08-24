@@ -24,6 +24,18 @@ function previousPage()
   app.activateAction("goto-previous")
 end
 
+function undo()
+  app.activateAction("undo")
+end
+
+function redo()
+  app.activateAction("redo")
+end
+
+function search()
+  app.activateAction("search")
+end
+
 function initUi()
   for _, entry in ipairs(toolShortcuts) do
     app.registerUi({
@@ -43,5 +55,20 @@ function initUi()
     menu = "Previous Page (Shift+K)",
     callback = "previousPage",
     shortcut = "<Shift>k",
+  })
+  app.registerUi({
+    menu = "Undo (U)",
+    callback = "undo",
+    shortcut = "u",
+  })
+  app.registerUi({
+    menu = "Redo (Ctrl+R)",
+    callback = "redo",
+    shortcut = "<Control>r",
+  })
+  app.registerUi({
+    menu = "Search (/)",
+    callback = "search",
+    shortcut = "slash",
   })
 end
