@@ -131,6 +131,15 @@ void XojPageView::deleteViewBuffer() {
     this->buffer.reset();
 }
 
+bool XojPageView::tryDeleteViewBuffer() {
+    std::unique_lock lock(this->drawingMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+    this->buffer.reset();
+    return true;
+}
+
 auto XojPageView::containsPoint(int x, int y, bool local) const -> bool {
     if (!local) {
         auto p = this->getPixelPosition();
@@ -1098,6 +1107,12 @@ void XojPageView::rerenderPage(bool sizeChanged) {
     this->rerenderComplete = true;
     this->sizeChanged = sizeChanged;
     this->xournal->getControl()->getScheduler()->addRerenderPage(this);
+}
+
+void XojPageView::rerenderPageForPreload(std::uint64_t generation) {
+    this->rerenderComplete = true;
+    this->sizeChanged = false;
+    this->xournal->getControl()->getScheduler()->addPreloadPage(this, generation);
 }
 
 void XojPageView::repaintPage() const { xournal->getRepaintHandler()->repaintPage(this); }

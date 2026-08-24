@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstddef>  // for size_t
+#include <cstdint>  // for uint64_t
 #include <memory>   // for unique_ptr, shared_ptr
 #include <mutex>    // for mutex
 #include <string>   // for string
@@ -65,6 +66,7 @@ public:
 public:
     void addOverlayView(std::unique_ptr<xoj::view::OverlayView>);
     void rerenderPage(bool sizeChanged = false) override;
+    void rerenderPageForPreload(std::uint64_t generation);
     void rerenderRect(double x, double y, double width, double height) override;
 
     void repaintPage() const override;
@@ -119,6 +121,7 @@ public:
     bool actionDelete();
 
     void deleteViewBuffer() override;
+    bool tryDeleteViewBuffer();
 
     /**
      * Returns whether this PageView contains the

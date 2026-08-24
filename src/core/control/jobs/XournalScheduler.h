@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include <cstdint>  // for uint64_t
+
 #include "control/jobs/Job.h"  // for JobType
 
 #include "Scheduler.h"  // for JobPriority, Scheduler
@@ -40,6 +42,8 @@ public:
 
     void addRepaintSidebar(SidebarPreviewBaseEntry* preview);
     void addRerenderPage(XojPageView* view);
+    void addPreloadPage(XojPageView* view, std::uint64_t preloadGeneration);
+    void cancelStalePreloadPages(std::uint64_t preloadGeneration);
 
     /**
      * Blocks until all currently running Job%s have been executed
@@ -53,6 +57,7 @@ private:
     void removeSource(void* source, JobType type, JobPriority priority, bool awaitFinishTask = true);
 
     bool existsSource(void* source, JobType type, JobPriority priority);
+    void removeQueuedPreloadPage(XojPageView* view);
 
 private:
 };

@@ -56,6 +56,7 @@ using xoj::util::Rectangle;
 constexpr int REGULAR_MOVE_AMOUNT = 3;
 constexpr int SMALL_MOVE_AMOUNT = 1;
 constexpr int LARGE_MOVE_AMOUNT = 10;
+constexpr guint PRELOAD_DEBOUNCE_MILLISECONDS = 150;
 
 std::pair<size_t, size_t> XournalView::preloadPageBounds(size_t page, size_t maxPage) {
     const size_t preloadBefore = this->control->getSettings()->getPreloadPagesBefore();
@@ -107,7 +108,14 @@ XournalView::XournalView(GtkWidget* parent, Control* control, ScrollHandling* sc
 }
 
 XournalView::~XournalView() {
-    g_source_remove(this->cleanupTimeout);
+    if (this->cleanupTimeout != std::numeric_limits<guint>::max()) {
+        g_source_remove(this->cleanupTimeout);
+        this->cleanupTimeout = std::numeric_limits<guint>::max();
+    }
+    if (this->preloadTimeout != 0) {
+        g_source_remove(this->preloadTimeout);
+        this->preloadTimeout = 0;
+    }
 
     gtk_widget_destroy(this->widget);
     this->widget = nullptr;
@@ -115,11 +123,99 @@ XournalView::~XournalView() {
 
 
 auto XournalView::clearMemoryTimer(XournalView* widget) -> gboolean {
-    widget->cleanupBufferCache();
+    // Let the scroll-settle timer own cleanup while an adjustment burst is active.
+    if (widget->preloadTimeout == 0) {
+        widget->cleanupBufferCache();
+    }
     return G_SOURCE_CONTINUE;
 }
 
+auto XournalView::preloadPagesTimer(XournalView* widget) -> gboolean {
+    widget->preloadTimeout = 0;
+    const auto generation = widget->preloadGeneration.load(std::memory_order_acquire);
+    widget->preloadSurroundingPages(generation);
+    if (widget->currentPage != npos && widget->currentPage < widget->viewPages.size() &&
+        widget->control->getSettings()->isEagerPageCleanup()) {
+        widget->cleanupBufferCache();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+auto XournalView::preloadVisiblePages(std::uint64_t generation) -> void {
+    auto visiblePages = this->getLayout()->getVisiblePages();
+    if (this->currentPage != npos &&
+        std::find(visiblePages.begin(), visiblePages.end(), this->currentPage) == visiblePages.end()) {
+        visiblePages.emplace_back(this->currentPage);
+    }
+
+    for (const size_t page: visiblePages) {
+        if (page < this->viewPages.size() && !this->viewPages[page]->hasBuffer()) {
+            this->viewPages[page]->rerenderPageForPreload(generation);
+        }
+    }
+}
+
+auto XournalView::preloadSurroundingPages(std::uint64_t generation) -> void {
+    if (this->currentPage == npos || this->currentPage >= this->viewPages.size()) {
+        return;
+    }
+
+    const auto& [pagesLower, pagesUpper] = preloadPageBounds(this->currentPage, this->viewPages.size());
+    xoj_assert(pagesLower <= pagesUpper);
+
+    auto queuePage = [this, generation](size_t page) {
+        if (!this->viewPages[page]->hasBuffer()) {
+            this->viewPages[page]->rerenderPageForPreload(generation);
+        }
+    };
+
+    queuePage(this->currentPage);
+
+    auto queueBefore = [this, pagesLower, queuePage] {
+        for (size_t page = this->currentPage; page > pagesLower;) {
+            --page;
+            queuePage(page);
+        }
+    };
+    auto queueAfter = [this, pagesUpper, queuePage] {
+        for (size_t page = this->currentPage + 1; page < pagesUpper; ++page) {
+            queuePage(page);
+        }
+    };
+
+    if (this->preloadDirection < 0) {
+        queueBefore();
+        queueAfter();
+    } else {
+        queueAfter();
+        queueBefore();
+    }
+}
+
+auto XournalView::schedulePreloadPages() -> void {
+    if (this->preloadTimeout != 0) {
+        g_source_remove(this->preloadTimeout);
+        this->preloadTimeout = 0;
+    }
+
+    if (this->currentPage != npos && this->currentPage < this->viewPages.size()) {
+        this->preloadTimeout = g_timeout_add(PRELOAD_DEBOUNCE_MILLISECONDS,
+                                             xoj::util::wrap_v<preloadPagesTimer>, this);
+    }
+}
+
+auto XournalView::scrollChanged() -> void {
+    const auto generation = this->preloadGeneration.fetch_add(1, std::memory_order_release) + 1;
+    this->control->getScheduler()->cancelStalePreloadPages(generation);
+    this->preloadVisiblePages(generation);
+    this->schedulePreloadPages();
+}
+
 auto XournalView::cleanupBufferCache() -> void {
+    if (this->currentPage == npos || this->currentPage >= this->viewPages.size()) {
+        return;
+    }
+
     const auto& [pagesLower, pagesUpper] = this->preloadPageBounds(this->currentPage, this->viewPages.size());
     xoj_assert(pagesLower <= pagesUpper);
 
@@ -137,7 +233,7 @@ auto XournalView::cleanupBufferCache() -> void {
             }
             continue;
         } else if (page->hasBuffer()) {
-            page->deleteViewBuffer();
+            page->tryDeleteViewBuffer();
         }
     }
 
@@ -399,6 +495,10 @@ void XournalView::pageSelected(size_t page) {
         return;
     }
 
+    if (page != npos && this->currentPage != npos && page != this->currentPage) {
+        this->preloadDirection = page > this->currentPage ? 1 : -1;
+    }
+
     control->getWindow()->getPdfToolbox()->userCancelSelection();
 
     if (this->lastSelectedPage != npos && this->lastSelectedPage < this->viewPages.size()) {
@@ -423,18 +523,9 @@ void XournalView::pageSelected(size_t page) {
     control->updateBackgroundSizeButton();
     control->updatePageActions();
 
-    if (control->getSettings()->isEagerPageCleanup()) {
-        this->cleanupBufferCache();
-    }
-
-    // Load surrounding pages if they are not
-    const auto& [pagesLower, pagesUpper] = preloadPageBounds(page, this->viewPages.size());
-    xoj_assert(pagesLower <= pagesUpper);
-    for (size_t i = pagesLower; i < pagesUpper; i++) {
-        if (!this->viewPages[i]->hasBuffer()) {
-            this->viewPages[i]->rerenderPage();
-        }
-    }
+    // Keep pages entering the viewport responsive. Defer surrounding preloads until scrolling settles so the
+    // background renderer does not spend the scroll burst on pages which are already stale.
+    this->scrollChanged();
 }
 
 auto XournalView::getControl() const -> Control* { return control; }
@@ -849,3 +940,7 @@ auto XournalView::getSelection() const -> EditSelection* {
 }
 
 auto XournalView::getLayout() const -> Layout* { return gtk_xournal_get_layout(getWidget()); }
+
+bool XournalView::isPreloadGenerationCurrent(std::uint64_t generation) const {
+    return this->preloadGeneration.load(std::memory_order_acquire) == generation;
+}
