@@ -23,6 +23,7 @@
 
 class Control;
 class ToolMenuHandler;
+struct KeyEvent;
 
 class PluginController final {
 public:
@@ -44,6 +45,13 @@ public:
      * Add toolbar buttons
      */
     void registerToolButtons(ToolMenuHandler* toolMenuHandler);
+
+    /**
+     * Dispatch a canvas-scoped shortcut registered by an enabled plugin.
+     *
+     * The caller invokes this after the active page/input handler has had the first chance to consume the key.
+     */
+    bool handleKeyPress(const KeyEvent& event);
 
     /**
      * Show Plugin manager Dialog

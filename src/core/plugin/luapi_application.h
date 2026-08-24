@@ -57,6 +57,7 @@
 #include "model/Text.h"
 #include "model/XojPage.h"  // IWYU pragma: keep for XojPage
 #include "plugin/Plugin.h"
+#include "plugin/PluginShortcut.h"
 #include "undo/InsertUndoAction.h"
 #include "util/GVariantTemplate.h"    // for makeGVariant
 #include "util/PathUtil.h"            // for clea...
@@ -499,8 +500,9 @@ static int applib_openDialog(lua_State* L) {
 /**
  * Allow to register menupoints and toolbar buttons. This needs to be called from initUi
  *
- * @param opts {menu: string, callback: string, toolbarID: string, mode:integer, accelerator:string, parentPath:string}
- *   options (`mode`, `toolbarID`, `accelerator` and `parentPath` are optional)
+ * @param opts {menu: string, callback: string, toolbarID: string, mode:integer, accelerator:string, shortcut:string,
+ * parentPath:string}
+ *   options (`mode`, `toolbarID`, `accelerator`, `shortcut` and `parentPath` are optional)
  * @return {menuId:integer}
  *
  * Example 1: app.registerUi({["menu"] = "HelloWorld", callback="printMessage", mode=1, accelerator="<Control>a"})
@@ -518,6 +520,10 @@ static int applib_openDialog(lua_State* L) {
  *
  * The mode and accelerator are optional. When specifying the mode, the callback function should have one parameter
    that receives the mode. This is useful for callback functions that are shared among multiple menu entries.
+ *
+ * The optional shortcut is a canvas-scoped key binding. It is dispatched after the active page/input handler gets
+ * first chance to consume the key and is suppressed while a text editor is active. Unlike accelerator, it does not
+ * install a window-wide GTK accelerator, so it is safe for one-letter tool shortcuts.
  *
  * The parentPath parameter creates submenu hierarchy. Without it, the menu item appears directly in the Plugins menu.
  * With parentPath, the item is placed under a nested submenu path. For example, parentPath="Tools/Custom"
@@ -544,32 +550,30 @@ static int applib_registerUi(lua_State* L) {
     lua_getfield(L, 1, "mode");
     lua_getfield(L, 1, "toolbarId");
     lua_getfield(L, 1, "iconName");
-    // In Example 1 stack now has following:
-    //    1 = {"menu"="MenuName", callback="functionName", mode=1, accelerator="<Control>a"}
-    //   -7 = "<Control>a"
-    //   -6 = "" (parentPath)
-    //   -5 = "MenuName"
-    //   -4 = "functionName"
-    //   -3 = mode
-    //   -2 = nil
-    //   -1 = nil
-
-    const char* accelerator = luaL_optstring(L, -7, "");
-    const char* parentPath = luaL_optstring(L, -6, "");
-    const char* menu = luaL_optstring(L, -5, "");
-    const char* callback = luaL_optstring(L, -4, nullptr);
-    const ptrdiff_t mode = luaL_optinteger(L, -3, std::numeric_limits<ptrdiff_t>::max());
-    const char* toolbarId = luaL_optstring(L, -2, "");
-    const char* iconName = luaL_optstring(L, -1, "");
+    lua_getfield(L, 1, "shortcut");
+    const char* accelerator = luaL_optstring(L, 2, "");
+    const char* parentPath = luaL_optstring(L, 3, "");
+    const char* menu = luaL_optstring(L, 4, "");
+    const char* callback = luaL_optstring(L, 5, nullptr);
+    const ptrdiff_t mode = luaL_optinteger(L, 6, std::numeric_limits<ptrdiff_t>::max());
+    const char* toolbarId = luaL_optstring(L, 7, "");
+    const char* iconName = luaL_optstring(L, 8, "");
+    const char* shortcut = luaL_optstring(L, 9, "");
     if (callback == nullptr) {
         return luaL_error(L, "Missing callback function!");
     }
 
-    size_t menuId = plugin->registerMenu(menu, callback, mode, accelerator, parentPath);
+    if (shortcut[0] != '\0') {
+        if (!xoj::plugin::parseShortcut(shortcut)) {
+            return luaL_error(L, "Invalid canvas shortcut: \"%s\"", shortcut);
+        }
+    }
+
+    size_t menuId = plugin->registerMenu(menu, callback, mode, accelerator, parentPath, shortcut);
     plugin->registerToolButton(menu, toolbarId, iconName, callback, mode);
 
     // Make sure to remove all vars which are put to the stack before!
-    lua_pop(L, 7);
+    lua_pop(L, 8);
 
     // Add return value to the Stack
     lua_createtable(L, 0, 2);

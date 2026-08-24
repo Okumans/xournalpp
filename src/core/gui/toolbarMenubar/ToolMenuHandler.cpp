@@ -404,6 +404,8 @@ void ToolMenuHandler::initToolItems() {
                                 TOOL_SELECT_PDF_TEXT_LINEAR, "select-pdf-text-ht", _("Select Linear PDF Text"));
     emplaceCustomItemWithTarget("SELECT_PDF_TEXT_RECT", Cat::SELECTION, Action::SELECT_TOOL, TOOL_SELECT_PDF_TEXT_RECT,
                                 "select-pdf-text-area", _("Select PDF Text in Rectangle"));
+    emplaceCustomItemWithTarget("SMART_SELECT", Cat::SELECTION, Action::SELECT_TOOL, TOOL_SMART_SELECT,
+                                "combo-selection", _("Smart Select"));
 
     emplaceCustomItemTgl("SETSQUARE", Cat::MISC, Action::SETSQUARE, "setsquare", _("Setsquare"));
     emplaceCustomItemTgl("COMPASS", Cat::MISC, Action::COMPASS, "compass", _("Compass"));

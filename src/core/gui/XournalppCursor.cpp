@@ -325,7 +325,7 @@ void XournalppCursor::updateCursor() {
             setCursor(CRSR_DEFAULT);
         } else if (type == TOOL_VERTICAL_SPACE) {
             setCursor(CRSR_SB_V_DOUBLE_ARROW);
-        } else if (type == TOOL_SELECT_OBJECT) {
+        } else if (type == TOOL_SELECT_OBJECT || type == TOOL_SMART_SELECT) {
             setCursor(CRSR_DEFAULT);
         } else if (type == TOOL_PLAY_OBJECT) {
             setCursor(CRSR_HAND2);

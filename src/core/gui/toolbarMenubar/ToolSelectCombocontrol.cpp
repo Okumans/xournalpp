@@ -9,7 +9,8 @@
 
 static std::vector<ComboToolButton::Entry> makeEntries(IconNameHelper& icons, bool hideAudio) {
     using Entry = ComboToolButton::Entry;
-    std::vector<Entry> res = {Entry(_("Select Rectangle"), icons.iconName("select-rect"), TOOL_SELECT_RECT),
+    std::vector<Entry> res = {Entry(_("Smart Select"), icons.iconName("combo-selection"), TOOL_SMART_SELECT),
+                              Entry(_("Select Rectangle"), icons.iconName("select-rect"), TOOL_SELECT_RECT),
                               Entry(_("Select Region"), icons.iconName("select-lasso"), TOOL_SELECT_REGION),
                               Entry(_("Select Multi-Layer Rectangle"), icons.iconName("select-multilayer-rect"),
                                     TOOL_SELECT_MULTILAYER_RECT),

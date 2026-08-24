@@ -111,6 +111,30 @@ auto PopplerGlibPage::findText(const std::string& text) -> std::vector<XojPdfRec
     return findings;
 }
 
+bool PopplerGlibPage::hasTextAt(double x, double y) {
+    if (this->page == nullptr) {
+        return false;
+    }
+
+    PopplerRectangle* rectArray = nullptr;
+    guint numRects = 0;
+    if (!poppler_page_get_text_layout(const_cast<PopplerPage*>(this->page), &rectArray, &numRects) ||
+        rectArray == nullptr || numRects == 0) {
+        g_free(rectArray);
+        return false;
+    }
+
+    const bool found = std::any_of(rectArray, rectArray + numRects, [x, y](const PopplerRectangle& rect) {
+        const double minX = std::min(rect.x1, rect.x2);
+        const double maxX = std::max(rect.x1, rect.x2);
+        const double minY = std::min(rect.y1, rect.y2);
+        const double maxY = std::max(rect.y1, rect.y2);
+        return minX <= x && x <= maxX && minY <= y && y <= maxY;
+    });
+    g_free(rectArray);
+    return found;
+}
+
 auto getPopplerSelectionStyle(XojPdfPageSelectionStyle style) -> PopplerSelectionStyle {
     switch (style) {
         case XojPdfPageSelectionStyle::Word:

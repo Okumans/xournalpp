@@ -37,17 +37,19 @@ extern "C" {
 class Plugin;
 class Control;
 class ToolMenuHandler;
+struct KeyEvent;
 
 struct MenuEntry final {
     MenuEntry() = default;
     MenuEntry(Plugin* plugin, std::string label, std::string callback, ptrdiff_t mode, std::string accelerator,
-              std::string parentPath = ""):
+              std::string parentPath = "", std::string shortcut = ""):
             plugin(plugin),
             label(std::move(label)),
             parentPath(std::move(parentPath)),
             callback(std::move(callback)),
             mode(mode),
-            accelerator(std::move(accelerator)) {}
+            accelerator(std::move(accelerator)),
+            shortcut(std::move(shortcut)) {}
 
     Plugin* plugin = nullptr;                               ///< The Plugin
     std::string label{};                                    ///< Menu display name
@@ -57,8 +59,12 @@ struct MenuEntry final {
     /**
      * @brief Accelerator key, see
      *     https://developer.gnome.org/gtk3/stable/gtk3-Keyboard-Accelerators.html#gtk-accelerator-parse
-     */
+    */
     std::string accelerator{};
+    /// Canvas-scoped shortcut, matched after the active page/input handler gets first chance.
+    std::string shortcut{};
+    guint shortcutKeyval{0};
+    GdkModifierType shortcutModifiers{};
     /// Action activated when using the menu entry
     xoj::util::GObjectSPtr<GSimpleAction> action;
 };
@@ -138,6 +144,8 @@ public:
 
     /// Execute menu entry
     void executeMenuEntry(MenuEntry* entry);
+    /// Execute the first matching canvas-scoped shortcut
+    bool handleKeyPress(const KeyEvent& event);
     // Execute toolbar button
     void executeToolbarButton(ToolbarButtonEntry* entry);
 
@@ -174,9 +182,10 @@ public:
     /// @param mode Mode in which callback is run
     /// @param accelerator Accelerator key
     /// @param parentPath Submenu path (e.g., "File/Tools"), empty = root
+    /// @param shortcut Canvas-scoped shortcut (e.g., "<Shift>j"), empty = none
     /// @return Internal ID, can e.g. be used to disable the menu
     auto registerMenu(std::string label, std::string callback, ptrdiff_t mode, std::string accelerator,
-                      std::string parentPath = "") -> size_t;
+                      std::string parentPath = "", std::string shortcut = "") -> size_t;
 
     ///@return The main controller
     auto getControl() const -> Control*;

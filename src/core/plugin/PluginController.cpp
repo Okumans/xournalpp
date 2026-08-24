@@ -188,3 +188,24 @@ void PluginController::registerToolButtons(ToolMenuHandler* toolMenuHandler) {
     }
 #endif
 }
+
+bool PluginController::handleKeyPress(const KeyEvent& event) {
+#ifdef ENABLE_PLUGINS
+    // Text editing owns keyboard input. In particular, do not let a one-letter canvas shortcut steal characters or
+    // navigation from the IM context and text editor.
+    if (control->getTextEditor() != nullptr) {
+        return false;
+    }
+
+    // Plugins are sorted by name and path, so the first matching registration provides deterministic collision
+    // handling without changing the existing plugin loading order.
+    for (auto&& plugin: plugins) {
+        if (plugin->handleKeyPress(event)) {
+            return true;
+        }
+    }
+#else
+    (void)event;
+#endif
+    return false;
+}

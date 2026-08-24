@@ -224,15 +224,27 @@ void PdfFloatingToolbox::createStrokes(PdfMarkerStyle position, PdfMarkerStyle w
 }
 
 void PdfFloatingToolbox::switchSelectTypeCb(GtkButton* button, PdfFloatingToolbox* pft) {
-    ToolType type = pft->theMainWindow->getControl()->getToolHandler()->getToolType();
+    auto* toolHandler = pft->theMainWindow->getControl()->getToolHandler();
+    const ToolType activeType = toolHandler->getToolType();
+    ToolType type = activeType;
 
-    type = type == ToolType::TOOL_SELECT_PDF_TEXT_LINEAR ? ToolType::TOOL_SELECT_PDF_TEXT_RECT :
-                                                           ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
+    if (activeType == ToolType::TOOL_SMART_SELECT) {
+        type = pft->selectionStyle == XojPdfPageSelectionStyle::Linear ? ToolType::TOOL_SELECT_PDF_TEXT_RECT :
+                                                                          ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
+    } else {
+        type = activeType == ToolType::TOOL_SELECT_PDF_TEXT_LINEAR ? ToolType::TOOL_SELECT_PDF_TEXT_RECT :
+                                                                      ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
+    }
 
-    pft->theMainWindow->getControl()->selectTool(type);
+    // Smart Select remains the active tool while the toolbox changes only
+    // the style used to recompute the current PDF selection.
+    if (activeType != ToolType::TOOL_SMART_SELECT) {
+        pft->theMainWindow->getControl()->selectTool(type);
+    }
 
+    pft->selectionStyle = PdfElemSelection::selectionStyleForToolType(type);
     pft->pdfElemSelection->setToolType(type);
-    pft->pdfElemSelection->finalizeSelection(PdfElemSelection::selectionStyleForToolType(type));
+    pft->pdfElemSelection->finalizeSelection(pft->selectionStyle);
 }
 
 bool PdfFloatingToolbox::isHidden() const { return !gtk_widget_is_visible(this->floatingToolbox); }

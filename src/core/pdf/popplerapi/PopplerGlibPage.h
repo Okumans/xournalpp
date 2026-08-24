@@ -38,6 +38,8 @@ public:
 
     std::vector<XojPdfRectangle> findText(const std::string& text) override;
 
+    bool hasTextAt(double x, double y) override;
+
     std::string selectText(const XojPdfRectangle& rect, XojPdfPageSelectionStyle style) override;
 
     cairo_region_t* selectTextRegion(const XojPdfRectangle& rect, XojPdfPageSelectionStyle style) override;

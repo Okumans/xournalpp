@@ -190,7 +190,14 @@ public:  // listener
     void elementsChanged(const std::vector<const Element*>& elements, const Range& range) override;
 
 private:
+    enum class SmartSelectState { Undecided, ObjectMove, Rectangle, PdfText };
+
     void startText(double x, double y);
+
+    void startSmartSelectDelegate(double x, double y);
+    void finalizeSmartSelect(const PositionInputData& pos);
+    void cancelSmartSelect();
+    bool smartSelectTextAtPress() const;
 
     void startLink();
 
@@ -289,6 +296,13 @@ private:
 
 
     DeviceId currentSequenceDeviceId;
+
+    bool smartSelectActive = false;
+    SmartSelectState smartSelectState = SmartSelectState::Undecided;
+    double smartSelectStartX = 0;
+    double smartSelectStartY = 0;
+    bool smartSelectShift = false;
+    bool smartSelectAlt = false;
 
 
     friend class RenderJob;
