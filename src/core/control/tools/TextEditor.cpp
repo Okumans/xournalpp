@@ -1,9 +1,12 @@
 #include "TextEditor.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>  // for strcmp, size_t
 #include <memory>   // for allocator, make_unique, __shared_p...
 #include <string>   // for std::string()
 #include <utility>  // for move
+#include <vector>
 
 #include <gdk/gdkkeysyms.h>  // for GDK_KEY_B, GDK_KEY_ISO_Enter, GDK_...
 #include <glib-object.h>     // for g_object_get, g_object_unref, G_CA...
@@ -38,6 +41,7 @@ class UndoAction;
 
 static constexpr auto MOVE_ICON_NAME = "xopp-move";
 static constexpr auto EXTEND_ICON_NAME = "xopp-wrap";
+static constexpr size_t MAX_TEXT_EDIT_HISTORY = 256;
 
 /** GtkTextBuffer helper functions **/
 static auto getIteratorAtCursor(GtkTextBuffer* buffer) -> GtkTextIter {
@@ -170,6 +174,8 @@ TextEditor::TextEditor(Control* control, const PageRef& page, GtkWidget* xournal
         this->cursorVisible = true;
     }
 
+    this->initializeTextEditHistory();
+
     this->moveIcon = [&]() {
         auto icon = std::make_unique<FlyingClickableIcon>(control->getWindow(), MOVE_ICON_NAME,
                                                           FlyingClickableIcon::Anchor::SOUTH_EAST);
@@ -298,6 +304,7 @@ TextEditor::~TextEditor() {
     this->contentsChanged(true);
 
     finalizeEdition();
+    this->control->undoRedoChanged();
 }
 
 auto TextEditor::getViewPool() const -> const std::shared_ptr<xoj::util::DispatchPool<xoj::view::TextEditionView>>& {
@@ -314,43 +321,469 @@ bool TextEditor::bufferEmpty() const { return gtk_text_buffer_get_char_count(thi
 
 void TextEditor::replaceBufferContent(const std::string& text) {
     gtk_text_buffer_set_text(this->buffer.get(), text.c_str(), -1);
+    this->applyModelStylesToBuffer();
+    this->typingFont.reset();
 
     GtkTextIter first = {nullptr};
     gtk_text_buffer_get_iter_at_offset(this->buffer.get(), &first, 0);
     gtk_text_buffer_place_cursor(this->buffer.get(), &first);
     this->layoutStatus = LayoutStatus::NEEDS_COMPLETE_UPDATE;
     this->cursorBox = computeCursorBox();
+    this->updateFormattingActions();
+}
+
+auto TextEditor::captureTextEditState() const -> TextEditState {
+    TextEditState state;
+    state.text = this->textElement->getText();
+    state.styleRuns = this->textElement->serializeStyleRuns();
+    state.font = this->textElement->getFont();
+    state.color = this->textElement->getColor();
+    state.wrapWidth = this->textElement->getWrap();
+    state.alignment = static_cast<int>(static_cast<TextAlignment::Value>(this->textElement->getAlign()));
+    state.justify = this->textElement->getJustify();
+    state.typingFont = this->typingFont;
+
+    const GtkTextIter cursor = getIteratorAtCursor(this->buffer.get());
+    GtkTextIter selectionBound;
+    gtk_text_buffer_get_iter_at_mark(this->buffer.get(), &selectionBound,
+                                     gtk_text_buffer_get_selection_bound(this->buffer.get()));
+    state.cursorOffset = static_cast<size_t>(getByteOffsetOfIterator(cursor));
+    state.selectionBoundOffset = static_cast<size_t>(getByteOffsetOfIterator(selectionBound));
+    return state;
+}
+
+void TextEditor::restoreTextEditState(const TextEditState& state) {
+    this->restoringTextEditHistory = true;
+
+    this->textElement->setText(state.text);
+    this->textElement->setFont(state.font);
+    if (state.styleRuns.empty()) {
+        this->textElement->setStyleRuns({});
+    } else {
+        this->textElement->deserializeStyleRuns(state.styleRuns);
+    }
+    this->textElement->setColor(state.color);
+    this->textElement->setWrap(state.wrapWidth);
+    this->textElement->setAlignment(TextAlignment(static_cast<TextAlignment::Value>(state.alignment)));
+    this->textElement->setJustify(state.justify);
+
+    gtk_text_buffer_set_text(this->buffer.get(), state.text.c_str(), -1);
+    this->applyModelStylesToBuffer();
+    this->typingFont = state.typingFont;
+
+    const auto clampOffset = [&state](size_t offset) {
+        return static_cast<int>(std::min(offset, state.text.size()));
+    };
+    GtkTextIter cursor = getIteratorAtByteOffset(this->buffer.get(), clampOffset(state.cursorOffset));
+    GtkTextIter selectionBound = getIteratorAtByteOffset(this->buffer.get(), clampOffset(state.selectionBoundOffset));
+    gtk_text_buffer_select_range(this->buffer.get(), &cursor, &selectionBound);
+
+    this->control->setCopyCutEnabled(gtk_text_buffer_get_has_selection(this->buffer.get()));
+    this->layoutStatus = LayoutStatus::NEEDS_COMPLETE_UPDATE;
+    this->computeVirtualCursorPosition();
+    this->updateFormattingActions();
+    this->repaintEditor(true);
+
+    this->restoringTextEditHistory = false;
+}
+
+void TextEditor::initializeTextEditHistory() {
+    this->textEditHistory.clear();
+    this->textEditHistory.emplace_back(this->captureTextEditState());
+    this->textEditHistoryIndex = 0;
+    this->updateTextEditUndoActions();
+}
+
+void TextEditor::prepareTextEditHistory() {
+    if (this->restoringTextEditHistory || this->textEditHistory.empty()) {
+        return;
+    }
+
+    const auto current = this->captureTextEditState();
+    auto& currentHistoryState = this->textEditHistory[this->textEditHistoryIndex];
+    currentHistoryState.cursorOffset = current.cursorOffset;
+    currentHistoryState.selectionBoundOffset = current.selectionBoundOffset;
+}
+
+void TextEditor::recordTextEditHistory() {
+    if (this->restoringTextEditHistory || this->textEditHistory.empty()) {
+        return;
+    }
+
+    const auto current = this->captureTextEditState();
+    const auto sameFont = [](const XojFont& lhs, const XojFont& rhs) {
+        return lhs.getName() == rhs.getName() && lhs.getSize() == rhs.getSize();
+    };
+    const auto sameOptionalFont = [&sameFont](const std::optional<XojFont>& lhs,
+                                               const std::optional<XojFont>& rhs) {
+        if (lhs.has_value() != rhs.has_value()) {
+            return false;
+        }
+        return !lhs || sameFont(*lhs, *rhs);
+    };
+    const auto sameState = [&sameFont, &sameOptionalFont](const TextEditState& lhs, const TextEditState& rhs) {
+        return lhs.text == rhs.text && lhs.styleRuns == rhs.styleRuns && sameFont(lhs.font, rhs.font) &&
+               lhs.color == rhs.color && lhs.wrapWidth == rhs.wrapWidth && lhs.alignment == rhs.alignment &&
+               lhs.justify == rhs.justify && sameOptionalFont(lhs.typingFont, rhs.typingFont) &&
+               lhs.cursorOffset == rhs.cursorOffset && lhs.selectionBoundOffset == rhs.selectionBoundOffset;
+    };
+
+    if (sameState(this->textEditHistory[this->textEditHistoryIndex], current)) {
+        this->updateTextEditUndoActions();
+        return;
+    }
+
+    if (this->textEditHistoryIndex + 1 < this->textEditHistory.size()) {
+        this->textEditHistory.erase(this->textEditHistory.begin() +
+                                            static_cast<std::ptrdiff_t>(this->textEditHistoryIndex + 1),
+                                    this->textEditHistory.end());
+    }
+
+    this->textEditHistory.emplace_back(current);
+    this->textEditHistoryIndex = this->textEditHistory.size() - 1;
+
+    if (this->textEditHistory.size() > MAX_TEXT_EDIT_HISTORY) {
+        const auto removeCount = this->textEditHistory.size() - MAX_TEXT_EDIT_HISTORY;
+        this->textEditHistory.erase(this->textEditHistory.begin(),
+                                    this->textEditHistory.begin() + static_cast<std::ptrdiff_t>(removeCount));
+        this->textEditHistoryIndex -= removeCount;
+    }
+
+    this->updateTextEditUndoActions();
+}
+
+void TextEditor::beginTextEditHistoryGroup() {
+    this->prepareTextEditHistory();
+    ++this->textEditHistoryGroupDepth;
+}
+
+void TextEditor::endTextEditHistoryGroup() {
+    if (this->textEditHistoryGroupDepth == 0) {
+        return;
+    }
+
+    --this->textEditHistoryGroupDepth;
+    if (this->textEditHistoryGroupDepth == 0) {
+        this->recordTextEditHistory();
+    }
+}
+
+void TextEditor::updateTextEditUndoActions() const {
+    auto* undoRedo = this->control->getUndoRedoHandler();
+    auto* actionDb = this->control->getActionDatabase();
+    actionDb->enableAction(Action::UNDO, undoRedo->canUndo() || this->canUndoTextEdit());
+    actionDb->enableAction(Action::REDO, undoRedo->canRedo() || this->canRedoTextEdit());
+}
+
+auto TextEditor::canUndoTextEdit() const -> bool {
+    return !this->textEditHistory.empty() && this->textEditHistoryIndex > 0;
+}
+
+auto TextEditor::canRedoTextEdit() const -> bool {
+    return !this->textEditHistory.empty() && this->textEditHistoryIndex + 1 < this->textEditHistory.size();
+}
+
+auto TextEditor::undoTextEdit() -> bool {
+    if (!this->canUndoTextEdit()) {
+        return false;
+    }
+
+    --this->textEditHistoryIndex;
+    this->restoreTextEditState(this->textEditHistory[this->textEditHistoryIndex]);
+    this->updateTextEditUndoActions();
+    return true;
+}
+
+auto TextEditor::redoTextEdit() -> bool {
+    if (!this->canRedoTextEdit()) {
+        return false;
+    }
+
+    ++this->textEditHistoryIndex;
+    this->restoreTextEditState(this->textEditHistory[this->textEditHistoryIndex]);
+    this->updateTextEditUndoActions();
+    return true;
+}
+
+GtkTextTag* TextEditor::getFontTag(const XojFont& font) {
+    const std::string key = font.asString();
+    if (const auto it = this->fontTags.find(key); it != this->fontTags.end()) {
+        return it->second;
+    }
+
+    GtkTextTag* tag = gtk_text_buffer_create_tag(this->buffer.get(), nullptr, "font", key.c_str(), nullptr);
+    xoj_assert(tag != nullptr);
+    this->fontTags.emplace(key, tag);
+    return tag;
+}
+
+auto TextEditor::getFontAtIterator(const GtkTextIter& iter) const -> XojFont {
+    GtkTextIter lookup = iter;
+    if (gtk_text_iter_is_end(&lookup) && !gtk_text_iter_is_start(&lookup)) {
+        gtk_text_iter_backward_char(&lookup);
+    }
+
+    XojFont result = this->textElement->getFont();
+    GSList* tags = gtk_text_iter_get_tags(&lookup);
+    for (GSList* item = tags; item != nullptr; item = item->next) {
+        auto* tag = GTK_TEXT_TAG(item->data);
+        bool recognized = false;
+        for (const auto& [fontDescription, knownTag]: this->fontTags) {
+            if (knownTag == tag) {
+                result = XojFont(fontDescription.c_str());
+                recognized = true;
+                break;
+            }
+        }
+
+        if (!recognized) {
+            gchar* fontDescription = nullptr;
+            g_object_get(tag, "font", &fontDescription, nullptr);
+            if (fontDescription != nullptr) {
+                XojFont tagFont(fontDescription);
+                if (!tagFont.getName().empty() && std::isfinite(tagFont.getSize()) && tagFont.getSize() > 0) {
+                    result = std::move(tagFont);
+                }
+                g_free(fontDescription);
+            }
+        }
+    }
+    g_slist_free(tags);
+    return result;
+}
+
+void TextEditor::clearFontTags() {
+    GtkTextIter start;
+    GtkTextIter end;
+    gtk_text_buffer_get_bounds(this->buffer.get(), &start, &end);
+    for (const auto& [fontDescription, tag]: this->fontTags) {
+        gtk_text_buffer_remove_tag(this->buffer.get(), tag, &start, &end);
+    }
+}
+
+void TextEditor::applyModelStylesToBuffer() {
+    this->clearFontTags();
+
+    for (const auto& run: this->textElement->getStyleRuns()) {
+        GtkTextIter start = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(run.start));
+        GtkTextIter end = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(run.end));
+        gtk_text_buffer_apply_tag(this->buffer.get(), this->getFontTag(run.font), &start, &end);
+    }
+}
+
+void TextEditor::applyTypingFont(size_t start, size_t end) {
+    if (!this->typingFont || start >= end) {
+        return;
+    }
+
+    GtkTextIter begin = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(start));
+    GtkTextIter finish = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(end));
+    gtk_text_buffer_apply_tag(this->buffer.get(), this->getFontTag(*this->typingFont), &begin, &finish);
+}
+
+auto TextEditor::getSelectionByteRange(size_t& start, size_t& end) const -> bool {
+    GtkTextIter selectionStart;
+    GtkTextIter selectionEnd;
+    if (!gtk_text_buffer_get_selection_bounds(this->buffer.get(), &selectionStart, &selectionEnd)) {
+        return false;
+    }
+
+    // GtkTextIter line indexes are byte indexes, but computing the absolute
+    // position by walking lines is easy to get wrong at an end iterator. The
+    // selection is formatted infrequently, so use the exact UTF-8 slices here
+    // and keep the faster iterator conversion for the per-character editor
+    // synchronization path.
+    GtkTextIter bufferStart;
+    gtk_text_buffer_get_start_iter(this->buffer.get(), &bufferStart);
+    const auto beforeSelection =
+            xoj::util::OwnedCString::assumeOwnership(gtk_text_iter_get_slice(&bufferStart, &selectionStart));
+    const auto selectedText =
+            xoj::util::OwnedCString::assumeOwnership(gtk_text_iter_get_slice(&selectionStart, &selectionEnd));
+    const auto byteLength = [](const xoj::util::OwnedCString& text) -> size_t {
+        return text.get() == nullptr ? 0 : std::strlen(text.get());
+    };
+    start = byteLength(beforeSelection);
+    end = start + byteLength(selectedText);
+    return start < end;
+}
+
+auto TextEditor::currentFontAttribute(bool bold) const -> bool {
+    GtkTextIter start;
+    GtkTextIter end;
+    if (!gtk_text_buffer_get_selection_bounds(this->buffer.get(), &start, &end)) {
+        const auto font = this->typingFont.value_or(this->getFontAtIterator(getIteratorAtCursor(this->buffer.get())));
+        return bold ? Text::isBold(font) : Text::isItalic(font);
+    }
+
+    bool hasCharacters = false;
+    bool allMatch = true;
+    GtkTextIter iter = start;
+    while (!gtk_text_iter_equal(&iter, &end)) {
+        hasCharacters = true;
+        const auto font = this->getFontAtIterator(iter);
+        allMatch = allMatch && (bold ? Text::isBold(font) : Text::isItalic(font));
+
+        if (!gtk_text_iter_forward_char(&iter)) {
+            break;
+        }
+    }
+    return hasCharacters && allMatch;
+}
+
+void TextEditor::updateFormattingActions() const {
+    auto* db = this->control->getActionDatabase();
+    db->setActionState(Action::TEXT_BOLD, this->currentFontAttribute(true));
+    db->setActionState(Action::TEXT_ITALIC, this->currentFontAttribute(false));
+}
+
+void TextEditor::formatSelection(const std::function<void(size_t, size_t)>& formatter) {
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (!getSelectionByteRange(start, end)) {
+        return;
+    }
+
+    this->updateTextElementContent();
+    formatter(start, end);
+    this->applyModelStylesToBuffer();
+    this->typingFont.reset();
+    this->updateFormattingActions();
+    this->layoutStatus = LayoutStatus::NEEDS_COMPLETE_UPDATE;
+    this->repaintEditor(true);
+    this->recordTextEditHistory();
 }
 
 void TextEditor::setColor(Color color) {
+    this->prepareTextEditHistory();
     this->textElement->setColor(color);
     repaintEditor(false);
+    this->recordTextEditHistory();
 }
 
 void TextEditor::setFont(XojFont font) {
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->setFontRange(selectionStart, selectionEnd, font);
+        });
+        return;
+    }
+
     this->textElement->setFont(font);
+    this->typingFont = std::move(font);
+    this->applyModelStylesToBuffer();
+    this->updateFormattingActions();
     afterFontChange();
+    this->recordTextEditHistory();
+}
+
+void TextEditor::setBold(bool bold) {
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->setBold(selectionStart, selectionEnd, bold);
+        });
+        return;
+    }
+
+    this->typingFont = Text::withBold(this->getFontAtIterator(getIteratorAtCursor(this->buffer.get())), bold);
+    this->updateFormattingActions();
+    this->recordTextEditHistory();
+}
+
+void TextEditor::setItalic(bool italic) {
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->setItalic(selectionStart, selectionEnd, italic);
+        });
+        return;
+    }
+
+    this->typingFont = Text::withItalic(this->getFontAtIterator(getIteratorAtCursor(this->buffer.get())), italic);
+    this->updateFormattingActions();
+    this->recordTextEditHistory();
+}
+
+void TextEditor::setFontSize(double size) {
+    if (!std::isfinite(size) || size <= 0) {
+        return;
+    }
+
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->setFontSize(selectionStart, selectionEnd, size);
+        });
+        return;
+    }
+
+    this->typingFont = Text::withSize(this->getFontAtIterator(getIteratorAtCursor(this->buffer.get())), size);
+    this->updateFormattingActions();
+    this->recordTextEditHistory();
+}
+
+void TextEditor::adjustFontSize(double delta) {
+    if (!std::isfinite(delta)) {
+        return;
+    }
+
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->adjustFontSize(selectionStart, selectionEnd, delta);
+        });
+        return;
+    }
+
+    const auto currentFont = this->getFontAtIterator(getIteratorAtCursor(this->buffer.get()));
+    this->typingFont = Text::withSize(currentFont, std::max(1.0, currentFont.getSize() + delta));
+    this->updateFormattingActions();
+    this->recordTextEditHistory();
 }
 
 void TextEditor::setAlignment(TextAlignment al) {
+    this->prepareTextEditHistory();
     this->textElement->setAlignment(al);
     this->layoutStatus = LayoutStatus::NEEDS_PARAMETERS_UPDATE;
     repaintEditor(true);  // The size may change if the text overflows
+    this->recordTextEditHistory();
 }
 
 void TextEditor::setJustify(bool justify) {
+    this->prepareTextEditHistory();
     this->textElement->setJustify(justify);
     this->layoutStatus = LayoutStatus::NEEDS_PARAMETERS_UPDATE;
     repaintEditor(true);
+    this->recordTextEditHistory();
 }
 
 void TextEditor::afterFontChange() {
     this->textElement->updatePangoFont(this->layout.get());
+    this->layoutStatus = LayoutStatus::NEEDS_COMPLETE_UPDATE;
     this->computeVirtualCursorPosition();
     this->repaintEditor();
 }
 
 void TextEditor::iMCommitCallback(GtkIMContext* context, const gchar* str, TextEditor* te) {
+    te->beginTextEditHistoryGroup();
     gtk_text_buffer_begin_user_action(te->buffer.get());
 
     bool hadSelection = gtk_text_buffer_get_has_selection(te->buffer.get());
@@ -359,11 +792,14 @@ void TextEditor::iMCommitCallback(GtkIMContext* context, const gchar* str, TextE
         te->control->setCopyCutEnabled(false);
     }
 
+    const size_t insertionStart = static_cast<size_t>(getByteOffsetOfCursor(te->buffer.get()));
+    bool inserted = false;
+
     if (!strcmp(str, "\n")) {
         if (!gtk_text_buffer_insert_interactive_at_cursor(te->buffer.get(), "\n", 1, true)) {
             gtk_widget_error_bell(te->xournalWidget);
         } else {
-            te->contentsChanged(true);
+            inserted = true;
         }
     } else {
         if (!hadSelection && te->cursorOverwrite) {
@@ -375,11 +811,18 @@ void TextEditor::iMCommitCallback(GtkIMContext* context, const gchar* str, TextE
 
         if (!gtk_text_buffer_insert_interactive_at_cursor(te->buffer.get(), str, -1, true)) {
             gtk_widget_error_bell(te->xournalWidget);
+        } else {
+            inserted = true;
         }
+    }
+
+    if (inserted) {
+        te->applyTypingFont(insertionStart, insertionStart + strlen(str));
     }
 
     gtk_text_buffer_end_user_action(te->buffer.get());
     te->contentsChanged();
+    te->endTextEditHistoryGroup();
     te->repaintEditor();
 }
 
@@ -428,6 +871,7 @@ auto TextEditor::iMRetrieveSurroundingCallback(GtkIMContext* context, TextEditor
 }
 
 auto TextEditor::imDeleteSurroundingCallback(GtkIMContext* context, gint offset, gint n_chars, TextEditor* te) -> bool {
+    te->prepareTextEditHistory();
     GtkTextIter start = getIteratorAtCursor(te->buffer.get());
     GtkTextIter end = start;
 
@@ -483,60 +927,55 @@ void TextEditor::toggleOverwrite() {
  * Improve that later on...
  */
 void TextEditor::decreaseFontSize() {
-    XojFont& font = textElement->getFont();
-    if (double size = font.getSize(); size > 1) {
-        font.setSize(font.getSize() - 1);
-        afterFontChange();
-    }
+    adjustFontSize(-1);
 }
 
 void TextEditor::increaseFontSize() {
-    XojFont& font = textElement->getFont();
-    font.setSize(font.getSize() + 1);
-    afterFontChange();
+    adjustFontSize(1);
 }
 
 void TextEditor::toggleBoldFace() {
-    // get the current/used font
-    XojFont& font = textElement->getFont();
-    std::string fontName = font.getName();
+    setBold(!currentFontAttribute(true));
+}
 
-    std::size_t found = fontName.find(" Bold");
-
-    // toggle bold
-    if (found == std::string::npos) {
-        fontName = fontName + " Bold";
-    } else {
-        fontName = fontName.erase(found, 5);
-    }
-
-    font.setName(fontName);
-    afterFontChange();
+void TextEditor::toggleItalicFace() {
+    setItalic(!currentFontAttribute(false));
 }
 
 void TextEditor::selectAtCursor(TextEditor::SelectType ty) {
-    GtkTextIter startPos;
-    GtkTextIter endPos;
-    gtk_text_buffer_get_selection_bounds(this->buffer.get(), &startPos, &endPos);
     const auto searchFlag = GTK_TEXT_SEARCH_TEXT_ONLY;  // To be used to find double newlines
+
+    // Start from the insertion mark rather than from the current selection
+    // bounds.  The latter are not useful for a collapsed selection and, more
+    // importantly, can leave the end iterator one character short when a
+    // double-click lands at the end of a word.
+    GtkTextIter startPos = getIteratorAtCursor(this->buffer.get());
+    GtkTextIter endPos = startPos;
 
     switch (ty) {
         case TextEditor::SelectType::WORD: {
             auto currentPos = getIteratorAtCursor(this->buffer.get());
             if (!gtk_text_iter_inside_word(&currentPos)) {
-                // Do nothing if cursor is over whitespace
-                return;
+                // A cursor at the buffer end is not considered "inside" the
+                // preceding word by GTK, although it is a valid double-click
+                // position for the word immediately before it.
+                auto previousPos = currentPos;
+                if (gtk_text_iter_backward_char(&previousPos) && gtk_text_iter_inside_word(&previousPos)) {
+                    currentPos = previousPos;
+                } else {
+                    // Do nothing if the cursor is over whitespace.
+                    return;
+                }
             }
 
-            if (!gtk_text_iter_starts_word(&currentPos)) {
-                gtk_text_iter_backward_word_start(&startPos);
-            }
-            if (!gtk_text_iter_ends_word(&currentPos)) {
-                gtk_text_iter_forward_word_end(&endPos);
-            }
+            startPos = currentPos;
+            endPos = currentPos;
+            gtk_text_iter_backward_word_start(&startPos);
+            gtk_text_iter_forward_word_end(&endPos);
             break;
         }
         case TextEditor::SelectType::PARAGRAPH:
+            gtk_text_buffer_get_selection_bounds(this->buffer.get(), &startPos, &endPos);
             // Note that a GTK "paragraph" is a line, so there's no nice one-liner.
             // We define a paragraph as text separated by double newlines.
             while (!gtk_text_iter_is_start(&startPos)) {
@@ -577,6 +1016,7 @@ void TextEditor::selectAtCursor(TextEditor::SelectType ty) {
     // Selection highlighting is handled through Pango attributes
     this->layoutStatus = LayoutStatus::NEEDS_ATTRIBUTES_UPDATE;
     this->repaintEditor(false);
+    this->updateFormattingActions();
 }
 
 void TextEditor::moveCursor(GtkMovementStep step, int count, bool extendSelection) {
@@ -669,8 +1109,19 @@ void TextEditor::moveCursor(GtkMovementStep step, int count, bool extendSelectio
 void TextEditor::findPos(GtkTextIter* iter, double xPos, double yPos) const {
     int index = 0;
     int trailing = 0;
-    pango_layout_xy_to_index(this->getUpToDateLayout(), round_cast<int>(xPos * PANGO_SCALE),
-                             round_cast<int>(yPos * PANGO_SCALE), &index, &trailing);
+    const bool insideLayout = pango_layout_xy_to_index(this->getUpToDateLayout(), round_cast<int>(xPos * PANGO_SCALE),
+                                                       round_cast<int>(yPos * PANGO_SCALE), &index, &trailing);
+    if (!insideLayout) {
+        // Pango reports a miss when the mouse is just beyond the final glyph.
+        // Do not reuse its unspecified index/trailing outputs: selecting by
+        // dragging past the last glyph must produce the buffer end iterator.
+        if (xPos <= 0) {
+            gtk_text_buffer_get_start_iter(this->buffer.get(), iter);
+        } else {
+            gtk_text_buffer_get_end_iter(this->buffer.get(), iter);
+        }
+        return;
+    }
     /*
      * trailing is non-zero iff the abscissa is past the middle of the grapheme.
      * In this case, it contains the length of the grapheme in utf8 char count.
@@ -680,12 +1131,56 @@ void TextEditor::findPos(GtkTextIter* iter, double xPos, double yPos) const {
     gtk_text_iter_forward_chars(iter, trailing);
 }
 
-void TextEditor::updateTextElementContent() { this->textElement->setText(cloneToStdString(this->buffer.get())); }
+void TextEditor::updateTextElementContent() {
+    const std::string content = cloneToStdString(this->buffer.get());
+    this->textElement->setText(content);
+
+    std::vector<Text::StyleRun> runs;
+    GtkTextIter iter;
+    GtkTextIter end;
+    gtk_text_buffer_get_start_iter(this->buffer.get(), &iter);
+    gtk_text_buffer_get_end_iter(this->buffer.get(), &end);
+
+    while (!gtk_text_iter_equal(&iter, &end)) {
+        GtkTextIter next = iter;
+        // GTK returns false when moving from the final character to the end
+        // iterator, but the iterator is still advanced.  Do not discard that
+        // final character: its tag is exactly the state we need to preserve
+        // when synchronizing inline styles back to the model.
+        gtk_text_iter_forward_char(&next);
+        if (gtk_text_iter_equal(&next, &iter)) {
+            break;
+        }
+
+        const XojFont currentFont = getFontAtIterator(iter);
+        const auto& defaultFont = this->textElement->getFont();
+        if (currentFont.getName() != defaultFont.getName() || currentFont.getSize() != defaultFont.getSize()) {
+            const size_t start = static_cast<size_t>(getByteOffsetOfIterator(iter));
+            const size_t finish = static_cast<size_t>(getByteOffsetOfIterator(next));
+            if (!runs.empty() && runs.back().end == start &&
+                runs.back().font.getName() == currentFont.getName() &&
+                runs.back().font.getSize() == currentFont.getSize()) {
+                runs.back().end = finish;
+            } else {
+                runs.push_back({start, finish, currentFont});
+            }
+        }
+
+        iter = next;
+    }
+
+    this->textElement->setStyleRuns(std::move(runs));
+}
 
 void TextEditor::contentsChanged(bool forceCreateUndoAction) {
-    // Todo: Reinstate text edition undo stack
+    (void)forceCreateUndoAction;
+    this->updateTextElementContent();
+    this->updateFormattingActions();
     this->layoutStatus = LayoutStatus::NEEDS_COMPLETE_UPDATE;
     this->computeVirtualCursorPosition();
+    if (this->textEditHistoryGroupDepth == 0) {
+        this->recordTextEditHistory();
+    }
 }
 
 void TextEditor::markPos(double x, double y, bool extendSelection) {
@@ -774,6 +1269,7 @@ void TextEditor::moveCursorIterator(const GtkTextIter* newLocation, gboolean ext
     } else {
         repaintCursorAfterChange();
     }
+    this->updateFormattingActions();
 }
 
 void TextEditor::updateCursorBox() {
@@ -828,6 +1324,7 @@ static auto find_whitepace_region(const GtkTextIter* center, GtkTextIter* start,
 
 void TextEditor::deleteFromCursor(GtkDeleteType type, int count) {
 
+    this->prepareTextEditHistory();
     this->resetImContext();
 
     if (type == GTK_DELETE_CHARS) {
@@ -940,6 +1437,7 @@ void TextEditor::deleteFromCursor(GtkDeleteType type, int count) {
 
 void TextEditor::backspace() {
 
+    this->prepareTextEditHistory();
     resetImContext();
 
     // Backspace deletes the selection, if one exists
@@ -987,6 +1485,7 @@ void TextEditor::copyToClipboard() const {
 }
 
 void TextEditor::cutToClipboard() {
+    this->prepareTextEditHistory();
     auto* clipboard = gtk_widget_get_clipboard(this->xournalWidget);
     gtk_text_buffer_cut_clipboard(this->buffer.get(), clipboard, true);
 
@@ -995,6 +1494,7 @@ void TextEditor::cutToClipboard() {
 }
 
 void TextEditor::pasteFromClipboard() {
+    this->beginTextEditHistoryGroup();
     auto* clipboard = gtk_widget_get_clipboard(this->xournalWidget);
     gtk_text_buffer_paste_clipboard(this->buffer.get(), clipboard, nullptr, true);
 }
@@ -1009,6 +1509,8 @@ void TextEditor::bufferPasteDoneCallback(GtkTextBuffer* buffer, GtkClipboard* cl
         te->layoutStatus = LayoutStatus::NEEDS_PARAMETERS_UPDATE;
         te->repaintEditor(true);
     }
+
+    te->endTextEditHistoryGroup();
 }
 
 void TextEditor::resetImContext() {
@@ -1040,12 +1542,11 @@ void TextEditor::setTextToPangoLayout(PangoLayout* pl) const {
         std::string txt = cloneWithInsertToStdString(this->buffer.get(), preed);
 
         int pos = getByteOffsetOfCursor(this->buffer.get());
-        xoj::util::PangoAttrListSPtr attrlist(pango_attr_list_new(), xoj::util::adopt);
+        auto attrlist = this->textElement->createPangoAttrList();
         pango_attr_list_splice(attrlist.get(), this->preeditAttrList.get(), pos, static_cast<int>(preed.length()));
 
-        pango_layout_set_attributes(pl, attrlist.get());
-
         pango_layout_set_text(pl, txt.c_str(), static_cast<int>(txt.length()));
+        pango_layout_set_attributes(pl, attrlist.get());
     } else {
         setSelectionAttributesToPangoLayout(pl);
         pango_layout_set_text(pl, cloneToCString(this->buffer.get()).get(), -1);
@@ -1055,7 +1556,7 @@ void TextEditor::setTextToPangoLayout(PangoLayout* pl) const {
 Color TextEditor::getSelectionColor() const { return this->control->getSettings()->getSelectionColor(); }
 
 void TextEditor::setSelectionAttributesToPangoLayout(PangoLayout* pl) const {
-    xoj::util::PangoAttrListSPtr attrlist(pango_attr_list_new(), xoj::util::adopt);
+    auto attrlist = this->textElement->createPangoAttrList();
 
     GtkTextIter start;
     GtkTextIter end;

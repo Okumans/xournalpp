@@ -1255,6 +1255,8 @@ function app.setFont(font) end
 ---| "font"
 ---| "text-alignment"
 ---| "text-justify"
+---| "text-bold"
+---| "text-italic"
 ---| "plugin-manager"
 ---| "help"
 ---| "demo"

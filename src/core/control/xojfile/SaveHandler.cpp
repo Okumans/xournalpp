@@ -195,6 +195,9 @@ void SaveHandler::visitLayer(XmlNode* page, const Layer* l) {
             text->setAttrib(xoj::xml_attrs::X_COORD_STR, origin.x);
             text->setAttrib(xoj::xml_attrs::Y_COORD_STR, origin.y);
             text->setAttrib(xoj::xml_attrs::COLOR_STR, getColorStr(t->getColor()).c_str());
+            if (auto styles = t->serializeStyleRuns(); !styles.empty()) {
+                text->setAttrib(xoj::xml_attrs::STYLES_STR, styles);
+            }
             if (auto w = t->getWrap(); w != Text::NO_WRAP) {
                 text->setAttrib(xoj::xml_attrs::WRAP_STR, w);
             }

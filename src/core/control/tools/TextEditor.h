@@ -11,13 +11,19 @@
 
 #pragma once
 
+#include <cstddef>
+#include <functional>
+#include <optional>
 #include <string>  // for string
+#include <unordered_map>
+#include <vector>
 
 #include <gdk/gdk.h>      // for GdkEventKey
 #include <glib.h>         // for gint, gboolean, gchar
 #include <gtk/gtk.h>      // for GtkIMContext, GtkTextIter, GtkWidget
 #include <pango/pango.h>  // for PangoAttrList, PangoLayout
 
+#include "model/Font.h"
 #include "model/OverlayBase.h"
 #include "model/PageRef.h"  // for PageRef
 #include "util/Color.h"     // for Color
@@ -28,7 +34,6 @@
 #include "util/raii/PangoSPtr.h"
 
 class Text;
-class XojFont;
 class Control;
 class TextEditorCallbacks;
 struct KeyEvent;
@@ -70,6 +75,11 @@ public:
     bool bufferEmpty() const;
 
     void setFont(XojFont font);
+    void setBold(bool bold);
+    void setItalic(bool italic);
+    void setFontSize(double size);
+    void adjustFontSize(double delta);
+    void updateFormattingActions() const;
     void setColor(Color color);
     void setAlignment(TextAlignment al);
     void setJustify(bool justify);
@@ -92,11 +102,17 @@ public:
     void pasteFromClipboard();
     void selectAtCursor(TextEditor::SelectType ty);
 
+    bool canUndoTextEdit() const;
+    bool canRedoTextEdit() const;
+    bool undoTextEdit();
+    bool redoTextEdit();
+
     void onViewCreation() const;  ///< Call upon creation of a view
 
 private:
     void toggleOverwrite();
     void toggleBoldFace();
+    void toggleItalicFace();
     void increaseFontSize();
     void decreaseFontSize();
     void moveCursor(GtkMovementStep step, int count, bool extendSelection);
@@ -106,6 +122,37 @@ private:
 
     void afterFontChange();
     void replaceBufferContent(const std::string& text);
+
+    GtkTextTag* getFontTag(const XojFont& font);
+    XojFont getFontAtIterator(const GtkTextIter& iter) const;
+    void clearFontTags();
+    void applyModelStylesToBuffer();
+    void applyTypingFont(size_t start, size_t end);
+    bool getSelectionByteRange(size_t& start, size_t& end) const;
+    bool currentFontAttribute(bool bold) const;
+    void formatSelection(const std::function<void(size_t, size_t)>& formatter);
+
+    struct TextEditState {
+        std::string text;
+        std::string styleRuns;
+        XojFont font;
+        Color color;
+        double wrapWidth = -1;
+        int alignment = 0;
+        bool justify = false;
+        std::optional<XojFont> typingFont;
+        size_t cursorOffset = 0;
+        size_t selectionBoundOffset = 0;
+    };
+
+    TextEditState captureTextEditState() const;
+    void restoreTextEditState(const TextEditState& state);
+    void initializeTextEditHistory();
+    void prepareTextEditHistory();
+    void recordTextEditHistory();
+    void beginTextEditHistoryGroup();
+    void endTextEditHistoryGroup();
+    void updateTextEditUndoActions() const;
 
     void finalizeEdition();
     void initializeEditionAt(double x, double y);
@@ -176,6 +223,14 @@ private:
     xoj::util::GObjectSPtr<GtkIMContext> imContext;
     xoj::util::GObjectSPtr<GtkTextBuffer> buffer;
     xoj::util::GObjectSPtr<PangoLayout> layout;
+
+    std::unordered_map<std::string, GtkTextTag*> fontTags;
+    std::optional<XojFont> typingFont;
+
+    std::vector<TextEditState> textEditHistory;
+    size_t textEditHistoryIndex = 0;
+    size_t textEditHistoryGroupDepth = 0;
+    bool restoringTextEditHistory = false;
 
     enum class LayoutStatus { UP_TO_DATE, NEEDS_ATTRIBUTES_UPDATE, NEEDS_PARAMETERS_UPDATE, NEEDS_COMPLETE_UPDATE };
     mutable LayoutStatus layoutStatus;

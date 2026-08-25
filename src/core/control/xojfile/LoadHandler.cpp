@@ -351,7 +351,8 @@ void LoadHandler::finalizeStroke() {
 }
 
 void LoadHandler::addText(std::string font, double size, double x, double y, Color color, std::optional<double> wrap,
-                          std::optional<TextAlignment> align, bool justify, fs::path filename, size_t timestamp) {
+                          std::optional<TextAlignment> align, bool justify, std::string styles, fs::path filename,
+                          size_t timestamp) {
     xoj_assert(!this->text);
     this->text = std::make_unique<Text>();
 
@@ -363,6 +364,7 @@ void LoadHandler::addText(std::string font, double size, double x, double y, Col
     this->text->setWrap(wrap.value_or(Text::NO_WRAP));
     this->text->setAlignment(align.value_or(TextAlignment::LEFT));
     this->text->setJustify(justify);
+    this->textStyles = std::move(styles);
 
     setAudioAttributes(*this->text, std::move(filename), timestamp);
 }
@@ -371,6 +373,10 @@ void LoadHandler::setTextContents(std::string contents) {
     xoj_assert(this->text);
 
     this->text->setText(std::move(contents));
+    if (!this->textStyles.empty() && !this->text->deserializeStyleRuns(this->textStyles)) {
+        g_warning("LoadHandler: ignoring one or more invalid inline text styles");
+    }
+    this->textStyles.clear();
 }
 
 void LoadHandler::finalizeText() {
