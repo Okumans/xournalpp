@@ -495,6 +495,7 @@ TEST(ControlLoadHandler, testTextInlineStylesRoundTrip) {
     ASSERT_NE(original, nullptr);
     original->setBold(0, 3, true);
     original->setItalic(1, 3, true);
+    original->setColorRange(0, 1, Colors::black);
 
     SaveHandler saver;
     const auto outputPath = Util::getTmpDirSubfolder() / "rich-text-round-trip.xopp";
@@ -512,10 +513,13 @@ TEST(ControlLoadHandler, testTextInlineStylesRoundTrip) {
     EXPECT_EQ(restored->getStyleRuns()[0].end, 1U);
     EXPECT_TRUE(Text::isBold(restored->getStyleRuns()[0].font));
     EXPECT_FALSE(Text::isItalic(restored->getStyleRuns()[0].font));
+    ASSERT_TRUE(restored->getStyleRuns()[0].color.has_value());
+    EXPECT_EQ(*restored->getStyleRuns()[0].color, Colors::black);
     EXPECT_EQ(restored->getStyleRuns()[1].start, 1U);
     EXPECT_EQ(restored->getStyleRuns()[1].end, 3U);
     EXPECT_TRUE(Text::isBold(restored->getStyleRuns()[1].font));
     EXPECT_TRUE(Text::isItalic(restored->getStyleRuns()[1].font));
+    EXPECT_FALSE(restored->getStyleRuns()[1].color.has_value());
 
     fs::remove(outputPath);
 }
