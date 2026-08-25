@@ -49,6 +49,8 @@ void TextView::draw(const Context& ctx) const {
     auto layout = initPango(ctx.cr, text);
     const std::string& content = text->getText();
     pango_layout_set_text(layout.get(), content.c_str(), static_cast<int>(content.length()));
+    auto attributes = text->createPangoAttrList();
+    pango_layout_set_attributes(layout.get(), attributes.get());
 
     pango_cairo_show_layout(ctx.cr, layout.get());
 }

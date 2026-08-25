@@ -141,7 +141,12 @@ struct ActionProperties<Action::UNDO> {
     static constexpr const char* accelerators[] = {"<Ctrl>Z", nullptr};
 #endif
     static bool initiallyEnabled(Control* ctrl) { return ctrl->undoRedo->canUndo(); }
-    static void callback(GSimpleAction*, GVariant*, Control* ctrl) { UndoRedoController::undo(ctrl); }
+    static void callback(GSimpleAction*, GVariant*, Control* ctrl) {
+        if (auto* editor = ctrl->getTextEditor(); editor && editor->undoTextEdit()) {
+            return;
+        }
+        UndoRedoController::undo(ctrl);
+    }
 };
 template <>
 struct ActionProperties<Action::REDO> {
@@ -152,6 +157,9 @@ struct ActionProperties<Action::REDO> {
 #endif
     static bool initiallyEnabled(Control* ctrl) { return ctrl->undoRedo->canRedo(); }
     static void callback(GSimpleAction*, GVariant*, Control* ctrl) {
+        if (auto* editor = ctrl->getTextEditor(); editor && editor->redoTextEdit()) {
+            return;
+        }
         ctrl->clearSelectionEndText();
         UndoRedoController::redo(ctrl);
     }
@@ -823,6 +831,30 @@ struct ActionProperties<Action::TEXT_JUSTIFY> {
         ctrl->getToolHandler()->setTextJustify(justify);
         if (auto* te = ctrl->getTextEditor(); te) {
             te->setJustify(justify);
+        }
+    }
+};
+
+template <>
+struct ActionProperties<Action::TEXT_BOLD> {
+    using state_type = bool;
+    static constexpr state_type initialState(Control*) { return false; }
+    static void callback(GSimpleAction* ga, GVariant* p, Control* ctrl) {
+        g_simple_action_set_state(ga, p);
+        if (auto* te = ctrl->getTextEditor(); te) {
+            te->setBold(g_variant_get_boolean(p));
+        }
+    }
+};
+
+template <>
+struct ActionProperties<Action::TEXT_ITALIC> {
+    using state_type = bool;
+    static constexpr state_type initialState(Control*) { return false; }
+    static void callback(GSimpleAction* ga, GVariant* p, Control* ctrl) {
+        g_simple_action_set_state(ga, p);
+        if (auto* te = ctrl->getTextEditor(); te) {
+            te->setItalic(g_variant_get_boolean(p));
         }
     }
 };

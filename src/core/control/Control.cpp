@@ -1261,6 +1261,18 @@ void Control::toolChanged() {
         this->actionDB->setActionState(Action::TEXT_JUSTIFY, toolHandler->getActiveTool()->getTextJustify());
     }
 
+    const bool enableTextFormatting = type == TOOL_TEXT;
+    this->actionDB->enableAction(Action::TEXT_BOLD, enableTextFormatting);
+    this->actionDB->enableAction(Action::TEXT_ITALIC, enableTextFormatting);
+    if (enableTextFormatting) {
+        if (auto* editor = this->getTextEditor(); editor) {
+            editor->updateFormattingActions();
+        }
+    } else {
+        this->actionDB->setActionState(Action::TEXT_BOLD, false);
+        this->actionDB->setActionState(Action::TEXT_ITALIC, false);
+    }
+
     getCursor()->updateCursor();
 
     if (type != TOOL_TEXT) {

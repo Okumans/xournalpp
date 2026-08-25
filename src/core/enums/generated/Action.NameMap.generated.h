@@ -98,6 +98,8 @@ constexpr const char* ACTION_NAMES[] = {  // Action to string conversion map
         "font",
         "text-alignment",
         "text-justify",
+        "text-bold",
+        "text-italic",
         "plugin-manager",
         "help",
         "demo",

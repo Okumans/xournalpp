@@ -34,6 +34,7 @@ public:
     void readObject(const char* name);
     std::string readObject();
     std::string getNextObjectName();
+    bool nextObjectIs(const char* name);
     void endObject();
 
     int readInt();

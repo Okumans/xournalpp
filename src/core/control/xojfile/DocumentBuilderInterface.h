@@ -59,7 +59,7 @@ public:
     virtual void finalizeStroke() = 0;
     virtual void addText(std::string font, double size, xoj::util::Matrix matrix, Color color,
                          std::optional<double> wrap, std::optional<TextAlignment> align, bool justify,
-                         fs::path filename, size_t timestamp) = 0;
+                         std::string styles, fs::path filename, size_t timestamp) = 0;
     virtual void setTextContents(std::string contents) = 0;
     virtual void finalizeText() = 0;
     virtual void addImageLegacy(double left, double top, double right, double bottom,

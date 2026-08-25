@@ -11,13 +11,17 @@
 
 #pragma once
 
+#include <cstddef>  // for size_t
+#include <functional>
 #include <string>  // for string
+#include <string_view>
 #include <vector>
 
 #include <pango/pango.h>
 
 #include "util/Point.h"
 #include "util/raii/GObjectSPtr.h"
+#include "util/raii/PangoSPtr.h"
 
 #include "AudioContent.h"
 #include "Font.h"  // for XojFont
@@ -30,6 +34,19 @@ class XojPdfRectangle;
 
 class Text: public RectangularElement, public AudioContent {
 public:
+    /**
+     * A font applied to a half-open UTF-8 byte range of the text.
+     *
+     * The offsets deliberately use UTF-8 bytes because that is the coordinate
+     * system used by Pango and GtkTextIter's line indices.  Text always keeps
+     * these offsets on character boundaries.
+     */
+    struct StyleRun {
+        size_t start = 0;
+        size_t end = 0;
+        XojFont font;
+    };
+
     Text();
     ~Text() override;
 
@@ -44,6 +61,40 @@ public:
 
     const std::string& getText() const;
     void setText(std::string text);
+
+    const std::vector<StyleRun>& getStyleRuns() const;
+    void setStyleRuns(std::vector<StyleRun> runs);
+
+    /** Return the effective font at a UTF-8 byte offset. */
+    XojFont getFontAtByteOffset(size_t offset) const;
+
+    /** Apply a complete font to a half-open UTF-8 byte range. */
+    void setFontRange(size_t start, size_t end, const XojFont& font);
+    void setBold(size_t start, size_t end, bool bold);
+    void setItalic(size_t start, size_t end, bool italic);
+    void setFontSize(size_t start, size_t end, double size);
+    void adjustFontSize(size_t start, size_t end, double delta);
+
+    static bool isBold(const XojFont& font);
+    static bool isItalic(const XojFont& font);
+    static XojFont withBold(const XojFont& font, bool bold);
+    static XojFont withItalic(const XojFont& font, bool italic);
+    static XojFont withSize(const XojFont& font, double size);
+
+    /**
+     * Serialize inline styles for the optional .xopp `styles` attribute.
+     * An empty return value means that the text uses only its object font.
+     */
+    std::string serializeStyleRuns() const;
+
+    /**
+     * Decode the optional .xopp `styles` attribute. Invalid runs are ignored
+     * and the return value reports whether the complete value was valid.
+     */
+    bool deserializeStyleRuns(std::string_view serialized);
+
+    /** Build the Pango attributes representing the inline style runs. */
+    xoj::util::PangoAttrListSPtr createPangoAttrList() const;
 
     void setInEditing(bool inEditing);
     bool isInEditing() const;
@@ -86,6 +137,10 @@ public:
     std::vector<XojPdfRectangle> findText(const std::string& search) const;
 
 private:
+    void normalizeStyleRuns();
+    void transformFontRange(size_t start, size_t end,
+                            const std::function<XojFont(const XojFont&)>& transform);
+
     XojFont font;
 
     std::string text;
@@ -96,6 +151,7 @@ private:
      * Could be larger or smaller than the theoretical size this->naturalSize, and there could be an offset
      */
     mutable xoj::util::Rectangle<double> effectiveBounds;
+    std::vector<StyleRun> styleRuns;
 
     double wrapWidth = NO_WRAP;  ///< NO_WRAP for no wrap
     TextAlignment align = TextAlignment::LEFT;

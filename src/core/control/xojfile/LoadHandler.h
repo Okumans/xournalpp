@@ -103,7 +103,8 @@ private:
     void setStrokePoints(std::vector<Point> pointVector, bool hasPressure) override;
     void finalizeStroke() override;
     void addText(std::string font, double size, xoj::util::Matrix matrix, Color color, std::optional<double> wrap,
-                 std::optional<TextAlignment> align, bool justify, fs::path filename, size_t timestamp) override;
+                 std::optional<TextAlignment> align, bool justify, std::string styles, fs::path filename,
+                 size_t timestamp) override;
     void setTextContents(std::string contents) override;
     void finalizeText() override;
     void addImageLegacy(double left, double top, double right, double bottom,
@@ -206,6 +207,7 @@ private:
     std::unique_ptr<Layer> layer;
     std::unique_ptr<Stroke> stroke;
     std::unique_ptr<Text> text;
+    std::string textStyles;
     std::unique_ptr<Image> image;
     std::unique_ptr<TexImage> teximage;
     std::unique_ptr<Link> link;

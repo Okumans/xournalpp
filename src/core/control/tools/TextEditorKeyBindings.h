@@ -38,7 +38,7 @@ struct TextEditor::KeyBindings {
     using hash_type = uint64_t;
     using keyval_type = std::invoke_result_t<decltype(gdk_key_event_get_keyval), GdkEvent*>;
     static_assert(std::is_same<keyval_type, guint>::value);
-    using mapped_type = void (*)(TextEditor*);
+    using mapped_type = bool (*)(TextEditor*);
     using value_type = std::pair<const hash_type, mapped_type>;
     static_assert(sizeof(PressedModifier) + sizeof(keyval_type) == sizeof(hash_type));
 
@@ -56,14 +56,17 @@ struct TextEditor::KeyBindings {
         if (it == table.end()) {
             return false;
         }
-        it->second(te);
-        return true;
+        return it->second(te);
     }
+
+    static bool undo(TextEditor* te) { return te->undoTextEdit(); }
+    static bool redo(TextEditor* te) { return te->redoTextEdit(); }
 };
 
 template <auto fun, auto... a>
-void wrap(TextEditor* te) {
+bool wrap(TextEditor* te) {
     (te->*fun)(a...);
+    return true;
 }
 
 #define move_binding(mod, key, mvt, dir)                                                                    \
@@ -113,6 +116,14 @@ const TextEditor::KeyBindings TextEditor::keyBindings(
          {KeyBindings::hash(CTRL & SHIFT, GDK_KEY_BackSpace),
           wrap<&TextEditor::deleteFromCursor, GTK_DELETE_PARAGRAPH_ENDS, -1>},
 
+         {KeyBindings::hash(CTRL, GDK_KEY_z), KeyBindings::undo},
+         // Shift may be consumed by GTK when it produces the uppercase keyval.
+         {KeyBindings::hash(CTRL, GDK_KEY_Z), KeyBindings::redo},
+         {KeyBindings::hash(CTRL & SHIFT, GDK_KEY_z), KeyBindings::redo},
+         {KeyBindings::hash(CTRL & SHIFT, GDK_KEY_Z), KeyBindings::redo},
+         {KeyBindings::hash(CTRL, GDK_KEY_y), KeyBindings::redo},
+         {KeyBindings::hash(CTRL, GDK_KEY_Y), KeyBindings::redo},
+
          {KeyBindings::hash(CTRL, GDK_KEY_x), wrap<&TextEditor::cutToClipboard>},
          {KeyBindings::hash(NONE, GDK_KEY_Cut), wrap<&TextEditor::cutToClipboard>},
          {KeyBindings::hash(SHIFT, GDK_KEY_Delete), wrap<&TextEditor::cutToClipboard>},
@@ -130,6 +141,8 @@ const TextEditor::KeyBindings TextEditor::keyBindings(
 
          {KeyBindings::hash(CTRL, GDK_KEY_b), wrap<&TextEditor::toggleBoldFace>},
          {KeyBindings::hash(CTRL, GDK_KEY_B), wrap<&TextEditor::toggleBoldFace>},
+         {KeyBindings::hash(CTRL, GDK_KEY_i), wrap<&TextEditor::toggleItalicFace>},
+         {KeyBindings::hash(CTRL, GDK_KEY_I), wrap<&TextEditor::toggleItalicFace>},
 
          {KeyBindings::hash(CTRL, GDK_KEY_plus), wrap<&TextEditor::increaseFontSize>},
          {KeyBindings::hash(CTRL, GDK_KEY_equal), wrap<&TextEditor::increaseFontSize>},
