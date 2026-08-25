@@ -1,6 +1,14 @@
 #include "Text.h"
 
+#include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <ranges>
+#include <string_view>
 #include <utility>  // for move
 
 #include <glib.h>  // for g_warning
@@ -20,6 +28,46 @@
 
 using xoj::util::Rectangle;
 
+namespace {
+
+auto fontsEqual(const XojFont& lhs, const XojFont& rhs) -> bool {
+    return lhs.getName() == rhs.getName() && lhs.getSize() == rhs.getSize();
+}
+
+auto isValidFont(const XojFont& font) -> bool {
+    return !font.getName().empty() && std::isfinite(font.getSize()) && font.getSize() > 0;
+}
+
+auto isUtf8Boundary(std::string_view text, size_t offset) -> bool {
+    return offset == 0 || offset == text.size() ||
+           (static_cast<unsigned char>(text[offset]) & 0xc0U) != 0x80U;
+}
+
+auto parseSizeT(std::string_view text, size_t& value) -> bool {
+    if (text.empty()) {
+        return false;
+    }
+
+    const char* first = text.data();
+    const char* last = first + text.size();
+    auto [end, error] = std::from_chars(first, last, value);
+    return error == std::errc{} && end == last;
+}
+
+auto makeStyledFont(const XojFont& font, PangoWeight weight, PangoStyle style) -> XojFont {
+    PangoFontDescription* description = pango_font_description_from_string(font.getName().c_str());
+    pango_font_description_set_weight(description, weight);
+    pango_font_description_set_style(description, style);
+
+    gchar* descriptionString = pango_font_description_to_string(description);
+    XojFont result(descriptionString ? descriptionString : "", font.getSize());
+    g_free(descriptionString);
+    pango_font_description_free(description);
+    return result;
+}
+
+}  // namespace
+
 Text::Text(): AudioElement(ELEMENT_TEXT) {
     this->font.setName("Sans");
     this->font.setSize(12);
@@ -31,6 +79,7 @@ auto Text::cloneText() const -> std::unique_ptr<Text> {
     auto text = std::make_unique<Text>();
     text->font = this->font;
     text->text = this->text;
+    text->styleRuns = this->styleRuns;
     text->setColor(this->getColor());
     text->boundingBox = this->boundingBox;
     text->cloneAudioData(this);
@@ -51,6 +100,7 @@ auto Text::getFont() const -> const XojFont& { return font; }
 
 void Text::setFont(const XojFont& font) {
     this->font = font;
+    normalizeStyleRuns();
     sizeCalculated = false;
 }
 
@@ -62,6 +112,279 @@ auto Text::getText() const -> const std::string& { return this->text; }
 
 void Text::setText(std::string text) {
     this->text = std::move(text);
+    this->styleRuns.clear();
+    sizeCalculated = false;
+}
+
+auto Text::getStyleRuns() const -> const std::vector<Text::StyleRun>& { return this->styleRuns; }
+
+void Text::setStyleRuns(std::vector<StyleRun> runs) {
+    this->styleRuns = std::move(runs);
+    normalizeStyleRuns();
+    sizeCalculated = false;
+}
+
+auto Text::getFontAtByteOffset(size_t offset) const -> XojFont {
+    offset = std::min(offset, this->text.size());
+
+    for (const auto& run: this->styleRuns) {
+        if (offset >= run.start && (offset < run.end || (offset == this->text.size() && run.end == offset))) {
+            return run.font;
+        }
+    }
+
+    return this->font;
+}
+
+void Text::setFontRange(size_t start, size_t end, const XojFont& font) {
+    transformFontRange(start, end, [&font](const XojFont&) { return font; });
+}
+
+void Text::setBold(size_t start, size_t end, bool bold) {
+    transformFontRange(start, end, [bold](const XojFont& font) { return Text::withBold(font, bold); });
+}
+
+void Text::setItalic(size_t start, size_t end, bool italic) {
+    transformFontRange(start, end, [italic](const XojFont& font) { return Text::withItalic(font, italic); });
+}
+
+void Text::setFontSize(size_t start, size_t end, double size) {
+    if (!std::isfinite(size) || size <= 0) {
+        return;
+    }
+    transformFontRange(start, end, [size](const XojFont& font) { return Text::withSize(font, size); });
+}
+
+void Text::adjustFontSize(size_t start, size_t end, double delta) {
+    if (!std::isfinite(delta)) {
+        return;
+    }
+    transformFontRange(start, end, [delta](const XojFont& font) {
+        return Text::withSize(font, std::max(1.0, font.getSize() + delta));
+    });
+}
+
+auto Text::isBold(const XojFont& font) -> bool {
+    PangoFontDescription* description = pango_font_description_from_string(font.getName().c_str());
+    const auto weight = pango_font_description_get_weight(description);
+    pango_font_description_free(description);
+    return weight >= PANGO_WEIGHT_SEMIBOLD;
+}
+
+auto Text::isItalic(const XojFont& font) -> bool {
+    PangoFontDescription* description = pango_font_description_from_string(font.getName().c_str());
+    const auto style = pango_font_description_get_style(description);
+    pango_font_description_free(description);
+    return style != PANGO_STYLE_NORMAL;
+}
+
+auto Text::withBold(const XojFont& font, bool bold) -> XojFont {
+    PangoFontDescription* description = pango_font_description_from_string(font.getName().c_str());
+    const auto style = pango_font_description_get_style(description);
+    const auto weight = bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL;
+    pango_font_description_free(description);
+    return makeStyledFont(font, weight, style);
+}
+
+auto Text::withItalic(const XojFont& font, bool italic) -> XojFont {
+    PangoFontDescription* description = pango_font_description_from_string(font.getName().c_str());
+    const auto weight = pango_font_description_get_weight(description);
+    pango_font_description_free(description);
+    return makeStyledFont(font, weight, italic ? PANGO_STYLE_ITALIC : PANGO_STYLE_NORMAL);
+}
+
+auto Text::withSize(const XojFont& font, double size) -> XojFont { return XojFont(font.getName(), size); }
+
+auto Text::serializeStyleRuns() const -> std::string {
+    std::string result;
+
+    for (const auto& run: this->styleRuns) {
+        if (run.start >= run.end || run.end > this->text.size() || !isValidFont(run.font)) {
+            continue;
+        }
+
+        const auto& name = run.font.getName();
+        gchar* encodedName = g_base64_encode(reinterpret_cast<const guchar*>(name.data()), name.size());
+        if (!encodedName) {
+            continue;
+        }
+
+        if (!result.empty()) {
+            result += ';';
+        }
+        result += std::to_string(run.start);
+        result += '-';
+        result += std::to_string(run.end);
+        result += ':';
+        result += encodedName;
+        result += ':';
+
+        char sizeBuffer[G_ASCII_DTOSTR_BUF_SIZE];
+        g_ascii_formatd(sizeBuffer, G_ASCII_DTOSTR_BUF_SIZE, "%.17g", run.font.getSize());
+        result += sizeBuffer;
+
+        g_free(encodedName);
+    }
+
+    return result;
+}
+
+auto Text::deserializeStyleRuns(std::string_view serialized) -> bool {
+    if (serialized.empty()) {
+        setStyleRuns({});
+        return true;
+    }
+
+    std::vector<StyleRun> runs;
+    bool valid = true;
+
+    size_t recordStart = 0;
+    while (recordStart <= serialized.size()) {
+        const size_t recordEnd = serialized.find(';', recordStart);
+        const auto record = serialized.substr(recordStart, recordEnd == std::string_view::npos ?
+                                                                  std::string_view::npos : recordEnd - recordStart);
+
+        if (record.empty()) {
+            valid = false;
+        } else {
+            const size_t dash = record.find('-');
+            const size_t firstColon = record.find(':', dash == std::string_view::npos ? 0 : dash + 1);
+            const size_t secondColon = record.find(':', firstColon == std::string_view::npos ? 0 : firstColon + 1);
+
+            size_t start = 0;
+            size_t end = 0;
+            if (dash == std::string_view::npos || firstColon == std::string_view::npos ||
+                secondColon == std::string_view::npos ||
+                !parseSizeT(record.substr(0, dash), start) ||
+                !parseSizeT(record.substr(dash + 1, firstColon - dash - 1), end)) {
+                valid = false;
+            } else {
+                const auto encodedName = record.substr(firstColon + 1, secondColon - firstColon - 1);
+                const auto sizeText = record.substr(secondColon + 1);
+                std::string encodedNameString(encodedName);
+                gsize decodedLength = 0;
+                guchar* decodedName = g_base64_decode(encodedNameString.c_str(), &decodedLength);
+
+                gchar* sizeEnd = nullptr;
+                const std::string sizeString(sizeText);
+                const double size = g_ascii_strtod(sizeString.c_str(), &sizeEnd);
+                const bool goodSize = sizeEnd == sizeString.c_str() + sizeString.size() && std::isfinite(size) &&
+                                      size > 0;
+                const bool goodRange = start < end && end <= this->text.size() &&
+                                       isUtf8Boundary(this->text, start) && isUtf8Boundary(this->text, end);
+                const bool goodName = decodedName != nullptr && decodedLength > 0 &&
+                                      g_utf8_validate(reinterpret_cast<const char*>(decodedName), decodedLength,
+                                                      nullptr);
+                if (!goodName || !goodSize || !goodRange) {
+                    valid = false;
+                } else {
+                    std::string name(reinterpret_cast<const char*>(decodedName), decodedLength);
+                    runs.push_back({start, end, XojFont(std::move(name), size)});
+                }
+                g_free(decodedName);
+            }
+        }
+
+        if (recordEnd == std::string_view::npos) {
+            break;
+        }
+        recordStart = recordEnd + 1;
+    }
+
+    setStyleRuns(std::move(runs));
+    return valid;
+}
+
+auto Text::createPangoAttrList() const -> xoj::util::PangoAttrListSPtr {
+    xoj::util::PangoAttrListSPtr attributes(pango_attr_list_new(), xoj::util::adopt);
+
+    for (const auto& run: this->styleRuns) {
+        if (!isValidFont(run.font) || run.start > std::numeric_limits<unsigned int>::max() ||
+            run.end > std::numeric_limits<unsigned int>::max()) {
+            continue;
+        }
+
+        PangoFontDescription* description = pango_font_description_from_string(run.font.getName().c_str());
+        pango_font_description_set_absolute_size(description, run.font.getSize() * PANGO_SCALE);
+
+        PangoAttribute* attribute = pango_attr_font_desc_new(description);
+        pango_font_description_free(description);
+        attribute->start_index = static_cast<unsigned int>(run.start);
+        attribute->end_index = static_cast<unsigned int>(run.end);
+        pango_attr_list_insert(attributes.get(), attribute);
+    }
+
+    return attributes;
+}
+
+void Text::normalizeStyleRuns() {
+    std::ranges::sort(this->styleRuns, [](const StyleRun& lhs, const StyleRun& rhs) {
+        return lhs.start < rhs.start || (lhs.start == rhs.start && lhs.end < rhs.end);
+    });
+
+    std::vector<StyleRun> normalized;
+    normalized.reserve(this->styleRuns.size());
+
+    for (auto run: this->styleRuns) {
+        if (run.start >= run.end || run.end > this->text.size() || !isUtf8Boundary(this->text, run.start) ||
+            !isUtf8Boundary(this->text, run.end) || !isValidFont(run.font) || fontsEqual(run.font, this->font)) {
+            continue;
+        }
+
+        if (!normalized.empty() && run.start < normalized.back().end) {
+            if (run.end <= normalized.back().end) {
+                continue;
+            }
+            run.start = normalized.back().end;
+        }
+
+        if (!normalized.empty() && normalized.back().end == run.start &&
+            fontsEqual(normalized.back().font, run.font)) {
+            normalized.back().end = run.end;
+        } else {
+            normalized.push_back(std::move(run));
+        }
+    }
+
+    this->styleRuns = std::move(normalized);
+}
+
+void Text::transformFontRange(size_t start, size_t end,
+                              const std::function<XojFont(const XojFont&)>& transform) {
+    start = std::min(start, this->text.size());
+    end = std::min(end, this->text.size());
+    if (start >= end || !isUtf8Boundary(this->text, start) || !isUtf8Boundary(this->text, end)) {
+        return;
+    }
+
+    std::vector<size_t> boundaries{0, start, end, this->text.size()};
+    for (const auto& run: this->styleRuns) {
+        boundaries.push_back(run.start);
+        boundaries.push_back(run.end);
+    }
+    std::ranges::sort(boundaries);
+    boundaries.erase(std::ranges::unique(boundaries).begin(), boundaries.end());
+
+    std::vector<StyleRun> replacement;
+    replacement.reserve(boundaries.size());
+    for (size_t i = 0; i + 1 < boundaries.size(); i++) {
+        const size_t segmentStart = boundaries[i];
+        const size_t segmentEnd = boundaries[i + 1];
+        if (segmentStart == segmentEnd) {
+            continue;
+        }
+
+        XojFont segmentFont = getFontAtByteOffset(segmentStart);
+        if (segmentStart >= start && segmentEnd <= end) {
+            segmentFont = transform(segmentFont);
+        }
+        if (!fontsEqual(segmentFont, this->font)) {
+            replacement.push_back({segmentStart, segmentEnd, std::move(segmentFont)});
+        }
+    }
+
+    this->styleRuns = std::move(replacement);
+    normalizeStyleRuns();
     sizeCalculated = false;
 }
 
@@ -112,6 +435,8 @@ auto Text::getOrigin() const -> const xoj::util::Point<double>& { return this->s
 void Text::calcSize() const {
     auto layout = createPangoLayout();
     pango_layout_set_text(layout.get(), this->text.c_str(), static_cast<int>(this->text.length()));
+    auto attributes = createPangoAttrList();
+    pango_layout_set_attributes(layout.get(), attributes.get());
 
     auto boxes = computeBoxesForLayout(layout.get(), this->getOrigin(), this->wrapWidth);
 
@@ -172,6 +497,10 @@ void Text::scale(double x0, double y0, double fx, double fy, double rotation,
         this->wrapWidth *= fx;
     }
 
+    for (auto& run: this->styleRuns) {
+        run.font.setSize(run.font.getSize() * fx);
+    }
+
     sizeCalculated = false;
 }
 
@@ -194,6 +523,12 @@ void Text::serialize(ObjectOutputStream& out) const {
     out.writeInt(static_cast<int>(this->align));
     out.writeInt(this->justify);
 
+    if (const auto styles = this->serializeStyleRuns(); !styles.empty()) {
+        out.writeObject("TextStyles");
+        out.writeString(styles);
+        out.endObject();
+    }
+
     out.endObject();
 }
 
@@ -211,6 +546,16 @@ void Text::readSerialized(ObjectInputStream& in) {
     this->align.validate();
     this->justify = in.readInt() != 0;
 
+    this->styleRuns.clear();
+    if (in.nextObjectIs("TextStyles")) {
+        in.readObject("TextStyles");
+        const auto styles = in.readString();
+        if (!this->deserializeStyleRuns(styles)) {
+            g_warning("Text: ignoring one or more invalid inline text styles in serialized data");
+        }
+        in.endObject();
+    }
+
     in.endObject();
 }
 
@@ -222,6 +567,8 @@ auto Text::findText(const std::string& search) const -> std::vector<XojPdfRectan
 
     auto layout = this->createPangoLayout();
     pango_layout_set_text(layout.get(), this->text.c_str(), static_cast<int>(this->text.length()));
+    auto attributes = createPangoAttrList();
+    pango_layout_set_attributes(layout.get(), attributes.get());
 
 
     std::string text = StringUtils::toLowerCase(this->text);

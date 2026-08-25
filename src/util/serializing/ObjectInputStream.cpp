@@ -87,6 +87,34 @@ auto ObjectInputStream::getNextObjectName() -> std::string {
     return name;
 }
 
+auto ObjectInputStream::nextObjectIs(const char* name) -> bool {
+    const auto position = istream.tellg();
+    if (position == std::streampos(-1) || getSize(istream) < 2) {
+        return false;
+    }
+
+    char underscore = 0;
+    char type = 0;
+    istream.get(underscore);
+    istream.get(type);
+    if (underscore != '_' || type != '{') {
+        istream.clear();
+        istream.seekg(position);
+        return false;
+    }
+
+    bool result = false;
+    try {
+        result = readString() == name;
+    } catch (const InputStreamException&) {
+        result = false;
+    }
+
+    istream.clear();
+    istream.seekg(position);
+    return result;
+}
+
 void ObjectInputStream::endObject() { checkType('}'); }
 
 auto ObjectInputStream::readInt() -> int {

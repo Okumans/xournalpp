@@ -482,6 +482,44 @@ TEST(ControlLoadHandler, testText) {
               Colors::black, 140.34657, TextAlignment::RIGHT, true);
 }
 
+TEST(ControlLoadHandler, testTextInlineStylesRoundTrip) {
+    auto doc = loadTestDocument(GET_TESTFILE(u8"load/text.xopp"));
+    ASSERT_TRUE(doc);
+
+    PageRef page = doc->getPage(0);
+    ASSERT_EQ(page->getLayerCount(), 1U);
+    Layer* layer = page->getLayers()[0];
+    ASSERT_FALSE(layer->getElements().empty());
+
+    auto* original = dynamic_cast<Text*>(layer->getElements()[0].get());
+    ASSERT_NE(original, nullptr);
+    original->setBold(0, 3, true);
+    original->setItalic(1, 3, true);
+
+    SaveHandler saver;
+    const auto outputPath = Util::getTmpDirSubfolder() / "rich-text-round-trip.xopp";
+    saver.prepareSave(doc.get(), outputPath);
+    saver.saveTo(outputPath);
+
+    auto loaded = loadTestDocument(outputPath);
+    ASSERT_TRUE(loaded);
+    const auto loadedPage = loaded->getPage(0);
+    const auto loadedLayer = loadedPage->getLayersView().front();
+    const auto* restored = dynamic_cast<const Text*>(loadedLayer->getElementsView().front());
+    ASSERT_NE(restored, nullptr);
+    ASSERT_EQ(restored->getStyleRuns().size(), 2U);
+    EXPECT_EQ(restored->getStyleRuns()[0].start, 0U);
+    EXPECT_EQ(restored->getStyleRuns()[0].end, 1U);
+    EXPECT_TRUE(Text::isBold(restored->getStyleRuns()[0].font));
+    EXPECT_FALSE(Text::isItalic(restored->getStyleRuns()[0].font));
+    EXPECT_EQ(restored->getStyleRuns()[1].start, 1U);
+    EXPECT_EQ(restored->getStyleRuns()[1].end, 3U);
+    EXPECT_TRUE(Text::isBold(restored->getStyleRuns()[1].font));
+    EXPECT_TRUE(Text::isItalic(restored->getStyleRuns()[1].font));
+
+    fs::remove(outputPath);
+}
+
 TEST(ControlLoadHandler, testTextZipped) {
     auto doc = loadTestDocument(GET_TESTFILE(u8"packaged_xopp/text.xopp"));
     ASSERT_TRUE(doc);

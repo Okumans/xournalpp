@@ -445,6 +445,8 @@ void ToolMenuHandler::initToolItems() {
     emplaceCustomItemWithTarget("HAND", Cat::SELECTION, Action::SELECT_TOOL, TOOL_HAND, "hand", _("Hand"));
 
     emplaceItem<FontButton>("SELECT_FONT", *control->getActionDatabase());
+    emplaceStockItemTgl("FORMAT_BOLD", Cat::TOOLS, Action::TEXT_BOLD, "format-text-bold", _("Bold text"));
+    emplaceStockItemTgl("FORMAT_ITALIC", Cat::TOOLS, Action::TEXT_ITALIC, "format-text-italic", _("Italic text"));
     emplaceStockItemTgl("FORMAT_JUSTIFY", Cat::TOOLS, Action::TEXT_JUSTIFY, "format-justify-fill", _("Justify text"));
     emplaceStockItemWithTarget("FORMAT_ALIGN_LEFT", Cat::TOOLS, Action::TEXT_ALIGNMENT, TextAlignment::LEFT,
                                "format-justify-left", _("Align text to the left"));

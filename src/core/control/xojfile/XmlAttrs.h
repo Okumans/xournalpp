@@ -54,6 +54,7 @@ constexpr auto X_COORD_STR = u8"x";  // also in link
 constexpr auto Y_COORD_STR = u8"y";  // also in link
 constexpr auto ALIGN_STR = u8"align";  // also in link
 constexpr auto JUSTIFY_STR = u8"justify";
+constexpr auto STYLES_STR = u8"styles";  ///< optional inline text styles
 
 // image
 constexpr auto LEFT_POS_STR = u8"left";      // also in teximage
