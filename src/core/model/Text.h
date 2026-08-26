@@ -13,6 +13,7 @@
 
 #include <cstddef>  // for size_t
 #include <functional>
+#include <optional>
 #include <string>  // for string
 #include <string_view>
 #include <vector>
@@ -21,6 +22,7 @@
 
 #include "model/Element.h"
 #include "util/Point.h"
+#include "util/Color.h"
 #include "util/raii/GObjectSPtr.h"
 #include "util/raii/PangoSPtr.h"
 
@@ -36,7 +38,7 @@ class XojPdfRectangle;
 class Text: public AudioElement {
 public:
     /**
-     * A font applied to a half-open UTF-8 byte range of the text.
+     * Inline attributes applied to a half-open UTF-8 byte range of the text.
      *
      * The offsets deliberately use UTF-8 bytes because that is the coordinate
      * system used by Pango and GtkTextIter's line indices.  Text always keeps
@@ -46,6 +48,9 @@ public:
         size_t start = 0;
         size_t end = 0;
         XojFont font;
+        // An empty value inherits the text element's base color.  Keeping this
+        // optional preserves the compact legacy font-only style encoding.
+        std::optional<Color> color;
     };
 
     Text();
@@ -54,6 +59,7 @@ public:
     static constexpr double NO_WRAP = -1;
 
 public:
+    void setColor(Color color);
     void setFont(const XojFont& font);
     XojFont& getFont();
     const XojFont& getFont() const;
@@ -69,8 +75,13 @@ public:
     /** Return the effective font at a UTF-8 byte offset. */
     XojFont getFontAtByteOffset(size_t offset) const;
 
+    /** Return the effective color at a UTF-8 byte offset. */
+    Color getColorAtByteOffset(size_t offset) const;
+
     /** Apply a complete font to a half-open UTF-8 byte range. */
     void setFontRange(size_t start, size_t end, const XojFont& font);
+    /** Apply an explicit foreground color to a half-open UTF-8 byte range. */
+    void setColorRange(size_t start, size_t end, Color color);
     void setBold(size_t start, size_t end, bool bold);
     void setItalic(size_t start, size_t end, bool italic);
     void setFontSize(size_t start, size_t end, double size);
@@ -145,8 +156,9 @@ public:
 
 private:
     void normalizeStyleRuns();
-    void transformFontRange(size_t start, size_t end,
-                            const std::function<XojFont(const XojFont&)>& transform);
+    std::optional<Color> getInlineColorAtByteOffset(size_t offset) const;
+    void transformStyleRange(size_t start, size_t end,
+                             const std::function<void(XojFont&, std::optional<Color>&)>& transform);
 
     XojFont font;
 

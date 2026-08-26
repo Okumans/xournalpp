@@ -323,6 +323,7 @@ void TextEditor::replaceBufferContent(const std::string& text) {
     gtk_text_buffer_set_text(this->buffer.get(), text.c_str(), -1);
     this->applyModelStylesToBuffer();
     this->typingFont.reset();
+    this->typingColor.reset();
 
     GtkTextIter first = {nullptr};
     gtk_text_buffer_get_iter_at_offset(this->buffer.get(), &first, 0);
@@ -342,6 +343,7 @@ auto TextEditor::captureTextEditState() const -> TextEditState {
     state.alignment = static_cast<int>(static_cast<TextAlignment::Value>(this->textElement->getAlign()));
     state.justify = this->textElement->getJustify();
     state.typingFont = this->typingFont;
+    state.typingColor = this->typingColor;
 
     const GtkTextIter cursor = getIteratorAtCursor(this->buffer.get());
     GtkTextIter selectionBound;
@@ -370,6 +372,7 @@ void TextEditor::restoreTextEditState(const TextEditState& state) {
     gtk_text_buffer_set_text(this->buffer.get(), state.text.c_str(), -1);
     this->applyModelStylesToBuffer();
     this->typingFont = state.typingFont;
+    this->typingColor = state.typingColor;
 
     const auto clampOffset = [&state](size_t offset) {
         return static_cast<int>(std::min(offset, state.text.size()));
@@ -425,6 +428,7 @@ void TextEditor::recordTextEditHistory() {
         return lhs.text == rhs.text && lhs.styleRuns == rhs.styleRuns && sameFont(lhs.font, rhs.font) &&
                lhs.color == rhs.color && lhs.wrapWidth == rhs.wrapWidth && lhs.alignment == rhs.alignment &&
                lhs.justify == rhs.justify && sameOptionalFont(lhs.typingFont, rhs.typingFont) &&
+               lhs.typingColor == rhs.typingColor &&
                lhs.cursorOffset == rhs.cursorOffset && lhs.selectionBoundOffset == rhs.selectionBoundOffset;
     };
 
@@ -517,6 +521,19 @@ GtkTextTag* TextEditor::getFontTag(const XojFont& font) {
     return tag;
 }
 
+GtkTextTag* TextEditor::getColorTag(Color color) {
+    const auto key = static_cast<uint32_t>(color);
+    if (const auto it = this->colorTags.find(key); it != this->colorTags.end()) {
+        return it->second;
+    }
+
+    const auto rgba = Util::argb_to_GdkRGBA(color);
+    GtkTextTag* tag = gtk_text_buffer_create_tag(this->buffer.get(), nullptr, "foreground-rgba", &rgba, nullptr);
+    xoj_assert(tag != nullptr);
+    this->colorTags.emplace(key, tag);
+    return tag;
+}
+
 auto TextEditor::getFontAtIterator(const GtkTextIter& iter) const -> XojFont {
     GtkTextIter lookup = iter;
     if (gtk_text_iter_is_end(&lookup) && !gtk_text_iter_is_start(&lookup)) {
@@ -552,11 +569,34 @@ auto TextEditor::getFontAtIterator(const GtkTextIter& iter) const -> XojFont {
     return result;
 }
 
+auto TextEditor::getColorAtIterator(const GtkTextIter& iter) const -> std::optional<Color> {
+    GtkTextIter lookup = iter;
+    if (gtk_text_iter_is_end(&lookup) && !gtk_text_iter_is_start(&lookup)) {
+        gtk_text_iter_backward_char(&lookup);
+    }
+
+    GSList* tags = gtk_text_iter_get_tags(&lookup);
+    for (GSList* item = tags; item != nullptr; item = item->next) {
+        auto* tag = GTK_TEXT_TAG(item->data);
+        for (const auto& [color, knownTag]: this->colorTags) {
+            if (knownTag == tag) {
+                g_slist_free(tags);
+                return Color(color);
+            }
+        }
+    }
+    g_slist_free(tags);
+    return std::nullopt;
+}
+
 void TextEditor::clearFontTags() {
     GtkTextIter start;
     GtkTextIter end;
     gtk_text_buffer_get_bounds(this->buffer.get(), &start, &end);
     for (const auto& [fontDescription, tag]: this->fontTags) {
+        gtk_text_buffer_remove_tag(this->buffer.get(), tag, &start, &end);
+    }
+    for (const auto& [color, tag]: this->colorTags) {
         gtk_text_buffer_remove_tag(this->buffer.get(), tag, &start, &end);
     }
 }
@@ -568,17 +608,25 @@ void TextEditor::applyModelStylesToBuffer() {
         GtkTextIter start = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(run.start));
         GtkTextIter end = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(run.end));
         gtk_text_buffer_apply_tag(this->buffer.get(), this->getFontTag(run.font), &start, &end);
+        if (run.color) {
+            gtk_text_buffer_apply_tag(this->buffer.get(), this->getColorTag(*run.color), &start, &end);
+        }
     }
 }
 
 void TextEditor::applyTypingFont(size_t start, size_t end) {
-    if (!this->typingFont || start >= end) {
+    if ((!this->typingFont && !this->typingColor) || start >= end) {
         return;
     }
 
     GtkTextIter begin = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(start));
     GtkTextIter finish = getIteratorAtByteOffset(this->buffer.get(), static_cast<int>(end));
-    gtk_text_buffer_apply_tag(this->buffer.get(), this->getFontTag(*this->typingFont), &begin, &finish);
+    if (this->typingFont) {
+        gtk_text_buffer_apply_tag(this->buffer.get(), this->getFontTag(*this->typingFont), &begin, &finish);
+    }
+    if (this->typingColor) {
+        gtk_text_buffer_apply_tag(this->buffer.get(), this->getColorTag(*this->typingColor), &begin, &finish);
+    }
 }
 
 auto TextEditor::getSelectionByteRange(size_t& start, size_t& end) const -> bool {
@@ -657,7 +705,21 @@ void TextEditor::formatSelection(const std::function<void(size_t, size_t)>& form
 
 void TextEditor::setColor(Color color) {
     this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        this->typingColor = color;
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->setColorRange(selectionStart, selectionEnd, color);
+        });
+        return;
+    }
+
+    this->updateTextElementContent();
     this->textElement->setColor(color);
+    this->applyModelStylesToBuffer();
+    this->typingColor.reset();
     repaintEditor(false);
     this->recordTextEditHistory();
 }
@@ -1153,16 +1215,18 @@ void TextEditor::updateTextElementContent() {
         }
 
         const XojFont currentFont = getFontAtIterator(iter);
+        const auto currentColor = getColorAtIterator(iter);
         const auto& defaultFont = this->textElement->getFont();
-        if (currentFont.getName() != defaultFont.getName() || currentFont.getSize() != defaultFont.getSize()) {
+        if (currentFont.getName() != defaultFont.getName() || currentFont.getSize() != defaultFont.getSize() ||
+            currentColor) {
             const size_t start = static_cast<size_t>(getByteOffsetOfIterator(iter));
             const size_t finish = static_cast<size_t>(getByteOffsetOfIterator(next));
             if (!runs.empty() && runs.back().end == start &&
                 runs.back().font.getName() == currentFont.getName() &&
-                runs.back().font.getSize() == currentFont.getSize()) {
+                runs.back().font.getSize() == currentFont.getSize() && runs.back().color == currentColor) {
                 runs.back().end = finish;
             } else {
-                runs.push_back({start, finish, currentFont});
+                runs.push_back({start, finish, currentFont, currentColor});
             }
         }
 

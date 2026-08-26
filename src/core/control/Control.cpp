@@ -1383,7 +1383,8 @@ void Control::changeColorOfSelection() {
         TextEditor* edit = getTextEditor();
 
 
-        if (this->toolHandler->getToolType() == TOOL_TEXT && edit != nullptr) {
+        if (edit != nullptr &&
+            (this->toolHandler->getToolType() == TOOL_TEXT || this->toolHandler->getToolType() == TOOL_SMART_SELECT)) {
             // Todo move into selection
             edit->setColor(toolHandler->getColor());
         }

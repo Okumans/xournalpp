@@ -7,9 +7,10 @@
 
 This is a development fork of [upstream Xournal++](https://github.com/xournalpp/xournalpp).
 It keeps the upstream application and documentation while focusing on
-keyboard-first quality-of-life improvements for writing and text editing, with
-a smaller PDF page-loading performance improvement. This fork is not an
-official Xournal++ release; use the upstream
+keyboard-first quality-of-life improvements for writing and text editing,
+rich-text formatting, and consistent PDF annotations, with a smaller PDF
+page-loading performance improvement. This fork is not an official Xournal++
+release; use the upstream
 [Releases](https://github.com/xournalpp/xournalpp/releases) page for stable
 versions.
 
@@ -24,6 +25,15 @@ Compared with the upstream `master` branch, this fork currently includes:
   requiring `Shift`.
 - A Smart Select tool that can select or move objects, select regions, and
   select text from a PDF background depending on the gesture.
+- Rich-text formatting for selected parts of a text object, including
+  independent font size, bold, italic, and color changes with text-edit undo
+  history.
+- Double-clicking a selected text object with Smart Select enters text editing
+  and selects the word under the pointer; toolbar color changes apply to that
+  selected text without requiring a tool switch.
+- PDF text highlights use the remembered Highlighter color and can be recolored
+  by highlighting the same text again. PDF underlines and strikethroughs use
+  the remembered Text-tool color, with the Pen color as a fallback.
 - Keyboard resizing for selected objects with `Ctrl+=` and `Ctrl+-`.
 - A modest PDF page-loading improvement through background scheduling and cache
   work.
@@ -58,6 +68,11 @@ adaptation for a drawing and note-taking application, not a full Vim mode.
 
 When a text object is being edited, `Ctrl+=` and `Ctrl+-` change its font size
 instead of scaling the selected object.
+
+Text objects can contain multiple formatting spans. Select part of a text
+object and use the toolbar to change its font size, bold or italic style, or
+color without changing the rest of the object. These edits are undoable through
+the normal text-edit history.
 
 <img src="readme/main.png" width=550px% title="Xournal++ on GNU/Linux"/>
 
