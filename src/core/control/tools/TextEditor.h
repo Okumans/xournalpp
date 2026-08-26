@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>  // for string
@@ -127,7 +128,9 @@ private:
     void replaceBufferContent(const std::string& text);
 
     GtkTextTag* getFontTag(const XojFont& font);
+    GtkTextTag* getColorTag(Color color);
     XojFont getFontAtIterator(const GtkTextIter& iter) const;
+    std::optional<Color> getColorAtIterator(const GtkTextIter& iter) const;
     void clearFontTags();
     void applyModelStylesToBuffer();
     void applyTypingFont(size_t start, size_t end);
@@ -144,6 +147,7 @@ private:
         int alignment = 0;
         bool justify = false;
         std::optional<XojFont> typingFont;
+        std::optional<Color> typingColor;
         size_t cursorOffset = 0;
         size_t selectionBoundOffset = 0;
     };
@@ -228,7 +232,9 @@ private:
     xoj::util::GObjectSPtr<PangoLayout> layout;
 
     std::unordered_map<std::string, GtkTextTag*> fontTags;
+    std::unordered_map<uint32_t, GtkTextTag*> colorTags;
     std::optional<XojFont> typingFont;
+    std::optional<Color> typingColor;
 
     std::vector<TextEditState> textEditHistory;
     size_t textEditHistoryIndex = 0;

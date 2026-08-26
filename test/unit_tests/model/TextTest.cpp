@@ -39,6 +39,10 @@ void expectSameStyles(const Text& lhs, const Text& rhs) {
         EXPECT_EQ(left.end, right.end);
         EXPECT_EQ(left.font.getName(), right.font.getName());
         EXPECT_DOUBLE_EQ(left.font.getSize(), right.font.getSize());
+        ASSERT_EQ(left.color.has_value(), right.color.has_value());
+        if (left.color) {
+            EXPECT_EQ(*left.color, *right.color);
+        }
     }
 }
 
@@ -91,6 +95,7 @@ TEST(Text, inlineStyleRangesUseUtf8ByteBoundaries) {
 TEST(Text, inlineStylesRoundTripThroughTextSerialization) {
     Text original;
     original.setText("styled text");
+    original.setColorRange(0, 6, Color{0xffff0000U});
     original.setBold(0, 6, true);
     original.setItalic(3, 11, true);
     original.setFontSize(3, 6, 18.5);
@@ -106,6 +111,50 @@ TEST(Text, inlineStylesRoundTripThroughTextSerialization) {
     auto binaryRoundTrip = deserializeText(serializeText(original));
     ASSERT_EQ(binaryRoundTrip->getText(), original.getText());
     expectSameStyles(original, *binaryRoundTrip);
+}
+
+TEST(Text, inlineColorsUseUtf8ByteBoundaries) {
+    Text text;
+    text.setText("ab 世界cd");
+    const Color red{0xffff0000U};
+    const Color blue{0xff0000ffU};
+
+    // The first CJK character starts at byte 3; each CJK character uses three bytes.
+    text.setColorRange(3, 9, red);
+    text.setColorRange(6, text.getText().size(), blue);
+
+    ASSERT_EQ(text.getStyleRuns().size(), 2U);
+    EXPECT_EQ(text.getStyleRuns()[0].start, 3U);
+    EXPECT_EQ(text.getStyleRuns()[0].end, 6U);
+    ASSERT_TRUE(text.getStyleRuns()[0].color.has_value());
+    EXPECT_EQ(*text.getStyleRuns()[0].color, red);
+    EXPECT_EQ(text.getStyleRuns()[1].start, 6U);
+    EXPECT_EQ(text.getStyleRuns()[1].end, text.getText().size());
+    ASSERT_TRUE(text.getStyleRuns()[1].color.has_value());
+    EXPECT_EQ(*text.getStyleRuns()[1].color, blue);
+
+    EXPECT_EQ(text.getColorAtByteOffset(0), text.getColor());
+    EXPECT_EQ(text.getColorAtByteOffset(3), red);
+    EXPECT_EQ(text.getColorAtByteOffset(6), blue);
+
+    // Restoring the base color removes the inline override for that range.
+    text.setColorRange(3, 6, text.getColor());
+    ASSERT_EQ(text.getStyleRuns().size(), 1U);
+    EXPECT_EQ(text.getStyleRuns()[0].start, 6U);
+    EXPECT_EQ(text.getStyleRuns()[0].end, text.getText().size());
+    EXPECT_EQ(text.getColorAtByteOffset(3), text.getColor());
+}
+
+TEST(Text, legacyFontOnlyStylesInheritObjectColor) {
+    Text text;
+    text.setText("abc");
+    const Color green{0xff00ff00U};
+    text.setColor(green);
+
+    ASSERT_TRUE(text.deserializeStyleRuns("0-3:U2Fucw==:16"));
+    ASSERT_EQ(text.getStyleRuns().size(), 1U);
+    EXPECT_FALSE(text.getStyleRuns()[0].color.has_value());
+    EXPECT_EQ(text.getColorAtByteOffset(1), green);
 }
 
 TEST(Text, textWithoutStylesKeepsLegacyBinaryLayoutReadable) {
