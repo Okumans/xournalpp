@@ -706,6 +706,7 @@ auto XojPageView::onButtonDoublePressEvent(const PositionInputData& pos) -> bool
                     // that synthetic press before hover motion is delivered.
                     if (this->textEditor) {
                         this->textEditor->mouseReleased();
+                        this->textEditor->selectAtCursor(TextEditor::SelectType::WORD);
                     }
                 } else {
                     toolHandler->selectTool(TOOL_TEXT);
@@ -713,6 +714,9 @@ auto XojPageView::onButtonDoublePressEvent(const PositionInputData& pos) -> bool
                     // Simulate a button press; there's too many things that we
                     // could forget to do if we manually call startText
                     this->onButtonPressEvent(pos);
+                    if (this->textEditor) {
+                        this->textEditor->selectAtCursor(TextEditor::SelectType::WORD);
+                    }
                 }
             } else if (elemType == ELEMENT_TEXIMAGE) {
                 // Open latex dialog... but only after the buttonReleaseEvent

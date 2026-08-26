@@ -23,6 +23,7 @@
 #include "model/Point.h"            // for Point
 #include "model/Stroke.h"           // for Stroke, BUTT, StrokeTool::HIGHLIG...
 #include "model/XojPage.h"          // for XojPage
+#include "undo/ColorUndoAction.h"   // for ColorUndoAction
 #include "undo/GroupUndoAction.h"   // for GroupUndoAction
 #include "undo/InsertUndoAction.h"  // for InsertUndoAction
 #include "undo/UndoAction.h"        // for UndoAction
@@ -31,6 +32,41 @@
 #include "util/gtk4_helper.h"       // for gtk_widget_get_clipboard
 
 #include "MainWindow.h"  // for MainWindow
+
+namespace {
+
+constexpr double PDF_HIGHLIGHT_MATCH_TOLERANCE = 1.0;
+
+bool approximatelyEqual(double lhs, double rhs) { return std::abs(lhs - rhs) <= PDF_HIGHLIGHT_MATCH_TOLERANCE; }
+
+bool isPdfHighlightForRect(const Stroke& stroke, const XojPdfRectangle& rect) {
+    if (stroke.getToolType() != StrokeTool::HIGHLIGHTER || stroke.getStrokeCapStyle() != StrokeCapStyle::BUTT ||
+        stroke.getPointCount() != 2) {
+        return false;
+    }
+
+    const auto& points = stroke.getPointVector();
+    if (points[0].z != Point::NO_PRESSURE || points[1].z != Point::NO_PRESSURE) {
+        return false;
+    }
+
+    const double rectLeft = std::min(rect.x1, rect.x2);
+    const double rectRight = std::max(rect.x1, rect.x2);
+    const double rectTop = std::min(rect.y1, rect.y2);
+    const double rectBottom = std::max(rect.y1, rect.y2);
+    const double rectMiddle = (rectTop + rectBottom) / 2;
+    const double rectHeight = rectBottom - rectTop;
+
+    const double lineLeft = std::min(points[0].x, points[1].x);
+    const double lineRight = std::max(points[0].x, points[1].x);
+    const double lineMiddle = (points[0].y + points[1].y) / 2;
+
+    return approximatelyEqual(points[0].y, points[1].y) && approximatelyEqual(lineLeft, rectLeft) &&
+           approximatelyEqual(lineRight, rectRight) && approximatelyEqual(lineMiddle, rectMiddle) &&
+           approximatelyEqual(stroke.getWidth(), rectHeight);
+}
+
+}  // namespace
 
 PdfFloatingToolbox::PdfFloatingToolbox(MainWindow* theMainWindow, GtkOverlay* overlay):
         theMainWindow(theMainWindow), overlay(overlay, xoj::util::ref), position({0, 0}) {
@@ -68,8 +104,13 @@ void PdfFloatingToolbox::show(int x, int y) {
     this->position = {x, y};
     this->show();
 
-    // Record the color now: the active tool may change while the toolbox is up (e.g. if the tool is linked to a button)
-    this->color = theMainWindow->getXournal()->getControl()->getToolHandler()->getColor();
+    // Use the persistent color of the regular Highlighter tool. PDF text selection tools have their own transient
+    // marker color, which should not override the user's selected highlighter color.
+    auto* toolHandler = theMainWindow->getXournal()->getControl()->getToolHandler();
+    this->color = toolHandler->getTool(TOOL_HIGHLIGHTER).getColor();
+    const auto& textTool = toolHandler->getTool(TOOL_TEXT);
+    this->textColor = textTool.hasCapability(TOOL_CAP_COLOR) ? textTool.getColor() :
+                                                               toolHandler->getTool(TOOL_PEN).getColor();
 }
 
 void PdfFloatingToolbox::hide() {
@@ -115,6 +156,7 @@ auto PdfFloatingToolbox::getOverlayPosition(GtkOverlay* overlay, GtkWidget* widg
 void PdfFloatingToolbox::userCancelSelection() {
     this->pdfElemSelection.reset();
     this->hide();
+    this->theMainWindow->getXournal()->requestFocus();
 }
 
 void PdfFloatingToolbox::highlightCb(GtkButton* button, PdfFloatingToolbox* pft) {
@@ -177,7 +219,16 @@ void PdfFloatingToolbox::createStrokes(PdfMarkerStyle position, PdfMarkerStyle w
     Layer* layer = page->getSelectedLayer();
 
     Range dirtyRange;
+    Range recolorRange;
     std::vector<ElementPtr> strokes;
+    auto colorUndo = std::make_unique<ColorUndoAction>(page, layer);
+    bool recolored = false;
+
+    const bool canUpdateExistingHighlight =
+            position == PdfMarkerStyle::POS_TEXT_MIDDLE && width == PdfMarkerStyle::WIDTH_TEXT_HEIGHT;
+    const Color strokeColor = canUpdateExistingHighlight ? this->color : this->textColor;
+
+    doc->lock();
     for (XojPdfRectangle rect: textRects) {
         const double topOfLine = std::min(rect.y1, rect.y2);
         const double middleOfLine = (rect.y1 + rect.y2) / 2;
@@ -191,8 +242,32 @@ void PdfFloatingToolbox::createStrokes(PdfMarkerStyle position, PdfMarkerStyle w
         // the width of stroke
         const double w = width == PdfMarkerStyle::WIDTH_TEXT_LINE ? 1 : rectWidth;
 
+        bool foundExistingHighlight = false;
+        if (canUpdateExistingHighlight) {
+            for (auto& element: layer->getElements()) {
+                auto* existingStroke = dynamic_cast<Stroke*>(element.get());
+                if (!existingStroke || !isPdfHighlightForRect(*existingStroke, rect)) {
+                    continue;
+                }
+
+                const Color oldColor = existingStroke->getColor();
+                if (oldColor != strokeColor) {
+                    existingStroke->setColor(strokeColor);
+                    colorUndo->addStroke(existingStroke, oldColor, strokeColor);
+                    recolorRange = recolorRange.unite(Range(existingStroke->getBoundingBox()));
+                    recolored = true;
+                }
+                foundExistingHighlight = true;
+                break;
+            }
+        }
+
+        if (foundExistingHighlight) {
+            continue;
+        }
+
         auto stroke = std::make_unique<Stroke>();
-        stroke->setColor(this->color);
+        stroke->setColor(strokeColor);
         stroke->setFill(markerOpacity);
         stroke->setToolType(StrokeTool::HIGHLIGHTER);
         stroke->setWidth(w);
@@ -209,18 +284,28 @@ void PdfFloatingToolbox::createStrokes(PdfMarkerStyle position, PdfMarkerStyle w
     std::vector<const Element*> strokePtrs(strokes.size());
     std::transform(strokes.begin(), strokes.end(), strokePtrs.begin(), [](auto& e) { return e.get(); });
 
-    doc->lock();
     for (auto&& s: strokes) {
         layer->addElement(std::move(s));
     }
     doc->unlock();
-    page->fireElementsChanged(strokePtrs, dirtyRange);
+
+    if (!strokePtrs.empty()) {
+        page->fireElementsChanged(strokePtrs, dirtyRange);
+    }
+    if (recolored) {
+        page->fireRangeChanged(recolorRange);
+    }
 
     auto undoAct = std::make_unique<GroupUndoAction>();
+    if (recolored) {
+        undoAct->addAction(std::move(colorUndo));
+    }
     for (auto* stroke: strokePtrs) {
         undoAct->addAction(std::make_unique<InsertUndoAction>(page, layer, stroke));
     }
-    control->getUndoRedoHandler()->addUndoAction(std::move(undoAct));
+    if (recolored || !strokePtrs.empty()) {
+        control->getUndoRedoHandler()->addUndoAction(std::move(undoAct));
+    }
 }
 
 void PdfFloatingToolbox::switchSelectTypeCb(GtkButton* button, PdfFloatingToolbox* pft) {

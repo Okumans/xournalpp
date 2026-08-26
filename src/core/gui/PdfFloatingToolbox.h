@@ -82,7 +82,8 @@ private:
 private:
     GtkWidget* floatingToolbox;
     MainWindow* theMainWindow;
-    Color color;  ///< Used for strokes/highlighting
+    Color color;      ///< Remembered Highlighter color
+    Color textColor;  ///< Remembered Text-tool color for underline/strikethrough
 
     /// The overlay that the toolbox should be displayed in.
     xoj::util::GObjectSPtr<GtkOverlay> overlay;
