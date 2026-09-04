@@ -20,22 +20,21 @@
 
 #include <pango/pango.h>
 
-#include "model/Element.h"
 #include "util/Point.h"
 #include "util/Color.h"
 #include "util/raii/GObjectSPtr.h"
 #include "util/raii/PangoSPtr.h"
 
-#include "AudioElement.h"  // for AudioElement
+#include "AudioContent.h"
+#include "Element.h"
 #include "Font.h"          // for XojFont
 #include "TextAlignment.h"
 
-class Element;
 class ObjectInputStream;
 class ObjectOutputStream;
 class XojPdfRectangle;
 
-class Text: public AudioElement {
+class Text: public Element, public AudioContent {
 public:
     /**
      * Inline attributes applied to a half-open UTF-8 byte range of the text.

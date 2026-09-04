@@ -14,7 +14,7 @@
 #include <glib.h>  // for g_warning
 #include <pango/pangocairo.h>
 
-#include "model/AudioElement.h"   // for AudioElement
+#include "model/AudioContent.h"  // for AudioContent
 #include "model/Element.h"        // for ELEMENT_TEXT, Eleme...
 #include "model/Font.h"           // for XojFont
 #include "pdf/base/XojPdfPage.h"  // for XojPdfRectangle
@@ -72,7 +72,7 @@ auto makeStyledFont(const XojFont& font, PangoWeight weight, PangoStyle style) -
 
 }  // namespace
 
-Text::Text(): AudioElement(ELEMENT_TEXT) {
+Text::Text(): Element(ELEMENT_TEXT) {
     this->font.setName("Sans");
     this->font.setSize(12);
 }
@@ -81,12 +81,12 @@ Text::~Text() = default;
 
 auto Text::cloneText() const -> std::unique_ptr<Text> {
     auto text = std::make_unique<Text>();
+    static_cast<AudioContent&>(*text) = *this;
     text->font = this->font;
     text->text = this->text;
     text->styleRuns = this->styleRuns;
     text->setColor(this->getColor());
     text->boundingBox = this->boundingBox;
-    text->cloneAudioData(this);
     text->snappedBounds = this->snappedBounds;
     text->sizeCalculated = this->sizeCalculated;
     text->inEditing = this->inEditing;
@@ -586,7 +586,8 @@ auto Text::rescaleOnlyAspectRatio() const -> bool { return true; }
 void Text::serialize(ObjectOutputStream& out) const {
     out.writeObject("Text");
 
-    this->AudioElement::serialize(out);
+    this->Element::serialize(out);
+    this->AudioContent::serialize(out);
 
     out.writeString(this->text);
 
@@ -608,7 +609,8 @@ void Text::serialize(ObjectOutputStream& out) const {
 void Text::readSerialized(ObjectInputStream& in) {
     in.readObject("Text");
 
-    this->AudioElement::readSerialized(in);
+    this->Element::readSerialized(in);
+    this->AudioContent::readSerialized(in);
 
     this->text = in.readString();
 
