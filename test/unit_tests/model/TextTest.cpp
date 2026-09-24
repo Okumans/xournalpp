@@ -166,7 +166,7 @@ TEST(Text, textWithoutStylesKeepsLegacyBinaryLayoutReadable) {
     EXPECT_TRUE(roundTrip->getStyleRuns().empty());
 }
 
-TEST(Text, scalingScalesInlineFontSizes) {
+TEST(Text, scalingTransformsInlineStyledText) {
     Text text;
     text.setText("scaled");
     text.setBold(0, 3, true);
@@ -175,8 +175,10 @@ TEST(Text, scalingScalesInlineFontSizes) {
     text.scale(0, 0, 2, 2, 0, false);
 
     ASSERT_EQ(text.getStyleRuns().size(), 2U);
-    EXPECT_DOUBLE_EQ(text.getStyleRuns()[0].font.getSize(), 24);
-    EXPECT_DOUBLE_EQ(text.getStyleRuns()[1].font.getSize(), 40);
+    EXPECT_DOUBLE_EQ(text.getStyleRuns()[0].font.getSize(), 12);
+    EXPECT_DOUBLE_EQ(text.getStyleRuns()[1].font.getSize(), 20);
+    EXPECT_DOUBLE_EQ(text.getTransformation().xx, 2);
+    EXPECT_DOUBLE_EQ(text.getTransformation().yy, 2);
 }
 
 TEST(Text, finalCharacterCanBeResized) {

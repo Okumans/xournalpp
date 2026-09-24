@@ -692,7 +692,7 @@ TEST(ControlLoadHandler, testText_v5) {
 }
 
 TEST(ControlLoadHandler, testTextInlineStylesRoundTrip) {
-    auto doc = loadTestDocument(GET_TESTFILE(u8"load/text.xopp"));
+    auto doc = loadTestDocument(GET_TESTFILE(u8"load/text-fileversion-5.xopp"));
     ASSERT_TRUE(doc);
 
     PageRef page = doc->getPage(0);

@@ -845,8 +845,8 @@ bool EditSelection::scaleSelection(double factor) {
     this->moveSelection(centerX - newCenterX, centerY - newCenterY);
 
     PageRef page = this->view->getPage();
-    this->contents->updateContent(this->getRect(), this->snappedBounds, this->rotation, this->preserveAspectRatio,
-                                  page->getSelectedLayer(), page, this->undo, CURSOR_SELECTION_NONE);
+    this->contents->updateContent(this->getRect(), this->snappedBounds, this->rotation, page->getSelectedLayer(), page,
+                                  this->undo, CURSOR_SELECTION_NONE);
     return true;
 }
 
