@@ -502,7 +502,7 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
                h->getToolType() == TOOL_SMART_SELECT) {
         if (h->getToolType() == TOOL_SMART_SELECT) {
             if (this->textEditor) {
-                if (this->textEditor->getContentBoundingBox().contains(x, y)) {
+                if (this->textEditor->isEventInEditor(x, y)) {
                     // While Smart Select has opened a text editor, clicks in
                     // that text must continue to place the editor cursor
                     // rather than start a new selection gesture.
@@ -672,6 +672,12 @@ auto XojPageView::onButtonDoublePressEvent(const PositionInputData& pos) -> bool
     ToolType toolType = toolHandler->getToolType();
     DrawingType drawingType = toolHandler->getDrawingType();
 
+    if (toolType == TOOL_SMART_SELECT && this->textEditor && this->textEditor->isEventInEditor(x, y)) {
+        this->startText(x, y);
+        this->textEditor->selectAtCursor(TextEditor::SelectType::WORD);
+        return true;
+    }
+
     EditSelection* selection = xournal->getSelection();
     bool hasNoModifiers = !pos.isShiftDown() && !pos.isControlDown();
 
@@ -763,7 +769,8 @@ auto XojPageView::onButtonTriplePressEvent(const PositionInputData& pos) -> bool
     ToolHandler* toolHandler = this->xournal->getControl()->getToolHandler();
     ToolType toolType = toolHandler->getToolType();
 
-    if (toolType == TOOL_TEXT) {
+    if (toolType == TOOL_TEXT ||
+        (toolType == TOOL_SMART_SELECT && this->textEditor && this->textEditor->isEventInEditor(x, y))) {
         this->startText(x, y);
         this->textEditor->selectAtCursor(TextEditor::SelectType::PARAGRAPH);
     } else if (toolType == TOOL_SELECT_PDF_TEXT_LINEAR || toolType == TOOL_SELECT_PDF_TEXT_RECT) {
