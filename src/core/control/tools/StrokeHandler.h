@@ -42,6 +42,20 @@ class Base;
 class Active;
 }  // namespace StrokeStabilizer
 
+struct StraightLineConstraintState {
+    enum class Axis { Undecided, Horizontal, Vertical };
+
+    Point lastPointerPosition;
+    Point anchor;
+    Axis axis{Axis::Undecided};
+    bool shiftActive{false};
+
+    void reset() {
+        this->axis = Axis::Undecided;
+        this->shiftActive = false;
+    }
+};
+
 /**
  * @brief The stroke handler draws a stroke on a XojPageView
  *
@@ -54,6 +68,7 @@ class Active;
 class StrokeHandler: public InputHandler {
 public:
     StrokeHandler(Control* control, const PageRef& page);
+    StrokeHandler(Control* control, const PageRef& page, StraightLineConstraintState& straightLineConstraint);
     ~StrokeHandler() override;
 
     void onSequenceCancelEvent() override;
@@ -95,10 +110,14 @@ protected:
     bool hasPressure;
 
 private:
+    void constrainToStraightLine(PositionInputData& pos, double zoom) const;
+
     /**
      * @brief Pointer to the Stabilizer instance
      */
     std::unique_ptr<StrokeStabilizer::Base> stabilizer;
+    StraightLineConstraintState ownedStraightLineConstraint;
+    StraightLineConstraintState* straightLineConstraint;
 
     std::shared_ptr<xoj::util::DispatchPool<xoj::view::StrokeToolView>> viewPool;
 

@@ -44,6 +44,17 @@ StrokeHandler::StrokeHandler(Control* control, const PageRef& page):
         InputHandler(control, page),
         snappingHandler(control->getSettings()),
         stabilizer(StrokeStabilizer::get(control->getSettings())),
+        straightLineConstraint(&this->ownedStraightLineConstraint),
+        viewPool(std::make_shared<xoj::util::DispatchPool<xoj::view::StrokeToolView>>()) {
+    snappingHandler.setPageRef(page);
+}
+
+StrokeHandler::StrokeHandler(Control* control, const PageRef& page,
+                             StraightLineConstraintState& straightLineConstraint):
+        InputHandler(control, page),
+        snappingHandler(control->getSettings()),
+        stabilizer(StrokeStabilizer::get(control->getSettings())),
+        straightLineConstraint(&straightLineConstraint),
         viewPool(std::make_shared<xoj::util::DispatchPool<xoj::view::StrokeToolView>>()) {
     snappingHandler.setPageRef(page);
 }
@@ -66,8 +77,51 @@ auto StrokeHandler::onMotionNotifyEvent(const PositionInputData& pos, double zoo
         return true;
     }
 
-    stabilizer->processEvent(pos);
+    const Point pointerPosition(pos.x / zoom, pos.y / zoom);
+    PositionInputData strokePosition = pos;
+
+    if (pos.isShiftDown()) {
+        if (!this->straightLineConstraint->shiftActive) {
+            this->straightLineConstraint->anchor = this->straightLineConstraint->lastPointerPosition;
+            this->straightLineConstraint->axis = StraightLineConstraintState::Axis::Undecided;
+            this->straightLineConstraint->shiftActive = true;
+        }
+
+        const double deltaX = pointerPosition.x - this->straightLineConstraint->anchor.x;
+        const double deltaY = pointerPosition.y - this->straightLineConstraint->anchor.y;
+        if (this->straightLineConstraint->axis == StraightLineConstraintState::Axis::Undecided &&
+            (deltaX != 0.0 || deltaY != 0.0)) {
+            if (std::abs(deltaX) >= std::abs(deltaY)) {
+                this->straightLineConstraint->axis = StraightLineConstraintState::Axis::Horizontal;
+            } else {
+                this->straightLineConstraint->axis = StraightLineConstraintState::Axis::Vertical;
+            }
+        }
+
+        constrainToStraightLine(strokePosition, zoom);
+    } else {
+        this->straightLineConstraint->reset();
+    }
+
+    this->straightLineConstraint->lastPointerPosition = pointerPosition;
+    stabilizer->processEvent(strokePosition);
     return true;
+}
+
+void StrokeHandler::constrainToStraightLine(PositionInputData& pos, double zoom) const {
+    const auto& constraint = *this->straightLineConstraint;
+    switch (constraint.axis) {
+        case StraightLineConstraintState::Axis::Horizontal:
+            pos.y = constraint.anchor.y * zoom;
+            break;
+        case StraightLineConstraintState::Axis::Vertical:
+            pos.x = constraint.anchor.x * zoom;
+            break;
+        case StraightLineConstraintState::Axis::Undecided:
+            pos.x = constraint.anchor.x * zoom;
+            pos.y = constraint.anchor.y * zoom;
+            break;
+    }
 }
 
 void StrokeHandler::paintTo(Point point) {
@@ -261,14 +315,28 @@ void StrokeHandler::onButtonPressEvent(const PositionInputData& pos, double zoom
     this->buttonDownPoint.x = pos.x / zoom;
     this->buttonDownPoint.y = pos.y / zoom;
 
+    const Point pointerPosition(pos.x / zoom, pos.y / zoom);
+    PositionInputData strokePosition = pos;
+    if (pos.isShiftDown()) {
+        if (!this->straightLineConstraint->shiftActive) {
+            this->straightLineConstraint->anchor = pointerPosition;
+            this->straightLineConstraint->axis = StraightLineConstraintState::Axis::Undecided;
+            this->straightLineConstraint->shiftActive = true;
+        }
+        constrainToStraightLine(strokePosition, zoom);
+    } else {
+        this->straightLineConstraint->reset();
+    }
+    this->straightLineConstraint->lastPointerPosition = pointerPosition;
+
     stroke = createStroke(this->control);
 
     this->hasPressure = this->stroke->getToolType().isPressureSensitive() && pos.pressure != Point::NO_PRESSURE;
 
     const double width = this->hasPressure ? pos.pressure * stroke->getWidth() : Point::NO_PRESSURE;
-    stroke->addPoint(Point(this->buttonDownPoint.x, this->buttonDownPoint.y, width));
+    stroke->addPoint(Point(strokePosition.x / zoom, strokePosition.y / zoom, width));
 
-    stabilizer->initialize(this, zoom, pos);
+    stabilizer->initialize(this, zoom, strokePosition);
 }
 
 void StrokeHandler::onButtonDoublePressEvent(const PositionInputData&, double) {

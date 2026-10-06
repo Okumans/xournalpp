@@ -52,6 +52,7 @@ class Range;
 class TexImage;
 class XojPdfRectangle;
 class XojPdfPage;
+struct StraightLineConstraintState;
 
 namespace xoj::view {
 class OverlayView;
@@ -243,6 +244,7 @@ private:
     XournalView* xournal = nullptr;
     Settings* settings = nullptr;
     std::unique_ptr<EraseHandler> eraser;
+    std::unique_ptr<StraightLineConstraintState> straightLineConstraint;
     std::unique_ptr<InputHandler> inputHandler;
 
     std::vector<std::unique_ptr<xoj::view::OverlayView>> overlayViews;

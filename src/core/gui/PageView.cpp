@@ -106,6 +106,7 @@ XojPageView::XojPageView(XournalView* xournal, const PageRef& page):
         eraser(std::make_unique<EraseHandler>(xournal->getControl()->getUndoRedoHandler(),
                                               xournal->getControl()->getDocument(), this->page,
                                               xournal->getControl()->getToolHandler(), this)),
+        straightLineConstraint(std::make_unique<StraightLineConstraintState>()),
         oldtext(nullptr) {
     this->registerToHandler(this->page);
 }
@@ -461,7 +462,8 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
                 this->inputHandler = std::make_unique<CoordinateSystemHandler>(control, getPage());
                 break;
             default:
-                this->inputHandler = std::make_unique<StrokeHandler>(control, getPage());
+                this->inputHandler =
+                        std::make_unique<StrokeHandler>(control, getPage(), *this->straightLineConstraint);
         }
         this->inputHandler->onButtonPressEvent(pos, zoom);
         this->overlayViews.emplace_back(this->inputHandler->createView(this));
@@ -1096,6 +1098,10 @@ auto XojPageView::onKeyPressEvent(const KeyEvent& event) -> bool {
 }
 
 auto XojPageView::onKeyReleaseEvent(const KeyEvent& event) -> bool {
+    if (event.keyval == GDK_KEY_Shift_L || event.keyval == GDK_KEY_Shift_R) {
+        this->straightLineConstraint->reset();
+    }
+
     if (this->textEditor && this->textEditor->onKeyReleaseEvent(event)) {
         return true;
     }
