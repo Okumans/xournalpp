@@ -144,6 +144,10 @@ enum class Action : size_t {
     TEXT_JUSTIFY,
     TEXT_BOLD,
     TEXT_ITALIC,
+    TEXT_UNDERLINE,
+    TEXT_STRIKETHROUGH,
+    TEXT_SUPERSCRIPT,
+    TEXT_SUBSCRIPT,
 
     // Plugin Menu
     PLUGIN_MANAGER,

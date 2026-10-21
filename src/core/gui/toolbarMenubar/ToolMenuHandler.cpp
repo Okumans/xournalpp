@@ -447,6 +447,14 @@ void ToolMenuHandler::initToolItems() {
     emplaceItem<FontButton>("SELECT_FONT", *control->getActionDatabase());
     emplaceStockItemTgl("FORMAT_BOLD", Cat::TOOLS, Action::TEXT_BOLD, "format-text-bold", _("Bold text"));
     emplaceStockItemTgl("FORMAT_ITALIC", Cat::TOOLS, Action::TEXT_ITALIC, "format-text-italic", _("Italic text"));
+    emplaceStockItemTgl("FORMAT_UNDERLINE", Cat::TOOLS, Action::TEXT_UNDERLINE, "format-text-underline",
+                        _("Underline text"));
+    emplaceStockItemTgl("FORMAT_STRIKETHROUGH", Cat::TOOLS, Action::TEXT_STRIKETHROUGH, "format-text-strikethrough",
+                        _("Strikethrough text"));
+    emplaceCustomItemTgl("FORMAT_SUPERSCRIPT", Cat::TOOLS, Action::TEXT_SUPERSCRIPT, "format-text-superscript",
+                         _("Superscript text"));
+    emplaceCustomItemTgl("FORMAT_SUBSCRIPT", Cat::TOOLS, Action::TEXT_SUBSCRIPT, "format-text-subscript",
+                         _("Subscript text"));
     emplaceStockItemTgl("FORMAT_JUSTIFY", Cat::TOOLS, Action::TEXT_JUSTIFY, "format-justify-fill", _("Justify text"));
     emplaceStockItemWithTarget("FORMAT_ALIGN_LEFT", Cat::TOOLS, Action::TEXT_ALIGNMENT, TextAlignment::LEFT,
                                "format-justify-left", _("Align text to the left"));

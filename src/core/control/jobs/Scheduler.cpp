@@ -130,6 +130,20 @@ void Scheduler::unblockRerenderZoom() {
     this->jobQueueCond.notify_all();
 }
 
+void Scheduler::beginZoomGesture() {
+    std::lock_guard queueLock(this->jobQueueMutex);
+    this->zoomGestureActive = true;
+    this->unblockRerenderZoom();
+}
+
+void Scheduler::endZoomGesture() {
+    // Pair the state change and wakeup with the worker's wait mutex so a
+    // gesture ending between queue inspection and waiting cannot lose its wakeup.
+    std::lock_guard queueLock(this->jobQueueMutex);
+    this->zoomGestureActive = false;
+    this->unblockRerenderZoom();
+}
+
 /**
  * If the Scheduler is blocking because we are zooming and there are only render jobs
  * we need to wakeup it later
@@ -171,7 +185,7 @@ auto Scheduler::jobThreadCallback(Scheduler* scheduler) -> gpointer {
             SDEBUG("Job Thread: Locked job queue.");
 
             bool hasOnlyRenderJobs = false;
-            job = scheduler->getNextJobUnlocked(onlyNonRenderJobs, &hasOnlyRenderJobs);
+            job = scheduler->getNextJobUnlocked(onlyNonRenderJobs || scheduler->zoomGestureActive, &hasOnlyRenderJobs);
             if (job != nullptr) {
                 hasOnlyRenderJobs = false;
             }
@@ -182,7 +196,7 @@ auto Scheduler::jobThreadCallback(Scheduler* scheduler) -> gpointer {
                 // unlock the whole scheduler
                 schedulerLock.unlock();
 
-                if (hasOnlyRenderJobs) {
+                if (hasOnlyRenderJobs && !scheduler->zoomGestureActive) {
                     if (auto id = scheduler->jobRenderThreadTimerId.exchange(g_timeout_add(
                                 static_cast<guint>(diff), xoj::util::wrap_for_once_v<jobRenderThreadTimer>, scheduler));
                         id != 0) {

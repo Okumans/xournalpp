@@ -1387,11 +1387,11 @@ auto XojPageView::paintPage(cairo_t* cr, GdkRectangle* rect) -> bool {
             return true;
         }
 
-        if (this->buffer.getZoom() != zoom) {
+        const bool scaledPreview = this->buffer.getZoom() != zoom;
+        if (scaledPreview) {
             rerenderPage();
-            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_FAST);
         }
-        this->buffer.paintTo(cr);
+        this->buffer.paintTo(cr, scaledPreview ? CAIRO_FILTER_FAST : CAIRO_FILTER_GOOD);
     }  // Restore the state of cr and then release the mutex
        // restoring the state of cr ensures this->buffer.surface is not longer referenced as the source in cr.
 

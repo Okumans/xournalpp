@@ -8,6 +8,7 @@
 
 #include "control/Control.h"  // for Control
 #include "control/actions/ActionDatabase.h"
+#include "control/jobs/XournalScheduler.h"
 #include "control/settings/Settings.h"  // for Settings
 #include "control/zoom/ZoomListener.h"  // for ZoomListener
 #include "gui/Layout.h"                 // for Layout
@@ -23,6 +24,10 @@
 using xoj::util::Rectangle;
 
 auto onScrolledwindowMainScrollEvent(GtkWidget* widget, GdkEventScroll* event, ZoomControl* zoom) -> bool {
+    if (zoom->touchpadZoomGuard.blocksScroll(event)) {
+        return true;
+    }
+
     auto state =
             gdk_event_get_modifier_state(reinterpret_cast<GdkEvent*>(event)) & gtk_accelerator_get_default_mod_mask();
 
@@ -48,8 +53,16 @@ auto onScrolledwindowMainScrollEvent(GtkWidget* widget, GdkEventScroll* event, Z
 
 auto onTouchpadPinchEvent(GtkWidget* widget, GdkEventTouchpadPinch* event, ZoomControl* zoom) -> bool {
     if (event->type == GDK_TOUCHPAD_PINCH && event->n_fingers == 2) {
+        // Focus loss/unmapping can end a gesture before its remaining events arrive.
+        if (event->phase != GDK_TOUCHPAD_GESTURE_PHASE_BEGIN && !zoom->touchpadZoomGuard.isActive()) {
+            return true;
+        }
+
         switch (event->phase) {
             case GDK_TOUCHPAD_GESTURE_PHASE_BEGIN: {
+                zoom->control->getScheduler()->beginZoomGesture();
+                zoom->touchpadZoomGuard.begin(GTK_SCROLLED_WINDOW(widget),
+                                              gdk_event_get_source_device(reinterpret_cast<GdkEvent*>(event)));
                 if (zoom->isZoomFitMode()) {
                     zoom->setZoomFitMode(false);
                 }
@@ -59,13 +72,19 @@ auto onTouchpadPinchEvent(GtkWidget* widget, GdkEventTouchpadPinch* event, ZoomC
                 break;
             }
             case GDK_TOUCHPAD_GESTURE_PHASE_UPDATE:
-                zoom->zoomSequenceChange(event->scale, true);
+                // Pinch events carry the focal-point movement separately from
+                // scroll events. Use it for direct panning without scroll inertia.
+                zoom->zoomSequenceChange(event->scale, true, {event->dx, event->dy});
                 break;
             case GDK_TOUCHPAD_GESTURE_PHASE_END:
+                zoom->touchpadZoomGuard.end();
                 zoom->endZoomSequence();
+                zoom->control->getScheduler()->endZoomGesture();
                 break;
             case GDK_TOUCHPAD_GESTURE_PHASE_CANCEL:
+                zoom->touchpadZoomGuard.end();
                 zoom->cancelZoomSequence();
+                zoom->control->getScheduler()->endZoomGesture();
                 break;
         }
         return true;
@@ -128,6 +147,7 @@ void ZoomControl::startZoomSequence() {
 void ZoomControl::startZoomSequence(xoj::util::Point<double> zoomCenter) {
     // * set zoom center and zoom startlevel
     this->zoomWidgetPos = zoomCenter;  // widget space coordinates of the zoomCenter!
+    this->zoomSequenceStartWidgetPos = zoomCenter;
     this->zoomSequenceStart = this->zoom;
 
     auto rect = getVisibleRect();
@@ -167,10 +187,13 @@ void ZoomControl::zoomSequenceChange(double zoom, bool relative, xoj::util::Poin
         }
     }
 
-    // scroll update
+    // Keep following the fingers even when the scale is unchanged (or clamped).
+    const double previousZoom = this->zoom;
     this->zoomWidgetPos += scrollVector;
-
     setZoom(zoom);
+    if (this->zoom == previousZoom && (scrollVector.x != 0 || scrollVector.y != 0)) {
+        fireZoomChanged();
+    }
 }
 
 void ZoomControl::endZoomSequence() {
@@ -180,7 +203,7 @@ void ZoomControl::endZoomSequence() {
 
 void ZoomControl::cancelZoomSequence() {
     if (isZoomSequenceActive()) {
-        setZoom(zoomSequenceStart);
+        zoomSequenceChange(zoomSequenceStart, false, this->zoomSequenceStartWidgetPos - this->zoomWidgetPos);
         endZoomSequence();
     }
 }
@@ -218,6 +241,23 @@ void ZoomControl::initZoomHandler(GtkWidget* window, GtkWidget* widget, XournalV
     gtk_widget_add_events(widget, GDK_TOUCHPAD_GESTURE_MASK);
     g_signal_connect(widget, "scroll-event", xoj::util::wrap_for_g_callback_v<onScrolledwindowMainScrollEvent>, this);
     g_signal_connect(widget, "event", xoj::util::wrap_for_g_callback_v<onTouchpadPinchEvent>, this);
+    g_signal_connect_swapped(widget, "unmap", G_CALLBACK(+[](ZoomControl* zoom) {
+                                 if (zoom->touchpadZoomGuard.isActive()) {
+                                     zoom->endZoomSequence();
+                                     zoom->control->getScheduler()->endZoomGesture();
+                                 }
+                                 zoom->touchpadZoomGuard.reset();
+                             }),
+                             this);
+    g_signal_connect_swapped(window, "focus-out-event", G_CALLBACK(+[](ZoomControl* zoom, GdkEventFocus*) -> gboolean {
+                                 if (zoom->touchpadZoomGuard.isActive()) {
+                                     zoom->endZoomSequence();
+                                     zoom->control->getScheduler()->endZoomGesture();
+                                 }
+                                 zoom->touchpadZoomGuard.reset();
+                                 return false;
+                             }),
+                             this);
     g_signal_connect(v->getScrollHandling()->getHorizontal(), "notify::page-size",
                      G_CALLBACK(+[](GObject*, GParamSpec*, gpointer self) {
                          static_cast<ZoomControl*>(self)->updateZoomFitValue();

@@ -42,7 +42,7 @@ public:
      * @brief Render the page with number pdfPageNo of the pdf document to the cairo context
      * @param cr the cairo context
      * @param pdfPageNo The page number (in the pdf document)
-     * @param zoom The current zoom level
+     * @param zoom Pixels per page unit, including the target device scale
      * @param pageWidth/pageHeight Xournal++ page dimensions
      */
     void render(cairo_t* cr, size_t pdfPageNo, double zoom, double pageWidth, double pageHeight);

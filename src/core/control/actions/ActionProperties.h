@@ -859,6 +859,30 @@ struct ActionProperties<Action::TEXT_ITALIC> {
     }
 };
 
+template <Text::InlineAttribute attribute>
+struct TextAttributeActionProperties {
+    using state_type = bool;
+    static constexpr state_type initialState(Control*) { return false; }
+    static void callback(GSimpleAction*, GVariant* p, Control* ctrl) {
+        if (auto* editor = ctrl->getTextEditor(); editor) {
+            // The editor updates all toggle states, including the opposite script.
+            editor->setAttribute(attribute, g_variant_get_boolean(p));
+        }
+    }
+};
+
+template <>
+struct ActionProperties<Action::TEXT_UNDERLINE>: TextAttributeActionProperties<Text::UNDERLINE> {};
+
+template <>
+struct ActionProperties<Action::TEXT_STRIKETHROUGH>: TextAttributeActionProperties<Text::STRIKETHROUGH> {};
+
+template <>
+struct ActionProperties<Action::TEXT_SUPERSCRIPT>: TextAttributeActionProperties<Text::SUPERSCRIPT> {};
+
+template <>
+struct ActionProperties<Action::TEXT_SUBSCRIPT>: TextAttributeActionProperties<Text::SUBSCRIPT> {};
+
 template <>
 struct ActionProperties<Action::AUDIO_RECORD> {
     using state_type = bool;

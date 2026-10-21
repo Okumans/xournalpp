@@ -21,6 +21,8 @@
 #include "util/Point.h"              // for Point
 #include "util/Rectangle.h"          // for Rectangle
 
+#include "TouchpadZoomGuard.h"
+
 constexpr auto DEFAULT_ZOOM_MAX{7};
 constexpr auto DEFAULT_ZOOM_MIN{0.3};
 constexpr auto DEFAULT_ZOOM_STEP{0.1};
@@ -202,6 +204,8 @@ private:
     friend bool onTouchpadPinchEvent(GtkWidget* widget, GdkEventTouchpadPinch* event, ZoomControl* zoom);
 
 private:
+    TouchpadZoomGuard touchpadZoomGuard;
+
     XournalView* view = nullptr;
     Control* control = nullptr;
     std::vector<ZoomListener*> listener;
@@ -221,6 +225,9 @@ private:
 
     /// Base zoom on start, for relative zoom (Gesture)
     double zoomSequenceStart = -1;
+
+    /// Initial focal point, used to restore panning when a gesture is cancelled.
+    xoj::util::Point<double> zoomSequenceStartWidgetPos;
 
     /// Zoom center position in widget coordinate space, will not be zoomed!
     xoj::util::Point<double> zoomWidgetPos;

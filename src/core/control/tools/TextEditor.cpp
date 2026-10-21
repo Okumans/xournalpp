@@ -142,6 +142,10 @@ TextEditor::TextEditor(Control* control, const PageRef& page, GtkWidget* xournal
     // Informs the windowing system of the selection -- i.e. for accessibility purposes
     gtk_text_buffer_add_selection_clipboard(buffer.get(), gtk_clipboard_get(GDK_SELECTION_PRIMARY));
 
+    gtk_text_buffer_register_serialize_tagset(this->buffer.get(), nullptr);
+    const auto richTextFormat = gtk_text_buffer_register_deserialize_tagset(this->buffer.get(), nullptr);
+    gtk_text_buffer_deserialize_set_can_create_tags(this->buffer.get(), richTextFormat, true);
+
     this->initializeEditionAt(x, y);
     g_signal_connect(this->buffer.get(), "paste-done", G_CALLBACK(bufferPasteDoneCallback), this);
 
@@ -336,6 +340,7 @@ void TextEditor::replaceBufferContent(const std::string& text) {
     this->applyModelStylesToBuffer();
     this->typingFont.reset();
     this->typingColor.reset();
+    this->typingAttributes.reset();
 
     GtkTextIter first = {nullptr};
     gtk_text_buffer_get_iter_at_offset(this->buffer.get(), &first, 0);
@@ -356,6 +361,7 @@ auto TextEditor::captureTextEditState() const -> TextEditState {
     state.justify = this->textElement->getJustify();
     state.typingFont = this->typingFont;
     state.typingColor = this->typingColor;
+    state.typingAttributes = this->typingAttributes;
 
     const GtkTextIter cursor = getIteratorAtCursor(this->buffer.get());
     GtkTextIter selectionBound;
@@ -385,6 +391,7 @@ void TextEditor::restoreTextEditState(const TextEditState& state) {
     this->applyModelStylesToBuffer();
     this->typingFont = state.typingFont;
     this->typingColor = state.typingColor;
+    this->typingAttributes = state.typingAttributes;
 
     const auto clampOffset = [&state](size_t offset) {
         return static_cast<int>(std::min(offset, state.text.size()));
@@ -440,7 +447,7 @@ void TextEditor::recordTextEditHistory() {
         return lhs.text == rhs.text && lhs.styleRuns == rhs.styleRuns && sameFont(lhs.font, rhs.font) &&
                lhs.color == rhs.color && lhs.wrapWidth == rhs.wrapWidth && lhs.alignment == rhs.alignment &&
                lhs.justify == rhs.justify && sameOptionalFont(lhs.typingFont, rhs.typingFont) &&
-               lhs.typingColor == rhs.typingColor &&
+               lhs.typingColor == rhs.typingColor && lhs.typingAttributes == rhs.typingAttributes &&
                lhs.cursorOffset == rhs.cursorOffset && lhs.selectionBoundOffset == rhs.selectionBoundOffset;
     };
 
@@ -546,6 +553,96 @@ GtkTextTag* TextEditor::getColorTag(Color color) {
     return tag;
 }
 
+GtkTextTag* TextEditor::getAttributeTag(uint32_t attributes, const XojFont& font) {
+    const auto key = std::to_string(attributes) + ":" + font.asString();
+    if (const auto it = this->attributeTags.find(key); it != this->attributeTags.end()) {
+        return it->second;
+    }
+
+    auto* tag = gtk_text_buffer_create_tag(
+            this->buffer.get(), nullptr, "underline",
+            attributes & Text::UNDERLINE ? PANGO_UNDERLINE_SINGLE : PANGO_UNDERLINE_NONE, "strikethrough",
+            static_cast<gboolean>((attributes & Text::STRIKETHROUGH) != 0), "rise",
+            static_cast<int>(Text::scriptRise(attributes, font.getSize()) * PANGO_SCALE), "scale",
+            attributes & (Text::SUPERSCRIPT | Text::SUBSCRIPT) ? 0.75 : 1.0, nullptr);
+    g_object_set_data(G_OBJECT(tag), "xournalpp-inline-attributes", GUINT_TO_POINTER(attributes + 1));
+    this->attributeTags.emplace(key, tag);
+    return tag;
+}
+
+auto TextEditor::getAttributesAtIterator(const GtkTextIter& iter) const -> uint32_t {
+    GtkTextIter lookup = iter;
+    if (gtk_text_iter_is_end(&lookup) && !gtk_text_iter_is_start(&lookup)) {
+        gtk_text_iter_backward_char(&lookup);
+    }
+
+    uint32_t attributes = 0;
+    GSList* tags = gtk_text_iter_get_tags(&lookup);
+    for (GSList* item = tags; item != nullptr; item = item->next) {
+        auto* tag = GTK_TEXT_TAG(item->data);
+        // Also accept GTK rich-text clipboard tags, which do not carry our marker.
+        gboolean underlineSet = false;
+        gboolean strikeSet = false;
+        gboolean riseSet = false;
+        PangoUnderline underline = PANGO_UNDERLINE_NONE;
+        gboolean strike = false;
+        int rise = 0;
+        g_object_get(tag, "underline-set", &underlineSet, "underline", &underline, "strikethrough-set", &strikeSet,
+                     "strikethrough", &strike, "rise-set", &riseSet, "rise", &rise, nullptr);
+        if (underlineSet) {
+            attributes = Text::withAttribute(attributes, Text::UNDERLINE, underline != PANGO_UNDERLINE_NONE);
+        }
+        if (strikeSet) {
+            attributes = Text::withAttribute(attributes, Text::STRIKETHROUGH, strike);
+        }
+        if (riseSet) {
+            attributes &= ~(Text::SUPERSCRIPT | Text::SUBSCRIPT);
+            if (rise != 0) {
+                attributes |= rise > 0 ? Text::SUPERSCRIPT : Text::SUBSCRIPT;
+            }
+        }
+    }
+    g_slist_free(tags);
+    return attributes;
+}
+
+auto TextEditor::currentAttribute(Text::InlineAttribute attribute) const -> bool {
+    GtkTextIter start;
+    GtkTextIter end;
+    if (!gtk_text_buffer_get_selection_bounds(this->buffer.get(), &start, &end)) {
+        const auto attributes =
+                this->typingAttributes.value_or(this->getAttributesAtIterator(getIteratorAtCursor(this->buffer.get())));
+        return (attributes & attribute) != 0;
+    }
+
+    do {
+        if (!(this->getAttributesAtIterator(start) & attribute)) {
+            return false;
+        }
+        gtk_text_iter_forward_char(&start);
+    } while (!gtk_text_iter_equal(&start, &end));
+    return true;
+}
+
+void TextEditor::setAttribute(Text::InlineAttribute attribute, bool enabled) {
+    this->prepareTextEditHistory();
+
+    size_t start = 0;
+    size_t end = 0;
+    if (getSelectionByteRange(start, end)) {
+        formatSelection([&](size_t selectionStart, size_t selectionEnd) {
+            this->textElement->setAttribute(selectionStart, selectionEnd, attribute, enabled);
+        });
+        return;
+    }
+
+    const auto attributes =
+            this->typingAttributes.value_or(this->getAttributesAtIterator(getIteratorAtCursor(this->buffer.get())));
+    this->typingAttributes = Text::withAttribute(attributes, attribute, enabled);
+    this->updateFormattingActions();
+    this->recordTextEditHistory();
+}
+
 auto TextEditor::getFontAtIterator(const GtkTextIter& iter) const -> XojFont {
     GtkTextIter lookup = iter;
     if (gtk_text_iter_is_end(&lookup) && !gtk_text_iter_is_start(&lookup)) {
@@ -565,7 +662,13 @@ auto TextEditor::getFontAtIterator(const GtkTextIter& iter) const -> XojFont {
             }
         }
 
-        if (!recognized) {
+        PangoFontDescription* tagDescription = nullptr;
+        g_object_get(tag, "font-desc", &tagDescription, nullptr);
+        const bool hasFont = tagDescription && pango_font_description_get_set_fields(tagDescription) != 0;
+        if (tagDescription) {
+            pango_font_description_free(tagDescription);
+        }
+        if (!recognized && hasFont && !g_object_get_data(G_OBJECT(tag), "xournalpp-inline-attributes")) {
             gchar* fontDescription = nullptr;
             g_object_get(tag, "font", &fontDescription, nullptr);
             if (fontDescription != nullptr) {
@@ -605,12 +708,7 @@ void TextEditor::clearFontTags() {
     GtkTextIter start;
     GtkTextIter end;
     gtk_text_buffer_get_bounds(this->buffer.get(), &start, &end);
-    for (const auto& [fontDescription, tag]: this->fontTags) {
-        gtk_text_buffer_remove_tag(this->buffer.get(), tag, &start, &end);
-    }
-    for (const auto& [color, tag]: this->colorTags) {
-        gtk_text_buffer_remove_tag(this->buffer.get(), tag, &start, &end);
-    }
+    gtk_text_buffer_remove_all_tags(this->buffer.get(), &start, &end);
 }
 
 void TextEditor::applyModelStylesToBuffer() {
@@ -623,11 +721,15 @@ void TextEditor::applyModelStylesToBuffer() {
         if (run.color) {
             gtk_text_buffer_apply_tag(this->buffer.get(), this->getColorTag(*run.color), &start, &end);
         }
+        if (run.attributes) {
+            gtk_text_buffer_apply_tag(this->buffer.get(), this->getAttributeTag(run.attributes, run.font), &start,
+                                      &end);
+        }
     }
 }
 
 void TextEditor::applyTypingFont(size_t start, size_t end) {
-    if ((!this->typingFont && !this->typingColor) || start >= end) {
+    if ((!this->typingFont && !this->typingColor && !this->typingAttributes) || start >= end) {
         return;
     }
 
@@ -638,6 +740,15 @@ void TextEditor::applyTypingFont(size_t start, size_t end) {
     }
     if (this->typingColor) {
         gtk_text_buffer_apply_tag(this->buffer.get(), this->getColorTag(*this->typingColor), &begin, &finish);
+    }
+    if (this->typingAttributes) {
+        // Remove inherited tags as well: disabling a style must affect newly typed text.
+        for (const auto& [key, tag]: this->attributeTags) {
+            gtk_text_buffer_remove_tag(this->buffer.get(), tag, &begin, &finish);
+        }
+        const auto font = this->typingFont.value_or(this->getFontAtIterator(begin));
+        gtk_text_buffer_apply_tag(this->buffer.get(), this->getAttributeTag(*this->typingAttributes, font), &begin,
+                                  &finish);
     }
 }
 
@@ -692,8 +803,17 @@ auto TextEditor::currentFontAttribute(bool bold) const -> bool {
 
 void TextEditor::updateFormattingActions() const {
     auto* db = this->control->getActionDatabase();
+    // Smart Select also opens this editor without switching the active tool.
+    for (auto action: {Action::TEXT_BOLD, Action::TEXT_ITALIC, Action::TEXT_UNDERLINE, Action::TEXT_STRIKETHROUGH,
+                       Action::TEXT_SUPERSCRIPT, Action::TEXT_SUBSCRIPT}) {
+        db->enableAction(action, true);
+    }
     db->setActionState(Action::TEXT_BOLD, this->currentFontAttribute(true));
     db->setActionState(Action::TEXT_ITALIC, this->currentFontAttribute(false));
+    db->setActionState(Action::TEXT_UNDERLINE, this->currentAttribute(Text::UNDERLINE));
+    db->setActionState(Action::TEXT_STRIKETHROUGH, this->currentAttribute(Text::STRIKETHROUGH));
+    db->setActionState(Action::TEXT_SUPERSCRIPT, this->currentAttribute(Text::SUPERSCRIPT));
+    db->setActionState(Action::TEXT_SUBSCRIPT, this->currentAttribute(Text::SUBSCRIPT));
 }
 
 void TextEditor::formatSelection(const std::function<void(size_t, size_t)>& formatter) {
@@ -709,6 +829,7 @@ void TextEditor::formatSelection(const std::function<void(size_t, size_t)>& form
     formatter(start, end);
     this->applyModelStylesToBuffer();
     this->typingFont.reset();
+    this->typingAttributes.reset();
     this->updateFormattingActions();
     this->layoutStatus = LayoutStatus::NEEDS_COMPLETE_UPDATE;
     this->repaintEditor(true);
@@ -1228,17 +1349,18 @@ void TextEditor::updateTextElementContent() {
 
         const XojFont currentFont = getFontAtIterator(iter);
         const auto currentColor = getColorAtIterator(iter);
+        const auto attributes = getAttributesAtIterator(iter);
         const auto& defaultFont = this->textElement->getFont();
         if (currentFont.getName() != defaultFont.getName() || currentFont.getSize() != defaultFont.getSize() ||
-            currentColor) {
+            currentColor || attributes) {
             const size_t start = static_cast<size_t>(getByteOffsetOfIterator(iter));
             const size_t finish = static_cast<size_t>(getByteOffsetOfIterator(next));
-            if (!runs.empty() && runs.back().end == start &&
-                runs.back().font.getName() == currentFont.getName() &&
-                runs.back().font.getSize() == currentFont.getSize() && runs.back().color == currentColor) {
+            if (!runs.empty() && runs.back().end == start && runs.back().font.getName() == currentFont.getName() &&
+                runs.back().font.getSize() == currentFont.getSize() && runs.back().color == currentColor &&
+                runs.back().attributes == attributes) {
                 runs.back().end = finish;
             } else {
-                runs.push_back({start, finish, currentFont, currentColor});
+                runs.push_back({start, finish, currentFont, currentColor, attributes});
             }
         }
 
@@ -1335,6 +1457,8 @@ void TextEditor::moveCursorIterator(const GtkTextIter* newLocation, gboolean ext
         gtk_text_buffer_place_cursor(this->buffer.get(), newLocation);
         control->setCopyCutEnabled(false);
     }
+
+    this->typingAttributes.reset();
 
     if (this->cursorBlink) {
         // Whenever the cursor moves, the blinking cycle restarts from the start (i.e. the cursor is first shown).
@@ -1731,6 +1855,11 @@ void TextEditor::finalizeEdition() {
     db->setActionState(Action::TEXT_ALIGNMENT, th->getTextAlignment());
     db->setActionState(Action::TEXT_JUSTIFY, th->getTextJustify());
     db->setActionState(Action::TOOL_COLOR, th->getColorMaskAlpha());
+    for (auto action: {Action::TEXT_BOLD, Action::TEXT_ITALIC, Action::TEXT_UNDERLINE, Action::TEXT_STRIKETHROUGH,
+                       Action::TEXT_SUPERSCRIPT, Action::TEXT_SUBSCRIPT}) {
+        db->setActionState(action, false);
+        db->enableAction(action, th->getToolType() == TOOL_TEXT);
+    }
 
     auto* doc = this->control->getDocument();
     UndoRedoHandler* undo = this->control->getUndoRedoHandler();

@@ -1268,15 +1268,17 @@ void Control::toolChanged() {
     }
 
     const bool enableTextFormatting = type == TOOL_TEXT;
-    this->actionDB->enableAction(Action::TEXT_BOLD, enableTextFormatting);
-    this->actionDB->enableAction(Action::TEXT_ITALIC, enableTextFormatting);
+    for (auto action: {Action::TEXT_BOLD, Action::TEXT_ITALIC, Action::TEXT_UNDERLINE, Action::TEXT_STRIKETHROUGH,
+                       Action::TEXT_SUPERSCRIPT, Action::TEXT_SUBSCRIPT}) {
+        this->actionDB->enableAction(action, enableTextFormatting);
+        if (!enableTextFormatting) {
+            this->actionDB->setActionState(action, false);
+        }
+    }
     if (enableTextFormatting) {
         if (auto* editor = this->getTextEditor(); editor) {
             editor->updateFormattingActions();
         }
-    } else {
-        this->actionDB->setActionState(Action::TEXT_BOLD, false);
-        this->actionDB->setActionState(Action::TEXT_ITALIC, false);
     }
 
     getCursor()->updateCursor();

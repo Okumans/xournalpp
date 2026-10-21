@@ -157,8 +157,10 @@ void PdfCache::render(cairo_t* cr, size_t pdfPageNo, double zoom, double pageWid
             return;
         }
 
-        xoj::view::Mask buffer(cairo_get_target(cr), Range(0, 0, popplerPage->getWidth(), popplerPage->getHeight()),
-                               renderZoom, CAIRO_CONTENT_COLOR_ALPHA);
+        // renderZoom already includes the target device scale. Inheriting it
+        // again would allocate four times as many pixels on a 2x display.
+        xoj::view::Mask buffer(1, Range(0, 0, popplerPage->getWidth(), popplerPage->getHeight()), renderZoom,
+                               CAIRO_CONTENT_COLOR_ALPHA);
         popplerPage->render(buffer.get());
         if (this->maxSize == 0) {
             buffer.paintTo(cr);

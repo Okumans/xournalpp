@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstddef>  // for size_t
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>  // for string
@@ -20,8 +21,8 @@
 
 #include <pango/pango.h>
 
-#include "util/Point.h"
 #include "util/Color.h"
+#include "util/Point.h"
 #include "util/raii/GObjectSPtr.h"
 #include "util/raii/PangoSPtr.h"
 
@@ -36,6 +37,11 @@ class XojPdfRectangle;
 
 class Text: public RectangularElement, public AudioContent {
 public:
+    enum InlineAttribute : uint32_t { UNDERLINE = 1, STRIKETHROUGH = 2, SUPERSCRIPT = 4, SUBSCRIPT = 8 };
+
+    static uint32_t withAttribute(uint32_t attributes, InlineAttribute attribute, bool enabled);
+    static double scriptRise(uint32_t attributes, double fontSize);
+
     /**
      * Inline attributes applied to a half-open UTF-8 byte range of the text.
      *
@@ -50,6 +56,7 @@ public:
         // An empty value inherits the text element's base color.  Keeping this
         // optional preserves the compact legacy font-only style encoding.
         std::optional<Color> color;
+        uint32_t attributes = 0;
     };
 
     Text();
@@ -81,6 +88,8 @@ public:
     void setFontRange(size_t start, size_t end, const XojFont& font);
     /** Apply an explicit foreground color to a half-open UTF-8 byte range. */
     void setColorRange(size_t start, size_t end, Color color);
+    uint32_t getAttributesAtByteOffset(size_t offset) const;
+    void setAttribute(size_t start, size_t end, InlineAttribute attribute, bool enabled);
     void setBold(size_t start, size_t end, bool bold);
     void setItalic(size_t start, size_t end, bool italic);
     void setFontSize(size_t start, size_t end, double size);
@@ -95,6 +104,9 @@ public:
     /**
      * Serialize inline styles for the optional .xopp `styles` attribute.
      * An empty return value means that the text uses only its object font.
+     * Records contain range:base64-font:size[:color[:attribute-flags]], with
+     * "-" for an inherited color when attribute flags are present. Legacy
+     * font-only and font/color records remain valid.
      */
     std::string serializeStyleRuns() const;
 
@@ -151,7 +163,7 @@ private:
     void normalizeStyleRuns();
     std::optional<Color> getInlineColorAtByteOffset(size_t offset) const;
     void transformStyleRange(size_t start, size_t end,
-                             const std::function<void(XojFont&, std::optional<Color>&)>& transform);
+                             const std::function<void(XojFont&, std::optional<Color>&, uint32_t&)>& transform);
 
     XojFont font;
 

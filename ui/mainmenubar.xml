@@ -847,6 +847,35 @@
         </item>
       </section>
     </submenu>
+    <submenu>
+      <attribute name="label" translatable="yes">Text Formatting</attribute>
+      <section>
+        <item>
+          <attribute name="label" translatable="yes">Bold</attribute>
+          <attribute name="action">win.text-bold</attribute>
+        </item>
+        <item>
+          <attribute name="label" translatable="yes">Italic</attribute>
+          <attribute name="action">win.text-italic</attribute>
+        </item>
+        <item>
+          <attribute name="label" translatable="yes">Underline</attribute>
+          <attribute name="action">win.text-underline</attribute>
+        </item>
+        <item>
+          <attribute name="label" translatable="yes">Strikethrough</attribute>
+          <attribute name="action">win.text-strikethrough</attribute>
+        </item>
+        <item>
+          <attribute name="label" translatable="yes">Superscript</attribute>
+          <attribute name="action">win.text-superscript</attribute>
+        </item>
+        <item>
+          <attribute name="label" translatable="yes">Subscript</attribute>
+          <attribute name="action">win.text-subscript</attribute>
+        </item>
+      </section>
+    </submenu>
     <item>
      <attribute name="label" translatable="yes">Text Font...</attribute>
      <attribute name="action">win.select-font</attribute>

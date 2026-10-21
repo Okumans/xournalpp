@@ -58,7 +58,7 @@ public:
     /**
      * @brief Paint the content of the surface to the target cairo context
      */
-    void paintTo(cairo_t* targetCr) const;
+    void paintTo(cairo_t* targetCr, cairo_filter_t filter = CAIRO_FILTER_GOOD) const;
     /**
      * @brief Paint the content of the surface to the target cairo context
      */

@@ -103,6 +103,11 @@ public:
      */
     void unblockRerenderZoom();
 
+    /// Hold queued page renders across pauses within a pinch; allow other work.
+    void beginZoomGesture();
+    /// Release the hold and render the final view without another debounce delay.
+    void endZoomGesture();
+
 private:
     static auto jobThreadCallback(Scheduler* scheduler) -> gpointer;
     auto getNextJobUnlocked(bool onlyNotRender = false, bool* hasRenderJobs = nullptr) -> Job*;
@@ -140,6 +145,8 @@ protected:
      */
     std::array<std::deque<Job*>*, JOB_N_PRIORITIES> jobQueue{};
 
+    // Protected by jobQueueMutex; independent of the short zoom debounce.
+    bool zoomGestureActive = false;
     std::atomic<gint64> blockRenderZoomTime = 0;
     std::atomic<guint> jobRenderThreadTimerId = 0;
 

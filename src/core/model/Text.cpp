@@ -161,24 +161,59 @@ auto Text::getColorAtByteOffset(size_t offset) const -> Color {
     return this->getInlineColorAtByteOffset(offset).value_or(this->getColor());
 }
 
+auto Text::getAttributesAtByteOffset(size_t offset) const -> uint32_t {
+    offset = std::min(offset, this->text.size());
+    for (const auto& run: this->styleRuns) {
+        if (offset >= run.start && (offset < run.end || (offset == this->text.size() && run.end == offset))) {
+            return run.attributes;
+        }
+    }
+    return 0;
+}
+
+auto Text::withAttribute(uint32_t attributes, InlineAttribute attribute, bool enabled) -> uint32_t {
+    if (enabled) {
+        if (attribute == SUPERSCRIPT || attribute == SUBSCRIPT) {
+            attributes &= ~(SUPERSCRIPT | SUBSCRIPT);
+        }
+        return attributes | attribute;
+    }
+    return attributes & ~attribute;
+}
+
+auto Text::scriptRise(uint32_t attributes, double fontSize) -> double {
+    if (attributes & SUPERSCRIPT) {
+        return fontSize * 0.4;
+    }
+    if (attributes & SUBSCRIPT) {
+        return -fontSize * 0.2;
+    }
+    return 0;
+}
+
+void Text::setAttribute(size_t start, size_t end, InlineAttribute attribute, bool enabled) {
+    transformStyleRange(start, end, [attribute, enabled](XojFont&, std::optional<Color>&, uint32_t& attributes) {
+        attributes = withAttribute(attributes, attribute, enabled);
+    });
+}
+
 void Text::setFontRange(size_t start, size_t end, const XojFont& font) {
-    transformStyleRange(start, end, [&font](XojFont& segmentFont, std::optional<Color>&) { segmentFont = font; });
+    transformStyleRange(start, end,
+                        [&font](XojFont& segmentFont, std::optional<Color>&, uint32_t&) { segmentFont = font; });
 }
 
 void Text::setColorRange(size_t start, size_t end, Color color) {
-    transformStyleRange(start, end, [color](XojFont&, std::optional<Color>& segmentColor) {
-        segmentColor = color;
-    });
+    transformStyleRange(start, end,
+                        [color](XojFont&, std::optional<Color>& segmentColor, uint32_t&) { segmentColor = color; });
 }
 
 void Text::setBold(size_t start, size_t end, bool bold) {
-    transformStyleRange(start, end, [bold](XojFont& font, std::optional<Color>&) {
-        font = Text::withBold(font, bold);
-    });
+    transformStyleRange(start, end,
+                        [bold](XojFont& font, std::optional<Color>&, uint32_t&) { font = Text::withBold(font, bold); });
 }
 
 void Text::setItalic(size_t start, size_t end, bool italic) {
-    transformStyleRange(start, end, [italic](XojFont& font, std::optional<Color>&) {
+    transformStyleRange(start, end, [italic](XojFont& font, std::optional<Color>&, uint32_t&) {
         font = Text::withItalic(font, italic);
     });
 }
@@ -187,16 +222,15 @@ void Text::setFontSize(size_t start, size_t end, double size) {
     if (!std::isfinite(size) || size <= 0) {
         return;
     }
-    transformStyleRange(start, end, [size](XojFont& font, std::optional<Color>&) {
-        font = Text::withSize(font, size);
-    });
+    transformStyleRange(start, end,
+                        [size](XojFont& font, std::optional<Color>&, uint32_t&) { font = Text::withSize(font, size); });
 }
 
 void Text::adjustFontSize(size_t start, size_t end, double delta) {
     if (!std::isfinite(delta)) {
         return;
     }
-    transformStyleRange(start, end, [delta](XojFont& font, std::optional<Color>&) {
+    transformStyleRange(start, end, [delta](XojFont& font, std::optional<Color>&, uint32_t&) {
         font = Text::withSize(font, std::max(1.0, font.getSize() + delta));
     });
 }
@@ -260,9 +294,13 @@ auto Text::serializeStyleRuns() const -> std::string {
         g_ascii_formatd(sizeBuffer, G_ASCII_DTOSTR_BUF_SIZE, "%.17g", run.font.getSize());
         result += sizeBuffer;
 
-        if (run.color) {
+        if (run.color || run.attributes) {
             result += ':';
-            result += std::to_string(static_cast<uint32_t>(*run.color));
+            result += run.color ? std::to_string(static_cast<uint32_t>(*run.color)) : "-";
+        }
+        if (run.attributes) {
+            result += ':';
+            result += std::to_string(run.attributes);
         }
 
         g_free(encodedName);
@@ -294,6 +332,9 @@ auto Text::deserializeStyleRuns(std::string_view serialized) -> bool {
             const size_t secondColon = record.find(':', firstColon == std::string_view::npos ? 0 : firstColon + 1);
             const size_t thirdColon = record.find(':', secondColon == std::string_view::npos ? 0 : secondColon + 1);
 
+            const size_t fourthColon =
+                    record.find(':', thirdColon == std::string_view::npos ? record.size() : thirdColon + 1);
+
             size_t start = 0;
             size_t end = 0;
             if (dash == std::string_view::npos || firstColon == std::string_view::npos ||
@@ -319,25 +360,34 @@ auto Text::deserializeStyleRuns(std::string_view serialized) -> bool {
                 bool goodColor = true;
                 if (thirdColon != std::string_view::npos) {
                     uint32_t colorValue = 0;
-                    const auto colorText = record.substr(thirdColon + 1);
+                    const auto colorText = record.substr(thirdColon + 1, fourthColon == std::string_view::npos ?
+                                                                                 std::string_view::npos :
+                                                                                 fourthColon - thirdColon - 1);
                     const char* colorFirst = colorText.data();
                     const char* colorLast = colorFirst + colorText.size();
                     auto [colorEnd, colorError] = std::from_chars(colorFirst, colorLast, colorValue);
-                    goodColor = !colorText.empty() && colorError == std::errc{} && colorEnd == colorLast;
-                    if (goodColor) {
+                    goodColor = (!colorText.empty() && colorError == std::errc{} && colorEnd == colorLast) ||
+                                (fourthColon != std::string_view::npos && colorText == "-");
+                    if (goodColor && colorText != "-") {
                         color = Color(colorValue);
                     }
                 }
+                size_t attributes = 0;
+                const bool goodAttributes =
+                        fourthColon == std::string_view::npos ||
+                        (parseSizeT(record.substr(fourthColon + 1), attributes) && attributes <= 15 &&
+                         (attributes & (SUPERSCRIPT | SUBSCRIPT)) != (SUPERSCRIPT | SUBSCRIPT));
                 const bool goodRange = start < end && end <= this->text.size() &&
                                        isUtf8Boundary(this->text, start) && isUtf8Boundary(this->text, end);
                 const bool goodName = decodedName != nullptr && decodedLength > 0 &&
                                       g_utf8_validate(reinterpret_cast<const char*>(decodedName), decodedLength,
                                                       nullptr);
-                if (!goodName || !goodSize || !goodColor || !goodRange) {
+                if (!goodName || !goodSize || !goodColor || !goodAttributes || !goodRange) {
                     valid = false;
                 } else {
                     std::string name(reinterpret_cast<const char*>(decodedName), decodedLength);
-                    runs.push_back({start, end, XojFont(std::move(name), size), color});
+                    runs.push_back(
+                            {start, end, XojFont(std::move(name), size), color, static_cast<uint32_t>(attributes)});
                 }
                 g_free(decodedName);
             }
@@ -371,6 +421,23 @@ auto Text::createPangoAttrList() const -> xoj::util::PangoAttrListSPtr {
         attribute->end_index = static_cast<unsigned int>(run.end);
         pango_attr_list_insert(attributes.get(), attribute);
 
+        const auto addAttribute = [&](PangoAttribute* attr) {
+            attr->start_index = static_cast<unsigned int>(run.start);
+            attr->end_index = static_cast<unsigned int>(run.end);
+            pango_attr_list_insert(attributes.get(), attr);
+        };
+        if (run.attributes & UNDERLINE) {
+            addAttribute(pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));
+        }
+        if (run.attributes & STRIKETHROUGH) {
+            addAttribute(pango_attr_strikethrough_new(true));
+        }
+        if (run.attributes & (SUPERSCRIPT | SUBSCRIPT)) {
+            addAttribute(pango_attr_scale_new(0.75));
+            addAttribute(pango_attr_rise_new(
+                    static_cast<int>(scriptRise(run.attributes, run.font.getSize()) * PANGO_SCALE)));
+        }
+
         if (run.color) {
             const auto color = Util::argb_to_ColorU16(*run.color);
             auto* colorAttribute = pango_attr_foreground_new(color.red, color.green, color.blue);
@@ -398,7 +465,7 @@ void Text::normalizeStyleRuns() {
 
         if (run.start >= run.end || run.end > this->text.size() || !isUtf8Boundary(this->text, run.start) ||
             !isUtf8Boundary(this->text, run.end) || !isValidFont(run.font) ||
-            (fontsEqual(run.font, this->font) && !run.color)) {
+            (fontsEqual(run.font, this->font) && !run.color && !run.attributes)) {
             continue;
         }
 
@@ -409,9 +476,8 @@ void Text::normalizeStyleRuns() {
             run.start = normalized.back().end;
         }
 
-        if (!normalized.empty() && normalized.back().end == run.start &&
-            fontsEqual(normalized.back().font, run.font) &&
-            inlineColorsEqual(normalized.back().color, run.color)) {
+        if (!normalized.empty() && normalized.back().end == run.start && fontsEqual(normalized.back().font, run.font) &&
+            inlineColorsEqual(normalized.back().color, run.color) && normalized.back().attributes == run.attributes) {
             normalized.back().end = run.end;
         } else {
             normalized.push_back(std::move(run));
@@ -422,7 +488,7 @@ void Text::normalizeStyleRuns() {
 }
 
 void Text::transformStyleRange(size_t start, size_t end,
-                               const std::function<void(XojFont&, std::optional<Color>&)>& transform) {
+                               const std::function<void(XojFont&, std::optional<Color>&, uint32_t&)>& transform) {
     start = std::min(start, this->text.size());
     end = std::min(end, this->text.size());
     if (start >= end || !isUtf8Boundary(this->text, start) || !isUtf8Boundary(this->text, end)) {
@@ -448,11 +514,12 @@ void Text::transformStyleRange(size_t start, size_t end,
 
         XojFont segmentFont = getFontAtByteOffset(segmentStart);
         std::optional<Color> segmentColor = getInlineColorAtByteOffset(segmentStart);
+        uint32_t attributes = getAttributesAtByteOffset(segmentStart);
         if (segmentStart >= start && segmentEnd <= end) {
-            transform(segmentFont, segmentColor);
+            transform(segmentFont, segmentColor, attributes);
         }
-        if (!fontsEqual(segmentFont, this->font) || (segmentColor && *segmentColor != this->getColor())) {
-            replacement.push_back({segmentStart, segmentEnd, std::move(segmentFont), segmentColor});
+        if (!fontsEqual(segmentFont, this->font) || (segmentColor && *segmentColor != this->getColor()) || attributes) {
+            replacement.push_back({segmentStart, segmentEnd, std::move(segmentFont), segmentColor, attributes});
         }
     }
 

@@ -144,6 +144,14 @@ const TextEditor::KeyBindings TextEditor::keyBindings(
          {KeyBindings::hash(CTRL, GDK_KEY_i), wrap<&TextEditor::toggleItalicFace>},
          {KeyBindings::hash(CTRL, GDK_KEY_I), wrap<&TextEditor::toggleItalicFace>},
 
+         {KeyBindings::hash(CTRL, GDK_KEY_u), wrap<&TextEditor::toggleAttribute<Text::UNDERLINE>>},
+         {KeyBindings::hash(CTRL, GDK_KEY_U), wrap<&TextEditor::toggleAttribute<Text::UNDERLINE>>},
+         {KeyBindings::hash(CTRL & SHIFT, GDK_KEY_k), wrap<&TextEditor::toggleAttribute<Text::STRIKETHROUGH>>},
+         {KeyBindings::hash(CTRL & SHIFT, GDK_KEY_K), wrap<&TextEditor::toggleAttribute<Text::STRIKETHROUGH>>},
+         {KeyBindings::hash(CTRL, GDK_KEY_K), wrap<&TextEditor::toggleAttribute<Text::STRIKETHROUGH>>},
+         {KeyBindings::hash(CTRL, GDK_KEY_period), wrap<&TextEditor::toggleAttribute<Text::SUPERSCRIPT>>},
+         {KeyBindings::hash(CTRL, GDK_KEY_comma), wrap<&TextEditor::toggleAttribute<Text::SUBSCRIPT>>},
+
          {KeyBindings::hash(CTRL, GDK_KEY_plus), wrap<&TextEditor::increaseFontSize>},
          {KeyBindings::hash(CTRL, GDK_KEY_equal), wrap<&TextEditor::increaseFontSize>},
          {KeyBindings::hash(CTRL, GDK_KEY_KP_Add), wrap<&TextEditor::increaseFontSize>},

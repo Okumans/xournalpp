@@ -37,6 +37,7 @@ void expectSameStyles(const Text& lhs, const Text& rhs) {
         const auto& right = rhs.getStyleRuns()[i];
         EXPECT_EQ(left.start, right.start);
         EXPECT_EQ(left.end, right.end);
+        EXPECT_EQ(left.attributes, right.attributes);
         EXPECT_EQ(left.font.getName(), right.font.getName());
         EXPECT_DOUBLE_EQ(left.font.getSize(), right.font.getSize());
         ASSERT_EQ(left.color.has_value(), right.color.has_value());
@@ -222,4 +223,123 @@ TEST(Text, invalidInlineStylesAreIgnored) {
     ASSERT_EQ(text.getStyleRuns().size(), 1U);
     EXPECT_EQ(text.getStyleRuns()[0].start, 0U);
     EXPECT_EQ(text.getStyleRuns()[0].end, 1U);
+}
+
+TEST(Text, decorationsPreserveOverlappingFontsColorsAndUtf8Ranges) {
+    Text text;
+    text.setText("ab 世界cd");
+    text.setBold(3, 9, true);
+    text.setColorRange(6, 9, Color{0xffff0000U});
+    text.setAttribute(3, 9, Text::UNDERLINE, true);
+    text.setAttribute(6, text.getText().size(), Text::STRIKETHROUGH, true);
+    text.setAttribute(6, 9, Text::SUPERSCRIPT, true);
+    text.setFontSize(6, 9, 20);
+
+    EXPECT_EQ(text.getAttributesAtByteOffset(0), 0U);
+    EXPECT_EQ(text.getAttributesAtByteOffset(3), Text::UNDERLINE);
+    EXPECT_EQ(text.getAttributesAtByteOffset(6), Text::UNDERLINE | Text::STRIKETHROUGH | Text::SUPERSCRIPT);
+    EXPECT_EQ(text.getAttributesAtByteOffset(9), Text::STRIKETHROUGH);
+    EXPECT_TRUE(Text::isBold(text.getFontAtByteOffset(6)));
+    EXPECT_DOUBLE_EQ(text.getFontAtByteOffset(6).getSize(), 20);
+    EXPECT_EQ(text.getColorAtByteOffset(6), Color{0xffff0000U});
+
+    // Invalid UTF-8 boundaries cannot partially decorate a character.
+    text.setAttribute(4, 8, Text::SUBSCRIPT, true);
+    EXPECT_EQ(text.getAttributesAtByteOffset(6), Text::UNDERLINE | Text::STRIKETHROUGH | Text::SUPERSCRIPT);
+
+    text.setAttribute(6, 9, Text::SUPERSCRIPT, false);
+    text.setAttribute(3, 9, Text::UNDERLINE, false);
+    EXPECT_EQ(text.getAttributesAtByteOffset(3), 0U);
+    EXPECT_EQ(text.getAttributesAtByteOffset(6), Text::STRIKETHROUGH);
+    EXPECT_TRUE(Text::isBold(text.getFontAtByteOffset(6)));
+    EXPECT_EQ(text.getColorAtByteOffset(6), Color{0xffff0000U});
+}
+
+TEST(Text, scriptModesReplaceEachOtherAndCanReturnToBaseline) {
+    Text text;
+    text.setText("H2O x2");
+    text.setAttribute(1, 2, Text::UNDERLINE, true);
+    text.setAttribute(1, 2, Text::SUBSCRIPT, true);
+    EXPECT_EQ(text.getAttributesAtByteOffset(1), Text::UNDERLINE | Text::SUBSCRIPT);
+
+    text.setAttribute(1, 2, Text::SUPERSCRIPT, true);
+    EXPECT_EQ(text.getAttributesAtByteOffset(1), Text::UNDERLINE | Text::SUPERSCRIPT);
+    text.setAttribute(1, 2, Text::SUPERSCRIPT, false);
+    EXPECT_EQ(text.getAttributesAtByteOffset(1), Text::UNDERLINE);
+    text.setAttribute(1, 2, Text::UNDERLINE, false);
+    EXPECT_TRUE(text.getStyleRuns().empty());
+}
+
+TEST(Text, decorationsRoundTripThroughXmlStylesBinaryAndClone) {
+    Text original;
+    original.setText("a世界z");
+    original.setAttribute(0, 4, Text::UNDERLINE, true);
+    original.setAttribute(1, 7, Text::STRIKETHROUGH, true);
+    original.setAttribute(1, 4, Text::SUPERSCRIPT, true);
+    original.setAttribute(4, 7, Text::SUBSCRIPT, true);
+    original.setItalic(1, 7, true);
+    original.setColorRange(4, 7, Color{0xff123456U});
+
+    Text restored;
+    restored.setText(original.getText());
+    ASSERT_TRUE(restored.deserializeStyleRuns(original.serializeStyleRuns()));
+    expectSameStyles(original, restored);
+    expectSameStyles(original, *deserializeText(serializeText(original)));
+    expectSameStyles(original, *original.cloneText());
+
+    Text invalid;
+    invalid.setText("abc");
+    EXPECT_FALSE(invalid.deserializeStyleRuns("0-3:U2Fucw==:12:-:12"));  // Both script modes
+    EXPECT_TRUE(invalid.getStyleRuns().empty());
+    EXPECT_FALSE(invalid.deserializeStyleRuns("0-3:U2Fucw==:12:-:16"));  // Unknown flag
+    EXPECT_FALSE(invalid.deserializeStyleRuns("0-3:U2Fucw==:12:-:-1"));
+    EXPECT_FALSE(invalid.deserializeStyleRuns("0-3:U2Fucw==:12:-:1:2"));
+}
+
+TEST(Text, decorationRunsMergeAndSurviveFontAndColorChanges) {
+    Text text;
+    text.setText("abcd");
+    text.setAttribute(0, 2, Text::UNDERLINE, true);
+    text.setAttribute(2, 4, Text::UNDERLINE, true);
+    ASSERT_EQ(text.getStyleRuns().size(), 1U);
+    EXPECT_EQ(text.getStyleRuns()[0].end, 4U);
+
+    text.setFont(XojFont("Serif", 24));
+    text.setFontRange(0, 4, text.getFont());
+    text.setColor(Color{0xff123456U});
+    ASSERT_EQ(text.getStyleRuns().size(), 1U);
+    EXPECT_EQ(text.getStyleRuns()[0].attributes, Text::UNDERLINE);
+    text.setAttribute(0, 4, Text::UNDERLINE, false);
+    EXPECT_TRUE(text.getStyleRuns().empty());
+}
+
+TEST(Text, decorationsProducePangoAttributesForRenderingAndExport) {
+    Text text;
+    text.setText("ab");
+    text.setAttribute(0, 2, Text::UNDERLINE, true);
+    text.setAttribute(0, 2, Text::STRIKETHROUGH, true);
+    text.setAttribute(0, 1, Text::SUPERSCRIPT, true);
+    text.setAttribute(1, 2, Text::SUBSCRIPT, true);
+    text.setFontSize(1, 2, 24);
+
+    auto attributes = text.createPangoAttrList();
+    auto* iter = pango_attr_list_get_iterator(attributes.get());
+    auto* underline = pango_attr_iterator_get(iter, PANGO_ATTR_UNDERLINE);
+    auto* strike = pango_attr_iterator_get(iter, PANGO_ATTR_STRIKETHROUGH);
+    auto* scale = pango_attr_iterator_get(iter, PANGO_ATTR_SCALE);
+    auto* rise = pango_attr_iterator_get(iter, PANGO_ATTR_RISE);
+    ASSERT_NE(underline, nullptr);
+    ASSERT_NE(strike, nullptr);
+    ASSERT_NE(scale, nullptr);
+    ASSERT_NE(rise, nullptr);
+    EXPECT_EQ(reinterpret_cast<PangoAttrInt*>(underline)->value, PANGO_UNDERLINE_SINGLE);
+    EXPECT_EQ(reinterpret_cast<PangoAttrInt*>(strike)->value, 1);
+    EXPECT_DOUBLE_EQ(reinterpret_cast<PangoAttrFloat*>(scale)->value, 0.75);
+    EXPECT_EQ(reinterpret_cast<PangoAttrInt*>(rise)->value, static_cast<int>(12 * 0.4 * PANGO_SCALE));
+
+    ASSERT_TRUE(pango_attr_iterator_next(iter));
+    rise = pango_attr_iterator_get(iter, PANGO_ATTR_RISE);
+    ASSERT_NE(rise, nullptr);
+    EXPECT_EQ(reinterpret_cast<PangoAttrInt*>(rise)->value, static_cast<int>(-24 * 0.2 * PANGO_SCALE));
+    pango_attr_iterator_destroy(iter);
 }

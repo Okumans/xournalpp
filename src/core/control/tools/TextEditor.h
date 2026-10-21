@@ -80,6 +80,7 @@ public:
     void setFont(XojFont font);
     void setBold(bool bold);
     void setItalic(bool italic);
+    void setAttribute(Text::InlineAttribute attribute, bool enabled);
     void setFontSize(double size);
     void adjustFontSize(double delta);
     void updateFormattingActions() const;
@@ -117,6 +118,10 @@ private:
     void toggleOverwrite();
     void toggleBoldFace();
     void toggleItalicFace();
+    template <Text::InlineAttribute attribute>
+    void toggleAttribute() {
+        setAttribute(attribute, !currentAttribute(attribute));
+    }
     void increaseFontSize();
     void decreaseFontSize();
     void moveCursor(GtkMovementStep step, int count, bool extendSelection);
@@ -129,6 +134,9 @@ private:
 
     GtkTextTag* getFontTag(const XojFont& font);
     GtkTextTag* getColorTag(Color color);
+    GtkTextTag* getAttributeTag(uint32_t attributes, const XojFont& font);
+    uint32_t getAttributesAtIterator(const GtkTextIter& iter) const;
+    bool currentAttribute(Text::InlineAttribute attribute) const;
     XojFont getFontAtIterator(const GtkTextIter& iter) const;
     std::optional<Color> getColorAtIterator(const GtkTextIter& iter) const;
     void clearFontTags();
@@ -148,6 +156,7 @@ private:
         bool justify = false;
         std::optional<XojFont> typingFont;
         std::optional<Color> typingColor;
+        std::optional<uint32_t> typingAttributes;
         size_t cursorOffset = 0;
         size_t selectionBoundOffset = 0;
     };
@@ -233,8 +242,10 @@ private:
 
     std::unordered_map<std::string, GtkTextTag*> fontTags;
     std::unordered_map<uint32_t, GtkTextTag*> colorTags;
+    std::unordered_map<std::string, GtkTextTag*> attributeTags;
     std::optional<XojFont> typingFont;
     std::optional<Color> typingColor;
+    std::optional<uint32_t> typingAttributes;
 
     std::vector<TextEditState> textEditHistory;
     size_t textEditHistoryIndex = 0;
