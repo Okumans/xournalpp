@@ -108,7 +108,8 @@ public:
         return false;
     }
 
-    static constexpr double ACTION_RADIUS = 5.;
+    // Keep click selection close to the object edge (in document coordinates).
+    static constexpr double ACTION_RADIUS = 0.5;
 
     bool checkLayer(const Layer* l) override {
         double minDistance = ACTION_RADIUS;

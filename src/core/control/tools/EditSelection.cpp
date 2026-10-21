@@ -62,7 +62,7 @@ static auto computeBoxes(const InsertionOrder& elts) -> std::pair<Range, Range> 
             [](auto&& p, auto&& q) {
                 return std::pair<Range, Range>(p.first.unite(q.first), p.second.unite(q.second));
             },
-            [](auto&& e) { return std::make_pair(Range(e.e->getBoundingBox()), Range(e.e->getSnappedBounds())); });
+            [](auto&& e) { return std::make_pair(Range(e.e->getSelectionBounds()), Range(e.e->getSnappedBounds())); });
 }
 
 auto createFromFloatingElement(Control* ctrl, const PageRef& page, Layer* layer, XojPageView* view, ElementPtr eOwn)
@@ -70,7 +70,7 @@ auto createFromFloatingElement(Control* ctrl, const PageRef& page, Layer* layer,
     auto* e = eOwn.get();  // Order of parameter evaluation is unspecified, eOwn.get() must be evaluated before moving
     InsertionOrder i{1};
     i[0] = InsertionPosition{std::move(eOwn)};
-    return std::make_unique<EditSelection>(ctrl, std::move(i), page, layer, view, Range(e->getBoundingBox()),
+    return std::make_unique<EditSelection>(ctrl, std::move(i), page, layer, view, Range(e->getSelectionBounds()),
                                            Range(e->getSnappedBounds()));
 }
 
@@ -94,7 +94,7 @@ auto createFromElementOnActiveLayer(Control* ctrl, const PageRef& page, XojPageV
         return layer->removeElementAt(e, pos);
     }();
     page->fireElementChanged(e);
-    return std::make_unique<EditSelection>(ctrl, std::move(i), page, layer, view, Range(e->getBoundingBox()),
+    return std::make_unique<EditSelection>(ctrl, std::move(i), page, layer, view, Range(e->getSelectionBounds()),
                                            Range(e->getSnappedBounds()));
 }
 
@@ -221,12 +221,14 @@ EditSelection::EditSelection(Control* ctrl, InsertionOrder elts, const PageRef& 
         undo(ctrl->getUndoRedoHandler()),
         snappingHandler(ctrl->getSettings()) {
     snappingHandler.setPageRef(page);
-    // make the visible bounding box large enough so that anchors do not collapse even for horizontal/vertical strokes
-    const double PADDING = 12.;
-    x = bounds.minX - PADDING;
-    y = bounds.minY - PADDING;
-    width = bounds.getWidth() + 2 * PADDING;
-    height = bounds.getHeight() + 2 * PADDING;
+    // Keep the outline close to the object, expanding only thin dimensions
+    // enough to keep the resize handles apart.
+    constexpr double PADDING = 1.;
+    const double minExtent = 2. * this->btnWidth / view->getXournal()->getZoom();
+    width = std::max(bounds.getWidth() + 2 * PADDING, minExtent);
+    height = std::max(bounds.getHeight() + 2 * PADDING, minExtent);
+    x = bounds.minX - (width - bounds.getWidth()) / 2.;
+    y = bounds.minY - (height - bounds.getHeight()) / 2.;
 
     this->contents = std::make_unique<EditSelectionContents>(this->getRect(), this->snappedBounds, this->sourcePage,
                                                              this->sourceLayer, this->view);

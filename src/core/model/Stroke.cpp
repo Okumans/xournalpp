@@ -30,6 +30,7 @@
 #include "util/SmallVector.h"                     // for SmallVector
 #include "util/TinyVector.h"                      // for TinyVector
 #include "util/i18n.h"                            // for FC, FORMAT_STR
+#include "util/raii/CairoWrappers.h"
 #include "util/serdesstream.h"                    // for serdes_stream
 #include "util/serializing/ObjectInputStream.h"   // for ObjectInputStream
 #include "util/serializing/ObjectOutputStream.h"  // for ObjectOutputStream
@@ -501,15 +502,73 @@ auto Stroke::intersects(double x, double y, double halfEraserSize) const -> bool
 
 double Stroke::distanceTo(double x, double y) const {
     double distance = std::numeric_limits<double>::max();
+    size_t first = 0;
+    size_t last = this->points.empty() ? 0 : this->points.size() - 1;
+    while (first < last && this->points[first].equalsPos(this->points[first + 1])) {
+        ++first;
+    }
+    while (last > first && this->points[last].equalsPos(this->points[last - 1])) {
+        --last;
+    }
     for (auto&& [p1, p2]: PairView(this->points)) {
         xoj::util::Point<double> v(p2.x - p1.x, p2.y - p1.y);
-        double ratio = std::clamp(((x - p1.x) * v.x + (y - p1.y) * v.y) / (v.x * v.x + v.y * v.y), 0., 1.);
+        const double length = std::hypot(v.x, v.y);
+        if (length == 0.) {
+            if (hasPressure() || this->capStyle == StrokeCapStyle::ROUND) {
+                const double width = p1.z == Point::NO_PRESSURE ? this->width : p1.z;
+                distance = std::min(distance, std::max(std::hypot(x - p1.x, y - p1.y) - width / 2., 0.));
+            }
+            continue;
+        }
+        const double along = ((x - p1.x) * v.x + (y - p1.y) * v.y) / length;
+        if (!hasPressure() && this->capStyle != StrokeCapStyle::ROUND) {
+            const double halfWidth = this->width / 2.;
+            const bool atStart = &p1 == &this->points[first];
+            const bool atEnd = &p2 == &this->points[last];
+            const bool square = this->capStyle == StrokeCapStyle::SQUARE;
+            const double start = atStart && square ? -halfWidth : 0.;
+            const double end = length + (atEnd && square ? halfWidth : 0.);
+            const double across = std::abs((x - p1.x) * v.y - (y - p1.y) * v.x) / length;
+            double d = std::hypot(std::max({start - along, along - end, 0.}), std::max(across - halfWidth, 0.));
+
+            // Internal vertices have round joins; only the path ends use caps.
+            if (!atStart) {
+                d = std::min(d, std::max(std::hypot(x - p1.x, y - p1.y) - halfWidth, 0.));
+            }
+            if (!atEnd) {
+                d = std::min(d, std::max(std::hypot(x - p2.x, y - p2.y) - halfWidth, 0.));
+            }
+            distance = std::min(distance, d);
+            continue;
+        }
+        double ratio = std::clamp(along / length, 0., 1.);
         /// Projection of (x,y) onto the segment [p1,p2]
         xoj::util::Point<double> projection(p1.x + ratio * v.x, p1.y + ratio * v.y);
         double width = p1.z == Point::NO_PRESSURE ? this->width : p1.z;
         distance = std::clamp(std::hypot(x - projection.x, y - projection.y) - .5 * width, 0., distance);
     }
     return distance;
+}
+
+auto Stroke::getSelectionBounds() const -> Rectangle<double> {
+    if (hasPressure() || this->capStyle == StrokeCapStyle::ROUND || this->points.size() < 2) {
+        return getBoundingBox();
+    }
+
+    // Redraw bounds deliberately overestimate flat caps. Use Cairo's painted
+    // extents for selection without changing the incremental redraw bounds.
+    xoj::util::CairoSurfaceSPtr surface(cairo_recording_surface_create(CAIRO_CONTENT_ALPHA, nullptr), xoj::util::adopt);
+    xoj::util::CairoSPtr cr(cairo_create(surface.get()), xoj::util::adopt);
+    cairo_set_line_width(cr.get(), this->width);
+    cairo_set_line_join(cr.get(), CAIRO_LINE_JOIN_ROUND);
+    cairo_set_line_cap(cr.get(), this->capStyle == StrokeCapStyle::BUTT ? CAIRO_LINE_CAP_BUTT : CAIRO_LINE_CAP_SQUARE);
+    cairo_move_to(cr.get(), this->points.front().x, this->points.front().y);
+    for (size_t i = 1; i < this->points.size(); ++i) {
+        cairo_line_to(cr.get(), this->points[i].x, this->points[i].y);
+    }
+    double x1, y1, x2, y2;
+    cairo_stroke_extents(cr.get(), &x1, &y1, &x2, &y2);
+    return Rectangle<double>(x1, y1, x2 - x1, y2 - y1);
 }
 
 /**

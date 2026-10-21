@@ -71,6 +71,9 @@ public:
 
     const xoj::util::Rectangle<double>& getBoundingBox() const;
 
+    /// Bounds used for selection, which may be tighter than the redraw bounds.
+    virtual xoj::util::Rectangle<double> getSelectionBounds() const { return getBoundingBox(); }
+
     /// Returns true if the element's bounding box intersects the given rectangle, in Page coordinates
     bool intersectsArea(double x, double y, double width, double height) const;
     /// Returns the distance between the element "as drawn" and the point (x,y), in Page coordinates

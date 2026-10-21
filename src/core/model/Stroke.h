@@ -158,6 +158,8 @@ public:
      */
     double distanceTo(double x, double y) const override;
 
+    xoj::util::Rectangle<double> getSelectionBounds() const override;
+
     /**
      * @brief Find the parameters within a certain interval corresponding to the points where the stroke crosses in
      * or out of the given box with its padding. Intersections are ignored if the stroke does not hit the small box
