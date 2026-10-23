@@ -650,7 +650,7 @@
                       <object class="GtkImage">
                         <property name="visible">True</property>
                         <property name="icon-name">edit-copy-symbolic</property>
-                        <property name="pixel-size">16</property>
+                        <property name="pixel-size">20</property>
                       </object>
                     </child>
                   </object>
@@ -680,7 +680,7 @@
                       <object class="GtkImage">
                         <property name="visible">True</property>
                         <property name="icon-name">xopp-tool-highlighter</property>
-                        <property name="pixel-size">16</property>
+                        <property name="pixel-size">20</property>
                       </object>
                     </child>
                   </object>
@@ -710,7 +710,7 @@
                       <object class="GtkImage">
                         <property name="visible">True</property>
                         <property name="icon-name">format-text-underline-symbolic</property>
-                        <property name="pixel-size">16</property>
+                        <property name="pixel-size">20</property>
                       </object>
                     </child>
                   </object>
@@ -730,7 +730,7 @@
                       <object class="GtkImage">
                         <property name="visible">True</property>
                         <property name="icon-name">format-text-strikethrough-symbolic</property>
-                        <property name="pixel-size">16</property>
+                        <property name="pixel-size">20</property>
                       </object>
                     </child>
                   </object>
@@ -769,7 +769,7 @@
                       <object class="GtkImage">
                         <property name="visible">True</property>
                         <property name="icon-name">view-list-symbolic</property>
-                        <property name="pixel-size">16</property>
+                        <property name="pixel-size">20</property>
                       </object>
                     </child>
                   </object>
@@ -786,7 +786,7 @@
               <object class="GtkImage" id="pdfTbPaletteIcon">
                 <property name="visible">True</property>
                 <property name="icon-name">xopp-tool-highlighter</property>
-                <property name="pixel-size">16</property>
+                <property name="pixel-size">20</property>
                 <property name="margin-start">7</property>
                 <property name="margin-end">8</property>
                 <property name="tooltip-text" translatable="yes">Highlight colors</property>
