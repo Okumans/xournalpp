@@ -12,8 +12,8 @@ RulerHandler::~RulerHandler() = default;
 
 auto RulerHandler::createShape(bool isAltDown, bool isShiftDown, bool isControlDown)
         -> std::pair<std::vector<Point>, Range> {
-    Point secondPoint = snappingHandler.snap(this->currPoint, this->startPoint, isAltDown);
-    Range rg(this->startPoint.x, this->startPoint.y);
-    rg.addPoint(secondPoint.x, secondPoint.y);
-    return {{this->startPoint, secondPoint}, rg};
+    auto [start, end] = lineEndpoints(isAltDown || isControlDown, isShiftDown);
+    Range rg(start.x, start.y);
+    rg.addPoint(end.x, end.y);
+    return {{start, end}, rg};
 }

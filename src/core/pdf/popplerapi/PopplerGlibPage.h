@@ -53,6 +53,11 @@ public:
     std::string getPageLabel() const override;
 
 private:
+    struct TextLayout {
+        std::once_flag initialized;
+        std::vector<PopplerRectangle> rectangles;
+    };
+    std::shared_ptr<TextLayout> textLayout = std::make_shared<TextLayout>();
     PopplerPage* page;
     PopplerDocument* document;
     std::shared_ptr<std::mutex> mutex;  ///< Poppler doesn't support parallel renderings. Lock this mutex when rendering

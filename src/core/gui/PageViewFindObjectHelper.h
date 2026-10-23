@@ -108,6 +108,8 @@ public:
         return false;
     }
 
+    const Element* getMatch() const { return match; }
+
     // Keep click selection close to the object edge (in document coordinates).
     static constexpr double ACTION_RADIUS = 0.5;
 

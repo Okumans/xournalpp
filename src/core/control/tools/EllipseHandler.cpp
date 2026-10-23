@@ -20,14 +20,14 @@ auto EllipseHandler::createShape(bool isAltDown, bool isShiftDown, bool isContro
     /**
      * Snap point to grid (if enabled - Alt key pressed will toggle)
      */
-    Point c = snappingHandler.snapToGrid(this->currPoint, isAltDown);
+    Point c = snappingHandler.snapToGrid(this->currPoint, false);
 
     double width = c.x - this->startPoint.x;
     double height = c.y - this->startPoint.y;
 
 
     this->modShift = isShiftDown;
-    this->modControl = isControlDown;
+    this->modControl = isAltDown || isControlDown;
 
     Settings* settings = control->getSettings();
     if (settings->getDrawDirModsEnabled()) {
@@ -37,8 +37,7 @@ auto EllipseHandler::createShape(bool isAltDown, bool isShiftDown, bool isContro
 
     if (this->modShift) {
         // make circle
-        width = (this->modControl) ? std::hypot(width, height) :
-                                     std::copysign(std::max(std::abs(width), std::abs(height)), width);
+        width = std::copysign(std::max(std::abs(width), std::abs(height)), width);
         height = std::copysign(width, height);
     }
 
@@ -63,8 +62,7 @@ auto EllipseHandler::createShape(bool isAltDown, bool isShiftDown, bool isContro
     /*
      * Set resolution depending on the radius (heuristic)
      */
-    auto nbPtsPerQuadrant =
-            static_cast<unsigned int>(std::ceil(5 + 0.3 * (std::abs(radiusX) + std::abs(radiusY))));
+    auto nbPtsPerQuadrant = static_cast<unsigned int>(std::ceil(5 + 0.3 * (std::abs(radiusX) + std::abs(radiusY))));
     const double stepAngle = M_PI_2 / nbPtsPerQuadrant;
 
     std::pair<std::vector<Point>, Range> res;
@@ -80,7 +78,9 @@ auto EllipseHandler::createShape(bool isAltDown, bool isShiftDown, bool isContro
     shape.emplace_back(center_x + radiusX, center_y);
     for (unsigned int j = 1U; j < nbPtsPerQuadrant; j++) {
         const double tgtAngle = stepAngle * j;
-        const double centerAngle = 0.25 * (std::atan2(std::abs(radiusY) * std::sin(tgtAngle), std::abs(radiusX) * std::cos(tgtAngle))) + 0.75 * tgtAngle;
+        const double centerAngle =
+                0.25 * (std::atan2(std::abs(radiusY) * std::sin(tgtAngle), std::abs(radiusX) * std::cos(tgtAngle))) +
+                0.75 * tgtAngle;
         double xp = center_x + radiusX * std::cos(centerAngle);
         double yp = center_y + radiusY * std::sin(centerAngle);
         shape.emplace_back(xp, yp);

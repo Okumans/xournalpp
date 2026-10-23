@@ -81,6 +81,8 @@ static gboolean keyboardCallback(GtkEventControllerKey* self, guint keyval, guin
 InputContext::~InputContext() {
     // Destructor is called in xournal_widget_dispose, so it can still accept events
     g_signal_handler_disconnect(this->widget, signal_id);
+    // Widget disposal can still emit focus-out after destroying InputContext.
+    g_signal_handlers_disconnect_by_data(this->widget, this);
 }
 
 void InputContext::connect(GtkWidget* pWidget, bool connectKeyboardHandler,
@@ -111,7 +113,14 @@ void InputContext::connect(GtkWidget* pWidget, bool connectKeyboardHandler,
             GDK_TOUCH_MASK | GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
             GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK | GDK_PROXIMITY_IN_MASK | GDK_PROXIMITY_OUT_MASK;
 
-    gtk_widget_add_events(pWidget, mask);
+    gtk_widget_add_events(pWidget, mask | GDK_FOCUS_CHANGE_MASK);
+    g_signal_connect(pWidget, "focus-out-event", G_CALLBACK(+[](GtkWidget*, GdkEventFocus*, gpointer data) -> gboolean {
+                         if (auto* view = static_cast<InputContext*>(data)->getView()) {
+                             view->releaseSpacePan();
+                         }
+                         return false;
+                     }),
+                     this);
 
 
     if (!logfunction) {

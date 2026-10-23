@@ -41,6 +41,9 @@ public:
     /// Hide the floating toolbox widget (keeping the current selection).
     void hide();
 
+    /// Show a color control for an existing highlight selected with Smart Select.
+    void showForObjectSelection(int x, int y);
+
     /// Returns true if the toolbox is currently hidden.
     bool isHidden() const;
 
@@ -67,6 +70,9 @@ public:
 
 private:
     void show();
+    static void highlightColorCb(GtkColorButton* button, PdfFloatingToolbox* pft);
+    static void textColorCb(GtkColorButton* button, PdfFloatingToolbox* pft);
+    void updateColorButtons();
 
     static gboolean getOverlayPosition(GtkOverlay* overlay, GtkWidget* widget, GdkRectangle* allocation,
                                        PdfFloatingToolbox* self);
@@ -80,6 +86,7 @@ private:
     void createStrokes(PdfMarkerStyle position, PdfMarkerStyle width, int markerOpacity);
 
 private:
+    bool objectSelection = false;
     GtkWidget* floatingToolbox;
     MainWindow* theMainWindow;
     Color color;      ///< Remembered Highlighter color

@@ -30,6 +30,8 @@ public:
     void setMouseSelectionType(CursorSelectionType selectionType);
 
     void setMouseDown(bool mouseDown);
+    void setTemporaryHand(bool enabled);
+    void setSmartSelectText(bool enabled);
     void setInvisible(bool invisible);
     void setInsidePage(bool insidePage);
     void setIsLinkHighlighted(bool higlighted);
@@ -59,6 +61,8 @@ private:
     CursorSelectionType selectionType = CURSOR_SELECTION_NONE;
 
     bool mouseDown = false;
+    bool temporaryHand = false;
+    bool smartSelectText = false;
     bool invisible = false;
     bool linkHighlighted = false;
 

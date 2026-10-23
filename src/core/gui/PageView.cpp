@@ -2,8 +2,8 @@
 
 #include <algorithm>  // for max, find_if
 #include <cinttypes>  // for int64_t
-#include <cstdint>    // for int64_t
 #include <cmath>      // for abs
+#include <cstdint>    // for int64_t
 #include <cstdlib>    // for size_t
 #include <iomanip>    // for operator<<, quoted
 #include <memory>     // for unique_ptr, make_...
@@ -125,7 +125,12 @@ void XojPageView::addOverlayView(std::unique_ptr<xoj::view::OverlayView> overlay
     this->overlayViews.emplace_back(std::move(overlay));
 }
 
-void XojPageView::setIsVisible(bool visible) { this->visible = visible; }
+void XojPageView::setIsVisible(bool visible) {
+    this->visible = visible;
+    if (!visible) {
+        clearHover(true);
+    }
+}
 
 void XojPageView::deleteViewBuffer() {
     std::lock_guard lock(this->drawingMutex);
@@ -201,16 +206,24 @@ void XojPageView::startText(double x, double y) {
     }
 }
 
-bool XojPageView::smartSelectTextAtPress() const {
-    const size_t pdfPageNr = this->page->getPdfPageNr();
-    if (pdfPageNr == npos) {
-        return false;
+std::shared_ptr<XojPdfPage> XojPageView::getHitTestPage() {
+    const auto number = this->page->getPdfPageNr();
+    if (number == npos) {
+        hitTestPage.reset();
+        hitTestPageNumber.reset();
+        return nullptr;
     }
+    if (!hitTestPage || hitTestPageNumber != number) {
+        auto* document = xournal->getControl()->getDocument();
+        std::shared_lock lock(*document);
+        hitTestPage = document->getPdfPage(number);
+        hitTestPageNumber = number;
+    }
+    return hitTestPage;
+}
 
-    Document* doc = this->xournal->getControl()->getDocument();
-    doc->lock_shared();
-    auto pdf = doc->getPdfPage(pdfPageNr);
-    doc->unlock_shared();
+bool XojPageView::smartSelectTextAtPress() {
+    auto pdf = getHitTestPage();
     return pdf && pdf->hasTextAt(this->smartSelectStartX, this->smartSelectStartY);
 }
 
@@ -249,8 +262,8 @@ void XojPageView::startSmartSelectDelegate(double x, double y) {
     }
 
     this->selector = std::make_unique<RectangularSelector>(this->smartSelectStartX, this->smartSelectStartY);
-    this->overlayViews.emplace_back(std::make_unique<xoj::view::SelectorView>(
-            this->selector.get(), this, this->settings->getSelectionColor()));
+    this->overlayViews.emplace_back(
+            std::make_unique<xoj::view::SelectorView>(this->selector.get(), this, this->settings->getSelectionColor()));
     this->selector->currentPos(x, y);
 }
 
@@ -292,16 +305,15 @@ void XojPageView::finalizeSmartSelect(const PositionInputData& pos) {
                     this->xournal->setSelection([&]() {
                         if (aggregate) {
                             auto selected = this->selector->releaseElements();
-                            return SelectionFactory::addElementsFromActiveLayer(control,
-                                                                                  this->xournal->getSelection(),
-                                                                                  selected);
+                            return SelectionFactory::addElementsFromActiveLayer(control, this->xournal->getSelection(),
+                                                                                selected);
                         }
 
                         control->getLayerController()->switchToLay(layerOfFinalizedSel);
-                        return SelectionFactory::createFromElementsOnActiveLayer(
-                                control, this->page, this, this->selector->releaseElements());
+                        return SelectionFactory::createFromElementsOnActiveLayer(control, this->page, this,
+                                                                                 this->selector->releaseElements());
                     }()
-                                                                  .release());
+                                                        .release());
                 } else if (this->selector->userTapped(zoom)) {
                     if (aggregate) {
                         SelectObject(this).atAggregate(x, y);
@@ -339,8 +351,8 @@ void XojPageView::cancelSmartSelect() {
     }
 
     if (this->selector) {
-        this->selector->getViewPool()->dispatchAndClear(
-                xoj::view::SelectorView::DELETE_VIEWS_REQUEST, Range(0, 0, this->getWidth(), this->getHeight()));
+        this->selector->getViewPool()->dispatchAndClear(xoj::view::SelectorView::DELETE_VIEWS_REQUEST,
+                                                        Range(0, 0, this->getWidth(), this->getHeight()));
         this->selector.reset();
     }
 
@@ -402,6 +414,8 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
         return false;
     }
     currentSequenceDeviceId = pos.deviceId;
+    clearHover();
+    this->xournal->getControl()->getWindow()->getPdfToolbox()->hide();
 
     Control* control = xournal->getControl();
 
@@ -462,8 +476,7 @@ auto XojPageView::onButtonPressEvent(const PositionInputData& pos) -> bool {
                 this->inputHandler = std::make_unique<CoordinateSystemHandler>(control, getPage());
                 break;
             default:
-                this->inputHandler =
-                        std::make_unique<StrokeHandler>(control, getPage(), *this->straightLineConstraint);
+                this->inputHandler = std::make_unique<StrokeHandler>(control, getPage(), *this->straightLineConstraint);
         }
         this->inputHandler->onButtonPressEvent(pos, zoom);
         this->overlayViews.emplace_back(this->inputHandler->createView(this));
@@ -785,6 +798,73 @@ auto XojPageView::onButtonTriplePressEvent(const PositionInputData& pos) -> bool
     return true;
 }
 
+bool XojPageView::isConnectingTap() const {
+    const auto* stroke = dynamic_cast<const StrokeHandler*>(inputHandler.get());
+    return stroke && stroke->isConnectingTap();
+}
+
+void XojPageView::clearHover(bool releasePdf) {
+    if (releasePdf) {
+        hitTestPage.reset();
+        hitTestPageNumber.reset();
+    }
+    if (hoverBounds) {
+        auto bounds = *hoverBounds;
+        hoverBounds.reset();
+        Range dirty(bounds);
+        dirty.addPadding(3 / getZoom());
+        flagDirtyRegion(dirty);
+    }
+    hoverPdfText = false;
+    xournal->getCursor()->setSmartSelectText(false);
+}
+
+void XojPageView::updateHover(const PositionInputData& pos) {
+    auto* tools = xournal->getControl()->getToolHandler();
+    const bool smart = tools->getToolType() == TOOL_SMART_SELECT;
+    const bool deleting = tools->getToolType() == TOOL_ERASER && tools->getEraserType() == ERASER_TYPE_DELETE_STROKE;
+    if ((!smart && !deleting) || textEditor || currentSequenceDeviceId || xournal->getSelection()) {
+        clearHover();
+        return;
+    }
+    const double x = pos.x / getZoom();
+    const double y = pos.y / getZoom();
+    SelectObject hit(this);
+    hit.findAt(x, y, false, false);
+    const auto* element = hit.getMatch();
+    if (deleting) {
+        element = nullptr;
+        std::shared_lock lock(*xournal->getControl()->getDocument());
+        const auto elements = page->getSelectedLayer()->getElementsView();
+        for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
+            const auto* stroke = dynamic_cast<const Stroke*>(*it);
+            if (stroke && stroke->intersects(x, y, tools->getThickness())) {
+                element = stroke;
+                break;
+            }
+        }
+    }
+    std::optional<xoj::util::Rectangle<double>> next;
+    if (element) {
+        next = element->getSelectionBounds();
+    }
+    if (hoverBounds != next) {
+        clearHover();
+        hoverBounds = next;
+        if (hoverBounds) {
+            Range dirty(*hoverBounds);
+            dirty.addPadding(3 / getZoom());
+            flagDirtyRegion(dirty);
+        }
+    }
+    hoverPdfText = false;
+    if (smart && !element && page->getPdfPageNr() != npos) {
+        auto pdf = getHitTestPage();
+        hoverPdfText = pdf && pdf->hasTextAt(x, y);
+    }
+    xournal->getCursor()->setSmartSelectText(hoverPdfText);
+}
+
 auto XojPageView::onMotionNotifyEvent(const PositionInputData& pos) -> bool {
     if (currentSequenceDeviceId && currentSequenceDeviceId != pos.deviceId) {
         // This motion event is not from the device which started the sequence: reject it
@@ -802,8 +882,8 @@ auto XojPageView::onMotionNotifyEvent(const PositionInputData& pos) -> bool {
         // input handler used this event
     } else if (this->smartSelectActive) {
         if (this->smartSelectState == SmartSelectState::Undecided) {
-            const double maxDist = std::max(std::abs(x - this->smartSelectStartX),
-                                            std::abs(y - this->smartSelectStartY));
+            const double maxDist =
+                    std::max(std::abs(x - this->smartSelectStartX), std::abs(y - this->smartSelectStartY));
             if (maxDist >= 10.0 / zoom) {
                 this->startSmartSelectDelegate(x, y);
             }
@@ -1084,8 +1164,14 @@ auto XojPageView::onKeyPressEvent(const KeyEvent& event) -> bool {
         }
     }
 
+    if (event.keyval == GDK_KEY_space && this->currentSequenceDeviceId) {
+        return true;  // Never change a running ink/eraser gesture into panning.
+    }
+
     // Esc leaves text edition
     if (event.keyval == GDK_KEY_Escape) {
+        this->straightLineConstraint->endpoint.reset();
+        this->straightLineConstraint->reset();
         if (this->textEditor) {
             endText();
             return true;
@@ -1404,6 +1490,20 @@ auto XojPageView::paintPage(cairo_t* cr, GdkRectangle* rect) -> bool {
     for (const auto& v: this->overlayViews) {
         v->draw(cr);
     }
+    const auto* tools = xournal->getControl()->getToolHandler();
+    if (hoverBounds && !currentSequenceDeviceId && !xournal->getSelection() &&
+        (tools->getToolType() == TOOL_SMART_SELECT ||
+         (tools->getToolType() == TOOL_ERASER && tools->getEraserType() == ERASER_TYPE_DELETE_STROKE))) {
+        const auto& bounds = *hoverBounds;
+        const auto color = getSelectionColor();
+        gdk_cairo_set_source_rgba(cr, &color);
+        cairo_set_line_width(cr, 1.0 / zoom);
+        const double dash[] = {3.0 / zoom, 3.0 / zoom};
+        cairo_set_dash(cr, dash, 2, 0);
+        cairo_rectangle(cr, bounds.x - 1.0 / zoom, bounds.y - 1.0 / zoom, bounds.width + 2.0 / zoom,
+                        bounds.height + 2.0 / zoom);
+        cairo_stroke(cr);
+    }
 
     return true;
 }
@@ -1446,7 +1546,10 @@ void XojPageView::rectChanged(Rectangle<double>& rect) { rerenderRect(rect.x, re
 
 void XojPageView::rangeChanged(Range& range) { rerenderRange(range); }
 
-void XojPageView::pageChanged() { rerenderPage(); }
+void XojPageView::pageChanged() {
+    clearHover(true);
+    rerenderPage();
+}
 
 void XojPageView::elementChanged(const Element* elem) {
     /*

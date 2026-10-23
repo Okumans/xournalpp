@@ -15,8 +15,9 @@
 #include <cstdint>  // for uint64_t
 #include <memory>   // for unique_ptr, shared_ptr
 #include <mutex>    // for mutex
-#include <string>   // for string
-#include <vector>   // for vector
+#include <optional>
+#include <string>  // for string
+#include <vector>  // for vector
 
 #include <cairo.h>    // for cairo_t
 #include <gdk/gdk.h>  // for GdkEventKey, GdkRGBA, GdkRectangle
@@ -168,6 +169,9 @@ public:  // event handler
     bool onMotionNotifyEvent(const PositionInputData& pos);
     void onSequenceCancelEvent(DeviceId id);
     void onTapEvent(const PositionInputData& pos);
+    void updateHover(const PositionInputData& pos);
+    void clearHover(bool releasePdf = false);
+    bool isConnectingTap() const;
 
     /**
      * This event fires after onButtonPressEvent and also
@@ -201,7 +205,8 @@ private:
     void startSmartSelectDelegate(double x, double y);
     void finalizeSmartSelect(const PositionInputData& pos);
     void cancelSmartSelect();
-    bool smartSelectTextAtPress() const;
+    bool smartSelectTextAtPress();
+    std::shared_ptr<XojPdfPage> getHitTestPage();
 
     void startLink();
 
@@ -301,6 +306,10 @@ private:
 
 
     DeviceId currentSequenceDeviceId;
+    std::optional<xoj::util::Rectangle<double>> hoverBounds;
+    bool hoverPdfText = false;
+    std::shared_ptr<XojPdfPage> hitTestPage;
+    std::optional<size_t> hitTestPageNumber;
 
     bool smartSelectActive = false;
     SmartSelectState smartSelectState = SmartSelectState::Undecided;

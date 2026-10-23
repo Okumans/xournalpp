@@ -421,3 +421,51 @@ You can still check out the [separate repository on GitLab](https://gitlab.com/T
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md). If your pull request does not need Xournal++ to be built to test it (e.g. for a README update), you can prepend [skip ci] to the title of the commit to disable CI running.
+
+### Drawing and PDF interaction improvements
+
+The existing tool shortcuts and shape-tool selection behavior are unchanged.
+Tool colors remain independent: choosing a PDF annotation color does not change
+the Pen color or switch away from Smart Select.
+
+| Interaction | Behavior |
+| --- | --- |
+| PDF floating toolbar color swatch | Choose a color and apply the selected text highlight without switching tools |
+| Select an existing highlight with Smart Select | Use its contextual color swatch to recolor it directly; undo restores the previous color |
+| PDF text-color swatch | Choose the remembered Text-tool color for underlines and strikethroughs |
+| Shift while drawing a rectangle / ellipse | Constrain to a square / circle |
+| Shift while drawing a line / arrow | Constrain to 45-degree increments |
+| Alt while drawing a shape | Draw symmetrically from the initial point; Shift + Alt combines both constraints |
+| Ctrl while drawing a shape | Legacy alias for drawing from the center |
+| Hold Space during a shape drag | Reposition the unfinished shape without changing its dimensions |
+| Esc during a shape drag | Cancel without creating an object or undo entry |
+| Shift-click with Pen / Highlighter | Connect the previous stroke endpoint to the clicked point at the selected width; continue Shift-clicking for more segments |
+| Esc | Forget the remembered endpoint for Shift-click segments |
+| Hold Space on the canvas | Temporarily pan without changing tool settings; release Space to restore normal input |
+| `[` / `]` on the canvas | Decrease / increase the current drawing tool's width preset and show its width near the pointer |
+
+Modifiers update the shape preview immediately, including when pressed or
+released during a drag. Alt is reserved for centered construction in these
+shape tools; the snapping settings still apply. The optional drawing-direction
+modifier setting retains its existing behavior.
+
+Smart Select outlines hovered objects and uses a text cursor over selectable
+PDF text. The eraser has a transparent outline matching its mode: a square for
+standard erasing, a circle at the actual whiteout stroke width, and a marked
+square for whole-stroke deletion. Cursor rendering accounts for zoom and display
+scale, and refreshes immediately when changing eraser mode or size.
+
+PDF text hit-testing reuses the page's immutable glyph layout during pointer
+motion instead of extracting it for every event. The hovered-page reference is
+released on page exit, invisibility, or background changes. Run the focused
+microbenchmark with:
+
+```sh
+build/test/benchmarks --gtest_filter=PdfTextHitBenchmark.*
+```
+
+It prints paired results for the original extraction-per-query algorithm and
+the cached helper. These results measure hit-testing only, not overall scrolling
+or application speed. Existing document-load and first-page GUI benchmarks remain
+available through `scripts/run-load-benchmarks.sh` and
+`scripts/run-gui-load-benchmark.sh`.

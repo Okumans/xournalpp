@@ -9,17 +9,17 @@
 
 #include <gdk/gdk.h>  // for GdkEventKey
 
-#include "control/Control.h"                                // for Control
-#include "control/ToolEnums.h"                              // for DRAWING_TYPE_ST...
-#include "control/ToolHandler.h"                            // for ToolHandler
-#include "control/layer/LayerController.h"                  // for LayerController
-#include "control/settings/Settings.h"                      // for Settings
-#include "control/settings/SettingsEnums.h"                 // for EmptyLastPageAppendType
-#include "control/shaperecognizer/ShapeRecognizer.h"        // for ShapeRecognizer
-#include "control/tools/InputHandler.h"                     // for InputHandler::P...
-#include "control/tools/SnapToGridInputHandler.h"           // for SnapToGridInput...
-#include "gui/inputdevices/PositionInputData.h"             // for PositionInputData
-#include "model/Document.h"                                 // for Document
+#include "control/Control.h"                          // for Control
+#include "control/ToolEnums.h"                        // for DRAWING_TYPE_ST...
+#include "control/ToolHandler.h"                      // for ToolHandler
+#include "control/layer/LayerController.h"            // for LayerController
+#include "control/settings/Settings.h"                // for Settings
+#include "control/settings/SettingsEnums.h"           // for EmptyLastPageAppendType
+#include "control/shaperecognizer/ShapeRecognizer.h"  // for ShapeRecognizer
+#include "control/tools/InputHandler.h"               // for InputHandler::P...
+#include "control/tools/SnapToGridInputHandler.h"     // for SnapToGridInput...
+#include "gui/inputdevices/PositionInputData.h"       // for PositionInputData
+#include "model/Document.h"                           // for Document
 #include "model/Element.h"
 #include "model/Layer.h"                                    // for Layer
 #include "model/LineStyle.h"                                // for LineStyle
@@ -78,6 +78,9 @@ auto StrokeHandler::onMotionNotifyEvent(const PositionInputData& pos, double zoo
     }
 
     const Point pointerPosition(pos.x / zoom, pos.y / zoom);
+    if (std::hypot(pointerPosition.x - buttonDownPoint.x, pointerPosition.y - buttonDownPoint.y) * zoom > 4.0) {
+        this->pointerDragged = true;
+    }
     PositionInputData strokePosition = pos;
 
     if (pos.isShiftDown()) {
@@ -147,7 +150,7 @@ void StrokeHandler::paintTo(Point point) {
              * Both device and tool are pressure sensitive
              */
             if (const double widthDelta = point.z - endPoint.z;
-                - widthDelta > MAX_WIDTH_VARIATION || widthDelta > MAX_WIDTH_VARIATION) {
+                -widthDelta > MAX_WIDTH_VARIATION || widthDelta > MAX_WIDTH_VARIATION) {
                 /**
                  * If the width variation is to big, decompose into shorter segments.
                  * Those segments can not be shorter than PIXEL_MOTION_THRESHOLD
@@ -219,6 +222,19 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
         return;
     }
     finalizeStroke(pos.pressure);
+    Range replacementRange;
+    if (shiftClickCandidate && !pointerDragged && pos.isShiftDown() &&
+        std::hypot(pos.x / zoom - buttonDownPoint.x, pos.y / zoom - buttonDownPoint.y) * zoom <= 4.0) {
+        replacementRange = Range(stroke->getBoundingBox());
+        const Point end(pos.x / zoom, pos.y / zoom);
+        stroke->setPointVector({Point(connectFrom.x, connectFrom.y), end});
+        replacementRange = replacementRange.unite(Range(stroke->getBoundingBox()));
+        this->viewPool->dispatch(xoj::view::StrokeToolView::STROKE_REPLACEMENT_REQUEST, *stroke);
+    }
+    straightLineConstraint->endpoint = stroke->getPointVector().back();
+    straightLineConstraint->endpointLayer = page->getSelectedLayer();
+    straightLineConstraint->endpointStroke = stroke.get();
+    straightLineConstraint->endpointTool = control->getToolHandler()->getToolType();
 
     Layer* layer = page->getSelectedLayer();
 
@@ -261,7 +277,7 @@ void StrokeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zo
 
     // Blitt the stroke to the page's buffer and delete all views.
     // Passing the empty Range() as no actual redrawing is necessary at this point
-    this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::FINALIZATION_REQUEST, Range());
+    this->viewPool->dispatchAndClear(xoj::view::StrokeToolView::FINALIZATION_REQUEST, replacementRange);
 
     page->fireElementChanged(ptr);
 }
@@ -316,6 +332,17 @@ void StrokeHandler::onButtonPressEvent(const PositionInputData& pos, double zoom
     this->buttonDownPoint.y = pos.y / zoom;
 
     const Point pointerPosition(pos.x / zoom, pos.y / zoom);
+    auto* handler = control->getToolHandler();
+    const auto& elements = page->getSelectedLayer()->getElementsView();
+    this->shiftClickCandidate =
+            pos.isShiftDown() && straightLineConstraint->endpoint &&
+            straightLineConstraint->endpointLayer == page->getSelectedLayer() &&
+            straightLineConstraint->endpointTool == handler->getToolType() &&
+            (handler->getToolType() == TOOL_PEN || handler->getToolType() == TOOL_HIGHLIGHTER) &&
+            std::find(elements.begin(), elements.end(), straightLineConstraint->endpointStroke) != elements.end();
+    if (shiftClickCandidate) {
+        connectFrom = *straightLineConstraint->endpoint;
+    }
     PositionInputData strokePosition = pos;
     if (pos.isShiftDown()) {
         if (!this->straightLineConstraint->shiftActive) {

@@ -166,7 +166,10 @@ void MainWindow::populate(GladeSearchpath* gladeSearchPath) {
 
 GMenuModel* MainWindow::getMenuModel() const { return menubar->getModel(); }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // GtkSettings outlives a window; its callbacks must not retain a dead window.
+    g_signal_handlers_disconnect_by_data(gtk_widget_get_settings(this->window), this);
+}
 
 struct ThemeProperties {
     bool dark;

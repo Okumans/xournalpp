@@ -11,7 +11,7 @@
 
 #pragma once
 
-#include <memory>  // for shared_ptr
+#include <memory>   // for shared_ptr
 #include <utility>  // for pair
 #include <vector>   // for vector
 
@@ -35,7 +35,7 @@ namespace xoj::view {
 class OverlayView;
 class Repaintable;
 class ShapeToolView;
-};
+};  // namespace xoj::view
 
 enum DIRSET_MODIFIERS { NONE = 0, SET = 1, SHIFT = 1 << 1, CONTROL = 1 << 2 };
 
@@ -91,6 +91,9 @@ protected:
      */
     void modifyModifiersByDrawDir(double width, double height, double zoom, bool changeCursor = true);
 
+    /// Line endpoints with Shift angle constraints and Alt (or legacy Ctrl) centering.
+    std::pair<Point, Point> lineEndpoints(bool centered, bool constrained) const;
+
 protected:
     std::vector<Point> shape;
 
@@ -111,6 +114,8 @@ protected:
     Point currPoint;
     Point buttonDownPoint;  // used for tapSelect and filtering - never snapped to grid.
     Point startPoint;       // May be snapped to grid
+    bool repositioning = false;
+    bool cancelled = false;
 
     std::shared_ptr<xoj::util::DispatchPool<xoj::view::ShapeToolView>> viewPool;
 };
