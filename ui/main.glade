@@ -781,17 +781,9 @@
         <child>
           <object class="GtkBox" id="pdfTbPalette">
             <property name="visible">True</property>
+            <property name="halign">center</property>
+            <property name="tooltip-text" translatable="yes">Highlight colors</property>
             <property name="spacing">4</property>
-            <child>
-              <object class="GtkImage" id="pdfTbPaletteIcon">
-                <property name="visible">True</property>
-                <property name="icon-name">xopp-tool-highlighter</property>
-                <property name="pixel-size">20</property>
-                <property name="margin-start">7</property>
-                <property name="margin-end">8</property>
-                <property name="tooltip-text" translatable="yes">Highlight colors</property>
-              </object>
-            </child>
             <child>
               <object class="GtkButton" id="pdfTbPresetYellow">
                 <property name="visible">True</property>

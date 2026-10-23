@@ -299,10 +299,10 @@ void PdfFloatingToolbox::show() {
     gtk_widget_hide(this->floatingToolbox);  // force showing in new position
     gtk_widget_show_all(this->floatingToolbox);
     gtk_widget_set_visible(theMainWindow->get("pdfTbTextActions"), !this->objectSelection);
-    auto* paletteIcon = theMainWindow->get("pdfTbPaletteIcon");
+    auto* palette = theMainWindow->get("pdfTbPalette");
     const auto* description = objectSelection ? _("Recolor selected highlight") : _("Highlight colors");
-    gtk_widget_set_tooltip_text(paletteIcon, description);
-    atk_object_set_name(gtk_widget_get_accessible(paletteIcon), description);
+    gtk_widget_set_tooltip_text(palette, description);
+    atk_object_set_name(gtk_widget_get_accessible(palette), description);
 }
 
 void PdfFloatingToolbox::copyTextToClipboard() {
