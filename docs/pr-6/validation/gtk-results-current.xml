@@ -1,75 +1,75 @@
 <?xml version='1.0' encoding='utf-8'?>
-<testsuites tests="24" failures="0" errors="0" name="GTK tests in separate processes" time="6.198999999999999">
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.254" timestamp="2026-10-23T06:47:21.679">
-    <testcase name="rectangleModifiersChangeTheLivePreview" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="116" status="run" result="completed" time="0.254" timestamp="2026-10-23T06:47:21.679" classname="DrawingInteractionTest" />
+<testsuites tests="24" failures="0" errors="0" name="GTK tests in separate processes" time="6.693999999999999">
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.468" timestamp="2026-10-23T06:55:17.136">
+    <testcase name="rectangleModifiersChangeTheLivePreview" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="116" status="run" result="completed" time="0.467" timestamp="2026-10-23T06:55:17.136" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.235" timestamp="2026-10-23T06:47:21.971">
-    <testcase name="centeredCircleFitsItsDragBox" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="132" status="run" result="completed" time="0.235" timestamp="2026-10-23T06:47:21.971" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.278" timestamp="2026-10-23T06:55:17.651">
+    <testcase name="centeredCircleFitsItsDragBox" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="132" status="run" result="completed" time="0.278" timestamp="2026-10-23T06:55:17.651" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.242" timestamp="2026-10-23T06:47:22.246">
-    <testcase name="linesSnapToDiagonalAndSupportCenteredDrawing" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="149" status="run" result="completed" time="0.242" timestamp="2026-10-23T06:47:22.246" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.275" timestamp="2026-10-23T06:55:17.974">
+    <testcase name="linesSnapToDiagonalAndSupportCenteredDrawing" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="149" status="run" result="completed" time="0.275" timestamp="2026-10-23T06:55:17.974" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.261" timestamp="2026-10-23T06:47:22.525">
-    <testcase name="spaceMovesTheUnfinishedRectangleWithoutResizing" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="160" status="run" result="completed" time="0.261" timestamp="2026-10-23T06:47:22.525" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.272" timestamp="2026-10-23T06:55:18.312">
+    <testcase name="spaceMovesTheUnfinishedRectangleWithoutResizing" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="160" status="run" result="completed" time="0.272" timestamp="2026-10-23T06:55:18.312" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.25" timestamp="2026-10-23T06:47:22.828">
-    <testcase name="escapeCancelsWithoutAnUndoEntryEvenAfterPointerRelease" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="177" status="run" result="completed" time="0.25" timestamp="2026-10-23T06:47:22.828" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.261" timestamp="2026-10-23T06:55:18.633">
+    <testcase name="escapeCancelsWithoutAnUndoEntryEvenAfterPointerRelease" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="177" status="run" result="completed" time="0.261" timestamp="2026-10-23T06:55:18.633" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.247" timestamp="2026-10-23T06:47:23.140">
-    <testcase name="completedShapeIsOneUndoStep" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="189" status="run" result="completed" time="0.247" timestamp="2026-10-23T06:47:23.140" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.26" timestamp="2026-10-23T06:55:18.936">
+    <testcase name="completedShapeIsOneUndoStep" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="189" status="run" result="completed" time="0.26" timestamp="2026-10-23T06:55:18.936" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.26" timestamp="2026-10-23T06:47:23.429">
-    <testcase name="shiftClickConnectsAtTheSelectedWidthAndSupportsUndo" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="200" status="run" result="completed" time="0.26" timestamp="2026-10-23T06:47:23.429" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.277" timestamp="2026-10-23T06:55:19.243">
+    <testcase name="shiftClickConnectsAtTheSelectedWidthAndSupportsUndo" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="200" status="run" result="completed" time="0.277" timestamp="2026-10-23T06:55:19.243" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.236" timestamp="2026-10-23T06:47:23.735">
-    <testcase name="heldSpaceAndWidthShortcutsPreserveTheTool" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="224" status="run" result="completed" time="0.236" timestamp="2026-10-23T06:47:23.735" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.247" timestamp="2026-10-23T06:55:19.565">
+    <testcase name="heldSpaceAndWidthShortcutsPreserveTheTool" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="224" status="run" result="completed" time="0.247" timestamp="2026-10-23T06:55:19.565" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.249" timestamp="2026-10-23T06:47:24.016">
-    <testcase name="pdfColorControlsDoNotChangeTheSelectedTool" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="238" status="run" result="completed" time="0.249" timestamp="2026-10-23T06:47:24.016" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.271" timestamp="2026-10-23T06:55:19.858">
+    <testcase name="pdfColorControlsDoNotChangeTheSelectedTool" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="238" status="run" result="completed" time="0.27" timestamp="2026-10-23T06:55:19.858" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.265" timestamp="2026-10-23T06:47:24.313">
-    <testcase name="existingHighlightCanBeRecoloredWithoutReselectingPdfText" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="250" status="run" result="completed" time="0.265" timestamp="2026-10-23T06:47:24.313" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.282" timestamp="2026-10-23T06:55:20.202">
+    <testcase name="existingHighlightCanBeRecoloredWithoutReselectingPdfText" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="250" status="run" result="completed" time="0.282" timestamp="2026-10-23T06:55:20.202" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.246" timestamp="2026-10-23T06:47:24.629">
-    <testcase name="temporaryPanDoesNotCreateInkThroughTheInputPipeline" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="282" status="run" result="completed" time="0.246" timestamp="2026-10-23T06:47:24.629" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.273" timestamp="2026-10-23T06:55:20.531">
+    <testcase name="temporaryPanDoesNotCreateInkThroughTheInputPipeline" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="282" status="run" result="completed" time="0.273" timestamp="2026-10-23T06:55:20.531" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.249" timestamp="2026-10-23T06:47:24.939">
-    <testcase name="shiftClickInkTakesPrecedenceOverOptionalTapSelection" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="314" status="run" result="completed" time="0.249" timestamp="2026-10-23T06:47:24.939" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.275" timestamp="2026-10-23T06:55:20.849">
+    <testcase name="shiftClickInkTakesPrecedenceOverOptionalTapSelection" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="314" status="run" result="completed" time="0.275" timestamp="2026-10-23T06:55:20.849" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.612" timestamp="2026-10-23T06:47:25.228">
-    <testcase name="pdfScrollZoomAndInkStress" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="346" status="run" result="completed" time="0.612" timestamp="2026-10-23T06:47:25.228" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.678" timestamp="2026-10-23T06:55:21.166">
+    <testcase name="pdfScrollZoomAndInkStress" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="346" status="run" result="completed" time="0.678" timestamp="2026-10-23T06:55:21.166" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.266" timestamp="2026-10-23T06:47:25.903">
-    <testcase name="pdfTextCanBeHighlightedInAChosenColorWithoutLeavingSmartSelect" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="415" status="run" result="completed" time="0.266" timestamp="2026-10-23T06:47:25.903" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.259" timestamp="2026-10-23T06:55:21.889">
+    <testcase name="pdfTextCanBeHighlightedInAChosenColorWithoutLeavingSmartSelect" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="415" status="run" result="completed" time="0.259" timestamp="2026-10-23T06:55:21.889" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.266" timestamp="2026-10-23T06:47:26.215">
-    <testcase name="presetColorHighlightsPdfTextInOneClickAndSupportsUndo" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="444" status="run" result="completed" time="0.266" timestamp="2026-10-23T06:47:26.215" classname="DrawingInteractionTest" />
+  <testsuite name="DrawingInteractionTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.263" timestamp="2026-10-23T06:55:22.188">
+    <testcase name="presetColorHighlightsPdfTextInOneClickAndSupportsUndo" file="/workspace/xournalpp/test/gtk_tests/control/DrawingInteractionTest.cpp" line="444" status="run" result="completed" time="0.263" timestamp="2026-10-23T06:55:22.188" classname="DrawingInteractionTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.194" timestamp="2026-10-23T06:47:26.553">
-    <testcase name="blocksLargeScrollDeltasAndScrollStopDuringPinch" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="99" status="run" result="completed" time="0.194" timestamp="2026-10-23T06:47:26.553" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.199" timestamp="2026-10-23T06:55:22.512">
+    <testcase name="blocksLargeScrollDeltasAndScrollStopDuringPinch" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="99" status="run" result="completed" time="0.199" timestamp="2026-10-23T06:55:22.512" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.347" timestamp="2026-10-23T06:47:26.786">
-    <testcase name="suppressesTailThenResumesNormalTouchpadScrolling" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="111" status="run" result="completed" time="0.347" timestamp="2026-10-23T06:47:26.786" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.343" timestamp="2026-10-23T06:55:22.759">
+    <testcase name="suppressesTailThenResumesNormalTouchpadScrolling" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="111" status="run" result="completed" time="0.343" timestamp="2026-10-23T06:55:22.759" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.096" timestamp="2026-10-23T06:47:27.183">
-    <testcase name="preservesDiscreteWheelsAndSeparateSmoothMouse" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="122" status="run" result="completed" time="0.096" timestamp="2026-10-23T06:47:27.183" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.092" timestamp="2026-10-23T06:55:23.138">
+    <testcase name="preservesDiscreteWheelsAndSeparateSmoothMouse" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="122" status="run" result="completed" time="0.092" timestamp="2026-10-23T06:55:23.138" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.096" timestamp="2026-10-23T06:47:27.324">
-    <testcase name="handlesPinchReportedThroughLogicalPointerAndResets" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="131" status="run" result="completed" time="0.096" timestamp="2026-10-23T06:47:27.324" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.092" timestamp="2026-10-23T06:55:23.267">
+    <testcase name="handlesPinchReportedThroughLogicalPointerAndResets" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="131" status="run" result="completed" time="0.092" timestamp="2026-10-23T06:55:23.267" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.6" timestamp="2026-10-23T06:47:27.459">
-    <testcase name="newPinchDuringCooldownKeepsBlockingUntilItEnds" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="145" status="run" result="completed" time="0.6" timestamp="2026-10-23T06:47:27.459" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.602" timestamp="2026-10-23T06:55:23.401">
+    <testcase name="newPinchDuringCooldownKeepsBlockingUntilItEnds" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="145" status="run" result="completed" time="0.602" timestamp="2026-10-23T06:55:23.401" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.093" timestamp="2026-10-23T06:47:28.104">
-    <testcase name="ignoresOrphanedUpdatesAndCancellationAfterFocusLoss" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="158" status="run" result="completed" time="0.093" timestamp="2026-10-23T06:47:28.104" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.099" timestamp="2026-10-23T06:55:24.040">
+    <testcase name="ignoresOrphanedUpdatesAndCancellationAfterFocusLoss" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="158" status="run" result="completed" time="0.099" timestamp="2026-10-23T06:55:24.040" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.462" timestamp="2026-10-23T06:47:28.245">
-    <testcase name="cancelsExistingMomentumWithEitherKineticSetting" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="173" status="run" result="completed" time="0.462" timestamp="2026-10-23T06:47:28.245" classname="TouchpadZoomGuardTest" />
+  <testsuite name="TouchpadZoomGuardTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.454" timestamp="2026-10-23T06:55:24.178">
+    <testcase name="cancelsExistingMomentumWithEitherKineticSetting" file="/workspace/xournalpp/test/gtk_tests/control/TouchpadZoomGuardTest.cpp" line="173" status="run" result="completed" time="0.454" timestamp="2026-10-23T06:55:24.178" classname="TouchpadZoomGuardTest" />
   </testsuite>
-  <testsuite name="UnrenderedPaletteTabTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.081" timestamp="2026-10-23T06:47:28.746">
-    <testcase name="unrenderedPaletteTabShouldYieldNoSelectedPalette" file="/workspace/xournalpp/test/gtk_tests/dialog/SettingsDialogPaletteTabTest.cpp" line="47" status="run" result="completed" time="0.081" timestamp="2026-10-23T06:47:28.746" classname="UnrenderedPaletteTabTest" />
+  <testsuite name="UnrenderedPaletteTabTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.087" timestamp="2026-10-23T06:55:24.677">
+    <testcase name="unrenderedPaletteTabShouldYieldNoSelectedPalette" file="/workspace/xournalpp/test/gtk_tests/dialog/SettingsDialogPaletteTabTest.cpp" line="47" status="run" result="completed" time="0.087" timestamp="2026-10-23T06:55:24.677" classname="UnrenderedPaletteTabTest" />
   </testsuite>
-  <testsuite name="RenderedPaletteTabTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.087" timestamp="2026-10-23T06:47:28.884">
-    <testcase name="renderedPaletteTabShouldNotChangeSelectedColorPalette" file="/workspace/xournalpp/test/gtk_tests/dialog/SettingsDialogPaletteTabTest.cpp" line="66" status="run" result="completed" time="0.087" timestamp="2026-10-23T06:47:28.884" classname="RenderedPaletteTabTest" />
+  <testsuite name="RenderedPaletteTabTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.084" timestamp="2026-10-23T06:55:24.827">
+    <testcase name="renderedPaletteTabShouldNotChangeSelectedColorPalette" file="/workspace/xournalpp/test/gtk_tests/dialog/SettingsDialogPaletteTabTest.cpp" line="66" status="run" result="completed" time="0.084" timestamp="2026-10-23T06:55:24.827" classname="RenderedPaletteTabTest" />
   </testsuite>
 </testsuites>
