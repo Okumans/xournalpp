@@ -18,8 +18,8 @@ ArrowHandler::~ArrowHandler() = default;
 
 auto ArrowHandler::createShape(bool isAltDown, bool isShiftDown, bool isControlDown)
         -> std::pair<std::vector<Point>, Range> {
-    Point c = snappingHandler.snap(this->currPoint, this->startPoint, isAltDown);
-    const double lineLength = std::hypot(c.x - this->startPoint.x, c.y - this->startPoint.y);
+    auto [start, c] = lineEndpoints(isAltDown || isControlDown, isShiftDown);
+    const double lineLength = std::hypot(c.x - start.x, c.y - start.y);
     const double thickness = control->getToolHandler()->getThickness();
     const double slimness = lineLength / thickness;
 
@@ -45,7 +45,7 @@ auto ArrowHandler::createShape(bool isAltDown, bool isShiftDown, bool isControlD
         // arrow head is not too thick compared to the line length (regime 3)
         arrowDist = thickness * THICK3;
         // help visibility by widening the angle
-        delta = (1 + (slimness - THICK3 / LENGTH2) / (THICK3 / LENGTH4 - THICK3 / LENGTH2)) *  M_PI / 6.0;
+        delta = (1 + (slimness - THICK3 / LENGTH2) / (THICK3 / LENGTH4 - THICK3 / LENGTH2)) * M_PI / 6.0;
         // which allows to shorten the tips and keep the horizonzal distance
         arrowDist *= sin(M_PI / 6.0) / sin(delta);
     } else {
@@ -55,22 +55,20 @@ auto ArrowHandler::createShape(bool isAltDown, bool isShiftDown, bool isControlD
         arrowDist *= sin(M_PI / 6.0) / sin(M_PI / 3.0);
     }
 
-    const double angle = atan2(c.y - this->startPoint.y, c.x - this->startPoint.x);
+    const double angle = atan2(c.y - start.y, c.x - start.x);
 
-    std::pair<std::vector<Point>, Range> res; // members initialised below
+    std::pair<std::vector<Point>, Range> res;  // members initialised below
     std::vector<Point>& shape = res.first;
 
     shape.reserve(doubleEnded ? 10 : 6);
 
-    shape.emplace_back(this->startPoint);
+    shape.emplace_back(start);
 
     if (doubleEnded) {
-        shape.emplace_back(startPoint.x + arrowDist * cos(angle + delta),
-                           startPoint.y + arrowDist * sin(angle + delta));
-        shape.emplace_back(startPoint);
-        shape.emplace_back(startPoint.x + arrowDist * cos(angle - delta),
-                           startPoint.y + arrowDist * sin(angle - delta));
-        shape.emplace_back(startPoint);
+        shape.emplace_back(start.x + arrowDist * cos(angle + delta), start.y + arrowDist * sin(angle + delta));
+        shape.emplace_back(start);
+        shape.emplace_back(start.x + arrowDist * cos(angle - delta), start.y + arrowDist * sin(angle - delta));
+        shape.emplace_back(start);
     }
 
     shape.emplace_back(c);

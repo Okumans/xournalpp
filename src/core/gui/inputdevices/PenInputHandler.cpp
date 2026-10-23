@@ -20,15 +20,17 @@
 #include "control/tools/EditSelection.h"        // for EditSelection
 #include "control/zoom/ZoomControl.h"           // for ZoomControl
 #include "gui/Layout.h"                         // for Layout
-#include "gui/PageView.h"                       // for XojPageView
-#include "gui/XournalView.h"                    // for XournalView
-#include "gui/XournalppCursor.h"                // for XournalppCursor
-#include "gui/scroll/ScrollHandling.h"          // for ScrollHandling
-#include "gui/widgets/XournalWidget.h"          // for GtkXournal
-#include "model/Point.h"                        // for Point, Point::NO_PRES...
-#include "util/Assert.h"                        // for xoj_assert
-#include "util/Point.h"                         // for Point
-#include "util/Util.h"                          // for execInUiThread
+#include "gui/MainWindow.h"
+#include "gui/PageView.h"  // for XojPageView
+#include "gui/PdfFloatingToolbox.h"
+#include "gui/XournalView.h"            // for XournalView
+#include "gui/XournalppCursor.h"        // for XournalppCursor
+#include "gui/scroll/ScrollHandling.h"  // for ScrollHandling
+#include "gui/widgets/XournalWidget.h"  // for GtkXournal
+#include "model/Point.h"                // for Point, Point::NO_PRES...
+#include "util/Assert.h"                // for xoj_assert
+#include "util/Point.h"                 // for Point
+#include "util/Util.h"                  // for execInUiThread
 #include "util/safe_casts.h"
 
 #include "AbstractInputHandler.h"  // for AbstractInputHandler
@@ -93,6 +95,19 @@ auto PenInputHandler::actionStart(InputEvent const& event) -> bool {
     // Change the tool depending on the key
     if (!changeTool(event))
         return false;
+
+    this->temporaryPan = this->inputContext->getView()->isSpacePanHeld();
+    if (this->temporaryPan) {
+        this->inputRunning = true;
+        this->penInWidget = true;
+        this->scrollStartPosition = event.absolute;
+        auto* cursor = this->inputContext->getView()->getCursor();
+        cursor->setTemporaryHand(true);
+        cursor->setMouseDown(true);
+        return true;
+    }
+
+    this->inputContext->getView()->getControl()->getWindow()->getPdfToolbox()->hide();
 
     // Used for pressure inference
     this->lastPressure = 0.0;
@@ -242,6 +257,9 @@ double PenInputHandler::filterPressure(PositionInputData const& pos, XojPageView
 }
 
 bool PenInputHandler::isCurrentTapSelection(InputEvent const& event) const {
+    if (sequenceStartPage && (event.state & GDK_SHIFT_MASK) && sequenceStartPage->isConnectingTap()) {
+        return false;  // Explicit Shift-click ink takes precedence over optional tap-to-select.
+    }
     if (!inputContext->getToolHandler()->supportsTapFilter()) {
         return false;
     }
@@ -271,6 +289,13 @@ bool PenInputHandler::isCurrentTapSelection(InputEvent const& event) const {
 }
 
 auto PenInputHandler::actionMotion(InputEvent const& event) -> bool {
+    if (this->temporaryPan) {
+        this->updateLastEvent(event);
+        if (this->deviceClassPressed) {
+            this->handleScrollEvent(event);
+        }
+        return true;
+    }
     /*
      * Workaround for misbehaving devices where Enter events are not published every time
      * This is required to disable outside scrolling again
@@ -313,6 +338,17 @@ auto PenInputHandler::actionMotion(InputEvent const& event) -> bool {
         return false;
     }
 
+    if (!this->deviceClassPressed) {
+        auto* previous = getPageAtCurrentPosition(this->lastEvent);
+        auto* current = getPageAtCurrentPosition(event);
+        if (previous && previous != current) {
+            previous->clearHover(true);
+        }
+        if (current) {
+            current->updateHover(getInputDataRelativeToCurrentPage(current, event));
+        }
+    }
+
     bool isShiftDown = (event.state & GDK_SHIFT_MASK);
     bool handleSelectionMove = xournal->selection != nullptr;
 
@@ -320,8 +356,7 @@ auto PenInputHandler::actionMotion(InputEvent const& event) -> bool {
     // hit one of its handles.  Otherwise the selection is retained for a
     // Shift-aggregate rectangle (or discarded when the Smart gesture commits
     // another route), and page routing must receive the motion.
-    if (xournal->selection && isSmartSelectToolType(toolHandler->getToolType()) &&
-        !xournal->selection->isMoving()) {
+    if (xournal->selection && isSmartSelectToolType(toolHandler->getToolType()) && !xournal->selection->isMoving()) {
         handleSelectionMove = false;
     }
 
@@ -429,6 +464,13 @@ auto PenInputHandler::actionEnd(InputEvent const& event) -> bool {
     EditSelection* selection = xournal->view->getSelection();
 
     cursor->setMouseDown(false);
+    if (this->temporaryPan) {
+        this->temporaryPan = false;
+        this->inputRunning = false;
+        this->sequenceStartPage = nullptr;
+        cursor->setTemporaryHand(xournal->view->isSpacePanHeld());
+        return true;
+    }
 
     this->inputStartedOutsidePageArea = false;
 
@@ -502,6 +544,11 @@ auto PenInputHandler::actionEnd(InputEvent const& event) -> bool {
     // we need this workaround so it's possible to select something with the middle button
     if (tmpSelection) {
         xournal->view->setSelection(tmpSelection);
+        if (isSmartSelectToolType(toolHandler->getToolType())) {
+            auto scroll = xournal->view->getScrollHandling()->getPosition();
+            xournal->view->getControl()->getWindow()->getPdfToolbox()->showForObjectSelection(
+                    round_cast<int>(event.relative.x - scroll.x), round_cast<int>(event.relative.y - scroll.y));
+        }
     }
 
     this->inputRunning = false;
@@ -529,6 +576,9 @@ void PenInputHandler::actionPerform(InputEvent const& event) {
 }
 
 void PenInputHandler::actionLeaveWindow(InputEvent const& event) {
+    if (auto* page = getPageAtCurrentPosition(this->lastHitEvent)) {
+        page->clearHover(true);
+    }
     if (!this->penInWidget) {
         return;
     }

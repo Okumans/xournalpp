@@ -17,6 +17,7 @@
  * Project source directory (needed for loading testfiles)
  */
 #cmakedefine PROJECT_SOURCE_DIR u8"@PROJECT_SOURCE_DIR@"
+#cmakedefine PROJECT_BINARY_DIR u8"@PROJECT_BINARY_DIR@"
 
 #define GET_TESTFILE(relative) std::u8string(PROJECT_SOURCE_DIR) + u8"/test/files/" + relative
 

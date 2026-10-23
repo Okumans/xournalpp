@@ -14,6 +14,7 @@
 #include "control/Control.h"      // for Control
 #include "control/ToolEnums.h"    // for ToolType, TOOL_SELECT_PDF_TEXT_LI...
 #include "control/ToolHandler.h"  // for ToolHandler
+#include "control/tools/EditSelection.h"
 #include "control/tools/PdfElemSelection.h"
 #include "gui/PageView.h"           // for XojPageView
 #include "gui/XournalView.h"        // for XournalView
@@ -83,6 +84,8 @@ PdfFloatingToolbox::PdfFloatingToolbox(MainWindow* theMainWindow, GtkOverlay* ov
     g_signal_connect(theMainWindow->get("pdfTbStrikethrough"), "clicked", G_CALLBACK(this->strikethroughCb), this);
     g_signal_connect(theMainWindow->get("pdfTbChangeType"), "clicked", G_CALLBACK(this->switchSelectTypeCb), this);
 
+    g_signal_connect(theMainWindow->get("pdfTbHighlightColor"), "color-set", G_CALLBACK(highlightColorCb), this);
+    g_signal_connect(theMainWindow->get("pdfTbTextColor"), "color-set", G_CALLBACK(textColorCb), this);
     this->clearSelection();
     this->hide();
 }
@@ -101,16 +104,75 @@ auto PdfFloatingToolbox::newSelection(double x, double y) -> const PdfElemSelect
 
 void PdfFloatingToolbox::show(int x, int y) {
     xoj_assert(this->getSelection());
+    this->objectSelection = false;
     this->position = {x, y};
-    this->show();
 
     // Use the persistent color of the regular Highlighter tool. PDF text selection tools have their own transient
     // marker color, which should not override the user's selected highlighter color.
     auto* toolHandler = theMainWindow->getXournal()->getControl()->getToolHandler();
     this->color = toolHandler->getTool(TOOL_HIGHLIGHTER).getColor();
     const auto& textTool = toolHandler->getTool(TOOL_TEXT);
-    this->textColor = textTool.hasCapability(TOOL_CAP_COLOR) ? textTool.getColor() :
-                                                               toolHandler->getTool(TOOL_PEN).getColor();
+    this->textColor =
+            textTool.hasCapability(TOOL_CAP_COLOR) ? textTool.getColor() : toolHandler->getTool(TOOL_PEN).getColor();
+    updateColorButtons();
+    this->show();
+}
+
+void PdfFloatingToolbox::updateColorButtons() {
+    const auto highlight = Util::rgb_to_GdkRGBA(this->color);
+    const auto text = Util::rgb_to_GdkRGBA(this->textColor);
+    gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(theMainWindow->get("pdfTbHighlightColor")), &highlight);
+    gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(theMainWindow->get("pdfTbTextColor")), &text);
+}
+
+void PdfFloatingToolbox::showForObjectSelection(int x, int y) {
+    auto* selection = theMainWindow->getXournal()->getSelection();
+    if (!selection) {
+        return;
+    }
+    bool found = false;
+    for (const auto* element: selection->getElementsView()) {
+        const auto* stroke = dynamic_cast<const Stroke*>(element);
+        if (!stroke || stroke->getToolType() != StrokeTool::HIGHLIGHTER) {
+            return;
+        }
+        this->color = stroke->getColor();
+        found = true;
+    }
+    if (!found) {
+        return;
+    }
+    this->objectSelection = true;
+    this->position = {x, y};
+    updateColorButtons();
+    this->show();
+}
+
+void PdfFloatingToolbox::highlightColorCb(GtkColorButton* button, PdfFloatingToolbox* pft) {
+    GdkRGBA rgba;
+    gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(button), &rgba);
+    pft->color = Util::GdkRGBA_to_rgb(rgba);
+    auto* control = pft->theMainWindow->getControl();
+    auto& tool = control->getToolHandler()->getTool(TOOL_HIGHLIGHTER);
+    const auto alpha = tool.getColor().alpha;
+    tool.setColor(Color(pft->color.red, pft->color.green, pft->color.blue, alpha));
+    if (pft->objectSelection) {
+        if (auto* selection = pft->theMainWindow->getXournal()->getSelection()) {
+            control->getUndoRedoHandler()->addUndoAction(selection->setColor(pft->color));
+        }
+        pft->hide();
+        pft->theMainWindow->getXournal()->requestFocus();
+    } else if (pft->hasSelection()) {
+        highlightCb(nullptr, pft);
+    }
+}
+
+void PdfFloatingToolbox::textColorCb(GtkColorButton* button, PdfFloatingToolbox* pft) {
+    GdkRGBA rgba;
+    gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(button), &rgba);
+    pft->textColor = Util::GdkRGBA_to_rgb(rgba);
+    pft->theMainWindow->getControl()->getToolHandler()->getTool(TOOL_TEXT).setColor(pft->textColor);
+    pft->theMainWindow->getXournal()->requestFocus();
 }
 
 void PdfFloatingToolbox::hide() {
@@ -183,6 +245,10 @@ void PdfFloatingToolbox::strikethroughCb(GtkButton* button, PdfFloatingToolbox* 
 void PdfFloatingToolbox::show() {
     gtk_widget_hide(this->floatingToolbox);  // force showing in new position
     gtk_widget_show_all(this->floatingToolbox);
+    for (const auto* name: {"pdfTbCopyText", "pdfTbHighlight", "pdfTbUnderline", "pdfTbStrikethrough",
+                            "pdfTbChangeType", "pdfTbTextColor"}) {
+        gtk_widget_set_visible(theMainWindow->get(name), !this->objectSelection);
+    }
 }
 
 void PdfFloatingToolbox::copyTextToClipboard() {
@@ -315,10 +381,10 @@ void PdfFloatingToolbox::switchSelectTypeCb(GtkButton* button, PdfFloatingToolbo
 
     if (activeType == ToolType::TOOL_SMART_SELECT) {
         type = pft->selectionStyle == XojPdfPageSelectionStyle::Linear ? ToolType::TOOL_SELECT_PDF_TEXT_RECT :
-                                                                          ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
+                                                                         ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
     } else {
         type = activeType == ToolType::TOOL_SELECT_PDF_TEXT_LINEAR ? ToolType::TOOL_SELECT_PDF_TEXT_RECT :
-                                                                      ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
+                                                                     ToolType::TOOL_SELECT_PDF_TEXT_LINEAR;
     }
 
     // Smart Select remains the active tool while the toolbox changes only

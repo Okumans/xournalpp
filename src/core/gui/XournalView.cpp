@@ -10,41 +10,42 @@
 #include <gdk/gdkkeysyms.h>  // for GDK_KEY_Page_Down
 #include <glib-object.h>     // for g_object_ref_sink
 
-#include "control/Control.h"                     // for Control
-#include "control/PdfCache.h"                    // for PdfCache
-#include "control/ScrollHandler.h"               // for ScrollHandler
-#include "control/ToolHandler.h"                 // for ToolHandler
-#include "control/actions/ActionDatabase.h"      // for ActionDatabase
-#include "control/jobs/XournalScheduler.h"       // for XournalScheduler
-#include "control/settings/MetadataManager.h"    // for MetadataManager
-#include "control/settings/Settings.h"           // for Settings
-#include "control/tools/CursorSelectionType.h"   // for CURSOR_SELECTION_NONE
-#include "control/tools/EditSelection.h"         // for EditSelection
-#include "control/zoom/ZoomControl.h"            // for ZoomControl
-#include "gui/MainWindow.h"                      // for MainWindow
-#include "gui/PdfFloatingToolbox.h"              // for PdfFloatingToolbox
+#include "control/Control.h"                            // for Control
+#include "control/PdfCache.h"                           // for PdfCache
+#include "control/ScrollHandler.h"                      // for ScrollHandler
+#include "control/ToolHandler.h"                        // for ToolHandler
+#include "control/actions/ActionDatabase.h"             // for ActionDatabase
+#include "control/jobs/XournalScheduler.h"              // for XournalScheduler
+#include "control/settings/MetadataManager.h"           // for MetadataManager
+#include "control/settings/Settings.h"                  // for Settings
+#include "control/tools/CursorSelectionType.h"          // for CURSOR_SELECTION_NONE
+#include "control/tools/EditSelection.h"                // for EditSelection
+#include "control/zoom/ZoomControl.h"                   // for ZoomControl
+#include "gui/MainWindow.h"                             // for MainWindow
+#include "gui/PdfFloatingToolbox.h"                     // for PdfFloatingToolbox
 #include "gui/inputdevices/GeometryToolInputHandler.h"  // for GeometryToolInputHandler
-#include "gui/inputdevices/HandRecognition.h"    // for HandRecognition
-#include "gui/inputdevices/InputContext.h"       // for InputContext
-#include "gui/scroll/ScrollHandling.h"           // for ScrollHandling
-#include "gui/toolbarMenubar/ColorToolItem.h"    // for ColorToolItem
-#include "gui/toolbarMenubar/ToolMenuHandler.h"  // for ToolMenuHandler
-#include "gui/widgets/XournalWidget.h"           // for gtk_xournal_get_layout
-#include "model/Document.h"                      // for Document
-#include "model/Element.h"                       // for Element, ELEMENT_STROKE
-#include "model/PageRef.h"                       // for PageRef
-#include "model/Stroke.h"                        // for Stroke, StrokeTool::E...
-#include "model/XojPage.h"                       // for XojPage
-#include "plugin/PluginController.h"             // for PluginController
-#include "undo/DeleteUndoAction.h"               // for DeleteUndoAction
-#include "undo/UndoRedoHandler.h"                // for UndoRedoHandler
-#include "util/Assert.h"                         // for xoj_assert
-#include "util/Point.h"                          // for Point
-#include "util/Rectangle.h"                      // for Rectangle
-#include "util/Util.h"                           // for npos
-#include "util/glib_casts.h"                     // for wrap_v
-#include "util/gtk4_helper.h"                    // for gtk_scrolled_window_set_child
-#include "util/safe_casts.h"                     // for round_cast
+#include "gui/inputdevices/HandRecognition.h"           // for HandRecognition
+#include "gui/inputdevices/InputContext.h"              // for InputContext
+#include "gui/scroll/ScrollHandling.h"                  // for ScrollHandling
+#include "gui/toolbarMenubar/ColorToolItem.h"           // for ColorToolItem
+#include "gui/toolbarMenubar/ToolMenuHandler.h"         // for ToolMenuHandler
+#include "gui/widgets/XournalWidget.h"                  // for gtk_xournal_get_layout
+#include "model/Document.h"                             // for Document
+#include "model/Element.h"                              // for Element, ELEMENT_STROKE
+#include "model/PageRef.h"                              // for PageRef
+#include "model/Stroke.h"                               // for Stroke, StrokeTool::E...
+#include "model/XojPage.h"                              // for XojPage
+#include "plugin/PluginController.h"                    // for PluginController
+#include "undo/DeleteUndoAction.h"                      // for DeleteUndoAction
+#include "undo/UndoRedoHandler.h"                       // for UndoRedoHandler
+#include "util/Assert.h"                                // for xoj_assert
+#include "util/Point.h"                                 // for Point
+#include "util/Rectangle.h"                             // for Rectangle
+#include "util/Util.h"                                  // for npos
+#include "util/glib_casts.h"                            // for wrap_v
+#include "util/gtk4_helper.h"                           // for gtk_scrolled_window_set_child
+#include "util/i18n.h"
+#include "util/safe_casts.h"  // for round_cast
 
 #include "Layout.h"           // for Layout
 #include "PageView.h"         // for XojPageView
@@ -109,6 +110,12 @@ XournalView::XournalView(GtkWidget* parent, Control* control, ScrollHandling* sc
 }
 
 XournalView::~XournalView() {
+    if (widthPopoverTimeout) {
+        g_source_remove(widthPopoverTimeout);
+    }
+    if (widthPopover) {
+        gtk_widget_destroy(widthPopover);
+    }
     if (this->cleanupTimeout != std::numeric_limits<guint>::max()) {
         g_source_remove(this->cleanupTimeout);
         this->cleanupTimeout = std::numeric_limits<guint>::max();
@@ -200,8 +207,7 @@ auto XournalView::schedulePreloadPages() -> void {
     }
 
     if (this->currentPage != npos && this->currentPage < this->viewPages.size()) {
-        this->preloadTimeout = g_timeout_add(PRELOAD_DEBOUNCE_MILLISECONDS,
-                                             xoj::util::wrap_v<preloadPagesTimer>, this);
+        this->preloadTimeout = g_timeout_add(PRELOAD_DEBOUNCE_MILLISECONDS, xoj::util::wrap_v<preloadPagesTimer>, this);
     }
 }
 
@@ -285,9 +291,8 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
     }
 
     if (auto* selection = getSelection(); selection) {
-        if (state == GDK_CONTROL_MASK &&
-            (keyval == GDK_KEY_equal || keyval == GDK_KEY_KP_Add || keyval == GDK_KEY_minus ||
-             keyval == GDK_KEY_KP_Subtract)) {
+        if (state == GDK_CONTROL_MASK && (keyval == GDK_KEY_equal || keyval == GDK_KEY_KP_Add ||
+                                          keyval == GDK_KEY_minus || keyval == GDK_KEY_KP_Subtract)) {
             const bool increase = keyval == GDK_KEY_equal || keyval == GDK_KEY_KP_Add;
             selection->scaleSelection(increase ? KEYBOARD_SCALE_STEP : 1.0 / KEYBOARD_SCALE_STEP);
             return true;
@@ -335,17 +340,22 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
         }
     }
 
-    if (keyval == GDK_KEY_space) {
-        GtkAllocation alloc = {0};
-        gtk_widget_get_allocation(gtk_widget_get_parent(this->widget), &alloc);
-        int windowHeight = alloc.height - scrollKeySize;
+    if (keyval == GDK_KEY_space && !(state & (GDK_CONTROL_MASK | GDK_MOD1_MASK))) {
+        this->spacePanHeld = true;
+        getCursor()->setTemporaryHand(true);
+        return true;
+    }
 
-        if (!state) {
-            layout->scrollRelative(0, windowHeight);
-            return true;
-        }
-        if (state == GDK_SHIFT_MASK) {
-            layout->scrollRelative(0, -windowHeight);
+    if ((keyval == GDK_KEY_bracketleft || keyval == GDK_KEY_bracketright) &&
+        !(state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_SHIFT_MASK))) {
+        auto* tools = control->getToolHandler();
+        if (tools->isDrawingTool() && tools->hasCapability(TOOL_CAP_SIZE)) {
+            const int step = keyval == GDK_KEY_bracketright ? 1 : -1;
+            const auto size = static_cast<ToolSize>(std::clamp(static_cast<int>(tools->getSize()) + step,
+                                                               static_cast<int>(TOOL_SIZE_VERY_FINE),
+                                                               static_cast<int>(TOOL_SIZE_VERY_THICK)));
+            tools->setSize(size);
+            showWidthIndicator(tools->getThickness());
             return true;
         }
     }
@@ -460,7 +470,56 @@ auto XournalView::onKeyPressEvent(const KeyEvent& event) -> bool {
 
 auto XournalView::getRepaintHandler() const -> RepaintHandler* { return this->repaintHandler.get(); }
 
+void XournalView::showWidthIndicator(double width) {
+    if (widthPopoverTimeout) {
+        g_source_remove(widthPopoverTimeout);
+        widthPopoverTimeout = 0;
+    }
+    if (widthPopover) {
+        gtk_widget_destroy(widthPopover);
+    }
+    widthPopover = gtk_popover_new(widget);
+    gtk_popover_set_modal(GTK_POPOVER(widthPopover), false);
+    gtk_widget_set_can_focus(widthPopover, false);
+    auto* text = g_strdup_printf(_("Stroke width: %.2f"), width);
+    auto* label = gtk_label_new(text);
+    g_free(text);
+    gtk_widget_set_margin_start(label, 10);
+    gtk_widget_set_margin_end(label, 10);
+    gtk_widget_set_margin_top(label, 6);
+    gtk_widget_set_margin_bottom(label, 6);
+    gtk_container_add(GTK_CONTAINER(widthPopover), label);
+    gint x = 20, y = 20;
+    if (auto* window = gtk_widget_get_window(widget)) {
+        auto* pointer = gdk_seat_get_pointer(gdk_display_get_default_seat(gtk_widget_get_display(widget)));
+        gdk_window_get_device_position(window, pointer, &x, &y, nullptr);
+    }
+    GdkRectangle anchor{x, y, 1, 1};
+    gtk_popover_set_pointing_to(GTK_POPOVER(widthPopover), &anchor);
+    gtk_widget_show_all(widthPopover);
+    gtk_popover_popup(GTK_POPOVER(widthPopover));
+    widthPopoverTimeout = g_timeout_add(
+            900,
+            +[](gpointer data) -> gboolean {
+                auto* self = static_cast<XournalView*>(data);
+                gtk_widget_destroy(self->widthPopover);
+                self->widthPopover = nullptr;
+                self->widthPopoverTimeout = 0;
+                return G_SOURCE_REMOVE;
+            },
+            this);
+}
+
+void XournalView::releaseSpacePan() {
+    this->spacePanHeld = false;
+    getCursor()->setTemporaryHand(false);
+}
+
 auto XournalView::onKeyReleaseEvent(const KeyEvent& event) -> bool {
+    if (event.keyval == GDK_KEY_space && this->spacePanHeld) {
+        releaseSpacePan();
+        return true;
+    }
     size_t p = getCurrentPage();
     if (p != npos && p < this->viewPages.size()) {
         auto& v = this->viewPages[p];
@@ -752,6 +811,12 @@ auto XournalView::getZoom() const -> double { return control->getZoomControl()->
 auto XournalView::getDpiScaleFactor() const -> int { return gtk_widget_get_scale_factor(widget); }
 
 void XournalView::clearSelection() {
+    if (control->getWindow()) {
+        auto* toolbox = control->getWindow()->getPdfToolbox();
+        if (!toolbox->hasSelection()) {
+            toolbox->hide();
+        }
+    }
     EditSelection* sel = GTK_XOURNAL(widget)->selection;
     GTK_XOURNAL(widget)->selection = nullptr;
     delete sel;

@@ -12,9 +12,11 @@
 #pragma once
 
 #include <memory>  // for unique_ptr
+#include <optional>
 
 #include <gdk/gdk.h>  // for GdkEventKey
 
+#include "control/ToolEnums.h"
 #include "model/PageRef.h"  // for PageRef
 #include "model/Point.h"    // for Point
 
@@ -49,6 +51,10 @@ struct StraightLineConstraintState {
     Point anchor;
     Axis axis{Axis::Undecided};
     bool shiftActive{false};
+    std::optional<Point> endpoint;
+    const Layer* endpointLayer = nullptr;
+    const Stroke* endpointStroke = nullptr;
+    ToolType endpointTool = TOOL_NONE;
 
     void reset() {
         this->axis = Axis::Undecided;
@@ -85,6 +91,7 @@ public:
      * @param point The endpoint of the added line
      */
     void paintTo(Point point);
+    bool isConnectingTap() const { return shiftClickCandidate && !pointerDragged; }
 
     auto createView(xoj::view::Repaintable* parent) const -> std::unique_ptr<xoj::view::OverlayView> override;
 
@@ -108,6 +115,9 @@ protected:
     SnapToGridInputHandler snappingHandler;
 
     bool hasPressure;
+    bool shiftClickCandidate = false;
+    bool pointerDragged = false;
+    Point connectFrom;
 
 private:
     void constrainToStraightLine(PositionInputData& pos, double zoom) const;

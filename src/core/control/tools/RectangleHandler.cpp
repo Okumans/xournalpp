@@ -19,14 +19,14 @@ auto RectangleHandler::createShape(bool isAltDown, bool isShiftDown, bool isCont
     /**
      * Snap point to grid (if enabled)
      */
-    Point c = snappingHandler.snapToGrid(this->currPoint, isAltDown);
+    Point c = snappingHandler.snapToGrid(this->currPoint, false);
 
     double width = c.x - this->startPoint.x;
     double height = c.y - this->startPoint.y;
 
 
     this->modShift = isShiftDown;
-    this->modControl = isControlDown;
+    this->modControl = isAltDown || isControlDown;
 
     Settings* settings = control->getSettings();
     if (settings->getDrawDirModsEnabled()) {

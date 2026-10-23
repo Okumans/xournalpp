@@ -27,7 +27,7 @@ PopplerGlibPage::PopplerGlibPage(PopplerPage* page, PopplerDocument* parentDoc, 
 }
 
 PopplerGlibPage::PopplerGlibPage(const PopplerGlibPage& other):
-        page(other.page), document(other.document), mutex(other.mutex) {
+        textLayout(other.textLayout), page(other.page), document(other.document), mutex(other.mutex) {
     if (page != nullptr) {
         g_object_ref(page);
     }
@@ -56,6 +56,7 @@ PopplerGlibPage& PopplerGlibPage::operator=(const PopplerGlibPage& other) {
 
     document = other.document;
     mutex = other.mutex;
+    textLayout = other.textLayout;
 
     return *this;
 }
@@ -116,23 +117,23 @@ bool PopplerGlibPage::hasTextAt(double x, double y) {
         return false;
     }
 
-    PopplerRectangle* rectArray = nullptr;
-    guint numRects = 0;
-    if (!poppler_page_get_text_layout(const_cast<PopplerPage*>(this->page), &rectArray, &numRects) ||
-        rectArray == nullptr || numRects == 0) {
+    // Pointer motion can query this hundreds of times per second. Poppler's
+    // layout is immutable for a page; extract it once, under the render lock.
+    // Copies share the cache, and even a page without text is cached.
+    std::call_once(textLayout->initialized, [this] {
+        std::lock_guard guard(*mutex);
+        PopplerRectangle* rectArray = nullptr;
+        guint numRects = 0;
+        if (poppler_page_get_text_layout(this->page, &rectArray, &numRects) && rectArray && numRects) {
+            textLayout->rectangles.assign(rectArray, rectArray + numRects);
+        }
         g_free(rectArray);
-        return false;
-    }
-
-    const bool found = std::any_of(rectArray, rectArray + numRects, [x, y](const PopplerRectangle& rect) {
-        const double minX = std::min(rect.x1, rect.x2);
-        const double maxX = std::max(rect.x1, rect.x2);
-        const double minY = std::min(rect.y1, rect.y2);
-        const double maxY = std::max(rect.y1, rect.y2);
-        return minX <= x && x <= maxX && minY <= y && y <= maxY;
     });
-    g_free(rectArray);
-    return found;
+    return std::any_of(textLayout->rectangles.begin(), textLayout->rectangles.end(),
+                       [x, y](const PopplerRectangle& rect) {
+                           return std::min(rect.x1, rect.x2) <= x && x <= std::max(rect.x1, rect.x2) &&
+                                  std::min(rect.y1, rect.y2) <= y && y <= std::max(rect.y1, rect.y2);
+                       });
 }
 
 auto getPopplerSelectionStyle(XojPdfPageSelectionStyle style) -> PopplerSelectionStyle {
@@ -187,7 +188,9 @@ auto PopplerGlibPage::selectText(const XojPdfRectangle& rect, XojPdfPageSelectio
 
             char* const startPos = g_utf8_offset_to_pointer(textBytes, i);
             char* const endPos = g_utf8_offset_to_pointer(textBytes, i + 1);
-            for (long j = 0; j < static_cast<ptrdiff_t>(endPos - startPos); ++j) { ss << startPos[j]; }
+            for (long j = 0; j < static_cast<ptrdiff_t>(endPos - startPos); ++j) {
+                ss << startPos[j];
+            }
         }
         g_free(textBytes);
         return ss.str();

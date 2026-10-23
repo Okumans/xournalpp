@@ -52,6 +52,20 @@ void BaseShapeHandler::cancelStroke() {
 }
 
 auto BaseShapeHandler::onKeyEvent(const KeyEvent& event, bool pressed) -> bool {
+    if (event.keyval == GDK_KEY_Escape && pressed) {
+        this->cancelled = true;
+        this->cancelStroke();
+        control->getCursor()->activateDrawDirCursor(false);
+        control->getCursor()->updateCursor();
+        return true;
+    }
+    if (event.keyval == GDK_KEY_space) {
+        this->repositioning = pressed;
+        return true;
+    }
+    if (this->cancelled) {
+        return true;
+    }
     bool isAltDown = event.state & GDK_MOD1_MASK;
     bool isShiftDown = event.state & GDK_SHIFT_MASK;
     bool isControlDown = event.state & GDK_CONTROL_MASK;
@@ -76,9 +90,16 @@ auto BaseShapeHandler::onKeyReleaseEvent(const KeyEvent& event) -> bool { return
 
 
 auto BaseShapeHandler::onMotionNotifyEvent(const PositionInputData& pos, double zoom) -> bool {
+    if (this->cancelled) {
+        return true;
+    }
     Point newPoint(pos.x / zoom, pos.y / zoom);
     if (!validMotion(newPoint, this->currPoint)) {
         return true;
+    }
+    if (this->repositioning) {
+        this->startPoint.x += newPoint.x - this->currPoint.x;
+        this->startPoint.y += newPoint.y - this->currPoint.y;
     }
     this->currPoint = newPoint;
 
@@ -87,12 +108,18 @@ auto BaseShapeHandler::onMotionNotifyEvent(const PositionInputData& pos, double 
     return true;
 }
 
-void BaseShapeHandler::onSequenceCancelEvent() { this->cancelStroke(); }
+void BaseShapeHandler::onSequenceCancelEvent() {
+    this->cancelled = true;
+    this->repositioning = false;
+    this->cancelStroke();
+    control->getCursor()->activateDrawDirCursor(false);
+}
 
 void BaseShapeHandler::onButtonReleaseEvent(const PositionInputData& pos, double zoom) {
     control->getCursor()->activateDrawDirCursor(false);  // in case released within  fixate_Dir_Mods_Dist
 
-    if (this->shape.size() <= 1) {
+    this->onMotionNotifyEvent(pos, zoom);
+    if (this->cancelled || this->shape.size() <= 1) {
         // We need at least two points to make a stroke (it can be twice the same)
         this->cancelStroke();
         return;
@@ -125,7 +152,9 @@ void BaseShapeHandler::onButtonPressEvent(const PositionInputData& pos, double z
     this->buttonDownPoint.x = pos.x / zoom;
     this->buttonDownPoint.y = pos.y / zoom;
 
-    this->startPoint = snappingHandler.snapToGrid(this->buttonDownPoint, pos.isAltDown());
+    this->cancelled = false;
+    this->repositioning = false;
+    this->startPoint = snappingHandler.snapToGrid(this->buttonDownPoint, false);
     this->currPoint = this->startPoint;
 
     this->stroke = createStroke(this->control);
@@ -166,6 +195,19 @@ void BaseShapeHandler::modifyModifiersByDrawDir(double width, double height, dou
         this->modShift = this->modShift == !gestureShift;
         this->modControl = this->modControl == !gestureControl;
     }
+}
+
+std::pair<Point, Point> BaseShapeHandler::lineEndpoints(bool centered, bool constrained) const {
+    Point end = snappingHandler.snap(this->currPoint, this->startPoint, false);
+    if (constrained) {
+        const double dx = end.x - startPoint.x;
+        const double dy = end.y - startPoint.y;
+        const double angle = std::round(std::atan2(dy, dx) / M_PI_4) * M_PI_4;
+        const double length = std::hypot(dx, dy);
+        end = Point(startPoint.x + length * std::cos(angle), startPoint.y + length * std::sin(angle));
+    }
+    const Point start = centered ? Point(2 * startPoint.x - end.x, 2 * startPoint.y - end.y) : startPoint;
+    return {start, end};
 }
 
 auto BaseShapeHandler::getShape() const -> const std::vector<Point>& { return this->shape; }

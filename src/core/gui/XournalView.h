@@ -163,6 +163,9 @@ public:
     bool onKeyReleaseEvent(const KeyEvent& event);
 
     void onSettingsChanged();
+    bool isSpacePanHeld() const { return spacePanHeld; }
+    void releaseSpacePan();
+    void showWidthIndicator(double width);
 
 private:
     void fireZoomChanged();
@@ -185,6 +188,9 @@ private:
     ScrollHandling* scrollHandling = nullptr;
 
     GtkWidget* widget = nullptr;
+    bool spacePanHeld = false;
+    GtkWidget* widthPopover = nullptr;
+    guint widthPopoverTimeout = 0;
 
     std::vector<std::unique_ptr<XojPageView>> viewPages;
 

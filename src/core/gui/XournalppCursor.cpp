@@ -15,9 +15,10 @@
 #include "control/settings/Settings.h"       // for Settings
 #include "control/settings/SettingsEnums.h"  // for STYLUS_CURSOR_BIG, STYLU...
 #include "control/zoom/ZoomControl.h"        // for ZoomControl
-#include "gui/MainWindow.h"                  // for MainWindow
-#include "util/Color.h"                      // for argb_to_GdkRGBA, rgb_to_...
-#include "util/safe_casts.h"                 // for ceil_cast
+#include "gui/EraserCursor.h"
+#include "gui/MainWindow.h"   // for MainWindow
+#include "util/Color.h"       // for argb_to_GdkRGBA, rgb_to_...
+#include "util/safe_casts.h"  // for ceil_cast
 
 #include "XournalView.h"  // for XournalView
 
@@ -128,6 +129,20 @@ void XournalppCursor::activateDrawDirCursor(bool enable, bool shift, bool ctrl) 
 }
 
 
+void XournalppCursor::setSmartSelectText(bool enabled) {
+    if (smartSelectText != enabled) {
+        smartSelectText = enabled;
+        updateCursor();
+    }
+}
+
+void XournalppCursor::setTemporaryHand(bool enabled) {
+    if (temporaryHand != enabled) {
+        temporaryHand = enabled;
+        updateCursor();
+    }
+}
+
 void XournalppCursor::setMouseDown(bool mouseDown) {
     if (this->mouseDown == mouseDown) {
         return;
@@ -138,7 +153,7 @@ void XournalppCursor::setMouseDown(bool mouseDown) {
     ToolType type = handler->getToolType();
 
     // Not always an update is needed
-    if (type == TOOL_HAND || type == TOOL_VERTICAL_SPACE || type == TOOL_ERASER) {
+    if (temporaryHand || type == TOOL_HAND || type == TOOL_VERTICAL_SPACE || type == TOOL_ERASER) {
         updateCursor();
     }
 }
@@ -237,7 +252,7 @@ void XournalppCursor::updateCursor() {
         ToolType type = handler->getToolType();
 
 
-        if (type == TOOL_HAND) {
+        if (temporaryHand || type == TOOL_HAND) {
             if (this->mouseDown) {
                 setCursor(CRSR_GRABBING);
             } else {
@@ -326,7 +341,7 @@ void XournalppCursor::updateCursor() {
         } else if (type == TOOL_VERTICAL_SPACE) {
             setCursor(CRSR_SB_V_DOUBLE_ARROW);
         } else if (type == TOOL_SELECT_OBJECT || type == TOOL_SMART_SELECT) {
-            setCursor(CRSR_DEFAULT);
+            setCursor(type == TOOL_SMART_SELECT && smartSelectText ? CRSR_XTERM : CRSR_DEFAULT);
         } else if (type == TOOL_PLAY_OBJECT) {
             setCursor(CRSR_HAND2);
         } else if (type == TOOL_SELECT_PDF_TEXT_LINEAR) {
@@ -398,30 +413,25 @@ auto XournalppCursor::getResizeCursor(double deltaAngle) -> GdkCursor* {
 
 auto XournalppCursor::getEraserCursor() -> GdkCursor* {
 
-    // Eraser's size follow a quadratic increment, so the cursor will do the same
-    double cursorSize = control->getToolHandler()->getThickness() * 2.0 * control->getZoomControl()->getZoom();
-    gulong flavour = static_cast<gulong>(64 * cursorSize);
-
-    if (CRSR_ERASER == this->currentCursor && flavour == this->currentCursorFlavour) {
-        return nullptr;  // cursor already set
+    auto* handler = control->getToolHandler();
+    const auto mode = handler->getEraserType();
+    // Standard erasing uses a square with half-size = thickness. Whiteout
+    // is a round stroke whose full diameter = thickness.
+    const double footprint =
+            xoj::gui::eraserCursorFootprint(handler->getThickness(), control->getZoomControl()->getZoom(), mode);
+    auto* widget = control->getWindow()->getXournal()->getWidget();
+    const int scale = gtk_widget_get_scale_factor(widget);
+    const gulong flavour = static_cast<gulong>(64 * footprint) * 16 + static_cast<gulong>(mode) * 4 + scale;
+    if (CRSR_ERASER == currentCursor && flavour == currentCursorFlavour) {
+        return nullptr;
     }
-    this->currentCursor = CRSR_ERASER;
-    this->currentCursorFlavour = flavour;
+    currentCursor = CRSR_ERASER;
+    currentCursorFlavour = flavour;
 
-    cairo_surface_t* surface =
-            cairo_image_surface_create(CAIRO_FORMAT_ARGB32, ceil_cast<int>(cursorSize), ceil_cast<int>(cursorSize));
-    cairo_t* cr = cairo_create(surface);
-    cairo_rectangle(cr, 0, 0, cursorSize, cursorSize);
-    cairo_set_source_rgb(cr, 1, 1, 1);
-    cairo_fill(cr);
-    cairo_rectangle(cr, 0, 0, cursorSize, cursorSize);
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_stroke(cr);
-    cairo_destroy(cr);
-    GdkCursor* cursor =
-            gdk_cursor_new_from_surface(gdk_display_get_default(), surface, cursorSize / 2.0, cursorSize / 2.0);
-    cairo_surface_destroy(surface);
-    return cursor;
+    auto image = xoj::gui::createEraserCursorImage(handler->getThickness(), control->getZoomControl()->getZoom(), mode,
+                                                   scale);
+    return gdk_cursor_new_from_surface(gtk_widget_get_display(widget), image.surface.get(), image.hotspot,
+                                       image.hotspot);
 }
 
 

@@ -2683,6 +2683,7 @@ void Control::setEraserType(EraserType type) {
         }
     }
     this->toolHandler->setEraserType(type);
+    this->getCursor()->updateCursor();
 }
 
 void Control::setToolSize(ToolSize size) {

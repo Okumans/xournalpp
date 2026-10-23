@@ -69,6 +69,7 @@ protected:
      * of the currently active tool.
      */
     bool inputStartedOutsidePageArea = false;
+    bool temporaryPan = false;
 
     /**
      * Flag whether pen is within the widget
