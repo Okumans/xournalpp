@@ -8,7 +8,7 @@ Review media for [pull request #6](https://github.com/Okumans/xournalpp/pull/6).
 
 [Watch or download the MP4](demo.mp4).
 
-The recording shows the actual application built from this PR on a virtual X11 display. Mouse and keyboard input are automated. The toolbar is customized to keep Smart Select, PDF text selection, Rectangle, and Ellipse visible.
+The recording shows the actual application built from this PR on a virtual X11 display. Mouse and keyboard input are automated. The floating annotation toolbar is icon-only, with tooltips and accessible names. The main toolbar is customized to keep Smart Select, PDF text selection, Rectangle, and Ellipse visible.
 
 ## Screenshots
 
@@ -20,7 +20,7 @@ The recording shows the actual application built from this PR on a virtual X11 d
 
 ![PDF text selection with the floating annotation toolbar](pdf-selection.png)
 
-### Focused highlight recoloring
+### Highlight recoloring
 
 ![Recolor palette for an existing highlight](recolor.png)
 
@@ -37,7 +37,7 @@ The recording shows the actual application built from this PR on a virtual X11 d
 Open [example.pdf](example.pdf) in the PR build.
 
 1. Use Smart Select to drag across the first sentence. The floating toolbar exposes separate highlight and text-color swatches.
-2. Click a preset highlight color to apply it immediately without leaving Smart Select. The last swatch opens the full color chooser. Select the highlight again for the focused **Recolor** palette; changing its color supports undo.
+2. Click a preset highlight color to apply it immediately without leaving Smart Select. The last swatch opens the full color chooser. Select the highlight again for the compact recolor palette; changing its color supports undo.
 3. Select Pen, then Rectangle (`Ctrl+2`). Start a drag and press/release Shift while holding the mouse button to see the constraint update live.
 4. Hold Alt during a shape drag to construct from the center. Hold Space to move the shape; press Esc to cancel an unfinished shape.
 5. Choose Ellipse (`Ctrl+3`) and hold Shift to draw a circle. Pen/Highlighter also support Shift-click connected segments.
