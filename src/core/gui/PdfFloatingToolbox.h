@@ -72,6 +72,7 @@ private:
     void show();
     static void highlightColorCb(GtkColorButton* button, PdfFloatingToolbox* pft);
     static void textColorCb(GtkColorButton* button, PdfFloatingToolbox* pft);
+    static void highlightPresetCb(GtkButton* button, PdfFloatingToolbox* pft);
     void updateColorButtons();
 
     static gboolean getOverlayPosition(GtkOverlay* overlay, GtkWidget* widget, GdkRectangle* allocation,

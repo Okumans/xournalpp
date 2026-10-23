@@ -1,8 +1,9 @@
 #include "PdfFloatingToolbox.h"
 
 #include <algorithm>  // for max, min
-#include <cmath>      // for abs
-#include <cstddef>    // for size_t
+#include <array>
+#include <cmath>    // for abs
+#include <cstddef>  // for size_t
 #include <memory>
 #include <string>   // for string
 #include <utility>  // for move
@@ -31,12 +32,28 @@
 #include "undo/UndoRedoHandler.h"   // for UndoRedoHandler
 #include "util/Assert.h"            // for xoj_assert
 #include "util/gtk4_helper.h"       // for gtk_widget_get_clipboard
+#include "util/i18n.h"
 
 #include "MainWindow.h"  // for MainWindow
 
 namespace {
 
 constexpr double PDF_HIGHLIGHT_MATCH_TOLERANCE = 1.0;
+
+struct HighlightPreset {
+    const char* widget;
+    const char* label;
+    GdkRGBA rgba;
+};
+
+constexpr std::array<HighlightPreset, 6> HIGHLIGHT_PRESETS{{
+        {"pdfTbPresetYellow", N_("Yellow highlight"), {1.0, 224.0 / 255, 102.0 / 255, 1.0}},
+        {"pdfTbPresetGreen", N_("Green highlight"), {140.0 / 255, 233.0 / 255, 154.0 / 255, 1.0}},
+        {"pdfTbPresetBlue", N_("Blue highlight"), {116.0 / 255, 192.0 / 255, 252.0 / 255, 1.0}},
+        {"pdfTbPresetPink", N_("Pink highlight"), {250.0 / 255, 162.0 / 255, 193.0 / 255, 1.0}},
+        {"pdfTbPresetOrange", N_("Orange highlight"), {1.0, 192.0 / 255, 120.0 / 255, 1.0}},
+        {"pdfTbPresetPurple", N_("Purple highlight"), {208.0 / 255, 191.0 / 255, 1.0, 1.0}},
+}};
 
 bool approximatelyEqual(double lhs, double rhs) { return std::abs(lhs - rhs) <= PDF_HIGHLIGHT_MATCH_TOLERANCE; }
 
@@ -86,6 +103,12 @@ PdfFloatingToolbox::PdfFloatingToolbox(MainWindow* theMainWindow, GtkOverlay* ov
 
     g_signal_connect(theMainWindow->get("pdfTbHighlightColor"), "color-set", G_CALLBACK(highlightColorCb), this);
     g_signal_connect(theMainWindow->get("pdfTbTextColor"), "color-set", G_CALLBACK(textColorCb), this);
+    for (size_t i = 0; i < HIGHLIGHT_PRESETS.size(); ++i) {
+        auto* button = theMainWindow->get(HIGHLIGHT_PRESETS[i].widget);
+        g_object_set_data(G_OBJECT(button), "pdf-highlight-preset", GINT_TO_POINTER(int(i)));
+        atk_object_set_name(gtk_widget_get_accessible(button), _(HIGHLIGHT_PRESETS[i].label));
+        g_signal_connect(button, "clicked", G_CALLBACK(highlightPresetCb), this);
+    }
     this->clearSelection();
     this->hide();
 }
@@ -123,6 +146,23 @@ void PdfFloatingToolbox::updateColorButtons() {
     const auto text = Util::rgb_to_GdkRGBA(this->textColor);
     gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(theMainWindow->get("pdfTbHighlightColor")), &highlight);
     gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(theMainWindow->get("pdfTbTextColor")), &text);
+    for (const auto& preset: HIGHLIGHT_PRESETS) {
+        auto* context = gtk_widget_get_style_context(theMainWindow->get(preset.widget));
+        const auto presetColor = Util::GdkRGBA_to_rgb(preset.rgba);
+        if (color.red == presetColor.red && color.green == presetColor.green && color.blue == presetColor.blue) {
+            gtk_style_context_add_class(context, "selected");
+        } else {
+            gtk_style_context_remove_class(context, "selected");
+        }
+    }
+}
+
+void PdfFloatingToolbox::highlightPresetCb(GtkButton* button, PdfFloatingToolbox* pft) {
+    const auto index = size_t(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "pdf-highlight-preset")));
+    xoj_assert(index < HIGHLIGHT_PRESETS.size());
+    auto* chooser = GTK_COLOR_CHOOSER(pft->theMainWindow->get("pdfTbHighlightColor"));
+    gtk_color_chooser_set_rgba(chooser, &HIGHLIGHT_PRESETS[index].rgba);
+    highlightColorCb(GTK_COLOR_BUTTON(chooser), pft);
 }
 
 void PdfFloatingToolbox::showForObjectSelection(int x, int y) {
@@ -192,19 +232,25 @@ auto PdfFloatingToolbox::getOverlayPosition(GtkOverlay* overlay, GtkWidget* widg
         allocation->height = natural.height;
 
         // Make sure the "pdfFloatingToolbox" is fully displayed.
-        const int gap = 5;
+        const int gap = 8;
 
-        // By default, we show the toolbox below and to the right of the selected text.
-        // If the toolbox will go out of the window, then we'll flip the corresponding directions.
+        // Prefer the space above the selection so the toolbar does not cover the next line of text.
+        // Flip horizontally near the right edge and fall below the selection near the top edge.
 
         GtkWidget* scrolledWindow =
                 gtk_widget_get_ancestor(self->theMainWindow->getXournal()->getWidget(), GTK_TYPE_SCROLLED_WINDOW);
 
         bool rightOK = self->position.x + allocation->width + gap <= gtk_widget_get_allocated_width(scrolledWindow);
-        bool bottomOK = self->position.y + allocation->height + gap <= gtk_widget_get_allocated_height(scrolledWindow);
+        bool aboveOK = self->position.y >= allocation->height + gap;
 
         allocation->x = rightOK ? self->position.x + gap : self->position.x - allocation->width - gap;
-        allocation->y = bottomOK ? self->position.y + gap : self->position.y - allocation->height - gap;
+        allocation->y = aboveOK ? self->position.y - allocation->height - gap : self->position.y + gap;
+
+        // Long translated labels and selections near an edge must not push controls outside the viewport.
+        allocation->x = std::clamp(allocation->x, 0,
+                                   std::max(0, gtk_widget_get_allocated_width(scrolledWindow) - allocation->width));
+        allocation->y = std::clamp(allocation->y, 0,
+                                   std::max(0, gtk_widget_get_allocated_height(scrolledWindow) - allocation->height));
 
         gtk_widget_translate_coordinates(scrolledWindow, GTK_WIDGET(overlay), allocation->x, allocation->y,
                                          &allocation->x, &allocation->y);
@@ -245,10 +291,9 @@ void PdfFloatingToolbox::strikethroughCb(GtkButton* button, PdfFloatingToolbox* 
 void PdfFloatingToolbox::show() {
     gtk_widget_hide(this->floatingToolbox);  // force showing in new position
     gtk_widget_show_all(this->floatingToolbox);
-    for (const auto* name: {"pdfTbCopyText", "pdfTbHighlight", "pdfTbUnderline", "pdfTbStrikethrough",
-                            "pdfTbChangeType", "pdfTbTextColor"}) {
-        gtk_widget_set_visible(theMainWindow->get(name), !this->objectSelection);
-    }
+    gtk_widget_set_visible(theMainWindow->get("pdfTbTextActions"), !this->objectSelection);
+    gtk_label_set_text(GTK_LABEL(theMainWindow->get("pdfTbColorLabel")),
+                       objectSelection ? _("Recolor") : _("Highlight"));
 }
 
 void PdfFloatingToolbox::copyTextToClipboard() {

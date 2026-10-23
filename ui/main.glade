@@ -628,143 +628,259 @@
     <property name="transition-type">none</property>
     <property name="reveal-child">True</property>
     <child>
-      <!-- n-columns=3 n-rows=3 -->
-      <object class="GtkGrid">
+      <object class="GtkBox" id="pdfFloatingToolPanel">
         <property name="name">pdfFloatingToolGrid</property>
         <property name="visible">True</property>
-        <property name="can-focus">True</property>
-        <property name="vexpand">True</property>
+        <property name="spacing">4</property>
         <property name="orientation">vertical</property>
-        <property name="row-spacing">2</property>
-        <property name="column-spacing">1</property>
         <child>
-          <object class="GtkButton" id="pdfTbCopyText">
+          <object class="GtkBox" id="pdfTbTextActions">
             <property name="visible">True</property>
-            <property name="can-focus">True</property>
-            <property name="receives-default">True</property>
-            <property name="tooltip-text" translatable="yes">Copy selected text</property>
-            <property name="always-show-image">True</property>
+            <property name="spacing">2</property>
             <child>
-              <object class="GtkImage">
+              <object class="GtkButton" id="pdfTbCopyText">
                 <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="icon-name">edit-copy</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Copy selected text</property>
+                <child>
+                  <object class="GtkBox">
+                    <property name="visible">True</property>
+                    <property name="spacing">6</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="visible">True</property>
+                        <property name="icon-name">edit-copy-symbolic</property>
+                        <property name="pixel-size">16</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel">
+                        <property name="visible">True</property>
+                        <property name="label" translatable="yes">Copy</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkSeparator">
+                <property name="visible">True</property>
+                <property name="orientation">vertical</property>
+                <property name="margin-start">4</property>
+                <property name="margin-end">4</property>
+                <property name="margin-top">7</property>
+                <property name="margin-bottom">7</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbHighlight">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Highlight selected text with the current color</property>
+                <child>
+                  <object class="GtkBox">
+                    <property name="visible">True</property>
+                    <property name="spacing">6</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="visible">True</property>
+                        <property name="icon-name">xopp-tool-highlighter</property>
+                        <property name="pixel-size">16</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel">
+                        <property name="visible">True</property>
+                        <property name="label" translatable="yes">Highlight</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkSeparator">
+                <property name="visible">True</property>
+                <property name="orientation">vertical</property>
+                <property name="margin-start">4</property>
+                <property name="margin-end">4</property>
+                <property name="margin-top">7</property>
+                <property name="margin-bottom">7</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbUnderline">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Underline selected text</property>
+                <child>
+                  <object class="GtkBox">
+                    <property name="visible">True</property>
+                    <property name="spacing">6</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="visible">True</property>
+                        <property name="icon-name">format-text-underline-symbolic</property>
+                        <property name="pixel-size">16</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbStrikethrough">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Strikethrough selected text</property>
+                <child>
+                  <object class="GtkBox">
+                    <property name="visible">True</property>
+                    <property name="spacing">6</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="visible">True</property>
+                        <property name="icon-name">format-text-strikethrough-symbolic</property>
+                        <property name="pixel-size">16</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkColorButton" id="pdfTbTextColor">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="use-alpha">False</property>
+                <property name="title" translatable="yes">Annotation text color</property>
+                <property name="tooltip-text" translatable="yes">Choose underline and strikethrough color</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkSeparator">
+                <property name="visible">True</property>
+                <property name="orientation">vertical</property>
+                <property name="margin-start">4</property>
+                <property name="margin-end">4</property>
+                <property name="margin-top">7</property>
+                <property name="margin-bottom">7</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbChangeType">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Toggle standard / region text selection</property>
+                <child>
+                  <object class="GtkBox">
+                    <property name="visible">True</property>
+                    <property name="spacing">6</property>
+                    <child>
+                      <object class="GtkImage">
+                        <property name="visible">True</property>
+                        <property name="icon-name">view-list-symbolic</property>
+                        <property name="pixel-size">16</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
               </object>
             </child>
           </object>
-          <packing>
-            <property name="left-attach">0</property>
-            <property name="top-attach">0</property>
-            <property name="width">2</property>
-            <property name="height">2</property>
-          </packing>
         </child>
         <child>
-          <object class="GtkButton" id="pdfTbHighlight">
+          <object class="GtkBox" id="pdfTbPalette">
             <property name="visible">True</property>
-            <property name="can-focus">True</property>
-            <property name="receives-default">True</property>
-            <property name="tooltip-text" translatable="yes">Highlight selected text</property>
-            <property name="always-show-image">True</property>
+            <property name="spacing">4</property>
             <child>
-              <object class="GtkImage">
+              <object class="GtkLabel" id="pdfTbColorLabel">
                 <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="icon-name">xopp-tool-highlighter</property>
+                <property name="label" translatable="yes">Highlight</property>
+                <property name="margin-start">7</property>
+                <property name="margin-end">8</property>
+                <style>
+                  <class name="pdf-color-label"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbPresetYellow">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Yellow highlight</property>
+                <style>
+                  <class name="pdf-highlight-swatch"/>
+                  <class name="pdf-highlight-yellow"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbPresetGreen">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Green highlight</property>
+                <style>
+                  <class name="pdf-highlight-swatch"/>
+                  <class name="pdf-highlight-green"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbPresetBlue">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Blue highlight</property>
+                <style>
+                  <class name="pdf-highlight-swatch"/>
+                  <class name="pdf-highlight-blue"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbPresetPink">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Pink highlight</property>
+                <style>
+                  <class name="pdf-highlight-swatch"/>
+                  <class name="pdf-highlight-pink"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbPresetOrange">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Orange highlight</property>
+                <style>
+                  <class name="pdf-highlight-swatch"/>
+                  <class name="pdf-highlight-orange"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="pdfTbPresetPurple">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="tooltip-text" translatable="yes">Purple highlight</property>
+                <style>
+                  <class name="pdf-highlight-swatch"/>
+                  <class name="pdf-highlight-purple"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkColorButton" id="pdfTbHighlightColor">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="use-alpha">False</property>
+                <property name="title" translatable="yes">Highlight color</property>
+                <property name="tooltip-text" translatable="yes">More highlight colors: apply to selected text or recolor a highlight</property>
               </object>
             </child>
           </object>
-          <packing>
-            <property name="left-attach">2</property>
-            <property name="top-attach">0</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkColorButton" id="pdfTbHighlightColor">
-            <property name="visible">True</property>
-            <property name="can-focus">False</property>
-            <property name="title" translatable="yes">Highlight color</property>
-            <property name="tooltip-text" translatable="yes">Choose a color and highlight selected text, or recolor the selected highlight</property>
-            <property name="use-alpha">False</property>
-          </object>
-          <packing>
-            <property name="left-attach">3</property>
-            <property name="top-attach">0</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkColorButton" id="pdfTbTextColor">
-            <property name="visible">True</property>
-            <property name="can-focus">False</property>
-            <property name="title" translatable="yes">Annotation text color</property>
-            <property name="tooltip-text" translatable="yes">Choose underline and strikethrough color</property>
-            <property name="use-alpha">False</property>
-          </object>
-          <packing>
-            <property name="left-attach">3</property>
-            <property name="top-attach">1</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkButton" id="pdfTbUnderline">
-            <property name="visible">True</property>
-            <property name="can-focus">True</property>
-            <property name="receives-default">True</property>
-            <property name="tooltip-text" translatable="yes">Underline selected text</property>
-            <property name="always-show-image">True</property>
-            <child>
-              <object class="GtkImage">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="icon-name">format-text-underline</property>
-              </object>
-            </child>
-          </object>
-          <packing>
-            <property name="left-attach">2</property>
-            <property name="top-attach">1</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkButton" id="pdfTbStrikethrough">
-            <property name="visible">True</property>
-            <property name="can-focus">True</property>
-            <property name="receives-default">True</property>
-            <property name="tooltip-text" translatable="yes">Strikethrough selected text</property>
-            <property name="always-show-image">True</property>
-            <child>
-              <object class="GtkImage">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="icon-name">format-text-strikethrough</property>
-              </object>
-            </child>
-          </object>
-          <packing>
-            <property name="left-attach">2</property>
-            <property name="top-attach">2</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkButton" id="pdfTbChangeType">
-            <property name="visible">True</property>
-            <property name="can-focus">True</property>
-            <property name="receives-default">True</property>
-            <property name="tooltip-text" translatable="yes">Toggle standard / region text selection</property>
-            <property name="always-show-image">True</property>
-            <child>
-              <object class="GtkImage">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="icon-name">format-justify-center</property>
-              </object>
-            </child>
-          </object>
-          <packing>
-            <property name="left-attach">0</property>
-            <property name="top-attach">2</property>
-            <property name="width">2</property>
-          </packing>
         </child>
       </object>
     </child>
