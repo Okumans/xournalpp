@@ -7,13 +7,8 @@
  *  See: https://wiki.gnome.org/action/show/Projects/GTK/Inspector
  */
 
-#pdfFloatingToolGrid {
-    padding: 7px;
-}
-
 /*Style the Floating Toolbox!*/
-#floatingToolbox > box,
-#pdfFloatingToolGrid {
+#floatingToolbox > box {
 	background-color: white;
 	border-radius: 12px;
 
@@ -32,17 +27,6 @@
 	border-radius: 12px;
 }
 
-#pdfFloatingToolGrid button {
-	background: rgba(255, 255, 255, 0.8);
-	border: 12px;
-}
-
-#pdfFloatingToolGrid button:hover {
-	border-radius: 12px;
-	background: rgba(245, 245, 245, 0.8);
-	box-shadow: inset 0px 0px 2px gray;
-}
-
 /*
 	Use :checked for a selected ToggleButton.
 	See https://stackoverflow.com/questions/39824345/use-css-to-style-gtktogglebutton-depending-on-the-state
@@ -55,8 +39,7 @@
 	transition: background-color 0.5s ease, border-color 0.5s ease, margin 0.3s ease;
 }
 
-#floatingToolbox toolbar,
-#pdfFloatingToolGrid button {
+#floatingToolbox toolbar {
     /*
       The Adaptia GTK theme adds box-shadows to toolbars.
       Remove them to avoid horizontal lines that extend outside
@@ -66,8 +49,7 @@
     box-shadow: none;
 }
 
-window.darkMode #floatingToolbox button,
-window.darkMode #pdfFloatingToolGrid button {
+window.darkMode #floatingToolbox button {
 	background: rgba(55, 53, 53, 0.5);
 	border: none;
 }
@@ -78,8 +60,7 @@ window.darkMode #floatingToolbox button:checked {
 	box-shadow: 0px 0px 3px lightblue;
 }
 
-window.darkMode #floatingToolbox > box,
-window.darkMode #pdfFloatingToolGrid  {
+window.darkMode #floatingToolbox > box {
 	background-color: black;
 
 	/*
@@ -224,4 +205,85 @@ image.flying-icon.TL {
 }
 image.flying-icon.TR {
     border-radius: 50% 50% 50% 0%;
+}
+
+/* PDF annotation controls: clear action groups and direct, keyboard-accessible colors. */
+#pdfFloatingToolGrid {
+    background-color: @theme_base_color;
+    color: @theme_fg_color;
+    border: 1px solid alpha(@theme_fg_color, 0.14);
+    border-radius: 12px;
+    padding: 6px;
+    margin: 8px;
+    box-shadow: 0 3px 10px alpha(black, 0.18);
+}
+
+#pdfFloatingToolGrid button {
+    min-width: 24px;
+    min-height: 28px;
+    padding: 4px 7px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: @theme_fg_color;
+    box-shadow: none;
+}
+
+#pdfFloatingToolGrid button:hover {
+    background: alpha(@theme_fg_color, 0.07);
+    border-color: alpha(@theme_fg_color, 0.12);
+    box-shadow: none;
+}
+
+#pdfFloatingToolGrid button:focus {
+    outline: 2px solid @theme_selected_bg_color;
+    outline-offset: -2px;
+}
+
+#pdfFloatingToolGrid colorswatch {
+    min-width: 18px;
+    min-height: 18px;
+    border-radius: 4px;
+}
+
+#pdfFloatingToolGrid .pdf-color-label {
+    font-size: 0.9em;
+    color: alpha(@theme_fg_color, 0.7);
+}
+
+#pdfFloatingToolGrid button.pdf-highlight-swatch {
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    margin: 5px 2px;
+    border: 2px solid transparent;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1px alpha(black, 0.12);
+}
+
+#pdfFloatingToolGrid button.pdf-highlight-yellow { background: #ffe066; }
+#pdfFloatingToolGrid button.pdf-highlight-green { background: #8ce99a; }
+#pdfFloatingToolGrid button.pdf-highlight-blue { background: #74c0fc; }
+#pdfFloatingToolGrid button.pdf-highlight-pink { background: #faa2c1; }
+#pdfFloatingToolGrid button.pdf-highlight-orange { background: #ffc078; }
+#pdfFloatingToolGrid button.pdf-highlight-purple { background: #d0bfff; }
+
+#pdfFloatingToolGrid button.pdf-highlight-swatch:hover,
+#pdfFloatingToolGrid button.pdf-highlight-swatch.selected {
+    border-color: @theme_fg_color;
+}
+
+window.darkMode #pdfFloatingToolGrid {
+    background-color: @theme_base_color;
+    box-shadow: 0 3px 10px alpha(black, 0.4);
+}
+
+window.darkMode #pdfFloatingToolGrid button:not(.pdf-highlight-swatch) {
+    background: transparent;
+    border: 1px solid transparent;
+}
+
+window.darkMode #pdfFloatingToolGrid button:not(.pdf-highlight-swatch):hover {
+    background: alpha(@theme_fg_color, 0.12);
+    border-color: alpha(@theme_fg_color, 0.2);
 }

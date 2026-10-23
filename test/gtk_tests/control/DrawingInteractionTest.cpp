@@ -266,6 +266,7 @@ TEST_F(DrawingInteractionTest, existingHighlightCanBeRecoloredWithoutReselecting
     view->setSelection(selected.release());
     window->getPdfToolbox()->showForObjectSelection(100, 100);
     EXPECT_FALSE(window->getPdfToolbox()->isHidden());
+    EXPECT_FALSE(gtk_widget_get_visible(window->get("pdfTbTextActions")));
     auto* swatch = window->get("pdfTbHighlightColor");
     const GdkRGBA green{0, 1, 0, 1};
     gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(swatch), &green);
@@ -434,6 +435,33 @@ TEST_F(DrawingInteractionTest, pdfTextCanBeHighlightedInAChosenColorWithoutLeavi
     const auto elements = control->getCurrentPage()->getSelectedLayer()->getElementsView();
     ASSERT_GT(elements.size(), 0);
     EXPECT_EQ(elements.front()->getColor(), Color(255, 0, 255));
+    EXPECT_EQ(control->getToolHandler()->getToolType(), TOOL_SMART_SELECT);
+    EXPECT_EQ(control->getToolHandler()->getTool(TOOL_PEN).getColor(), penColor);
+    control->getUndoRedoHandler()->undo();
+    EXPECT_EQ(control->getCurrentPage()->getSelectedLayer()->getElementsView().size(), 0);
+}
+
+TEST_F(DrawingInteractionTest, presetColorHighlightsPdfTextInOneClickAndSupportsUndo) {
+    bool loaded = false;
+    control->openFileWithoutSavingTheCurrentDocument(
+            fs::path(GET_TESTFILE(u8"packaged_xopp/pdfBackground/old.xopp.bg.pdf")), false, 0,
+            [&](bool ok) { loaded = ok; });
+    ASSERT_TRUE(loaded);
+    control->selectTool(TOOL_SMART_SELECT);
+    const auto penColor = control->getToolHandler()->getTool(TOOL_PEN).getColor();
+    auto* toolbox = window->getPdfToolbox();
+    toolbox->newSelection(55, 60);
+    auto* selected = toolbox->getSelection();
+    selected->setToolType(TOOL_SELECT_PDF_TEXT_LINEAR);
+    selected->currentPos(250, 80, XojPdfPageSelectionStyle::Linear);
+    ASSERT_TRUE(selected->finalizeSelectionAndRepaint(XojPdfPageSelectionStyle::Linear));
+    toolbox->show(200, 200);
+    ASSERT_TRUE(gtk_widget_get_visible(window->get("pdfTbTextActions")));
+    gtk_button_clicked(GTK_BUTTON(window->get("pdfTbPresetBlue")));
+    EXPECT_FALSE(toolbox->hasSelection());
+    const auto elements = control->getCurrentPage()->getSelectedLayer()->getElementsView();
+    ASSERT_GT(elements.size(), 0);
+    EXPECT_EQ(elements.front()->getColor(), Color(116, 192, 252));
     EXPECT_EQ(control->getToolHandler()->getToolType(), TOOL_SMART_SELECT);
     EXPECT_EQ(control->getToolHandler()->getTool(TOOL_PEN).getColor(), penColor);
     control->getUndoRedoHandler()->undo();
