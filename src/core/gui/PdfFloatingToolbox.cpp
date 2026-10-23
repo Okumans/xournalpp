@@ -103,6 +103,13 @@ PdfFloatingToolbox::PdfFloatingToolbox(MainWindow* theMainWindow, GtkOverlay* ov
 
     g_signal_connect(theMainWindow->get("pdfTbHighlightColor"), "color-set", G_CALLBACK(highlightColorCb), this);
     g_signal_connect(theMainWindow->get("pdfTbTextColor"), "color-set", G_CALLBACK(textColorCb), this);
+    for (const auto* name: {"pdfTbCopyText", "pdfTbHighlight", "pdfTbUnderline", "pdfTbStrikethrough", "pdfTbTextColor",
+                            "pdfTbChangeType", "pdfTbHighlightColor"}) {
+        auto* widget = theMainWindow->get(name);
+        auto* description = gtk_widget_get_tooltip_text(widget);
+        atk_object_set_name(gtk_widget_get_accessible(widget), description);
+        g_free(description);
+    }
     for (size_t i = 0; i < HIGHLIGHT_PRESETS.size(); ++i) {
         auto* button = theMainWindow->get(HIGHLIGHT_PRESETS[i].widget);
         g_object_set_data(G_OBJECT(button), "pdf-highlight-preset", GINT_TO_POINTER(int(i)));
@@ -292,8 +299,10 @@ void PdfFloatingToolbox::show() {
     gtk_widget_hide(this->floatingToolbox);  // force showing in new position
     gtk_widget_show_all(this->floatingToolbox);
     gtk_widget_set_visible(theMainWindow->get("pdfTbTextActions"), !this->objectSelection);
-    gtk_label_set_text(GTK_LABEL(theMainWindow->get("pdfTbColorLabel")),
-                       objectSelection ? _("Recolor") : _("Highlight"));
+    auto* paletteIcon = theMainWindow->get("pdfTbPaletteIcon");
+    const auto* description = objectSelection ? _("Recolor selected highlight") : _("Highlight colors");
+    gtk_widget_set_tooltip_text(paletteIcon, description);
+    atk_object_set_name(gtk_widget_get_accessible(paletteIcon), description);
 }
 
 void PdfFloatingToolbox::copyTextToClipboard() {

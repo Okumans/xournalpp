@@ -653,12 +653,6 @@
                         <property name="pixel-size">16</property>
                       </object>
                     </child>
-                    <child>
-                      <object class="GtkLabel">
-                        <property name="visible">True</property>
-                        <property name="label" translatable="yes">Copy</property>
-                      </object>
-                    </child>
                   </object>
                 </child>
               </object>
@@ -687,12 +681,6 @@
                         <property name="visible">True</property>
                         <property name="icon-name">xopp-tool-highlighter</property>
                         <property name="pixel-size">16</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkLabel">
-                        <property name="visible">True</property>
-                        <property name="label" translatable="yes">Highlight</property>
                       </object>
                     </child>
                   </object>
@@ -795,14 +783,13 @@
             <property name="visible">True</property>
             <property name="spacing">4</property>
             <child>
-              <object class="GtkLabel" id="pdfTbColorLabel">
+              <object class="GtkImage" id="pdfTbPaletteIcon">
                 <property name="visible">True</property>
-                <property name="label" translatable="yes">Highlight</property>
+                <property name="icon-name">xopp-tool-highlighter</property>
+                <property name="pixel-size">16</property>
                 <property name="margin-start">7</property>
                 <property name="margin-end">8</property>
-                <style>
-                  <class name="pdf-color-label"/>
-                </style>
+                <property name="tooltip-text" translatable="yes">Highlight colors</property>
               </object>
             </child>
             <child>
