@@ -56,11 +56,12 @@ static void brushAndHistory() {
     for (int i = 0; i < 140; ++i) {
         bounded.undo();
     }
-    check(bounded.ink.size() == 12 && !bounded.canUndo(), "history retains at most 128 edits");
-    for (int i = 0; i < 128; ++i) {
+    check(bounded.ink.empty() && !bounded.canUndo(),
+          "history must retain edits beyond the old prototype's 128-step cap");
+    for (int i = 0; i < 140; ++i) {
         bounded.redo();
     }
-    check(bounded.ink.size() == 140 && !bounded.canRedo(), "bounded history remains fully redoable");
+    check(bounded.ink.size() == 140 && !bounded.canRedo(), "retained history remains fully redoable");
 }
 
 int main() {

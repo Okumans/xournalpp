@@ -23,6 +23,12 @@ target_compile_options(ink-renderer-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(ink-renderer-test PRIVATE PkgConfig::CAIRO)
 add_test(NAME ink-renderer COMMAND ink-renderer-test)
 
+add_executable(canvas-input-test CanvasInputTest.cpp)
+target_compile_features(canvas-input-test PRIVATE cxx_std_20)
+target_compile_options(canvas-input-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(canvas-input-test PRIVATE PkgConfig::UI)
+add_test(NAME canvas-input COMMAND canvas-input-test)
+
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-missing-pdf COMMAND xournalpp-gtk4-canvas --pdf ${CMAKE_CURRENT_BINARY_DIR}/missing.pdf)
 set_tests_properties(reject-unknown-option reject-missing-pdf PROPERTIES WILL_FAIL TRUE)
