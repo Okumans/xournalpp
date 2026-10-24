@@ -1,8 +1,11 @@
+#include <charconv>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -14,6 +17,7 @@
 #include "BehaviorDefaults.h"
 #include "CanvasInput.h"
 #include "CanvasState.h"
+#include "DocumentAutosave.h"
 #include "DocumentSession.h"
 #include "DocumentJob.h"
 #include "DocumentInk.h"
@@ -34,9 +38,16 @@ struct Options {
     std::string nativeDocument;
     std::string worker;
     std::string smokeDirectory;
+    int autosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
     bool dark = false;
     int width = 1100;
     int height = 820;
+};
+
+struct RecoveryInfo {
+    std::string saveTarget;
+    std::string saveVersion;
+    std::string autosavePath;
 };
 
 struct SurfaceDeleter {
@@ -67,8 +78,14 @@ public:
     }
 
     ~Prototype() {
-        if (heartbeatSource) {
-            g_source_remove(heartbeatSource);
+        for (guint* source: {&heartbeatSource, &autosaveSource, &crashHelperSource, &recoveryVerifySource}) {
+            if (*source) {
+                g_source_remove(*source);
+                *source = 0;
+            }
+        }
+        if (closed) {
+            cleanupActiveAutosave();
         }
         if (paintClock) {
             g_signal_handlers_disconnect_by_data(paintClock, this);
@@ -101,9 +118,116 @@ private:
         throw std::runtime_error(message);
     }
 
-    bool modified() const { return state.revision() != savedRevision; }
+    bool modified() const { return savedRevision != state.revision(); }
+
+    static std::filesystem::path cacheRoot() {
+        const char* dir = g_get_user_cache_dir();
+        return dir ? std::filesystem::path(dir) : std::filesystem::path{};
+    }
+
+    static std::filesystem::path configRoot() {
+        const char* dir = g_get_user_config_dir();
+        return dir ? std::filesystem::path(dir) : std::filesystem::path{};
+    }
+
+    std::string currentAutosaveTarget() const {
+        return prototype::bridge::autosavePathForTarget(saveTarget, cacheRoot(), static_cast<long long>(::getpid()))
+                .string();
+    }
+
+    void cleanupActiveAutosave() {
+        if (!activeAutosavePath.empty()) {
+            prototype::bridge::removeAutosaveFiles(activeAutosavePath);
+            activeAutosavePath.clear();
+        }
+    }
+
+    void scheduleAutosave(guint seconds) {
+        if (autosaveSource) {
+            g_source_remove(autosaveSource);
+            autosaveSource = 0;
+        }
+        if (!options.worker.empty() && seconds > 0) {
+            autosaveSource = g_timeout_add_seconds(
+                    seconds,
+                    +[](gpointer data) -> gboolean {
+                        static_cast<Prototype*>(data)->startAutosave();
+                        return G_SOURCE_CONTINUE;
+                    },
+                    this);
+        }
+    }
+
+    void waitForAutosave(std::function<void()> action) {
+        resetInput(true);
+        gtk_widget_set_sensitive(contentView, false);
+        deferredAction = std::move(action);
+        updateTitle();
+    }
+
+    void startAutosave() {
+        if (!nativeSession || options.worker.empty() || closed || busy || autosaving || choosingFile || messageDialog) {
+            return;
+        }
+        if (!modified()) {
+            if (!activeAutosavePath.empty()) {
+                cleanupActiveAutosave();
+                updateTitle();
+            }
+            autosavedRevision = state.revision();
+            return;
+        }
+        const auto target = currentAutosaveTarget();
+        std::error_code statusError;
+        if (autosavedRevision == state.revision() && activeAutosavePath == target &&
+            std::filesystem::is_regular_file(std::filesystem::symlink_status(target, statusError)) && !statusError) {
+            return;
+        }
+        const auto revision = state.revision();
+        const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto previous = activeAutosavePath;
+        autosaving = true;
+        updateTitle();
+        auto* application = G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
+        g_application_hold(application);
+        prototype::bridge::documentJob(
+                [session, worker, target, packets] { session->autosave(worker, target, packets); },
+                [this, application, session, revision, target, previous](const std::string& error) {
+                    autosaving = false;
+                    if (error.empty() && nativeSession == session && !closed) {
+                        if (!previous.empty() && previous != target) {
+                            prototype::bridge::removeAutosaveFiles(previous);
+                        }
+                        if (modified()) {
+                            activeAutosavePath = target;
+                            autosavedRevision = revision;
+                        } else {
+                            prototype::bridge::removeAutosaveFiles(target);
+                            activeAutosavePath.clear();
+                            autosavedRevision = state.revision();
+                        }
+                    } else if (!error.empty()) {
+                        ++autosaveErrors;
+                    }
+                    if (deferredAction) {
+                        gtk_widget_set_sensitive(contentView, true);
+                        auto next = std::move(deferredAction);
+                        deferredAction = nullptr;
+                        if (!closed) {
+                            next();
+                        }
+                    }
+                    if (!closed) {
+                        update();
+                    }
+                    g_application_release(application);
+                });
+    }
 
     void closeWindow() {
+        cleanupActiveAutosave();
         closed = true;
         gtk_window_destroy(GTK_WINDOW(window));
     }
@@ -118,8 +242,16 @@ private:
         std::string status;
         if (busy) {
             status = busyText;
+        } else if (autosaving) {
+            status = "Autosaving…";
         } else if (modified()) {
-            status = "Unsaved changes";
+            if (recoveredChanges && state.revision() == 0) {
+                status = "Recovered unsaved changes";
+            } else if (autosavedRevision == state.revision() && !activeAutosavePath.empty()) {
+                status = "Unsaved changes · Autosaved";
+            } else {
+                status = "Unsaved changes";
+            }
         } else if (!savedCopyPath.empty()) {
             status = "Copy saved: " + std::filesystem::path(savedCopyPath).filename().string();
         } else if (savedNormally) {
@@ -182,8 +314,8 @@ private:
         });
     }
 
-    void replaceDocument(const std::shared_ptr<prototype::bridge::DocumentSession>& session,
-                         const std::string& source) {
+    void replaceDocument(const std::shared_ptr<prototype::bridge::DocumentSession>& session, const std::string& source,
+                         const std::optional<RecoveryInfo>& recovery = std::nullopt) {
         GError* error = nullptr;
         const auto path = session->previewPath().string();
         auto* uri = g_filename_to_uri(path.c_str(), nullptr, &error);
@@ -202,11 +334,17 @@ private:
         }
         // Commit the replacement only after the new native snapshot and preview
         // are valid. Failed opens leave the old document and undo history intact.
+        if (!recovery || recovery->autosavePath != activeAutosavePath) {
+            cleanupActiveAutosave();
+        }
         input.reset();
         const auto brush = state.brush;
         state = CanvasState{};
         state.brush = brush;
-        savedRevision = 0;
+        savedRevision = recovery ? std::optional<size_t>{} : std::optional<size_t>{0};
+        autosavedRevision = 0;
+        recoveredChanges = bool(recovery);
+        activeAutosavePath = recovery ? recovery->autosavePath : std::string{};
         savedCopyPath.clear();
         savedNormally = false;
         g_clear_object(&page);
@@ -215,8 +353,8 @@ private:
         pageCount = count;
         nativeSession = session;
         sourcePath = source;
-        saveTarget = session->originalSavePath;
-        saveVersion = session->originalVersion;
+        saveTarget = recovery ? recovery->saveTarget : session->originalSavePath;
+        saveVersion = recovery ? recovery->saveVersion : session->originalVersion;
         cache.reset();
         thumbnails.clear();
         thumbnailWidgets.clear();
@@ -227,15 +365,182 @@ private:
     }
 
     void openDocument(const std::string& path, bool initial = false) {
+        if (autosaving) {
+            waitForAutosave([this, path, initial] { openDocument(path, initial); });
+            return;
+        }
         auto loaded = std::make_shared<std::shared_ptr<prototype::bridge::DocumentSession>>();
         const auto worker = options.worker;
-        runDocumentJob("Opening document…", [loaded, worker, path] {
-            *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, path);
-        }, [this, loaded, path] { replaceDocument(*loaded, path); }, initial);
+        runDocumentJob(
+                "Opening document…",
+                [loaded, worker, path] {
+                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, path);
+                },
+                [this, loaded, path, initial] {
+                    replaceDocument(*loaded, path);
+                    if (initial && path.empty() && !checkedStartupRecovery) {
+                        checkedStartupRecovery = true;
+                        checkStartupRecovery();
+                    }
+                },
+                initial);
+    }
+
+    void recoverSidecarAutosave(const std::string& path, const std::string& sidecar, bool initial) {
+        auto loaded = std::make_shared<std::shared_ptr<prototype::bridge::DocumentSession>>();
+        auto targetSave = std::make_shared<std::string>();
+        auto targetVersion = std::make_shared<std::string>();
+        const auto worker = options.worker;
+        runDocumentJob(
+                "Recovering autosave…",
+                [loaded, targetSave, targetVersion, worker, path, sidecar] {
+                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, sidecar);
+                    std::error_code statusError;
+                    if (g_ascii_strcasecmp(std::filesystem::path(path).extension().string().c_str(), ".xopp") == 0 &&
+                        std::filesystem::is_regular_file(std::filesystem::symlink_status(path, statusError)) &&
+                        !statusError) {
+                        *targetSave = path;
+                        *targetVersion = prototype::bridge::documentVersion(path).token;
+                    }
+                },
+                [this, loaded, targetSave, targetVersion, path, sidecar] {
+                    replaceDocument(*loaded, path, RecoveryInfo{*targetSave, *targetVersion, sidecar});
+                },
+                initial);
+    }
+
+    void promptSidecarRecovery(const std::string& path, const std::string& sidecar, bool initial) {
+        const auto body = "An autosave file exists for \"" + std::filesystem::path(path).filename().string() +
+                          "\". Recover unsaved changes from the autosave file, or discard it and open the saved "
+                          "document?";
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Autosave file detected", body.c_str()));
+        adw_alert_dialog_add_responses(messageDialog, "cancel", "Cancel", "discard", "Discard Autosave", "recover",
+                                       "Recover", nullptr);
+        adw_alert_dialog_set_response_appearance(messageDialog, "discard", ADW_RESPONSE_DESTRUCTIVE);
+        adw_alert_dialog_set_response_appearance(messageDialog, "recover", ADW_RESPONSE_SUGGESTED);
+        adw_alert_dialog_set_close_response(messageDialog, "cancel");
+        adw_alert_dialog_set_default_response(messageDialog, "recover");
+        struct SidecarPrompt {
+            Prototype* self;
+            std::string path;
+            std::string sidecar;
+            bool initial;
+        };
+        g_signal_connect_data(
+                messageDialog, "response",
+                G_CALLBACK(+[](AdwAlertDialog*, const char* response, gpointer data) {
+                    auto* prompt = static_cast<SidecarPrompt*>(data);
+                    auto* self = prompt->self;
+                    self->messageDialog = nullptr;
+                    const std::string reply = response ? response : "";
+                    if (reply == "discard") {
+                        prototype::bridge::removeAutosaveFiles(prompt->sidecar);
+                        self->openDocument(prompt->path, prompt->initial);
+                    } else if (reply == "recover") {
+                        self->recoverSidecarAutosave(prompt->path, prompt->sidecar, prompt->initial);
+                    } else if (prompt->initial && !self->nativeSession) {
+                        self->openDocument("", true);
+                    }
+                }),
+                new SidecarPrompt{this, path, sidecar, initial},
+                +[](gpointer data, GClosure*) { delete static_cast<SidecarPrompt*>(data); }, GConnectFlags(0));
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
+    }
+
+    void restoreStartupRecovery(const std::string& recoveryPath) {
+        auto loaded = std::make_shared<std::shared_ptr<prototype::bridge::DocumentSession>>();
+        const auto adopted =
+                prototype::bridge::autosavePathForTarget({}, cacheRoot(), static_cast<long long>(::getpid())).string();
+        const auto worker = options.worker;
+        runDocumentJob(
+                "Restoring recovery file…",
+                [loaded, worker, recoveryPath, adopted] {
+                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath);
+                    (*loaded)->autosave(worker, adopted, {});
+                    if (adopted != recoveryPath) {
+                        prototype::bridge::removeAutosaveFiles(recoveryPath);
+                    }
+                },
+                [this, loaded, adopted] { replaceDocument(*loaded, "", RecoveryInfo{"", "", adopted}); });
+    }
+
+    void checkStartupRecovery() {
+        const auto found =
+                prototype::bridge::findStartupRecoveryFile(configRoot(), cacheRoot(), static_cast<long long>(::getpid()));
+        if (!found || busy || choosingFile || messageDialog) {
+            return;
+        }
+        const auto recoveryPath = found->string();
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+                "Recovery file detected",
+                "Xournal++ did not exit cleanly last time. Would you like to restore the unsaved recovery file?"));
+        adw_alert_dialog_add_responses(messageDialog, "delete", "Delete file", "restore", "Restore file", nullptr);
+        adw_alert_dialog_set_response_appearance(messageDialog, "delete", ADW_RESPONSE_DESTRUCTIVE);
+        adw_alert_dialog_set_response_appearance(messageDialog, "restore", ADW_RESPONSE_SUGGESTED);
+        adw_alert_dialog_set_close_response(messageDialog, "delete");
+        adw_alert_dialog_set_default_response(messageDialog, "restore");
+        struct RecoveryPrompt {
+            Prototype* self;
+            std::string path;
+        };
+        g_signal_connect_data(
+                messageDialog, "response",
+                G_CALLBACK(+[](AdwAlertDialog*, const char* response, gpointer data) {
+                    auto* prompt = static_cast<RecoveryPrompt*>(data);
+                    auto* self = prompt->self;
+                    self->messageDialog = nullptr;
+                    const std::string reply = response ? response : "";
+                    if (reply == "delete") {
+                        prototype::bridge::removeAutosaveFiles(prompt->path);
+                    } else if (reply == "restore") {
+                        self->restoreStartupRecovery(prompt->path);
+                    }
+                }),
+                new RecoveryPrompt{this, recoveryPath},
+                +[](gpointer data, GClosure*) { delete static_cast<RecoveryPrompt*>(data); }, GConnectFlags(0));
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
+    }
+
+    void requestOpenDocument(const std::string& path, bool initial = false) {
+        if (busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, path, initial] { requestOpenDocument(path, initial); });
+            return;
+        }
+        if (!path.empty() && prototype::bridge::isCacheProtectedPath(path, cacheRoot())) {
+            showError("Do not open autosave files directly from the cache folder (" +
+                      (cacheRoot() / "xournalpp").string() +
+                      "). Copy the file elsewhere or use automatic recovery on startup.");
+            return;
+        }
+        if (!options.worker.empty() && !path.empty() && !prototype::bridge::isRecoveryArtifact(path)) {
+            const auto extension = std::filesystem::path(path).extension().string();
+            if (g_ascii_strcasecmp(extension.c_str(), ".xopp") == 0 ||
+                g_ascii_strcasecmp(extension.c_str(), ".xoj") == 0) {
+                const auto sidecar =
+                        prototype::bridge::autosavePathForTarget(path, cacheRoot(), static_cast<long long>(::getpid()));
+                std::error_code statusError;
+                if (sidecar.string() != activeAutosavePath &&
+                    std::filesystem::is_regular_file(std::filesystem::symlink_status(sidecar, statusError)) &&
+                    !statusError) {
+                    promptSidecarRecovery(path, sidecar.string(), initial);
+                    return;
+                }
+            }
+        }
+        openDocument(path, initial);
     }
 
     void saveCopyTo(const std::string& path, std::function<void()> after = {}) {
         if (!nativeSession || busy) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, path, after = std::move(after)]() mutable {
+                saveCopyTo(path, std::move(after));
+            });
             return;
         }
         resetInput(true);
@@ -246,7 +551,10 @@ private:
         runDocumentJob("Saving copy…", [session, worker, path, packets] { session->saveCopy(worker, path, packets); },
                        [this, revision, path, after = std::move(after)] {
             savedRevision = revision;
+            autosavedRevision = revision;
+            recoveredChanges = false;
             savedCopyPath = path;
+            cleanupActiveAutosave();
             if (after) {
                 after();
             }
@@ -255,6 +563,10 @@ private:
 
     void save(std::function<void()> after = {}) {
         if (!nativeSession || busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, after = std::move(after)]() mutable { save(std::move(after)); });
             return;
         }
         if (saveTarget.empty()) {
@@ -266,6 +578,12 @@ private:
 
     void saveTo(const std::string& path, const std::string& expected = {}, std::function<void()> after = {}) {
         if (!nativeSession || busy) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, path, expected, after = std::move(after)]() mutable {
+                saveTo(path, expected, std::move(after));
+            });
             return;
         }
         resetInput(true);
@@ -284,6 +602,9 @@ private:
             savedNormally = true;
             savedCopyPath.clear();
             savedRevision = revision;
+            autosavedRevision = revision;
+            recoveredChanges = false;
+            cleanupActiveAutosave();
             if (after) {
                 after();
             }
@@ -291,7 +612,11 @@ private:
     }
 
     void chooseOpen() {
-        if (busy || choosingFile || options.worker.empty()) {
+        if (busy || choosingFile || messageDialog || options.worker.empty()) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this] { chooseOpen(); });
             return;
         }
         choosingFile = true;
@@ -310,17 +635,21 @@ private:
             self->choosingFile = false;
             GError* error = nullptr;
             auto* file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
-            self->finishFileChoice(file, error, [self](const std::string& path) { self->openDocument(path); });
+            self->finishFileChoice(file, error, [self](const std::string& path) { self->requestOpenDocument(path); });
         }, this);
         g_object_unref(dialog);
     }
 
     void chooseSave(std::function<void()> after = {}) {
-        if (busy || choosingFile || !nativeSession) {
+        if (busy || choosingFile || messageDialog || !nativeSession) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, after = std::move(after)]() mutable { chooseSave(std::move(after)); });
             return;
         }
         resetInput(true);
-        if (!options.smokeDirectory.empty() && !smokeSaveChoice.empty()) {
+        if (!smokeSaveChoice.empty()) {
             const auto path = std::exchange(smokeSaveChoice, {});
             saveTo(path, {}, std::move(after));
             return;
@@ -372,6 +701,10 @@ private:
         if (busy || choosingFile || messageDialog) {
             return;
         }
+        if (autosaving) {
+            waitForAutosave([this, after = std::move(after)]() mutable { protectDocument(std::move(after)); });
+            return;
+        }
         resetInput(true);
         if (!modified()) {
             after();
@@ -393,6 +726,7 @@ private:
             self->messageDialog = nullptr;
             auto after = std::move(self->afterConfirmation);
             if (std::string(response) == "discard") {
+                self->cleanupActiveAutosave();
                 after();
             } else if (std::string(response) == "save") {
                 self->save(std::move(after));
@@ -761,6 +1095,10 @@ private:
             if (self->busy || self->choosingFile || self->messageDialog) {
                 return true;
             }
+            if (self->autosaving) {
+                self->waitForAutosave([self] { self->protectDocument([self] { self->closeWindow(); }); });
+                return true;
+            }
             self->protectDocument([self] { self->closeWindow(); });
             return true;
         }), this);
@@ -784,13 +1122,53 @@ private:
                          this);
         gtk_widget_grab_focus(canvas);
         if (!options.worker.empty()) {
-            openDocument(sourcePath, true);
+            scheduleAutosave(static_cast<guint>(options.autosaveSeconds));
+            requestOpenDocument(sourcePath, true);
+        }
+        if (const char* marker = g_getenv("XOURNALPP_CRASH_AFTER_AUTOSAVE_MARKER"); marker && *marker) {
+            crashMarkerPath = marker;
+            crashHelperSource = g_timeout_add(
+                    50,
+                    +[](gpointer data) -> gboolean {
+                        auto* self = static_cast<Prototype*>(data);
+                        try {
+                            return self->stepCrashHelper();
+                        } catch (const std::exception& error) {
+                            std::cerr << "CRASH HELPER FAILED: " << error.what() << '\n';
+                            self->failed = true;
+                            g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(self->window))));
+                            self->crashHelperSource = 0;
+                            return G_SOURCE_REMOVE;
+                        }
+                    },
+                    this);
+        }
+        if (const char* action = g_getenv("XOURNALPP_RECOVERY_ACTION"); action && *action) {
+            recoveryActionSpec = action;
+            recoveryVerifySource = g_timeout_add(
+                    80,
+                    +[](gpointer data) -> gboolean {
+                        auto* self = static_cast<Prototype*>(data);
+                        try {
+                            return self->stepRecoveryVerify();
+                        } catch (const std::exception& error) {
+                            std::cerr << "RECOVERY VERIFY FAILED: " << error.what() << '\n';
+                            self->failed = true;
+                            g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(self->window))));
+                            self->recoveryVerifySource = 0;
+                            return G_SOURCE_REMOVE;
+                        }
+                    },
+                    this);
         }
         if (!options.smokeDirectory.empty()) {
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
                     ++self->busyHeartbeats;
+                }
+                if (self->autosaving) {
+                    ++self->autosaveHeartbeats;
                 }
                 return G_SOURCE_CONTINUE;
             }, this);
@@ -1367,8 +1745,96 @@ private:
         update();
     }
 
+    gboolean stepCrashHelper() {
+        require(++crashHelperTicks < 240, "Crash helper timed out waiting for autosave");
+        if (busy || !frames || !cache || !nativeSession) {
+            return G_SOURCE_CONTINUE;
+        }
+        if (crashHelperStep == 0) {
+            const auto x = state.offsetX + 90 * state.zoom;
+            const auto y = state.offsetY + 120 * state.zoom;
+            begin(Device::Stylus, x, y, 0.25);
+            motion(Device::Stylus, x + 50 * state.zoom, y + 25 * state.zoom, 0.75);
+            finish(Device::Stylus, 0.75);
+            require(modified() && state.ink.size() == 1 && state.ink[0].pressureSensitive,
+                    "Crash helper did not record pressure-sensitive stroke");
+            crashHelperStep = 1;
+            return G_SOURCE_CONTINUE;
+        }
+        if (autosaving || autosavedRevision != state.revision() || activeAutosavePath.empty()) {
+            return G_SOURCE_CONTINUE;
+        }
+        require(std::filesystem::is_regular_file(activeAutosavePath), "Crash helper autosave file missing");
+        const auto temporary = crashMarkerPath + ".tmp";
+        {
+            std::ofstream marker(temporary, std::ios::binary);
+            marker << activeAutosavePath << '\n';
+            marker.close();
+            require(bool(marker), "Cannot write crash helper marker");
+        }
+        std::filesystem::rename(temporary, crashMarkerPath);
+        crashHelperSource = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    gboolean stepRecoveryVerify() {
+        require(++recoveryVerifyTicks < 240, "Recovery verifier timed out");
+        if (busy || deferredAction) {
+            return G_SOURCE_CONTINUE;
+        }
+        if (recoveryVerifyStep == 0) {
+            if (!messageDialog) {
+                return G_SOURCE_CONTINUE;
+            }
+            if (recoveryActionSpec.starts_with("restore:")) {
+                answerDialog("restore");
+            } else if (recoveryActionSpec == "delete") {
+                answerDialog("delete");
+            } else if (recoveryActionSpec == "recover") {
+                answerDialog("recover");
+            } else if (recoveryActionSpec == "discard") {
+                answerDialog("discard");
+            } else {
+                throw std::runtime_error("Unknown XOURNALPP_RECOVERY_ACTION");
+            }
+            recoveryVerifyStep = 1;
+            return G_SOURCE_CONTINUE;
+        }
+        if (recoveryVerifyStep == 1) {
+            if (!frames || !cache || g_get_monotonic_time() - lastDocumentCompletion < 150000) {
+                return G_SOURCE_CONTINUE;
+            }
+            if (recoveryActionSpec == "delete" || recoveryActionSpec == "discard") {
+                require(!modified() && activeAutosavePath.empty(),
+                        "Expected clean state after deleting/discarding recovery file");
+                closeWindow();
+                recoveryVerifySource = 0;
+                return G_SOURCE_REMOVE;
+            }
+            if (recoveryActionSpec.starts_with("restore:")) {
+                require(modified() && recoveredChanges && saveTarget.empty() && !activeAutosavePath.empty() &&
+                                std::filesystem::is_regular_file(activeAutosavePath),
+                        "Expected unnamed dirty restored document with adopted cache autosave");
+                smokeSaveChoice = recoveryActionSpec.substr(std::string_view("restore:").size());
+                save([this] { closeWindow(); });
+            } else {
+                require(modified() && recoveredChanges && !saveTarget.empty() && !activeAutosavePath.empty() &&
+                                std::filesystem::is_regular_file(activeAutosavePath),
+                        "Expected associated dirty recovered document");
+                save([this] { closeWindow(); });
+            }
+            recoveryVerifyStep = 2;
+            return G_SOURCE_CONTINUE;
+        }
+        if (!closed) {
+            return G_SOURCE_CONTINUE;
+        }
+        recoveryVerifySource = 0;
+        return G_SOURCE_REMOVE;
+    }
+
     gboolean smoke() {
-        if (busy) {
+        if (busy || deferredAction) {
             require(++documentWaits < 120, "Document operation did not finish");
             return G_SOURCE_CONTINUE;
         }
@@ -1747,12 +2213,202 @@ private:
                 input.finish(Device::Mouse);
                 break;
             }
+            case 22: {
+                state.undo();
+                require(!modified(), "Undo before autosave test must restore clean state");
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "autosave-note.xopp").string();
+                chooseSave();
+                break;
+            }
+            case 23: {
+                require(!modified() && saveTarget.ends_with("autosave-note.xopp") && activeAutosavePath.empty(),
+                        "Baseline autosave document was not saved cleanly");
+                smokeAutosaveBaseVersion = saveVersion;
+                const auto x = state.offsetX + 90 * state.zoom;
+                const auto y = state.offsetY + 250 * state.zoom;
+                begin(Device::Stylus, x, y, 0.3);
+                motion(Device::Stylus, x + 55 * state.zoom, y + 18 * state.zoom, 0.8);
+                finish(Device::Stylus, 0.8);
+                // Keep a second stylus stroke actively in progress while background autosave runs.
+                begin(Device::Stylus, x, y + 36 * state.zoom, 0.4);
+                motion(Device::Stylus, x + 45 * state.zoom, y + 48 * state.zoom, 0.7);
+                require(modified() && input.active() && state.current.has_value(),
+                        "Active stylus stroke was not started before autosave");
+                scheduleAutosave(1);
+                autosaveWaits = 0;
+                break;
+            }
+            case 24: {
+                const auto autosaveSidecar =
+                        prototype::bridge::autosavePathForTarget(saveTarget, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                require(input.active() && state.current.has_value() && gtk_widget_is_sensitive(canvas),
+                        "Background autosave interrupted an active stroke or disabled the canvas");
+                if (autosaving || activeAutosavePath != autosaveSidecar || autosavedRevision != state.revision()) {
+                    require(++autosaveWaits < 60, "Periodic background autosave did not complete");
+                    --documentSmokeStep;
+                    break;
+                }
+                require(std::filesystem::is_regular_file(autosaveSidecar) &&
+                                prototype::bridge::documentVersion(saveTarget).token == smokeAutosaveBaseVersion &&
+                                !std::filesystem::exists(saveTarget + "~") &&
+                                !std::filesystem::exists(autosaveSidecar + ".swap"),
+                        "Autosave did not write sidecar cleanly or touched the primary saved document");
+                finish(Device::Stylus, 0.7);
+                require(!input.active() && state.ink.size() == 4, "Active stroke did not commit after autosave");
+                autosaveWaits = 0;
+                break;
+            }
+            case 25:
+                if (autosaving || autosavedRevision != state.revision()) {
+                    require(++autosaveWaits < 60, "Updated periodic autosave did not complete");
+                    --documentSmokeStep;
+                    break;
+                }
+                break;  // Paint the updated "Unsaved changes · Autosaved" header before capturing.
+            case 26: {
+                const auto autosaveSidecar = activeAutosavePath;
+                capture("autosaved");
+                state.undo();
+                state.undo();
+                require(!modified() && std::filesystem::is_regular_file(autosaveSidecar),
+                        "Expected clean state prior to autosave cleanup");
+                startAutosave();
+                require(activeAutosavePath.empty() && !std::filesystem::exists(autosaveSidecar),
+                        "Autosave check did not remove redundant sidecar after undoing to clean state");
+                state.redo();
+                state.redo();
+                autosaveWaits = 0;
+                break;
+            }
+            case 27: {
+                const auto autosaveDoc = saveTarget;
+                const auto autosaveSidecar =
+                        prototype::bridge::autosavePathForTarget(autosaveDoc, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                if (autosaving || activeAutosavePath != autosaveSidecar || autosavedRevision != state.revision()) {
+                    require(++autosaveWaits < 60, "Autosave did not recreate sidecar after redo");
+                    --documentSmokeStep;
+                    break;
+                }
+                const auto discardDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "discard-autosave.xopp").string();
+                const auto discardSidecar =
+                        prototype::bridge::autosavePathForTarget(discardDoc, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                const auto recoverDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "recover-autosave.xopp").string();
+                const auto recoverSidecar =
+                        prototype::bridge::autosavePathForTarget(recoverDoc, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                std::filesystem::copy_file(autosaveDoc, discardDoc,
+                                           std::filesystem::copy_options::overwrite_existing);
+                std::filesystem::copy_file(autosaveSidecar, discardSidecar,
+                                           std::filesystem::copy_options::overwrite_existing);
+                std::filesystem::copy_file(autosaveDoc, recoverDoc,
+                                           std::filesystem::copy_options::overwrite_existing);
+                std::filesystem::copy_file(autosaveSidecar, recoverSidecar,
+                                           std::filesystem::copy_options::overwrite_existing);
+                const auto cacheProtected =
+                        prototype::bridge::autosavePathForTarget({}, cacheRoot(), 999999).string();
+                std::filesystem::create_directories(std::filesystem::path(cacheProtected).parent_path());
+                std::filesystem::copy_file(autosaveSidecar, cacheProtected,
+                                           std::filesystem::copy_options::overwrite_existing);
+                requestOpenDocument(cacheProtected);
+                require(ioErrors == 4 && messageDialog && modified() && saveTarget == autosaveDoc,
+                        "Direct open inside cache directory was not refused safely");
+                std::filesystem::remove(cacheProtected);
+                answerDialog("close");
+                scheduleAutosave(static_cast<guint>(options.autosaveSeconds));
+                save();
+                break;
+            }
+            case 28: {
+                const auto previousSidecar =
+                        prototype::bridge::autosavePathForTarget(saveTarget, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                require(!modified() && activeAutosavePath.empty() && !std::filesystem::exists(previousSidecar),
+                        "Normal Save did not remove active autosave sidecar");
+                const auto discardDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "discard-autosave.xopp").string();
+                requestOpenDocument(discardDoc);
+                require(messageDialog, "Opening a document with a sidecar autosave did not prompt");
+                answerDialog("discard");
+                break;
+            }
+            case 29: {
+                const auto discardDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "discard-autosave.xopp").string();
+                const auto discardSidecar =
+                        prototype::bridge::autosavePathForTarget(discardDoc, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                require(!modified() && sourcePath == discardDoc && !std::filesystem::exists(discardSidecar),
+                        "Discard Autosave did not remove the sidecar or opened dirty state");
+                const auto recoverDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "recover-autosave.xopp").string();
+                smokeAutosaveBaseVersion = prototype::bridge::documentVersion(recoverDoc).token;
+                requestOpenDocument(recoverDoc);
+                require(messageDialog, "Sidecar recovery prompt did not appear");
+                break;
+            }
+            case 30:
+                capture("autosave-prompt");
+                answerDialog("recover");
+                break;
+            case 31: {
+                const auto recoverDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "recover-autosave.xopp").string();
+                const auto recoverSidecar =
+                        prototype::bridge::autosavePathForTarget(recoverDoc, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                require(modified() && recoveredChanges && saveTarget == recoverDoc &&
+                                activeAutosavePath == recoverSidecar &&
+                                std::filesystem::is_regular_file(recoverSidecar) &&
+                                prototype::bridge::documentVersion(recoverDoc).token == smokeAutosaveBaseVersion,
+                        "Recovered document did not stay dirty, keep its sidecar, or leave saved file untouched");
+                const auto x = state.offsetX + 120 * state.zoom;
+                const auto y = state.offsetY + 260 * state.zoom;
+                input.begin(Device::Mouse, {x, y, std::nullopt});
+                input.finish(Device::Mouse);
+                state.undo();
+                require(modified(), "Undoing back to revision 0 after recovery falsely marked document clean");
+                capture("autosave-recovered");
+                save();
+                break;
+            }
+            case 32: {
+                const auto recoverDoc =
+                        (std::filesystem::path(options.smokeDirectory) / "recover-autosave.xopp").string();
+                const auto recoverSidecar =
+                        prototype::bridge::autosavePathForTarget(recoverDoc, cacheRoot(),
+                                                                 static_cast<long long>(::getpid()))
+                                .string();
+                require(!modified() && !recoveredChanges && activeAutosavePath.empty() &&
+                                !std::filesystem::exists(recoverSidecar) &&
+                                prototype::bridge::documentVersion(recoverDoc).token != smokeAutosaveBaseVersion,
+                        "Saving a recovered document did not update target or clean up its sidecar autosave");
+                capture("autosave-saved");
+                const auto x = state.offsetX + 210 * state.zoom;
+                const auto y = state.offsetY + 230 * state.zoom;
+                input.begin(Device::Mouse, {x, y, std::nullopt});
+                input.finish(Device::Mouse);
+                break;
+            }
             default:
                 require(busyHeartbeats > 0, "The UI main loop did not run during document I/O");
                 std::cout << "PASS: document actions, async open/save, saved revisions, native reopen, "
                              "pressure transfer, failed-open/save retention, Save/Discard/Cancel, close protection, "
-                             "native Open/Save chooser cancellation, normal Save/Save As, external-edit conflict\n"
-                          << "busy_main_loop_ticks=" << busyHeartbeats << '\n';
+                             "native Open/Save chooser cancellation, normal Save/Save As, external-edit conflict, "
+                             "background autosave, cache-open guard, sidecar recovery\n"
+                          << "busy_main_loop_ticks=" << busyHeartbeats
+                          << " autosave_main_loop_ticks=" << autosaveHeartbeats << '\n';
                 gtk_window_close(GTK_WINDOW(window));
                 require(messageDialog, "Close prompt disappeared");
                 answerDialog("discard");
@@ -1772,7 +2428,26 @@ private:
     std::string saveVersion;
     bool savedNormally = false;
     std::string busyText;
-    size_t savedRevision = 0;
+    std::optional<size_t> savedRevision = 0;
+    std::optional<size_t> autosavedRevision = 0;
+    bool recoveredChanges = false;
+    bool checkedStartupRecovery = false;
+    bool autosaving = false;
+    int autosaveErrors = 0;
+    std::string activeAutosavePath;
+    std::function<void()> deferredAction;
+    guint autosaveSource = 0;
+    int autosaveHeartbeats = 0;
+    int autosaveWaits = 0;
+    std::string smokeAutosaveBaseVersion;
+    guint crashHelperSource = 0;
+    int crashHelperStep = 0;
+    int crashHelperTicks = 0;
+    std::string crashMarkerPath;
+    guint recoveryVerifySource = 0;
+    int recoveryVerifyStep = 0;
+    int recoveryVerifyTicks = 0;
+    std::string recoveryActionSpec;
     bool busy = false;
     bool closed = false;
     bool choosingFile = false;
@@ -1856,6 +2531,14 @@ int main(int argc, char** argv) {
             const std::string argument = argv[i];
             if (argument == "--dark") {
                 options.dark = true;
+            } else if (argument == "--autosave-seconds" && i + 1 < argc) {
+                const std::string_view raw = argv[++i];
+                int parsed = 0;
+                const auto [end, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), parsed);
+                if (ec != std::errc{} || end != raw.data() + raw.size() || parsed < 1 || parsed > 86400) {
+                    throw std::runtime_error("Autosave interval must be between 1 and 86400 seconds");
+                }
+                options.autosaveSeconds = parsed;
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
                         argument == "--smoke-dir") && i + 1 < argc) {
                 const auto path = std::filesystem::absolute(argv[++i]).string();
@@ -1871,7 +2554,7 @@ int main(int argc, char** argv) {
                 }
             } else {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
-                                         "[--dark] [--smoke-dir DIRECTORY]");
+                                         "[--autosave-seconds SECONDS] [--dark] [--smoke-dir DIRECTORY]");
             }
         }
         if (!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) {

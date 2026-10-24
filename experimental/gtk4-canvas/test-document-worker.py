@@ -150,6 +150,41 @@ def main():
         run("save", snapshot, alias, normal_ink, fresh, succeeds=False)
         assert alias.is_symlink() and digest(normal) == external_hash
 
+        # Autosave must only write recovery filenames, use .swap replacement, preserve primary + backup,
+        # and report SAVE_AS when opened directly.
+        run("autosave", snapshot, temporary / "not-autosave.xopp", normal_ink, succeeds=False)
+        assert not (temporary / "not-autosave.xopp").exists()
+        sidecar_autosave = temporary / ".normal.autosave.xopp"
+        backup.write_bytes(b"preserved primary backup")
+        run("autosave", snapshot, sidecar_autosave, normal_ink)
+        assert sidecar_autosave.is_file() and not Path(str(sidecar_autosave) + ".swap").exists()
+        assert digest(normal) == external_hash and backup.read_bytes() == b"preserved primary backup"
+        assert len(xml(sidecar_autosave).findall(".//stroke")) == 1
+        second_autosave_ink = temporary / "autosave2.ink"
+        second_autosave_ink.write_text("XOURNALPP_GTK4_INK_V1 2\n"
+                                       "0 0 1 4 1 0 0 2\n25 35 .3\n75 85 .8\n"
+                                       "1 1 0 14 1 1 0 2\n30 60 1\n90 60 1\n")
+        run("autosave", snapshot, sidecar_autosave, second_autosave_ink)
+        assert len(xml(sidecar_autosave).findall(".//stroke")) == 2
+        assert not Path(str(sidecar_autosave) + ".swap").exists()
+        assert digest(normal) == external_hash and backup.read_bytes() == b"preserved primary backup"
+        backup.unlink()
+        autosave_link = temporary / ".linked.autosave.xopp"
+        autosave_link.symlink_to(normal)
+        run("autosave", snapshot, autosave_link, normal_ink, succeeds=False)
+        assert autosave_link.is_symlink() and digest(normal) == external_hash
+        autosave_link.unlink()
+        recovered_snap = temporary / "recovered-snap.xopp"
+        recovered_pdf = temporary / "recovered-snap.pdf"
+        assert run("open", sidecar_autosave, recovered_snap, recovered_pdf) == "SAVE_AS\n"
+        emergency_file = Path(env["XDG_CONFIG_HOME"]) / "xournalpp" / "emergencysave.xopp"
+        run("autosave", snapshot, emergency_file, normal_ink)
+        assert emergency_file.is_file()
+        assert run("open", emergency_file, temporary / "emerg-snap.xopp", temporary / "emerg-snap.pdf") == "SAVE_AS\n"
+        cache_autosave = Path(env["XDG_CACHE_HOME"]) / "xournalpp" / "autosaves" / "4242.autosave.xopp"
+        run("autosave", snapshot, cache_autosave, second_autosave_ink)
+        assert cache_autosave.is_file() and len(xml(cache_autosave).findall(".//stroke")) == 2
+
         saved_hash = digest(output)
         run("save-copy", snapshot, output, ink, succeeds=False)
         assert digest(output) == saved_hash
@@ -203,6 +238,9 @@ def main():
                 content(p) for p in xml(second).findall("page")]
             assert not Path(str(second) + "~").exists()
             if name.startswith("pdfBackground"):
+                autosave_with_pdf = folder / ".copy.autosave.xopp"
+                run("autosave", snapshot_path, autosave_with_pdf, normal_ink)
+                assert (folder / ".copy.autosave.xopp.bg.pdf").is_file()
                 pdf_sidecar = folder / "copy.xopp.bg.pdf"
                 saved_hash = digest(second)
                 pdf_sidecar.write_bytes(pdf_sidecar.read_bytes() + b"\n% external PDF edit\n")
@@ -225,7 +263,7 @@ def main():
         assert not list(temporary.rglob(".xournalpp-gtk4-save-*"))
         assert all(digest(p) == value for p, value in hashes.items()), "Repository fixture modified"
     report = {"result": "passed", "operations": timings,
-              "scope": "Native load/save/render, text/styles/layers, ink, attachments, rejection and source preservation",
+              "scope": "Native load/save/autosave/render, text/styles/layers, ink, attachments, recovery SAVE_AS guard, rejection and source preservation",
               "timing_note": "Single warm-cache correctness run; process startup included; not a speed comparison"}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

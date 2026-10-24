@@ -69,9 +69,10 @@ cmake --build build-gtk4-canvas -j2
 ctest --test-dir build-gtk4-canvas --output-on-failure
 ```
 
-The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`, `--dark`,
-and `--smoke-dir DIRECTORY`. A worker can also accompany `--pdf`, or be used alone
-to create a blank A4 notebook. Without an input it displays a blank page.
+The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`,
+`--autosave-seconds SECONDS`, `--dark`, and `--smoke-dir DIRECTORY`. A worker can
+also accompany `--pdf`, or be used alone to create a blank A4 notebook. Without an
+input it displays a blank page.
 
 To open native documents, build the optional worker using the normal application's
 GTK 3 dependencies. It has no installation target and is disabled by default:
@@ -99,7 +100,9 @@ loads its ink as original objects, which are not yet editable in the frontend.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
 `open INPUT SNAPSHOT.xopp NEW.pdf`, `version PATH`,
-`save INPUT TARGET.xopp INK_TRANSFER VERSION`, and `save-copy INPUT NEW.xopp INK_TRANSFER`.
+`save INPUT TARGET.xopp INK_TRANSFER VERSION`,
+`autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER`, and
+`save-copy INPUT NEW.xopp INK_TRANSFER`.
 Save operations accept the versioned ink packets in `DocumentTransfer.h`, append native
 pen/highlighter objects to the top layer, and use the real saver. They stage the
 file and attached backgrounds in the destination directory and publish the
@@ -122,7 +125,21 @@ backend operation that refuses existing filenames and sidecars.
 The current publication code targets Linux and requires hard links plus atomic
 replacement via rename. The multi-file document/attachment publication is not a
 single filesystem transaction. Power-loss durability and Windows/macOS behavior
-have not been validated. Autosave and automatic recovery are still pending.
+have not been validated.
+
+With a worker, periodic background autosave runs every 180 seconds by default
+(`--autosave-seconds` overrides the interval for deterministic tests) without
+disabling the canvas or interrupting in-progress strokes. Associated native
+documents autosave to `.name.autosave.xopp` via `.swap` replacement without
+touching the saved `.xopp` or `filename~`; unsaved notebooks autosave to
+`<XDG_CACHE_HOME>/xournalpp/autosaves/<pid>.autosave.xopp`. Direct `Open` inside
+`<XDG_CACHE_HOME>/xournalpp` is refused. Normal Save, Save As, Discard and clean
+exit remove the active autosave artifact. Opening a document with an existing
+`.name.autosave.xopp` offers `Recover`, `Discard Autosave`, or `Cancel`; blank
+startup checks `<XDG_CONFIG_HOME>/xournalpp/emergencysave.xopp` and orphaned
+dead-PID cache autosaves (`Restore file` or `Delete file`), keeping restored
+documents dirty until explicitly saved. Signal-handler crash dumps are not yet
+installed in the GTK 4 frontend.
 
 ```sh
 python experimental/gtk4-canvas/test-document-worker.py \
@@ -181,8 +198,8 @@ pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
 Transfer serialization, background task/main-context checks and CLI rejection
-checks plus filesystem backup/publication checks bring the standalone suite to
-eleven tests.
+checks plus filesystem backup/publication and autosave/recovery checks bring the
+standalone suite to thirteen tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -197,7 +214,7 @@ the headless compositor reports device scale 1.
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. The prototype has no rich-text
-editor, selection tools, autosave/recovery, full undo system, plugins, or toolbar
+editor, selection tools, signal-handler emergency dump, full undo system, plugins, or toolbar
 configuration import. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
@@ -226,6 +243,6 @@ or toolbar configuration features.
 ## Remaining migration work
 
 The experiment still needs the real editing and selection models, full stroke
-geometry and partial erasing, continuous-page layout, document recovery and autosave, clipboard, dialogs, IME, settings, plugins and
+geometry and partial erasing, continuous-page layout, signal-crash emergency handling, clipboard, dialogs, IME, settings, plugins and
 configurable toolbars. Platform packaging, accessibility, hardware input and GPU
 validation remain required before replacing the existing application.
