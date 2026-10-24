@@ -34,6 +34,13 @@ int main() {
     prototype::drawInk(cr, {0, {{20, 120}, {200, 120}}, {prototype::Tool::Pen, {0, 0, 1}, 12}});
     pass &= pixel(surface, 80, 90) == 0xff0000 && pixel(surface, 80, 120) == 0x0000ff;
     pass &= pixel(surface, 80, 94) == 0xffffff && pixel(surface, 80, 124) == 0x0000ff;
+    // Whiteout (Tool::Eraser) paints opaque white at constant width over underlying ink/text,
+    // while later pen strokes draw cleanly on top of whiteout.
+    prototype::drawInk(cr, {0, {{60, 120, 0.1}, {120, 120, 0.2}}, {prototype::Tool::Eraser, {0, 0, 0}, 16}});
+    pass &= pixel(surface, 90, 120) == 0xffffff && pixel(surface, 90, 126) == 0xffffff;
+    pass &= pixel(surface, 40, 120) == 0x0000ff;
+    prototype::drawInk(cr, {0, {{90, 105}, {90, 135}}, {prototype::Tool::Pen, {0, 1, 0}, 4}});
+    pass &= pixel(surface, 90, 120) == 0x00ff00;
     pass &= cairo_status(cr) == CAIRO_STATUS_SUCCESS;
     pass &= cairo_get_operator(cr) == CAIRO_OPERATOR_OVER;
     cairo_destroy(cr);

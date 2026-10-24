@@ -113,11 +113,39 @@ static void backlog() {
           "backend tool mapping must distinguish eraser and pen ends");
 }
 
+static void whiteoutAndPartialInput() {
+    CanvasState state;
+    CanvasInput input(state);
+    input.begin(Device::Stylus, {20, 60, 0.3});
+    input.motion(Device::Stylus, {180, 60, 0.9});
+    input.finish(Device::Stylus, 0.9);
+    check(state.ink.size() == 1 && state.ink[0].pressureSensitive, "expected one pressure-sensitive pen stroke");
+
+    // Stylus eraser end in default Standard mode splits the pen stroke without changing toolbar brush.
+    input.begin(Device::Stylus, {100, 60, 0.5}, true);
+    input.finish(Device::Stylus);
+    check(state.brush.tool == Tool::Pen && state.ink.size() == 2,
+          "stylus eraser end in standard mode must split stroke and preserve pen tool");
+    state.undo();
+    check(state.ink.size() == 1, "undo must restore split stroke");
+
+    // Stylus eraser end in Whiteout mode draws opaque white constant-width ink without changing toolbar brush.
+    state.eraserMode = EraserMode::Whiteout;
+    state.eraserWidth = behavior::eraserWidths[static_cast<size_t>(behavior::ToolSize::Thick)];
+    input.begin(Device::Stylus, {40, 60, 0.2}, true);
+    input.motion(Device::Stylus, {140, 60, 0.8});
+    input.finish(Device::Stylus, 0.8);
+    check(state.brush.tool == Tool::Pen && state.ink.size() == 2 && state.ink[1].brush.tool == Tool::Eraser &&
+                  !state.ink[1].pressureSensitive && std::abs(state.ink[1].brush.width - 12.0) < 1e-9,
+          "stylus eraser end in whiteout mode must commit constant-width whiteout ink");
+}
+
 int main() {
     try {
         pressureAndRelease();
         eraserAndPan();
         backlog();
+        whiteoutAndPartialInput();
         std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary pan, backlog flags/order\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

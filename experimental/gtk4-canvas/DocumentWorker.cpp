@@ -68,16 +68,21 @@ void appendInk(Document& document, const std::vector<prototype::bridge::StrokePa
             throw std::runtime_error("Cannot append to a document page without an ink layer");
         }
         auto stroke = std::make_unique<Stroke>();
-        stroke->setToolType(packet.highlighter ? StrokeTool::HIGHLIGHTER : StrokeTool::PEN);
+        stroke->setToolType(packet.whiteout ? StrokeTool::ERASER :
+                                              (packet.highlighter ? StrokeTool::HIGHLIGHTER : StrokeTool::PEN));
         stroke->setWidth(packet.width);
-        stroke->setColor(Color{static_cast<uint8_t>(std::lround(packet.color[0] * 255)),
-                               static_cast<uint8_t>(std::lround(packet.color[1] * 255)),
-                               static_cast<uint8_t>(std::lround(packet.color[2] * 255))});
+        if (packet.whiteout) {
+            stroke->setColor(Color{255, 255, 255});
+        } else {
+            stroke->setColor(Color{static_cast<uint8_t>(std::lround(packet.color[0] * 255)),
+                                   static_cast<uint8_t>(std::lround(packet.color[1] * 255)),
+                                   static_cast<uint8_t>(std::lround(packet.color[2] * 255))});
+        }
         for (const auto& point: packet.points) {
             if (point.x < 0 || point.y < 0 || point.x > page->getWidth() || point.y > page->getHeight()) {
                 throw std::runtime_error("Transferred stroke lies outside its page");
             }
-            if (packet.pressureSensitive && !packet.highlighter) {
+            if (packet.pressureSensitive && !packet.highlighter && !packet.whiteout) {
                 stroke->addPoint(Point(point.x, point.y, point.pressure * packet.width));
             } else {
                 stroke->addPoint(Point(point.x, point.y));
