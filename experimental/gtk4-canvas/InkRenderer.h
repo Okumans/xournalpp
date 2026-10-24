@@ -43,4 +43,35 @@ inline void drawInk(cairo_t* cr, const Ink& ink) {
     cairo_restore(cr);
 }
 
+inline void drawInkPreview(cairo_t* cr, const CanvasState& state, size_t index) {
+    const auto translation = state.selectionOffset(index);
+    if (translation.x == 0 && translation.y == 0) {
+        drawInk(cr, state.ink.at(index));
+        return;
+    }
+    cairo_save(cr);
+    cairo_translate(cr, translation.x, translation.y);
+    drawInk(cr, state.ink.at(index));
+    cairo_restore(cr);
+}
+
+inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
+    const auto bounds = state.selectionBox();
+    if (!bounds || bounds->page != page) {
+        return;
+    }
+    const auto padding = state.selecting() && state.selected.empty() ? 0.0 : 4 / state.zoom;
+    cairo_save(cr);
+    cairo_rectangle(cr, bounds->x0 - padding, bounds->y0 - padding,
+                    bounds->x1 - bounds->x0 + 2 * padding, bounds->y1 - bounds->y0 + 2 * padding);
+    cairo_set_source_rgba(cr, 0.2, 0.52, 0.9, 0.08);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 0.2, 0.52, 0.9, 1);
+    cairo_set_line_width(cr, 1.5 / state.zoom);
+    const double dashes[] = {5 / state.zoom, 3 / state.zoom};
+    cairo_set_dash(cr, dashes, 2, 0);
+    cairo_stroke(cr);
+    cairo_restore(cr);
+}
+
 }  // namespace prototype

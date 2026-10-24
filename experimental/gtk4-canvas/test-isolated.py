@@ -261,13 +261,15 @@ def inside(args):
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",
-                            "continuous-pages", "goto-page-dialog", "page-inserted")
+                            "continuous-pages", "goto-page-dialog", "page-inserted", "selection",
+                            "selection-moved", "selection-deleted")
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
                              "autosave-note.xopp", ".autosave-note.autosave.xopp",
                              "discard-autosave.xopp", ".discard-autosave.autosave.xopp",
                              "recover-autosave.xopp", ".recover-autosave.autosave.xopp",
                              "eraser-modes.xopp", "native-edited.xopp",
-                             "exported-notes.pdf", "multipage-edited.xopp", "after-delete-page.xopp"):
+                             "exported-notes.pdf", "multipage-edited.xopp", "after-delete-page.xopp",
+                             "selection-moved.xopp", "selection-deleted.xopp"):
                 (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
@@ -287,6 +289,8 @@ def inside(args):
         if args.worker:
             if "PASS: document actions" not in results[name]:
                 raise RuntimeError("Document action checks did not finish")
+            if "PASS: rectangle selection" not in results[name]:
+                raise RuntimeError("Selection checks did not finish")
             first = ET.fromstring(gzip.decompress((output / "saved-copy.xopp").read_bytes()))
             second = ET.fromstring(gzip.decompress((output / "saved-again.xopp").read_bytes()))
             if len(first.findall(".//stroke")) != 4 or len(second.findall(".//stroke")) != 4:
@@ -334,6 +338,20 @@ def inside(args):
             if len(mp_pages) != 3 or len(mp_pages[1].findall(".//stroke")) != 2 or len(mp_pages[2].findall(".//stroke")) != 1:
                 raise RuntimeError("3-page edited document did not preserve strokes on Pages 2 and 3")
             after_delete = ET.fromstring(gzip.decompress((output / "after-delete-page.xopp").read_bytes()))
+            moved = ET.fromstring(gzip.decompress((output / "selection-moved.xopp").read_bytes()))
+            deleted = ET.fromstring(gzip.decompress((output / "selection-deleted.xopp").read_bytes()))
+            moved_strokes, deleted_strokes = moved.findall(".//stroke"), deleted.findall(".//stroke")
+            if len(moved_strokes) != len(deleted_strokes) + 1:
+                raise RuntimeError("Selection delete lost or duplicated native objects")
+            selected_stroke = moved.find("page").findall(".//stroke")[-1]
+            coords = list(map(float, selected_stroke.text.split()))
+            if abs(coords[0] - 320) > 1e-5 or abs(coords[1] - 440) > 1e-5:
+                raise RuntimeError("Selection move did not persist native page coordinates")
+            widths = list(map(float, selected_stroke.attrib["width"].split()))
+            if len(widths) < 2 or abs(widths[1] - widths[0] * .25) > 1e-5:
+                raise RuntimeError("Selection move changed native pressure widths")
+            if [ET.tostring(t) for t in moved.findall(".//text")] != [ET.tostring(t) for t in deleted.findall(".//text")]:
+                raise RuntimeError("Selection operations changed original native text")
             ad_pages = after_delete.findall("page")
             if len(ad_pages) != 2 or len(ad_pages[1].findall(".//stroke")) != 1:
                 raise RuntimeError("Deleting Page 2 did not shift Page 3 and its stroke cleanly to Page 2")

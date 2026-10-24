@@ -31,6 +31,11 @@ public:
             mode = Mode::Erase;
             state.beginErase();
             state.erase(sample.x, sample.y);
+        } else if (state.brush.tool == Tool::SelectRectangle && !eraserEnd) {
+            mode = Mode::Select;
+            if (!state.beginSelection(sample.x, sample.y)) {
+                return false;
+            }
         } else {
             mode = Mode::Draw;
             if (!state.begin(device, sample.x, sample.y, pressure(sample.pressure), eraserEnd)) {
@@ -59,6 +64,9 @@ public:
             case Mode::Draw:
                 state.append(device, sample.x, sample.y, pressure(sample.pressure));
                 break;
+            case Mode::Select:
+                state.moveSelectionPointer(sample.x, sample.y);
+                break;
         }
         lastX = sample.x;
         lastY = sample.y;
@@ -74,6 +82,8 @@ public:
             state.finish(device, pressure(releasePressure));
         } else if (mode == Mode::Erase) {
             state.finishErase();
+        } else if (mode == Mode::Select) {
+            state.finishSelection();
         }
         owner.reset();
     }
@@ -84,6 +94,9 @@ public:
         }
         if (owner && mode == Mode::Erase) {
             state.finishErase();
+        }
+        if (owner && mode == Mode::Select) {
+            state.cancelSelection();
         }
         state.cancel(device);
         owner.reset();
@@ -116,7 +129,7 @@ public:
     bool panning() const { return owner && mode == Mode::Pan; }
 
 private:
-    enum class Mode { Draw, Erase, Pan };
+    enum class Mode { Draw, Erase, Pan, Select };
 
     static bool finitePosition(InputSample sample) { return std::isfinite(sample.x) && std::isfinite(sample.y); }
 

@@ -244,7 +244,7 @@ private:
             return;
         }
         const auto revision = state.revision();
-        const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto packets = prototype::bridge::transferInk(state.committedInk());
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto previous = activeAutosavePath;
@@ -1041,6 +1041,9 @@ private:
             state.eraserWidth = eraserBrush.width;
         }
         input.cancel();
+        if (tool != Tool::SelectRectangle) {
+            state.clearSelection();
+        }
         state.brush = tool == Tool::Highlighter ? highlightBrush : (tool == Tool::Eraser ? eraserBrush : penBrush);
         state.brush.tool = tool;
         if (tool == Tool::Eraser) {
@@ -1054,7 +1057,10 @@ private:
                                static_cast<float>(color[2]), 1};
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
-        gtk_widget_set_visible(colorBox, tool != Tool::Eraser);
+        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::SelectRectangle);
+        gtk_widget_set_sensitive(sizeDropdown, tool != Tool::SelectRectangle);
+        gtk_widget_set_sensitive(widthButton, tool != Tool::SelectRectangle);
+        gtk_widget_set_visible(selectionLabel, tool == Tool::SelectRectangle);
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
@@ -1231,9 +1237,9 @@ private:
         cairo_set_source_surface(cr, thumbnails.at(number).first.get(), 0, 0);
         cairo_paint(cr);
         cairo_scale(cr, thumbnails.at(number).second, thumbnails.at(number).second);
-        for (const auto& ink: state.ink) {
-            if (ink.page == number) {
-                prototype::drawInk(cr, ink);
+        for (size_t index = 0; index < state.ink.size(); ++index) {
+            if (state.ink[index].page == number) {
+                prototype::drawInkPreview(cr, state, index);
             }
         }
         if (state.current && state.current->page == number) {
@@ -1317,7 +1323,7 @@ private:
         gtk_widget_set_halign(toolbar, GTK_ALIGN_CENTER);
         auto* toolGroup = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_widget_add_css_class(toolGroup, "linked");
-        const std::array names = {"Pen", "Highlight", "Eraser"};
+        const std::array names = {"Pen", "Highlight", "Eraser", "Select"};
         for (size_t i = 0; i < toolButtons.size(); ++i) {
             toolButtons[i] = gtk_toggle_button_new_with_label(names[i]);
             if (i) {
@@ -1333,6 +1339,7 @@ private:
                              this);
             gtk_box_append(GTK_BOX(toolGroup), toolButtons[i]);
         }
+        gtk_widget_set_tooltip_text(toolButtons[3], "Select strokes (Ctrl+Shift+R)");
         gtk_box_append(GTK_BOX(toolbar), toolGroup);
         colorBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         auto* colorDialog = gtk_color_dialog_new();
@@ -1422,6 +1429,9 @@ private:
                          }),
                          this);
         gtk_box_append(GTK_BOX(toolbar), widthButton);
+        selectionLabel = gtk_label_new("Drag to select");
+        gtk_widget_set_tooltip_text(selectionLabel, "Drag selected strokes to move; Delete removes them");
+        gtk_box_append(GTK_BOX(toolbar), selectionLabel);
         const auto initialToolIdx = static_cast<size_t>(importedConfig.settings.activeTool);
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[initialToolIdx]), true);
         selectTool(importedConfig.settings.activeTool);
@@ -1646,6 +1656,8 @@ private:
             return;
         }
         updateTitle();
+        gtk_label_set_text(GTK_LABEL(selectionLabel), state.selected.empty() ? "Drag to select" :
+                               (std::to_string(state.selected.size()) + " selected").c_str());
         gtk_widget_set_sensitive(openButton, !options.worker.empty());
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
@@ -2000,8 +2012,20 @@ private:
                     }
                     if (key == GDK_KEY_Escape) {
                         self->resetInput();
+                        self->state.clearSelection();
                     } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         return false;
+                    } else if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
+                               (key == GDK_KEY_r || key == GDK_KEY_R)) {
+                        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[3]), true);
+                    } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_a || key == GDK_KEY_A)) {
+                        self->input.cancel();
+                        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[3]), true);
+                        self->state.selectAllOnPage();
+                    } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_Delete || key == GDK_KEY_BackSpace) && !self->state.selected.empty()) {
+                        self->input.cancel();
+                        self->state.deleteSelection();
                     } else if (key == GDK_KEY_space && !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {
                         self->input.spaceHeld = true;
                         gtk_widget_set_cursor_from_name(self->canvas, "grab");
@@ -2197,14 +2221,15 @@ private:
             cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
             cairo_paint(cr);
             cairo_restore(cr);
-            for (const auto& ink: state.ink) {
-                if (ink.page == i) {
-                    prototype::drawInk(cr, ink);
+            for (size_t index = 0; index < state.ink.size(); ++index) {
+                if (state.ink[index].page == i) {
+                    prototype::drawInkPreview(cr, state, index);
                 }
             }
             if (state.current && state.current->page == i) {
                 prototype::drawInk(cr, *state.current);
             }
+            prototype::drawSelection(cr, state, i);
             cairo_restore(cr);
         }
         if (!drewAny) {
@@ -3373,6 +3398,91 @@ private:
                 input.finish(Device::Mouse);
                 break;
             }
+            case 46: {
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                navigateToPage(0);
+                const auto a = state.pageScreenPoint(0, 300, 400);
+                const auto b = state.pageScreenPoint(0, 350, 420);
+                input.begin(Device::Stylus, {a.x, a.y, .25});
+                input.motion(Device::Stylus, {b.x, b.y, .75});
+                input.finish(Device::Stylus);
+                smokeSelectionIndex = state.ink.size() - 1;
+                const auto originalRevision = state.revision();
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_R, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
+                require(handled && state.brush.tool == Tool::SelectRectangle, "Rectangle selection shortcut failed");
+                const auto from = state.pageScreenPoint(0, 295, 395);
+                const auto to = state.pageScreenPoint(0, 355, 425);
+                g_signal_emit_by_name(mouse, "drag-begin", from.x, from.y);
+                g_signal_emit_by_name(mouse, "drag-update", to.x - from.x, to.y - from.y);
+                g_signal_emit_by_name(mouse, "drag-end", to.x - from.x, to.y - from.y);
+                require(state.selected == std::vector<size_t>{smokeSelectionIndex} &&
+                                state.revision() == originalRevision, "Rectangle selection changed ink or saved status");
+                break;
+            }
+            case 47: {
+                capture("selection");
+                const auto from = state.pageScreenPoint(0, 320, 410);
+                const auto to = state.pageScreenPoint(0, 340, 450);
+                g_signal_emit_by_name(mouse, "drag-begin", from.x, from.y);
+                g_signal_emit_by_name(mouse, "drag-update", to.x - from.x, to.y - from.y);
+                require(std::abs(state.selectionBox()->x0 - 320) < 1e-6 &&
+                                std::abs(state.committedInk()[smokeSelectionIndex].points.front().x - 300) < 1e-6,
+                        "Selection preview leaked into committed autosave state");
+                g_signal_emit_by_name(mouse, "drag-end", to.x - from.x, to.y - from.y);
+                require(std::abs(state.ink[smokeSelectionIndex].points.front().y - 440) < 1e-6,
+                        "Selection drag did not apply page-coordinate translation");
+                break;
+            }
+            case 48:
+                capture("selection-moved");
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "selection-moved.xopp").string();
+                chooseSave();
+                break;
+            case 49: {
+                require(!modified() && !state.selected.empty(), "Saving discarded selection or failed");
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(modified() && std::abs(state.ink[smokeSelectionIndex].points.front().x - 300) < 1e-6 &&
+                                state.selected == std::vector<size_t>{smokeSelectionIndex},
+                        "Move undo did not retain selection and restore coordinates");
+                g_signal_emit_by_name(redoButton, "clicked");
+                require(!modified() && std::abs(state.ink[smokeSelectionIndex].points.front().x - 320) < 1e-6,
+                        "Move redo did not return to saved state");
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Delete, 0u, GdkModifierType(0), &handled);
+                require(handled && state.ink.size() == smokeSelectionIndex && state.selected.empty(),
+                        "Delete did not remove the selected stroke");
+                break;
+            }
+            case 50:
+                capture("selection-deleted");
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "selection-deleted.xopp").string();
+                chooseSave();
+                break;
+            case 51: {
+                require(!modified(), "Saving deleted native ink failed");
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(state.ink.size() == smokeSelectionIndex + 1 && state.selected.size() == 1 && modified(),
+                        "Delete undo did not restore the selected native stroke");
+                const auto from = state.pageScreenPoint(0, 340, 450);
+                g_signal_emit_by_name(mouse, "drag-begin", from.x, from.y);
+                g_signal_emit_by_name(mouse, "drag-update", 30.0, 20.0);
+                g_signal_emit_by_name(mouse, "cancel", nullptr);
+                require(std::abs(state.ink[smokeSelectionIndex].points.front().x - 320) < 1e-6 && !state.selecting(),
+                        "Selection cancellation retained transient coordinates");
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_a, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && !state.selected.empty(), "Select All failed");
+                for (auto index: state.selected) {
+                    require(state.ink[index].page == state.page, "Select All crossed page boundaries");
+                }
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Escape, 0u, GdkModifierType(0), &handled);
+                require(state.selected.empty(), "Escape did not clear selection");
+                std::cout << "PASS: rectangle selection, native stroke move/delete, saved-state undo/redo, "
+                             "selection cancellation, committed autosave snapshots, Select All and Escape\n";
+                break;
+            }
             default:
                 require(busyHeartbeats > 0, "The UI main loop did not run during document I/O");
                 std::cout << "PASS: document actions, async open/save/export-pdf, continuous multi-page viewport, "
@@ -3479,7 +3589,8 @@ private:
     GtkWidget* eraserModeDropdown = nullptr;
     GtkWidget* sizeDropdown = nullptr;
     GtkWidget* widthButton = nullptr;
-    std::array<GtkWidget*, 3> toolButtons{};
+    std::array<GtkWidget*, 4> toolButtons{};
+    GtkWidget* selectionLabel = nullptr;
     AdwOverlaySplitView* splitView = nullptr;
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
@@ -3516,6 +3627,7 @@ private:
     int baselineRasters = 0;
     int smokeStep = 0;
     int snapshotWaits = 0;
+    size_t smokeSelectionIndex = 0;
     int smokeWaits = 0;
 };
 
