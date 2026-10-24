@@ -335,6 +335,92 @@ static void continuousMultiPageLayout() {
           "deletePageAt must refuse deleting the last remaining page");
 }
 
+static void layerManagement() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}});
+    PageLayers source;
+    source.initialLayerCount = 2;
+    source.selectedLayer = 1;
+    source.layers = {{"Lower", true, {0}}, {"Upper", true, {1}}};
+    state.setLayerDocument({source, source});
+
+    state.brush = {Tool::Pen, {0, 0, 0}, 2};
+    check(state.begin(Device::Mouse, 20, 20), "drawing should begin on the initial layer");
+    state.append(Device::Mouse, 40, 40);
+    state.finish(Device::Mouse);
+    check(state.ink.size() == 1 && state.ink[0].layerId == 1 && state.ink[0].originLayer == 0,
+          "new ink should retain the active source-layer identity");
+
+    check(state.selectLayer(0, 2), "a foreground layer should be selectable");
+    check(state.begin(Device::Mouse, 60, 60), "drawing should begin on the selected layer");
+    state.append(Device::Mouse, 80, 80);
+    state.finish(Device::Mouse);
+    check(state.ink.back().layerId == 2 && state.ink.back().originLayer == 1,
+          "new ink should retain the selected source-layer identity");
+    state.selectAllOnPage();
+    check(state.selected.size() == 1 && state.selected[0] == 1,
+          "select-all should only select editable ink on the active layer");
+
+    check(state.setLayerVisible(0, 2, false) && !state.layerVisible(0, 2) && state.selected.empty(),
+          "hiding a layer should update visibility and clear stale selection");
+    state.selectAllOnPage();
+    check(state.selected.empty(), "hidden active-layer ink should not be selected");
+    state.undo();
+    check(state.layerVisible(0, 2), "undo should restore layer visibility");
+    state.redo();
+    check(!state.layerVisible(0, 2), "redo should hide the same layer again");
+    state.undo();
+
+    check(state.setLayerVisible(1, 2, false), "visibility changes should accept a non-active page index");
+    check(!state.layerVisible(1, 2) && state.layerVisible(0, 2),
+          "visibility changes should affect only the addressed page");
+    state.undo();
+    check(state.layerVisible(1, 2) && state.layerVisible(0, 2),
+          "undo should restore the addressed page without changing the active page");
+
+    check(state.selectLayer(0, 1) && state.addLayerAboveCurrent(),
+          "adding a layer should insert directly above the selected layer");
+    check(state.layersForPage(0).layers.size() == 3 && state.activeLayerId(0) == 2 &&
+                  state.activeLayerOrigin(0) == 2 && state.ink[1].layerId == 3,
+          "adding a layer should preserve existing object identities while shifting layer IDs");
+    check(state.begin(Device::Mouse, 100, 100), "drawing should begin on the newly added layer");
+    state.append(Device::Mouse, 120, 120);
+    state.finish(Device::Mouse);
+    check(state.ink.back().layerId == 2 && state.ink.back().originLayer == 2,
+          "newly added layers should get a distinct editable origin");
+
+    check(state.deleteCurrentLayer() && state.ink.size() == 2 && state.layersForPage(0).layers.size() == 2,
+          "deleting a layer should remove its editable objects");
+    state.undo();
+    check(state.layersForPage(0).layers.size() == 3 && state.ink.size() == 3 && state.ink.back().layerId == 2,
+          "undo should restore the deleted layer and its objects");
+    state.redo();
+    check(state.layersForPage(0).layers.size() == 2 && state.ink.size() == 2,
+          "redo should delete the layer and its objects again");
+    state.undo();
+
+    check(state.selectLayer(0, 3) && state.mergeCurrentLayerDown(),
+          "a foreground layer should merge into the layer below it");
+    check(state.layersForPage(0).layers.size() == 2 && state.activeLayerId(0) == 2 &&
+                  state.layersForPage(0).layers[1].origins == std::vector<size_t>({2, 1}) &&
+                  state.ink[1].layerId == 2 && state.ink[1].originLayer == 1,
+          "merge-down should preserve bottom-to-top source origins and editable object identity");
+    state.undo();
+    check(state.layersForPage(0).layers.size() == 3 && state.ink[1].layerId == 3,
+          "undo should restore the original layer stack and object IDs");
+    state.redo();
+    check(state.layersForPage(0).layers.size() == 2 && state.ink[1].layerId == 2,
+          "redo should reapply merge-down");
+
+    check(state.selectLayer(0, 1) && !state.mergeCurrentLayerDown(),
+          "the bottom foreground layer must not merge into the immutable background");
+    check(state.setLayerVisible(0, 0, false) && !state.layersForPage(0).backgroundVisible,
+          "background visibility should be independently toggleable");
+    state.undo();
+    check(state.layersForPage(0).backgroundVisible,
+          "background visibility should participate in undo history");
+}
+
 int main() {
     try {
         savedHistory();
@@ -342,6 +428,7 @@ int main() {
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
+        layerManagement();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
         check(std::abs(behavior::steppedZoom(1, true, false) - 1.1) < 1e-12,

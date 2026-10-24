@@ -10,6 +10,9 @@ int main() {
                       ("gtk4-ink-transfer-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
         prototype::Ink mouse{1, {{1, 2, 1}, {3, 4, 1}}, {prototype::Tool::Pen, {1, 0, 0}, 3}};
+        mouse.layerOrder = 11;
+        mouse.layerId = 2;
+        mouse.originLayer = 7;
         auto stylus = mouse;
         stylus.pressureSensitive = true;
         auto highlighter = stylus;
@@ -19,15 +22,21 @@ int main() {
         if (packets[0].pressureSensitive || !packets[1].pressureSensitive || !packets[2].highlighter ||
             !packets[3].whiteout || packets[3].highlighter || packets[3].pressureSensitive ||
             packets[3].color != prototype::behavior::whiteoutColor ||
-            packets[1].points[1].x != 3 || packets[0].page != 1) {
+            packets[1].points[1].x != 3 || packets[0].page != 1 || packets[0].layerOrder != 11 ||
+            packets[0].layerId != 2 || packets[0].originLayer != 7) {
             throw std::runtime_error("Session ink transfer changed tool, pressure mode or page coordinates");
         }
-        const StrokePacket original{2, false, true, 4.25, {0.1, 0.2, 0.9}, {{12.34, 56.78, 0.25}, {80, 90, 0.8}}};
+        StrokePacket original{2, false, true, 4.25, {0.1, 0.2, 0.9}, {{12.34, 56.78, 0.25}, {80, 90, 0.8}}};
+        original.layerOrder = 19;
+        original.layerId = 3;
+        original.originLayer = 12;
         const StrokePacket whiteoutPacket{0, false, false, 8.5, {1, 1, 1}, {{10, 20, 1}, {40, 20, 1}}, true};
         writeTransfer(path, {original, whiteoutPacket});
         const auto decoded = readTransfer(path);
         if (decoded.size() != 2 || decoded[0].page != original.page || !decoded[0].pressureSensitive ||
             decoded[0].width != original.width || decoded[0].color != original.color ||
+            decoded[0].layerOrder != original.layerOrder || decoded[0].layerId != original.layerId ||
+            decoded[0].originLayer != original.originLayer ||
             decoded[0].points[0].x != original.points[0].x || decoded[0].points[1].pressure != 0.8 ||
             !decoded[1].whiteout || decoded[1].highlighter || decoded[1].width != 8.5) {
             throw std::runtime_error("Ink transfer did not preserve page, style or sample precision");
@@ -35,21 +44,27 @@ int main() {
         const auto hydrated = sessionInk(decoded);
         if (hydrated.size() != 2 || hydrated[0].page != 2 || hydrated[0].brush.tool != prototype::Tool::Pen ||
             !hydrated[0].pressureSensitive || hydrated[0].brush.width != 4.25 ||
+            hydrated[0].layerOrder != 19 || hydrated[0].layerId != 3 || hydrated[0].originLayer != 12 ||
             hydrated[0].points[0].pressure != 0.25 || hydrated[0].points[1].pressure != 0.8 ||
             hydrated[1].brush.tool != prototype::Tool::Eraser || hydrated[1].pressureSensitive ||
             hydrated[1].brush.color != prototype::behavior::whiteoutColor) {
             throw std::runtime_error("Session hydration lost tool, pressure mode, or whiteout color");
         }
         prototype::CanvasState preloaded;
-        preloaded.page = 2;
+        preloaded.setPages({{595, 842}, {595, 842}, {595, 842}});
+        prototype::PageLayers pageLayers;
+        pageLayers.initialLayerCount = 13;
+        pageLayers.selectedLayer = 3;
+        pageLayers.layers = {{"Layer 1", true, {0}}, {"Layer 2", true, {1}}, {"Layer 3", true, {12}}};
+        preloaded.setLayerDocument({prototype::PageLayers{}, prototype::PageLayers{}, pageLayers});
+        preloaded.selectActivePage(2);
         preloaded.fit(800, 1000);
         preloaded.ink = hydrated;
         if (preloaded.revision() != 0 || preloaded.canUndo() || preloaded.canRedo()) {
             throw std::runtime_error("Preloaded native ink must start at clean revision 0");
         }
-        const double eraseX = preloaded.offsetX + ((12.34 + 80.0) * 0.5) * preloaded.zoom;
-        const double eraseY = preloaded.offsetY + ((56.78 + 90.0) * 0.5) * preloaded.zoom;
-        preloaded.erase(eraseX, eraseY);
+        const auto erasePoint = preloaded.pageScreenPoint(2, (12.34 + 80.0) * 0.5, (56.78 + 90.0) * 0.5);
+        preloaded.erase(erasePoint.x, erasePoint.y);
         if (preloaded.ink.size() != 3 || preloaded.revision() != 1 || !preloaded.canUndo()) {
             throw std::runtime_error("Preloaded native ink could not be partially erased");
         }

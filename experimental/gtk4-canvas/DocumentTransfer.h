@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "CanvasLayers.h"
+
 namespace prototype::bridge {
 
 struct Sample {
@@ -30,12 +32,14 @@ struct StrokePacket {
     std::vector<Sample> points;
     bool whiteout = false;
     size_t layerOrder = 0;
+    size_t layerId = 1;
+    size_t originLayer = newLayerOrigin;
 };
 
 inline constexpr size_t maxTransferPoints = 1000000;
 
 inline void validate(const StrokePacket& stroke) {
-    if (stroke.page < 0 || (stroke.highlighter && stroke.whiteout) || !std::isfinite(stroke.width) ||
+    if (stroke.page < 0 || stroke.layerId == 0 || (stroke.highlighter && stroke.whiteout) || !std::isfinite(stroke.width) ||
         stroke.width <= 0 || stroke.points.empty()) {
         throw std::runtime_error("Invalid transferred stroke");
     }
@@ -58,22 +62,33 @@ inline std::vector<StrokePacket> readTransfer(const std::filesystem::path& path)
     std::string magic;
     size_t count;
     if (!(stream >> magic >> count) ||
-        (magic != "XOURNALPP_GTK4_INK_V1" && magic != "XOURNALPP_GTK4_INK_V2") || count > maxTransferPoints) {
+        (magic != "XOURNALPP_GTK4_INK_V1" && magic != "XOURNALPP_GTK4_INK_V2" &&
+         magic != "XOURNALPP_GTK4_INK_V3") || count > maxTransferPoints) {
         throw std::runtime_error("Invalid ink-transfer header");
     }
-    const bool hasLayerOrder = magic == "XOURNALPP_GTK4_INK_V2";
+    const bool hasLayerOrder = magic == "XOURNALPP_GTK4_INK_V2" || magic == "XOURNALPP_GTK4_INK_V3";
+    const bool hasLayerIdentity = magic == "XOURNALPP_GTK4_INK_V3";
     std::vector<StrokePacket> strokes;
     size_t points = 0;
     for (size_t i = 0; i < count; ++i) {
         StrokePacket stroke;
         int tool, pressureSensitive;
         size_t length;
-        if (hasLayerOrder && !(stream >> stroke.page >> stroke.layerOrder >> tool >> pressureSensitive >> stroke.width >>
+        if (hasLayerIdentity && !(stream >> stroke.page >> stroke.layerId >> stroke.originLayer >> stroke.layerOrder >>
+                                  tool >> pressureSensitive >> stroke.width >>
+                                  stroke.color[0] >> stroke.color[1] >> stroke.color[2] >> length)) {
+            throw std::runtime_error("Invalid ink-transfer stroke header");
+        }
+        if (!hasLayerIdentity && hasLayerOrder && !(stream >> stroke.page >> stroke.layerOrder >> tool >> pressureSensitive >> stroke.width >>
                                stroke.color[0] >> stroke.color[1] >> stroke.color[2] >> length)) {
             throw std::runtime_error("Invalid ink-transfer stroke header");
         }
         if (!hasLayerOrder) {
             stroke.layerOrder = i;
+        }
+        if (!hasLayerIdentity) {
+            stroke.layerId = legacyTopLayer;
+            stroke.originLayer = newLayerOrigin;
         }
         if ((!hasLayerOrder && !(stream >> stroke.page >> tool >> pressureSensitive >> stroke.width >> stroke.color[0] >>
                                  stroke.color[1] >> stroke.color[2] >> length)) ||
@@ -115,11 +130,11 @@ inline void writeTransfer(const std::filesystem::path& path, const std::vector<S
     std::ofstream stream(path);
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_INK_V2 " << strokes.size() << '\n';
+    stream << "XOURNALPP_GTK4_INK_V3 " << strokes.size() << '\n';
     for (const auto& stroke: strokes) {
         const int tool = stroke.whiteout ? 2 : (stroke.highlighter ? 1 : 0);
-        stream << stroke.page << ' ' << stroke.layerOrder << ' ' << tool << ' ' << stroke.pressureSensitive << ' '
-               << stroke.width;
+        stream << stroke.page << ' ' << stroke.layerId << ' ' << stroke.originLayer << ' ' << stroke.layerOrder << ' '
+               << tool << ' ' << stroke.pressureSensitive << ' ' << stroke.width;
         for (double channel: stroke.color) {
             stream << ' ' << channel;
         }

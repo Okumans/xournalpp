@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "CanvasLayers.h"
+
 namespace prototype {
 
 struct TextStyleRun {
@@ -24,6 +26,8 @@ struct TextStyleRun {
 struct TextItem {
     int page = 0;
     size_t layerOrder = 0;
+    size_t layerId = 1;
+    size_t originLayer = newLayerOrigin;
     std::string text;
     std::string fontName = "Sans";
     double fontSize = 12;
