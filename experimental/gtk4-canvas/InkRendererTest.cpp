@@ -41,6 +41,20 @@ int main() {
     pass &= pixel(surface, 40, 120) == 0x0000ff;
     prototype::drawInk(cr, {0, {{90, 105}, {90, 135}}, {prototype::Tool::Pen, {0, 1, 0}, 4}});
     pass &= pixel(surface, 90, 120) == 0x00ff00;
+    // Selection preview is a Cairo translation; committed ink and autosave stay unchanged.
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_paint(cr);
+    prototype::CanvasState state;
+    state.ink = {{0, {{20, 20}, {20, 20}}, {prototype::Tool::Pen, {1, 0, 0}, 8}}};
+    state.selectAllOnPage();
+    state.beginSelection(20, 20);
+    state.moveSelectionPointer(50, 40);
+    prototype::drawInkPreview(cr, state, 0);
+    pass &= pixel(surface, 50, 40) == 0xff0000 && pixel(surface, 20, 20) == 0xffffff;
+    pass &= state.ink[0].points[0].x == 20 && state.revision() == 0;
+    cairo_matrix_t matrix;
+    cairo_get_matrix(cr, &matrix);
+    pass &= matrix.x0 == 0 && matrix.y0 == 0;
     pass &= cairo_status(cr) == CAIRO_STATUS_SUCCESS;
     pass &= cairo_get_operator(cr) == CAIRO_OPERATOR_OVER;
     cairo_destroy(cr);

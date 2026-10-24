@@ -29,7 +29,7 @@ struct PageHit {
     Point local{};
 };
 
-enum class Tool { Pen, Highlighter, Eraser };
+enum class Tool { Pen, Highlighter, Eraser, SelectRectangle };
 enum class EraserMode { Standard, Whiteout, DeleteStroke };
 
 inline constexpr const std::array<double, 5>& widthsForTool(Tool tool) {
@@ -57,6 +57,11 @@ struct Ink {
     bool pressureSensitive = false;
 };
 
+struct SelectionBox {
+    int page;
+    double x0, y0, x1, y1;
+};
+
 enum class Device { Mouse, Stylus };
 
 // Deliberately independent of GTK. Coordinates are PDF points, not device pixels.
@@ -80,10 +85,171 @@ public:
     double scrollZoomStep = behavior::scrollZoomStep;
     std::vector<Ink> ink;
     std::optional<Ink> current;
+    std::vector<size_t> selected;
     bool pinching = false;
     long long scrollBlockedUntil = 0;
 
     int pageCount() const { return pages.empty() ? 1 : static_cast<int>(pages.size()); }
+
+    std::optional<SelectionBox> selectionBox() const {
+        if (selectionGesture && selectionGesture->moving) {
+            const auto& g = *selectionGesture;
+            return SelectionBox{g.page, g.bounds.x0 + g.dx, g.bounds.y0 + g.dy,
+                                 g.bounds.x1 + g.dx, g.bounds.y1 + g.dy};
+        }
+        if (selectionGesture) {
+            const auto& g = *selectionGesture;
+            return SelectionBox{g.page, std::min(g.start.x, g.latest.x), std::min(g.start.y, g.latest.y),
+                                 std::max(g.start.x, g.latest.x), std::max(g.start.y, g.latest.y)};
+        }
+        std::optional<SelectionBox> box;
+        for (auto index: selected) {
+            if (index >= ink.size()) {
+                continue;
+            }
+            for (const auto& point: ink[index].points) {
+                if (!box) {
+                    box = SelectionBox{ink[index].page, point.x, point.y, point.x, point.y};
+                } else {
+                    box->x0 = std::min(box->x0, point.x);
+                    box->y0 = std::min(box->y0, point.y);
+                    box->x1 = std::max(box->x1, point.x);
+                    box->y1 = std::max(box->y1, point.y);
+                }
+            }
+        }
+        return box;
+    }
+
+    bool selecting() const { return selectionGesture.has_value(); }
+
+    const std::vector<Ink>& committedInk() const { return ink; }
+
+    Point selectionOffset(size_t index) const {
+        if (selectionGesture && selectionGesture->moving &&
+            std::binary_search(selected.begin(), selected.end(), index)) {
+            return {selectionGesture->dx, selectionGesture->dy};
+        }
+        return {0, 0};
+    }
+
+    void cancelSelection() {
+        if (selectionGesture) {
+            selected = std::move(selectionGesture->previousSelection);
+            selectionGesture.reset();
+        }
+    }
+
+    void clearSelection() {
+        cancelSelection();
+        selected.clear();
+    }
+
+    bool beginSelection(double x, double y) {
+        const auto hit = hitPage(x, y);
+        if (!hit || current || eraseGesture || selectionGesture || pinching) {
+            return false;
+        }
+        SelectionGesture gesture;
+        gesture.page = hit->page;
+        gesture.start = gesture.latest = hit->local;
+        gesture.previousSelection = selected;
+        const auto bounds = selectionBox();
+        const auto padding = 5 / zoom;
+        gesture.moving = bounds && bounds->page == hit->page && hit->local.x >= bounds->x0 - padding &&
+                         hit->local.x <= bounds->x1 + padding && hit->local.y >= bounds->y0 - padding &&
+                         hit->local.y <= bounds->y1 + padding;
+        if (gesture.moving) {
+            gesture.indices = selected;
+            gesture.bounds = *bounds;
+        } else {
+            selected.clear();
+        }
+        selectActivePage(hit->page);
+        selectionGesture = std::move(gesture);
+        return true;
+    }
+
+    void moveSelectionPointer(double x, double y) {
+        if (!selectionGesture || !std::isfinite(x) || !std::isfinite(y)) {
+            return;
+        }
+        auto& g = *selectionGesture;
+        g.latest = pageLocalPoint(g.page, x, y);
+        const auto size = pageSize(g.page);
+        g.latest.x = std::clamp(g.latest.x, 0.0, size.width);
+        g.latest.y = std::clamp(g.latest.y, 0.0, size.height);
+        if (g.moving) {
+            g.dx = std::clamp(g.latest.x - g.start.x, -g.bounds.x0, size.width - g.bounds.x1);
+            g.dy = std::clamp(g.latest.y - g.start.y, -g.bounds.y0, size.height - g.bounds.y1);
+        }
+    }
+
+    void finishSelection() {
+        if (!selectionGesture) {
+            return;
+        }
+        auto g = std::move(*selectionGesture);
+        selectionGesture.reset();
+        if (g.moving) {
+            Edit edit;
+            if (g.dx != 0 || g.dy != 0) {
+                for (auto index: g.indices) {
+                    auto moved = ink.at(index);
+                    for (auto& point: moved.points) {
+                        point.x += g.dx;
+                        point.y += g.dy;
+                    }
+                    edit.changes.push_back({index, {ink[index]}, index, {std::move(moved)}});
+                }
+            }
+            if (!edit.changes.empty()) {
+                edit.selectionBefore = edit.selectionAfter = selected;
+                apply(edit, true);
+                record(std::move(edit));
+            }
+        } else {
+            const auto size = pageSize(g.page);
+            const auto x0 = std::min(g.start.x, g.latest.x), x1 = std::max(g.start.x, g.latest.x);
+            const auto y0 = std::min(g.start.y, g.latest.y), y1 = std::max(g.start.y, g.latest.y);
+            // RectangularSelector extends at page edges (1 pt). Stroke selection
+            // tests every point, rather than accepting a crossing segment.
+            for (size_t i = 0; i < ink.size(); ++i) {
+                if (ink[i].page == g.page && !ink[i].points.empty() &&
+                    std::all_of(ink[i].points.begin(), ink[i].points.end(), [&](const Point& p) {
+                        return (x0 <= 1 || p.x >= x0) && (x1 >= size.width - 1 || p.x <= x1) &&
+                               (y0 <= 1 || p.y >= y0) && (y1 >= size.height - 1 || p.y <= y1);
+                    })) {
+                    selected.push_back(i);
+                }
+            }
+        }
+    }
+
+    void selectAllOnPage() {
+        clearSelection();
+        for (size_t i = 0; i < ink.size(); ++i) {
+            if (ink[i].page == page && !ink[i].points.empty()) {
+                selected.push_back(i);
+            }
+        }
+    }
+
+    void deleteSelection() {
+        cancelSelection();
+        if (selected.empty()) {
+            return;
+        }
+        Edit edit;
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        for (size_t n = 0; n < selected.size(); ++n) {
+            const auto i = selected[n];
+            edit.changes.push_back({i, {ink.at(i)}, i - n, {}});
+        }
+        apply(edit, true);
+        record(std::move(edit));
+    }
 
     PageSize pageSize(int index) const {
         if (pages.empty() || index < 0 || static_cast<size_t>(index) >= pages.size()) {
@@ -104,6 +270,7 @@ public:
 
     void setPages(std::vector<PageSize> nextPages) {
         cancel();
+        clearSelection();
         pages = std::move(nextPages);
         if (!pages.empty()) {
             selectActivePage(std::clamp(page, 0, pageCount() - 1));
@@ -315,6 +482,7 @@ public:
             return false;
         }
         cancel();
+        clearSelection();
         pages.erase(pages.begin() + removeIndex);
         std::erase_if(ink, [&](const Ink& stroke) { return stroke.page == removeIndex; });
         for (auto& stroke: ink) {
@@ -340,6 +508,10 @@ public:
     }
 
     bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false) {
+        if (brush.tool == Tool::SelectRectangle && !eraserEnd) {
+            return false;
+        }
+        clearSelection();
         const bool useEraser = eraserEnd || brush.tool == Tool::Eraser;
         const auto hit = hitPage(x, y, useEraser ? 1 : pressure);
         if ((useEraser && eraserMode != EraserMode::Whiteout) || pinching || current || eraseGesture || !hit) {
@@ -391,6 +563,7 @@ public:
     }
 
     void cancel() {
+        cancelSelection();
         finishErase();
         current.reset();
     }
@@ -424,6 +597,7 @@ public:
     size_t revision() const { return undoStates.empty() ? 0 : undoStates.back().revision; }
 
     void beginErase() {
+        clearSelection();
         if (!eraseGesture) {
             EraseGesture gesture;
             gesture.slotOrigin.resize(ink.size());
@@ -536,6 +710,18 @@ private:
     struct Edit {
         std::vector<Change> changes;
         size_t revision = 0;
+        std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
+        std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
+    };
+
+    struct SelectionGesture {
+        int page = 0;
+        Point start{}, latest{};
+        bool moving = false;
+        std::vector<size_t> previousSelection;
+        std::vector<size_t> indices;
+        SelectionBox bounds{};
+        double dx = 0, dy = 0;
     };
 
     struct EraseGesture {
@@ -908,6 +1094,7 @@ private:
                            it->before.end());
             }
         }
+        selected = (forward ? edit.selectionAfter : edit.selectionBefore).value_or(std::vector<size_t>{});
     }
 
     Device owner = Device::Mouse;
@@ -915,6 +1102,7 @@ private:
     std::vector<Edit> undoStates;
     std::vector<Edit> redoStates;
     std::optional<EraseGesture> eraseGesture;
+    std::optional<SelectionGesture> selectionGesture;
 };
 
 }  // namespace prototype

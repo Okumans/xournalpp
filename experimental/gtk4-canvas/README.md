@@ -236,7 +236,7 @@ highlight opacity, text visibility beneath highlighting, and renderer state.
 Transfer serialization, background task/main-context checks, read-only
 `settings.xml` and `.gpl` palette import/fallback checks, and CLI rejection checks
 plus filesystem backup/publication and autosave/recovery checks bring the
-standalone suite to sixteen tests.
+standalone suite to seventeen tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -251,7 +251,7 @@ the headless compositor reports device scale 1.
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. The prototype has no rich-text
-editor, selection tools, signal-handler emergency dump, full undo system, plugins, or toolbar
+editor, full object-selection tools, signal-handler emergency dump, full undo system, plugins, or toolbar
 configuration import. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
@@ -279,9 +279,31 @@ or toolbar configuration features.
 
 ## Remaining migration work
 
-The experiment still needs object selection and editing of lower-layer or
+The experiment still needs Smart Select, lasso, resize/rotate, clipboard, and editing of lower-layer or
 non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo,
 signal-crash emergency handling, clipboard, dialogs, IME, interactive preferences
 editing/persistence, per-device button mappings, plugins and configurable toolbars.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
+
+## Stroke selection
+
+Select (Ctrl+Shift+R) draws a rectangle around editable strokes on one page.
+All stroke points must be inside it, matching the existing rectangle selector;
+rectangles within one document point of a page edge extend to that edge. Drag
+inside the selected bounds to move the group. Delete/Backspace removes it,
+Ctrl+A selects editable strokes on the active page, and Escape cancels a drag
+and clears the selection. Editable top-layer native strokes participate alongside
+new ink; unsupported native objects remain preserved in the background.
+
+Selecting alone leaves the modified state unchanged. A move or deletion is one
+undo step and restores its selection on undo/redo. Transient moves use a Cairo
+translation; geometry changes only on release. Autosave therefore receives the
+last committed geometry during a drag. Explicit gesture cancellation restores
+the previous selection; interrupted input finalizes delivered motion.
+
+Selection movement currently stays within the source page because the native
+transfer format only accepts points within their page. Cross-page moves,
+Smart Select/object picking, lasso, resize/rotate, clipboard, and selection of
+text/images or lower-layer objects still need migration. This is the rectangle
+stroke subset, not a complete replacement for the production selection system.

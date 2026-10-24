@@ -40,6 +40,8 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; top-layer editable stroke suffix extracted losslessly into live ink (`Point::NO_PRESSURE` normalized) while preserving lower layers, z-order, text/images/audio/fills/dashes |
 | Preferences import (`settings.xml`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure sensitivity/min/multiplier, zoom steps, `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`), autosave enable/timeout, and `colorPalette`; eliminates legacy `Settings::load` disk writes/`setenv("LANGUAGE")`, `parseData` `nullptr` crashes, `tempg_ascii_strtod` locale sensitivity, and `ToolHandler::loadSettings` missing-`current` skips |
 | Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
+| Rectangle stroke selection | `Selector.cpp` / `Stroke::isInSelection`: all-point containment, `EDGE_TOUCHING_THRESHOLD=1.0` | Matched for live/editable native strokes on one page; Ctrl+Shift+R, Ctrl+A, Delete and Escape |
+| Selection move | `EditSelection` uses a transformation matrix for interaction | Cairo translation preview; one delta undo step on release, retains pressure/style/z-order and committed autosave geometry |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
 GTK 3 disables motion-event compression for its custom widget. The GTK 4 adapter
@@ -112,3 +114,11 @@ the recovered artifact. Unlike GTK 3 `CrashHandler`, the prototype does not writ
 recover up to the latest completed autosave, and orphaned cache detection uses POSIX
 `kill(pid, 0)` liveness checks. Interactive settings persistence and platform-specific
 file semantics remain migration work.
+
+## Selection scope
+
+Rectangle selection and moving/deleting apply to the editable stroke suffix
+already extracted from the top layer. Smart Select, lasso, other native object
+types, lower layers, clipboard and resize/rotate remain outstanding. Movement is
+currently clamped to the source page to satisfy the existing transfer protocol's
+page bounds; the production cross-page move behavior still needs migration.
