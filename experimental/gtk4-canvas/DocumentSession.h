@@ -7,6 +7,7 @@
 
 #include <gio/gio.h>
 
+#include "DocumentAutosave.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
 
@@ -63,6 +64,13 @@ public:
             version.pop_back();
         }
         return version;
+    }
+
+    void autosave(const std::string& worker, const std::string& output,
+                  const std::vector<StrokePacket>& packets) const {
+        const auto transfer = path / "autosave.ink";
+        writeTransfer(transfer, packets);
+        runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string()});
     }
 
     std::string originalSavePath;

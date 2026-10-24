@@ -20,8 +20,9 @@
 #include "util/raii/CairoWrappers.h"
 #include "view/DocumentView.h"
 
-#include "DocumentTransfer.h"
+#include "DocumentAutosave.h"
 #include "DocumentPublish.h"
+#include "DocumentTransfer.h"
 
 namespace {
 
@@ -160,6 +161,27 @@ void saveCopy(Document& document, const fs::path& output) {
     saveDocument(document, output, prototype::bridge::documentVersion(output).token, true);
 }
 
+void autosaveDocument(Document& document, const fs::path& output) {
+    if (!prototype::bridge::isRecoveryArtifact(output)) {
+        throw std::runtime_error("Autosave target must use an .autosave.xopp or emergencysave.xopp filename");
+    }
+    fs::create_directories(output.parent_path());
+    prototype::bridge::SaveStaging staging(output.parent_path());
+    const auto staged = staging.path / output.filename();
+    document.setFilepath(staged);
+    updatePreview(document);
+    SaveHandler saver;
+    saver.prepareSave(&document, output);
+    if (!saver.getErrorMessage().empty()) {
+        throw std::runtime_error(saver.getErrorMessage());
+    }
+    saver.saveTo(staged);
+    if (!saver.getErrorMessage().empty()) {
+        throw std::runtime_error(saver.getErrorMessage());
+    }
+    prototype::bridge::publishAutosave(staging, output);
+}
+
 void inspect(const Document& document) {
     std::cout << "{\"pages\":[";
     for (size_t i = 0; i < document.getPageCount(); ++i) {
@@ -190,8 +212,10 @@ int main(int argc, char** argv) {
     std::cout << std::setprecision(17);
     try {
         if (argc < 3) {
-            throw std::runtime_error("Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | open INPUT "
-                                     "SNAPSHOT PDF | save-copy INPUT XOPP INK | save INPUT XOPP INK VERSION | version PATH");
+            throw std::runtime_error(
+                    "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | open INPUT SNAPSHOT PDF | "
+                    "save-copy INPUT XOPP INK | save INPUT XOPP INK VERSION | autosave INPUT AUTOSAVE_XOPP INK | "
+                    "version PATH");
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
@@ -207,6 +231,7 @@ int main(int argc, char** argv) {
             render(*document, fs::absolute(argv[3]));
         } else if (command == "open" && argc == 5) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
+                                    !prototype::bridge::isRecoveryArtifact(input) &&
                                     g_ascii_strcasecmp(input.extension().string().c_str(), ".xopp") == 0;
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
@@ -230,6 +255,13 @@ int main(int argc, char** argv) {
             const auto output = fs::absolute(argv[3]);
             saveDocument(*document, output, argv[5], false);
             std::cout << prototype::bridge::documentVersion(output).token << '\n';
+        } else if (command == "autosave" && argc == 5) {
+            const auto output = fs::absolute(argv[3]);
+            if (!prototype::bridge::isRecoveryArtifact(output)) {
+                throw std::runtime_error("Autosave target must use an .autosave.xopp or emergencysave.xopp filename");
+            }
+            appendInk(*document, prototype::bridge::readTransfer(argv[4]));
+            autosaveDocument(*document, output);
         } else {
             throw std::runtime_error("Invalid document-worker command");
         }
