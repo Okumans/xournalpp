@@ -3,6 +3,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include "BehaviorDefaults.h"
 #include "CanvasState.h"
 
 using namespace prototype;
@@ -65,6 +66,12 @@ static void brushAndHistory() {
 int main() {
     try {
         brushAndHistory();
+        check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
+              "wheel zoom must use the original default two-percent step");
+        check(std::abs(behavior::steppedZoom(1, true, false) - 1.1) < 1e-12,
+              "keyboard zoom must use the original default ten-percent step");
+        check(std::abs(behavior::steppedZoom(behavior::steppedZoom(1, true, false), false, false) - 1) < 1e-12,
+              "opposite zoom steps must return to the starting zoom");
         CanvasState state;
         state.fit(1200, 900);
         const auto x = state.offsetX + 100 * state.zoom;
