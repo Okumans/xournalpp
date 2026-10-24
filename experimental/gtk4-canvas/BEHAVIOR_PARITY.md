@@ -18,8 +18,12 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Wheel zoom focus | `onScrolledwindowMainScrollEvent` uses pointer coordinates | Matched; surface-to-canvas mapping checked with real toolbar/sidebar offsets |
 | Pressure default & config | `Settings::loadDefault` + `Settings.cpp`: `pressureSensitivity` (and legacy `presureSensitivity`), `minimumPressure` (`>= 0.01`, default `0.05`), `pressureMultiplier` (`1.0`), guessing off | Matched in the normalized input adapter, with read-only `settings.xml` import |
 | Missing pressure | `PenInputHandler::filterPressure` retains the last device pressure | Matched, with invalid-axis and missing-axis tests |
-| Pen release | `StrokeHandler::onButtonReleaseEvent` finalizes existing samples | Matched; release position does not append a hover tail |
+| Pen release | `StrokeHandler::onButtonReleaseEvent` finalizes existing samples | Release-only hover coordinates are ignored; an enabled stabilizer may spline-finalize from its last delivered event |
 | Small-motion filtering | `InputHandler::PIXEL_MOTION_THRESHOLD` is 0.3 page points; initial dot may thicken | Matched for this part of the pipeline |
+| Geometric drawing tools | `BaseShapeHandler`, `LineHandler`, `RectangleHandler`, `EllipseHandler`, `ArrowHandler`, `CoordinateSystemHandler` | Line, rectangle, ellipse, arrow, double-arrow, and coordinate-axis paths preview during drag and commit through shared stroke undo. Shift snaps lines to 45° or locks square/circle proportions; Control/Alt center supported shapes. |
+| Shape recognizer | `ShapeRecognizer` + `CircleRecognizer`; minimum size defaults to 40 pt | Read-only `strokeRecognizerMinSize` import; recognizes near-straight lines, circles/ellipses, closed triangles, and four-corner rectangles. It uses a compact geometric fit, not the full segment-inertia recognizer. |
+| Stroke stabilization | `StrokeStabilizer`: `NONE`/`ARITHMETIC`/`VELOCITY_GAUSSIAN` with `NONE`/`DEADZONE`/`INERTIA`; defaults are no averaging and no preprocessor | Both dropdowns and the corresponding legacy settings values are supported. Arithmetic and velocity-Gaussian windows, deadzone/cusp filtering, inertia, and a smooth tail to the last delivered event are implemented with synthetic checks. Physical input latency and exact point-for-point equivalence remain unverified. |
+| Spline tool | `SplineHandler`: multi-click knots, drag tangents, first-knot attraction, Backspace/arrows/R/S, double-click/Escape completion | Multi-click knot editing, cubic Bezier preview, tangent drags, 10 px close-to-first completion, Backspace/arrows/R/S editing, and double-click/Escape completion are implemented. The generated spline is stored as a normal editable stroke. |
 | Stylus eraser | `StylusInputHandler::changeTool` applies the eraser mapping temporarily | Eraser-end routing preserves toolbar brush; custom mappings still absent |
 | Temporary hand tool | `XournalView` space press/release and `PenInputHandler::temporaryPan` | Space-drag remains a hand gesture until pointer release |
 | Outside-page drag | `PenInputHandler::actionStart` temporarily selects Hand | Matched across horizontal margins and the 15 pt vertical inter-page gap |
@@ -52,9 +56,10 @@ latest motion, checking axis flags and retaining missing pressure. These paths
 are exercised with synthetic samples and controller signals, not physical pen
 events. Per-device identities and configurable mappings still need migration.
 
-Core tool presets, colors, zoom steps, pressure thresholds, theme variant,
-autosave cadence, and `.gpl` color palettes are imported strictly read-only from
-`settings.xml` and `.gpl` files without ever modifying GTK 3 configuration files.
+Core tool presets, colors, zoom steps, pressure thresholds, shape-recognition
+threshold, stabilizer settings, theme variant, autosave cadence, and `.gpl`
+color palettes are imported strictly read-only from `settings.xml` and `.gpl`
+files without ever modifying GTK 3 configuration files.
 Per-device button mappings (`buttonConfig`, `deviceClasses`), `toolbar.ini`
 layouts, and interactive preference editing/persistence still require migration.
 The prototype uses independent ink and text models for session edits and
@@ -62,9 +67,14 @@ transfers them to the real native model when saving.
 
 ## Known differences that block application replacement
 
-- Existing stabilization, pressure inference, Shift drawing constraints,
-  Shift-click connection, stroke/tap filtering, and device-specific button
-  mappings (`buttonConfig`, `deviceClasses`) have not been migrated.
+- Shift line/aspect constraints and the main stabilizer families are migrated,
+  but draw-direction modifier inversion, grid snapping, Shift-click stroke
+  connection, the original inertia/cusp edge cases, and device-specific button
+  mappings (`buttonConfig`, `deviceClasses`) still differ or remain absent.
+- Shape recognition is a geometric subset: it does not port the original
+  segment queue/inertia model, all recognition scores, or snap-to-grid result
+  placement. Geometric tools output stroke paths rather than native rectangle,
+  ellipse, or arrow model objects.
 - The original uses its document, selection, layer, undo, and rich-text models.
   When opening a `.xopp` via the worker, supported top-layer round-cap,
   unfilled, undashed, non-audio `pen`, `highlighter`, and `#ffffffff` `eraser`
@@ -89,9 +99,10 @@ transfers them to the real native model when saving.
 - The original stroke renderer handles pressure geometry, caps, line styles,
   fill, and blend modes beyond the experiment's simple Cairo segments.
 - Remaining work includes other clipboard formats and native object types, IME, plugins, accessibility, platform behavior, and release packaging.
-- The input adapter preserves core sequence behavior but still uses simplified
-  stroke geometry and a single mouse/stylus owner category. It does not yet reuse
-  the production device-ID routing, full stroke handler, or eraser geometry.
+- The input adapter preserves core sequence behavior but uses a compact cubic
+  spline path and a single mouse/stylus owner category. It does not yet reuse
+  production device-ID routing, the full stroke handler, or exact eraser and
+  stabilizer finalization geometry.
 
 Each subsequent migration change should identify its source behavior, add a
 regression check, and update this ledger. Passing synthetic input checks is not

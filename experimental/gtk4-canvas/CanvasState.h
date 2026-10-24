@@ -12,14 +12,9 @@
 
 #include "BehaviorDefaults.h"
 #include "CanvasText.h"
+#include "CanvasDrawing.h"
 
 namespace prototype {
-
-struct Point {
-    double x;
-    double y;
-    double pressure = 1;
-};
 
 struct PageSize {
     double width = 595;
@@ -90,11 +85,13 @@ public:
     int page = 0;
     std::vector<PageSize> pages;
     Brush brush;
+    DrawingMode drawingMode = DrawingMode::Freehand;
     EraserMode eraserMode = EraserMode::Standard;
     double eraserWidth = behavior::eraserWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
     bool pressureSensitivity = true;
     double minimumPressure = behavior::minimumPressure;
     double pressureMultiplier = behavior::pressureMultiplier;
+    double shapeRecognizerMinSize = 40;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
     std::string textFontName = "Sans";
@@ -102,6 +99,13 @@ public:
     std::vector<Ink> ink;
     std::vector<TextItem> texts;
     std::optional<Ink> current;
+    std::vector<Point> rawCurrent;
+    std::vector<Point> splineKnots;
+    std::vector<Point> splineTangents;
+    std::optional<Point> splineHover;
+    bool currentShift = false;
+    bool currentControl = false;
+    bool currentAlt = false;
     std::vector<size_t> selected;
     bool pinching = false;
     long long scrollBlockedUntil = 0;
@@ -774,7 +778,8 @@ public:
         offsetY = y - anchor.y * zoom;
     }
 
-    bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false) {
+    bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false,
+               bool shift = false, bool control = false, bool alt = false) {
         if (brush.tool == Tool::Text) {
             return false;
         }
@@ -797,10 +802,21 @@ public:
         } else {
             current = Ink{hit->page, {hit->local}, brush, false};
         }
+        rawCurrent = {hit->local};
+        if (!useEraser && drawingMode == DrawingMode::Spline) {
+            splineKnots = {hit->local};
+            splineTangents = {{0, 0}};
+            splineHover = hit->local;
+            current->points = splineBezierPoints(splineKnots, splineTangents);
+        }
+        currentShift = shift;
+        currentControl = control;
+        currentAlt = alt;
         return true;
     }
 
-    void append(Device source, double x, double y, double pressure = 1) {
+    void append(Device source, double x, double y, double pressure = 1, bool shift = false, bool control = false,
+                bool alt = false) {
         if (!current || source != owner) {
             return;
         }
@@ -813,12 +829,138 @@ public:
                 }
                 return;
             }
-            current->points.push_back(p);
+            rawCurrent.push_back(p);
+            currentShift = shift;
+            currentControl = control;
+            currentAlt = alt;
+            if (current->brush.tool == Tool::Eraser || drawingMode == DrawingMode::Freehand ||
+                drawingMode == DrawingMode::ShapeRecognizer) {
+                current->points.push_back(p);
+            } else {
+                current->points = makeDrawingPath(drawingMode, rawCurrent.front(), p, current->brush.width, shift,
+                                                  control, alt, rawCurrent);
+            }
         }
+    }
+
+    void refreshCurrentShape(bool shift, bool control, bool alt) {
+        if (!current || current->brush.tool == Tool::Eraser || rawCurrent.empty()) return;
+        currentShift = shift;
+        currentControl = control;
+        currentAlt = alt;
+        if (drawingMode == DrawingMode::Spline) {
+            refreshSplinePreview();
+        } else if (drawingMode != DrawingMode::Freehand && drawingMode != DrawingMode::ShapeRecognizer) {
+            current->points = makeDrawingPath(drawingMode, rawCurrent.front(), rawCurrent.back(), current->brush.width,
+                                              shift, control, alt, rawCurrent);
+        }
+    }
+
+    bool addSplineKnot(double x, double y, double pressure = 1) {
+        if (!current || drawingMode != DrawingMode::Spline || splineKnots.empty()) return false;
+        const auto hit = hitPage(x, y);
+        if (!hit || hit->page != current->page) return false;
+        auto point = hit->local;
+        point.pressure = std::isfinite(pressure) && pressure >= 0 ? pressure : 1;
+        splineKnots.push_back(point);
+        splineTangents.push_back({0, 0});
+        splineHover = point;
+        refreshSplinePreview();
+        return true;
+    }
+
+    void moveSplineTangent(double x, double y, double pressure = 1) {
+        if (!current || drawingMode != DrawingMode::Spline || splineKnots.empty()) return;
+        const auto point = pageLocalPoint(current->page, x, y);
+        if (!containsOnPage(current->page, point)) return;
+        auto& knot = splineKnots.back();
+        splineTangents.back() = {point.x - knot.x, point.y - knot.y};
+        splineHover = Point{point.x, point.y, std::isfinite(pressure) && pressure >= 0 ? pressure : 1};
+        refreshSplinePreview();
+    }
+
+    void updateSplineHover(double x, double y) {
+        if (!current || drawingMode != DrawingMode::Spline || splineKnots.empty()) return;
+        const auto point = pageLocalPoint(current->page, x, y);
+        if (containsOnPage(current->page, point)) {
+            splineHover = point;
+            refreshSplinePreview();
+        }
+    }
+
+    bool removeLastSplineKnot() {
+        if (!current || drawingMode != DrawingMode::Spline || splineKnots.size() <= 1) return false;
+        splineKnots.pop_back();
+        splineTangents.pop_back();
+        splineHover = splineKnots.back();
+        refreshSplinePreview();
+        return true;
+    }
+
+    bool closeSplinePath() {
+        if (!current || drawingMode != DrawingMode::Spline || splineKnots.size() < 2) return false;
+        const auto& first = splineKnots.front();
+        const auto& last = splineKnots.back();
+        if (std::hypot(first.x - last.x, first.y - last.y) > 1e-8) {
+            splineKnots.push_back(first);
+            splineTangents.push_back(splineTangents.front());
+        }
+        splineHover.reset();
+        refreshSplinePreview();
+        return true;
+    }
+
+    bool moveLastSplineKnot(double dx, double dy) {
+        if (!current || drawingMode != DrawingMode::Spline || splineKnots.empty()) return false;
+        splineKnots.back().x += dx;
+        splineKnots.back().y += dy;
+        splineHover = splineKnots.back();
+        refreshSplinePreview();
+        return true;
+    }
+
+    bool rotateLastSplineTangent(double degrees) {
+        if (!current || drawingMode != DrawingMode::Spline || splineTangents.empty()) return false;
+        const double angle = degrees * M_PI / 180.0;
+        const auto old = splineTangents.back();
+        splineTangents.back() = {std::cos(angle) * old.x + std::sin(angle) * old.y,
+                                 -std::sin(angle) * old.x + std::cos(angle) * old.y};
+        refreshSplinePreview();
+        return true;
+    }
+
+    bool scaleLastSplineTangent(double factor) {
+        if (!current || drawingMode != DrawingMode::Spline || splineTangents.empty()) return false;
+        splineTangents.back().x *= factor;
+        splineTangents.back().y *= factor;
+        refreshSplinePreview();
+        return true;
     }
 
     void finish(Device source, std::optional<double> releasePressure = std::nullopt) {
         if (current && source == owner) {
+            if (current->brush.tool != Tool::Eraser && drawingMode == DrawingMode::Spline) {
+                if (splineKnots.size() < 2) {
+                    current.reset();
+                    rawCurrent.clear();
+                    splineKnots.clear();
+                    splineTangents.clear();
+                    splineHover.reset();
+                    return;
+                }
+                current->points = splineBezierPoints(splineKnots, splineTangents);
+            }
+            if (current->brush.tool != Tool::Eraser && drawingMode == DrawingMode::ShapeRecognizer) {
+                if (auto recognized = recognizeShape(rawCurrent, shapeRecognizerMinSize)) {
+                    current->points = std::move(*recognized);
+                }
+            }
+            if (current->brush.tool != Tool::Eraser && drawingMode != DrawingMode::Freehand &&
+                current->points.size() < 2) {
+                current.reset();
+                rawCurrent.clear();
+                return;
+            }
             if (current->points.size() == 1) {
                 const auto point = current->points.front();
                 if (releasePressure && std::isfinite(*releasePressure) && current->brush.tool == Tool::Pen) {
@@ -832,6 +974,10 @@ public:
             record(std::move(edit));
             ink.push_back(std::move(*current));
             current.reset();
+            rawCurrent.clear();
+            splineKnots.clear();
+            splineTangents.clear();
+            splineHover.reset();
         }
     }
 
@@ -875,6 +1021,10 @@ public:
         cancelSelection();
         finishErase();
         current.reset();
+        rawCurrent.clear();
+        splineKnots.clear();
+        splineTangents.clear();
+        splineHover.reset();
     }
 
     void cancel(Device source) {
@@ -977,6 +1127,12 @@ public:
     }
 
 private:
+    void refreshSplinePreview() {
+        if (current && drawingMode == DrawingMode::Spline) {
+            current->points = splineBezierPoints(splineKnots, splineTangents, splineHover);
+        }
+    }
+
     struct Box {
         double minX;
         double minY;

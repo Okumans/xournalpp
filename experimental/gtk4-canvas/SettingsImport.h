@@ -18,6 +18,7 @@
 
 #include "BehaviorDefaults.h"
 #include "CanvasState.h"
+#include "CanvasStabilizer.h"
 #include "PaletteImport.h"
 
 namespace prototype {
@@ -44,6 +45,8 @@ struct ImportedSettings {
     double scrollZoomStep = behavior::scrollZoomStep;
     std::string textFontName = "Sans";
     double textFontSize = 12;
+    double shapeRecognizerMinSize = 40;
+    StabilizerConfig stabilizer;
 
     bool showSidebar = true;
     ThemeVariant themeVariant = ThemeVariant::UseSystem;
@@ -197,6 +200,42 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         if (const auto pct = parseAsciiDouble(value); pct && *pct > 0.0) {
             out.scrollZoomStep = std::clamp(*pct / 100.0, 0.005, 2.0);
         }
+    } else if (name == "strokeRecognizerMinSize") {
+        if (const auto v = parseAsciiDouble(value); v && *v > 0) {
+            out.shapeRecognizerMinSize = std::clamp(*v, 1.0, 10000.0);
+        }
+    } else if (name == "stabilizerAveragingMethod") {
+        if (const auto v = parseAsciiInt(value); v && *v >= 0 && *v <= 2) {
+            out.stabilizer.averaging = static_cast<AveragingMethod>(*v);
+        }
+    } else if (name == "stabilizerPreprocessor") {
+        if (const auto v = parseAsciiInt(value); v && *v >= 0 && *v <= 2) {
+            out.stabilizer.preprocessor = static_cast<StrokePreprocessor>(*v);
+        }
+    } else if (name == "stabilizerBuffersize") {
+        if (const auto v = parseAsciiInt(value); v && *v > 0) {
+            out.stabilizer.bufferSize = static_cast<size_t>(std::clamp<long long>(*v, 1, 256));
+        }
+    } else if (name == "stabilizerSigma") {
+        if (const auto v = parseAsciiDouble(value); v && *v > 0) {
+            out.stabilizer.sigma = std::clamp(*v, 0.01, 100.0);
+        }
+    } else if (name == "stabilizerDeadzoneRadius") {
+        if (const auto v = parseAsciiDouble(value); v && *v >= 0) {
+            out.stabilizer.deadzoneRadius = std::clamp(*v, 0.0, 10000.0);
+        }
+    } else if (name == "stabilizerCuspDetection") {
+        out.stabilizer.cuspDetection = (value == "true");
+    } else if (name == "stabilizerDrag") {
+        if (const auto v = parseAsciiDouble(value); v && *v >= 0 && *v <= 1) {
+            out.stabilizer.drag = *v;
+        }
+    } else if (name == "stabilizerMass") {
+        if (const auto v = parseAsciiDouble(value); v && *v > 0) {
+            out.stabilizer.mass = std::clamp(*v, 0.01, 10000.0);
+        }
+    } else if (name == "stabilizerFinalizeStroke") {
+        out.stabilizer.finalizeStroke = (value == "true");
     } else if (name == "showSidebar") {
         out.showSidebar = (value == "true");
     } else if (name == "themeVariant") {
@@ -442,6 +481,7 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.pressureSensitivity = settings.pressureSensitivity;
     state.minimumPressure = settings.minimumPressure;
     state.pressureMultiplier = settings.pressureMultiplier;
+    state.shapeRecognizerMinSize = settings.shapeRecognizerMinSize;
     state.zoomStep = settings.zoomStep;
     state.scrollZoomStep = settings.scrollZoomStep;
     state.eraserMode = settings.eraserMode;

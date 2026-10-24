@@ -37,6 +37,12 @@ target_compile_options(canvas-input-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(canvas-input-test PRIVATE PkgConfig::UI)
 add_test(NAME canvas-input COMMAND canvas-input-test)
 
+add_executable(canvas-drawing-test CanvasDrawingTest.cpp)
+target_compile_features(canvas-drawing-test PRIVATE cxx_std_20)
+target_compile_options(canvas-drawing-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(canvas-drawing-test PRIVATE PkgConfig::UI)
+add_test(NAME canvas-drawing COMMAND canvas-drawing-test)
+
 add_executable(document-transfer-test DocumentTransferTest.cpp)
 target_compile_features(document-transfer-test PRIVATE cxx_std_20)
 target_compile_options(document-transfer-test PRIVATE -Wall -Wextra -Wpedantic)

@@ -254,19 +254,22 @@ history retention. A separate normalized-input test covers pressure fallback,
 pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
-Transfer serialization, rich-text transfer/rendering, background task/main-context
-checks, read-only `settings.xml` and `.gpl` palette import/fallback checks, and CLI
-rejection checks plus filesystem backup/publication and autosave/recovery checks
-bring the standalone suite to twenty tests.
+Transfer serialization, geometric drawing/recognition/spline/stabilizer checks,
+rich-text transfer/rendering, background task/main-context checks, read-only
+`settings.xml` and `.gpl` palette import/fallback checks, CLI rejection checks,
+filesystem backup/publication and autosave/recovery checks bring the standalone
+suite to twenty-one tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
 events. It checks visible styled ink, tool-specific presets, highlighter
 selection, keyboard and button undo/redo, erasing, gesture cancellation, pinch
-state, PDF cache reuse, zoom rerasterization, thumbnail page navigation, unmap
-cleanup, and an actual narrower canvas. It also verifies sidebar collapse,
-overlay dismissal, page navigation at the current zoom, and the inline rich-text
-editor's create, edit, and style path. It explicitly renders a 2x raster cache
+state, geometric drawing controls, live Shift constraints, shape recognition,
+interactive spline knots/tangents and Escape completion, PDF cache reuse, zoom
+rerasterization, thumbnail page navigation, unmap cleanup, and an actual narrower
+canvas. It also verifies sidebar collapse, overlay dismissal, page navigation
+at the current zoom, and the inline rich-text editor's create, edit, and style
+path. It explicitly renders a 2x raster cache
 and checks its dimensions. This is **not** a compositor-at-2x or physical HiDPI display test;
 the headless compositor reports device scale 1.
 
@@ -300,9 +303,39 @@ the color button's actual color-change signal is exercised. This is a separate
 native experiment, not an implementation of the main application's annotation
 or toolbar configuration features.
 
+## Drawing tools and stabilization
+
+The Drawing section is inside the existing quick-color popover, so the narrow
+toolbar layout stays usable. It provides Freehand, Line, Rectangle, Ellipse,
+Arrow, Double arrow, Coordinate axes, Shape recognizer, and Spline modes.
+Shift snaps a line to 45° or locks a rectangle/ellipse/coordinate-axis gesture
+to equal dimensions. Control centers line/rectangle/ellipse/arrow paths and
+reverses the coordinate-axis orientation; Alt also centers the supported
+geometric paths.
+
+Shape recognition replaces a sufficiently large trace with a fitted line,
+circle/ellipse, triangle, or four-corner rectangle. Its minimum size imports
+from `strokeRecognizerMinSize` (40 pt by default). Spline clicks add knots,
+dragging a knot sets its tangent, and the first knot closes the path when
+clicked within 10 screen pixels. Double-click or Escape commits the stroke;
+Backspace removes the last knot, arrows move it, `R`/`r` rotate its tangent, and
+`S`/`s` scale it.
+
+The two stabilization controls import the legacy averaging and preprocessor
+settings. Arithmetic and velocity-Gaussian averaging can combine with deadzone
+or inertia preprocessing; both default to off, matching Xournal++ defaults.
+The stabilizer smooths the final segment to the last delivered motion event and
+does not use a release-only hover coordinate.
+
+These paths are editable pen/highlighter strokes. The full original recognizer,
+grid snapping, draw-direction modifier inversion, native shape objects, and
+point-for-point stabilizer equivalence are not claimed. The isolated tests use
+synthetic GTK input in a private render session; physical tablet behavior is
+still unverified.
+
 ## Remaining migration work
 
-The experiment still needs editing of lower-layer/non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars.
+The experiment still needs editing of lower-layer/non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
@@ -312,4 +345,4 @@ Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), and Smart Select (`S`) selec
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Text, images, shapes and lower-layer objects remain preserved in the document background but are not selectable yet. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Native shape and image objects and lower-layer objects remain preserved in the document background but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
