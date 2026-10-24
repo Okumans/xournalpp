@@ -28,6 +28,7 @@
 #include "PaletteImport.h"
 #include "SettingsImport.h"
 #include "StylusSamples.h"
+#include "StrokeClipboard.h"
 
 using prototype::CanvasState;
 using prototype::Device;
@@ -1031,6 +1032,116 @@ private:
         gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), matched ? static_cast<guint>(*matched) : 5u);
     }
 
+    void activateSelection(Tool tool) {
+        selectionTool = tool;
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+        selectTool(tool);
+    }
+
+    void copySelection(bool cut = false) {
+        if (busy || state.selected.empty()) return;
+        resetInput(true);
+        try {
+            const auto bytes = prototype::clipboard::encode(state.copySelection());
+            auto* data = g_bytes_new(bytes.data(), bytes.size());
+            auto* provider = gdk_content_provider_new_for_bytes(prototype::clipboard::mime, data);
+            const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), provider);
+            g_object_unref(provider);
+            g_bytes_unref(data);
+            if (!copied) throw std::runtime_error("Cannot claim the clipboard");
+            if (cut) state.deleteSelection();
+            update();
+        } catch (const std::exception& error) {
+            showError(error.what());
+        }
+    }
+
+    void duplicateSelection() {
+        if (busy || state.selected.empty()) return;
+        resetInput(true);
+        const auto box = state.selectionBox();
+        state.pasteStrokes(state.copySelection(), box->page,
+                           {(box->x0+box->x1)/2 + 20, (box->y0+box->y1)/2 + 20});
+        update();
+    }
+
+    void finishClipboardRead(const std::string& error) {
+        if (clipboardTimer) g_source_remove(clipboardTimer);
+        clipboardTimer = 0;
+        g_clear_object(&clipboardCancellation);
+        busy = false;
+        gtk_widget_set_sensitive(contentView, true);
+        if (!error.empty()) showError(error);
+        update();
+        g_application_release(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
+    }
+
+    void pasteSelection() {
+        if (busy || choosingFile || messageDialog) return;
+        resetInput(true);
+        // Freeze document actions through completion, so a delayed clipboard
+        // cannot insert into a newly opened document. Bound both time and size.
+        busy = true;
+        busyText = "Reading clipboard…";
+        gtk_widget_set_sensitive(contentView, false);
+        updateTitle();
+        g_application_hold(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
+        clipboardCancellation = g_cancellable_new();
+        clipboardTimer = g_timeout_add_seconds(5, +[](gpointer data) -> gboolean {
+            auto* self = static_cast<Prototype*>(data);
+            self->clipboardTimer = 0;
+            g_cancellable_cancel(self->clipboardCancellation);
+            return G_SOURCE_REMOVE;
+        }, this);
+        const char* types[] = {prototype::clipboard::mime, nullptr};
+        gdk_clipboard_read_async(gtk_widget_get_clipboard(canvas), types, G_PRIORITY_DEFAULT,
+                                clipboardCancellation, +[](GObject* object, GAsyncResult* result, gpointer data) {
+            auto* self = static_cast<Prototype*>(data);
+            GError* error = nullptr;
+            auto* rawStream = gdk_clipboard_read_finish(GDK_CLIPBOARD(object), result, nullptr, &error);
+            if (!rawStream) {
+                const std::string message = error ? error->message : "Clipboard has no editable Xournal strokes";
+                g_clear_error(&error);
+                self->finishClipboardRead(message);
+                return;
+            }
+            auto stream = std::shared_ptr<GInputStream>(rawStream, [](GInputStream* stream) { g_object_unref(stream); });
+            auto decoded = std::make_shared<std::vector<Ink>>();
+            auto* cancellation = self->clipboardCancellation;
+            prototype::bridge::documentJob([stream, decoded, cancellation] {
+                std::string bytes;
+                char buffer[16384];
+                while (true) {
+                    GError* error = nullptr;
+                    const auto read = g_input_stream_read(stream.get(), buffer, sizeof(buffer), cancellation, &error);
+                    if (read < 0) {
+                        const std::string message = error ? error->message : "Cannot read clipboard";
+                        g_clear_error(&error);
+                        throw std::runtime_error(message);
+                    }
+                    if (!read) break;
+                    if (size_t(read) > prototype::clipboard::maxBytes - bytes.size())
+                        throw std::runtime_error("Clipboard exceeds the 64 MiB limit");
+                    bytes.append(buffer, size_t(read));
+                }
+                *decoded = prototype::clipboard::decode(bytes);
+            }, [self, decoded](const std::string& error) {
+                std::string failure = error;
+                if (failure.empty()) {
+                    const auto sz = self->state.pageSize(self->state.page);
+                    auto center = self->state.pageLocalPoint(self->state.page,
+                            gtk_widget_get_width(self->canvas)/2.0, gtk_widget_get_height(self->canvas)/2.0);
+                    center.x = std::clamp(center.x, 0.0, sz.width);
+                    center.y = std::clamp(center.y, 0.0, sz.height);
+                    if (!self->state.pasteStrokes(std::move(*decoded), self->state.page, center))
+                        failure = "Cannot place clipboard strokes";
+                    else self->activateSelection(self->selectionTool);
+                }
+                self->finishClipboardRead(failure);
+            });
+        }, this);
+    }
+
     void selectTool(Tool tool) {
         if (state.brush.tool == Tool::Pen) {
             penBrush = state.brush;
@@ -1041,7 +1152,7 @@ private:
             state.eraserWidth = eraserBrush.width;
         }
         input.cancel();
-        if (tool != Tool::SelectRectangle) {
+        if (!prototype::isSelectionTool(tool)) {
             state.clearSelection();
         }
         state.brush = tool == Tool::Highlighter ? highlightBrush : (tool == Tool::Eraser ? eraserBrush : penBrush);
@@ -1057,10 +1168,16 @@ private:
                                static_cast<float>(color[2]), 1};
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
-        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::SelectRectangle);
-        gtk_widget_set_sensitive(sizeDropdown, tool != Tool::SelectRectangle);
-        gtk_widget_set_sensitive(widthButton, tool != Tool::SelectRectangle);
-        gtk_widget_set_visible(selectionLabel, tool == Tool::SelectRectangle);
+        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && !prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(selectionActions, prototype::isSelectionTool(tool));
+        if (prototype::isSelectionTool(tool)) {
+            selectionTool = tool;
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), static_cast<guint>(tool)-3);
+        }
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
@@ -1238,9 +1355,13 @@ private:
         cairo_paint(cr);
         cairo_scale(cr, thumbnails.at(number).second, thumbnails.at(number).second);
         for (size_t index = 0; index < state.ink.size(); ++index) {
-            if (state.ink[index].page == number) {
+            if (state.displayPage(index) == number && state.ink[index].page == number) {
                 prototype::drawInkPreview(cr, state, index);
             }
+        }
+        for (size_t index = 0; index < state.ink.size(); ++index) {
+            if (state.displayPage(index) == number && state.ink[index].page != number)
+                prototype::drawInkPreview(cr, state, index);
         }
         if (state.current && state.current->page == number) {
             prototype::drawInk(cr, *state.current);
@@ -1332,14 +1453,15 @@ private:
             g_object_set_data(G_OBJECT(toolButtons[i]), "tool", GUINT_TO_POINTER(i));
             g_signal_connect(toolButtons[i], "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
                                  if (gtk_toggle_button_get_active(button)) {
-                                     static_cast<Prototype*>(data)->selectTool(static_cast<Tool>(
-                                             GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "tool"))));
+                                     auto* self = static_cast<Prototype*>(data);
+                                     const auto index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "tool"));
+                                     self->selectTool(index == 3 ? self->selectionTool : static_cast<Tool>(index));
                                  }
                              }),
                              this);
             gtk_box_append(GTK_BOX(toolGroup), toolButtons[i]);
         }
-        gtk_widget_set_tooltip_text(toolButtons[3], "Select strokes (Ctrl+Shift+R)");
+        gtk_widget_set_tooltip_text(toolButtons[3], "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S)");
         gtk_box_append(GTK_BOX(toolbar), toolGroup);
         colorBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         auto* colorDialog = gtk_color_dialog_new();
@@ -1429,8 +1551,27 @@ private:
                          }),
                          this);
         gtk_box_append(GTK_BOX(toolbar), widthButton);
+        const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", nullptr};
+        selectionModeDropdown = gtk_drop_down_new_from_strings(selectionModes);
+        g_signal_connect(selectionModeDropdown, "notify::selected", G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+            auto* self = static_cast<Prototype*>(data);
+            const auto tool = static_cast<Tool>(3 + gtk_drop_down_get_selected(GTK_DROP_DOWN(object)));
+            if (tool != self->state.brush.tool && prototype::isSelectionTool(self->state.brush.tool)) self->activateSelection(tool);
+        }), this);
+        gtk_box_append(GTK_BOX(toolbar), selectionModeDropdown);
+        selectionActions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(selectionActions, "linked");
+        gtk_box_append(GTK_BOX(selectionActions), button("edit-copy-symbolic", "Copy strokes (Ctrl+C)",
+                G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->copySelection(); })));
+        gtk_box_append(GTK_BOX(selectionActions), button("edit-cut-symbolic", "Cut strokes (Ctrl+X)",
+                G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->copySelection(true); })));
+        gtk_box_append(GTK_BOX(selectionActions), button("edit-paste-symbolic", "Paste strokes (Ctrl+V)",
+                G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->pasteSelection(); })));
+        gtk_box_append(GTK_BOX(selectionActions), button("edit-duplicate-symbolic", "Duplicate strokes",
+                G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->duplicateSelection(); })));
+        gtk_box_append(GTK_BOX(toolbar), selectionActions);
         selectionLabel = gtk_label_new("Drag to select");
-        gtk_widget_set_tooltip_text(selectionLabel, "Drag selected strokes to move; Delete removes them");
+        gtk_widget_set_tooltip_text(selectionLabel, "Drag to move, drag a square to resize, or drag the circle to rotate");
         gtk_box_append(GTK_BOX(toolbar), selectionLabel);
         const auto initialToolIdx = static_cast<size_t>(importedConfig.settings.activeTool);
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[initialToolIdx]), true);
@@ -1976,6 +2117,24 @@ private:
                     if (self->busy || self->choosingFile || self->messageDialog) {
                         return false;
                     }
+                    self->input.shiftHeld = (modifiers & GDK_SHIFT_MASK) || key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R;
+                    if (!GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
+                        if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_c || key == GDK_KEY_C)) {
+                            self->copySelection(); return true;
+                        }
+                        if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_x || key == GDK_KEY_X)) {
+                            self->copySelection(true); return true;
+                        }
+                        if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_v || key == GDK_KEY_V)) {
+                            self->pasteSelection(); return true;
+                        }
+                        if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) && (key == GDK_KEY_g || key == GDK_KEY_G)) {
+                            self->activateSelection(Tool::SelectLasso); return true;
+                        }
+                        if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) && (key == GDK_KEY_s || key == GDK_KEY_S)) {
+                            self->activateSelection(Tool::SmartSelect); return true;
+                        }
+                    }
                     if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_o || key == GDK_KEY_O)) {
                         if (!self->options.worker.empty()) {
                             self->protectDocument([self] { self->chooseOpen(); });
@@ -2017,7 +2176,7 @@ private:
                         return false;
                     } else if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
                                (key == GDK_KEY_r || key == GDK_KEY_R)) {
-                        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[3]), true);
+                        self->activateSelection(Tool::SelectRectangle);
                     } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_a || key == GDK_KEY_A)) {
                         self->input.cancel();
                         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[3]), true);
@@ -2074,6 +2233,9 @@ private:
         gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
         g_signal_connect(keys, "key-released",
                          G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType, gpointer data) {
+                             if (key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R) {
+                                 static_cast<Prototype*>(data)->input.shiftHeld = false;
+                             }
                              if (key == GDK_KEY_space) {
                                  auto* self = static_cast<Prototype*>(data);
                                  self->input.spaceHeld = false;
@@ -2222,9 +2384,13 @@ private:
             cairo_paint(cr);
             cairo_restore(cr);
             for (size_t index = 0; index < state.ink.size(); ++index) {
-                if (state.ink[index].page == i) {
+                if (state.displayPage(index) == i && state.ink[index].page == i) {
                     prototype::drawInkPreview(cr, state, index);
                 }
+            }
+            for (size_t index = 0; index < state.ink.size(); ++index) {
+                if (state.displayPage(index) == i && state.ink[index].page != i)
+                    prototype::drawInkPreview(cr, state, index);
             }
             if (state.current && state.current->page == i) {
                 prototype::drawInk(cr, *state.current);
@@ -3412,6 +3578,7 @@ private:
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_R, 0u,
                                       GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
                 require(handled && state.brush.tool == Tool::SelectRectangle, "Rectangle selection shortcut failed");
+                g_signal_emit_by_name(keys,"key-released",GDK_KEY_Shift_L,0u,GdkModifierType(0));
                 const auto from = state.pageScreenPoint(0, 295, 395);
                 const auto to = state.pageScreenPoint(0, 355, 425);
                 g_signal_emit_by_name(mouse, "drag-begin", from.x, from.y);
@@ -3483,6 +3650,138 @@ private:
                              "selection cancellation, committed autosave snapshots, Select All and Escape\n";
                 break;
             }
+            case 52: {
+                activateSelection(Tool::SmartSelect);
+                state.clearSelection();
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                const auto a = state.pageScreenPoint(0, 260, 300);
+                const auto b = state.pageScreenPoint(0, 360, 320);
+                const auto c = state.pageScreenPoint(0, 300, 380);
+                input.begin(Device::Stylus, {a.x,a.y,.25});
+                input.motion(Device::Stylus, {b.x,b.y,.5});
+                input.motion(Device::Stylus, {c.x,c.y,.75});
+                input.finish(Device::Stylus);
+                smokeSelectionIndex = state.ink.size()-1;
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_G, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
+                require(handled && state.brush.tool == Tool::SelectLasso, "Lasso shortcut failed");
+                g_signal_emit_by_name(keys,"key-released",GDK_KEY_Shift_L,0u,GdkModifierType(0));
+                const auto from = state.pageScreenPoint(0,250,290);
+                g_signal_emit_by_name(mouse,"drag-begin",from.x,from.y);
+                for (const auto p: {prototype::Point{370,290},prototype::Point{370,390},prototype::Point{250,390},prototype::Point{250,290}}) {
+                    const auto to = state.pageScreenPoint(0,p.x,p.y);
+                    g_signal_emit_by_name(mouse,"drag-update",to.x-from.x,to.y-from.y);
+                }
+                g_signal_emit_by_name(mouse,"drag-end",0.0,0.0);
+                require(state.selected == std::vector<size_t>{smokeSelectionIndex},"Lasso did not select native editable stroke");
+                break;
+            }
+            case 53: {
+                capture("lasso-selection");
+                const auto handles = state.selectionHandles();
+                const auto a = state.pageScreenPoint(0,handles[4].x,handles[4].y);
+                const auto b = state.pageScreenPoint(0,handles[0].x+1.5*(handles[4].x-handles[0].x),
+                                                         handles[0].y+1.5*(handles[4].y-handles[0].y));
+                smokeTransformWidth = state.ink.back().brush.width;
+                g_signal_emit_by_name(mouse,"drag-begin",a.x,a.y);
+                g_signal_emit_by_name(mouse,"drag-update",b.x-a.x,b.y-a.y);
+                require(state.committedInk().back().brush.width == smokeTransformWidth,"Resize preview leaked into autosave");
+                g_signal_emit_by_name(mouse,"drag-end",b.x-a.x,b.y-a.y);
+                require(std::abs(state.ink.back().brush.width-1.5*smokeTransformWidth)<1e-6,"Resize lost native width scaling");
+                break;
+            }
+            case 54: {
+                capture("selection-resized");
+                const auto box = state.selectionBox();
+                const auto h = state.selectionHandles()[8];
+                const auto cx = (box->x0+box->x1)/2, cy = (box->y0+box->y1)/2;
+                const auto a = state.pageScreenPoint(0,h.x,h.y);
+                const auto b = state.pageScreenPoint(0,cx-(h.y-cy),cy+(h.x-cx));
+                g_signal_emit_by_name(mouse,"drag-begin",a.x,a.y);
+                g_signal_emit_by_name(mouse,"drag-update",b.x-a.x,b.y-a.y);
+                g_signal_emit_by_name(mouse,"drag-end",b.x-a.x,b.y-a.y);
+                require(std::abs(state.ink.back().brush.width-1.5*smokeTransformWidth)<1e-6,"Rotation changed stroke width");
+                break;
+            }
+            case 55: {
+                capture("selection-rotated");
+                smokeClipboardCount = state.ink.size();
+                gboolean handled = false;
+                g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_c,0u,GDK_CONTROL_MASK,&handled);
+                require(handled,"Copy shortcut failed");
+                g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_v,0u,GDK_CONTROL_MASK,&handled);
+                require(handled && busy,"Paste did not start async clipboard read");
+                break;
+            }
+            case 56: {
+                require(state.ink.size()==smokeClipboardCount+1 && state.selected.size()==1 &&
+                                std::abs(state.ink.back().brush.width-1.5*smokeTransformWidth)<1e-6,
+                        "Clipboard paste lost native stroke or width");
+                capture("selection-pasted");
+                duplicateSelection();
+                require(state.ink.size()==smokeClipboardCount+2,"Duplicate selection failed");
+                g_signal_emit_by_name(undoButton,"clicked");
+                require(state.ink.size()==smokeClipboardCount+1,"Duplicate was not a single undo action");
+                gboolean handled=false;
+                g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_x,0u,GDK_CONTROL_MASK,&handled);
+                require(handled && state.ink.size()==smokeClipboardCount,"Cut did not remove clipboard selection");
+                g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_v,0u,GDK_CONTROL_MASK,&handled);
+                break;
+            }
+            case 57: {
+                require(state.ink.size()==smokeClipboardCount+1 && state.selected.size()==1,"Cut/paste failed");
+                const auto box = state.selectionBox();
+                const auto a = state.pageScreenPoint(0,(box->x0+box->x1)/2,(box->y0+box->y1)/2);
+                const auto b = state.pageScreenPoint(1,180,220);
+                g_signal_emit_by_name(mouse,"drag-begin",a.x,a.y);
+                g_signal_emit_by_name(mouse,"drag-update",b.x-a.x,b.y-a.y);
+                require(state.displayPage(state.selected.front())==1 && state.committedInk().back().page==0,
+                        "Cross-page preview leaked into committed document");
+                g_signal_emit_by_name(mouse,"drag-end",b.x-a.x,b.y-a.y);
+                require(state.ink.back().page==1,"Cross-page transfer did not reassign page");
+                g_signal_emit_by_name(undoButton,"clicked");
+                require(state.ink.back().page==0,"Cross-page undo failed");
+                g_signal_emit_by_name(redoButton,"clicked");
+                navigateToPage(1);
+                break;
+            }
+            case 58:
+                capture("selection-transferred");
+                smokeSaveChoice=(std::filesystem::path(options.smokeDirectory)/"selection-transforms.xopp").string();
+                chooseSave();
+                break;
+            case 59: {
+                require(!modified() && state.ink.back().page==1,"Saving selection transforms failed");
+                gboolean handled=false;
+                g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_Escape,0u,GdkModifierType(0),&handled);
+                g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_s,0u,GdkModifierType(0),&handled);
+                require(handled && state.brush.tool==Tool::SmartSelect,"Smart Select shortcut failed");
+                const auto p=state.ink.back().points.front();
+                const auto from=state.pageScreenPoint(1,p.x,p.y);
+                g_signal_emit_by_name(mouse,"drag-begin",from.x,from.y);
+                g_signal_emit_by_name(mouse,"drag-update",15.0,15.0);
+                g_signal_emit_by_name(mouse,"drag-end",15.0,15.0);
+                require(state.selected.size()==1 && modified(),"Smart Select did not pick and move stroke");
+                capture("smart-selection");
+                std::cout << "PASS: lasso, native resize/rotate, real GDK Copy/Cut/Paste, duplicate, cross-page transfer and Smart Select\n";
+                break;
+            }
+            case 60: {
+                smokeClipboardCount=state.ink.size();
+                auto* bytes=g_bytes_new_static("malformed",9);
+                auto* provider=gdk_content_provider_new_for_bytes(prototype::clipboard::mime,bytes);
+                require(gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas),provider),"Test clipboard offer failed");
+                g_object_unref(provider);g_bytes_unref(bytes);
+                pasteSelection();
+                break;
+            }
+            case 61:
+                require(messageDialog && state.ink.size()==smokeClipboardCount && state.selected.size()==1,
+                        "Malformed clipboard changed selection or ink");
+                answerDialog("close");
+                std::cout << "PASS: malformed async clipboard rejected atomically\n";
+                break;
             default:
                 require(busyHeartbeats > 0, "The UI main loop did not run during document I/O");
                 std::cout << "PASS: document actions, async open/save/export-pdf, continuous multi-page viewport, "
@@ -3591,6 +3890,11 @@ private:
     GtkWidget* widthButton = nullptr;
     std::array<GtkWidget*, 4> toolButtons{};
     GtkWidget* selectionLabel = nullptr;
+    GtkWidget* selectionModeDropdown = nullptr;
+    GtkWidget* selectionActions = nullptr;
+    Tool selectionTool = Tool::SelectRectangle;
+    GCancellable* clipboardCancellation = nullptr;
+    guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
@@ -3627,6 +3931,8 @@ private:
     int baselineRasters = 0;
     int smokeStep = 0;
     int snapshotWaits = 0;
+    double smokeTransformWidth = 0;
+    size_t smokeClipboardCount = 0;
     size_t smokeSelectionIndex = 0;
     int smokeWaits = 0;
 };

@@ -18,6 +18,7 @@ public:
     explicit CanvasInput(CanvasState& state): state(state) {}
 
     bool spaceHeld = false;
+    bool shiftHeld = false;
 
     bool begin(Device device, InputSample sample, bool eraserEnd = false) {
         if (owner || state.current || state.pinching || !finitePosition(sample)) {
@@ -31,9 +32,9 @@ public:
             mode = Mode::Erase;
             state.beginErase();
             state.erase(sample.x, sample.y);
-        } else if (state.brush.tool == Tool::SelectRectangle && !eraserEnd) {
+        } else if (isSelectionTool(state.brush.tool) && !eraserEnd) {
             mode = Mode::Select;
-            if (!state.beginSelection(sample.x, sample.y)) {
+            if (!state.beginSelection(sample.x, sample.y, shiftHeld)) {
                 return false;
             }
         } else {
@@ -113,6 +114,7 @@ public:
     void reset() {
         cancel();
         spaceHeld = false;
+        shiftHeld = false;
         state.resetInput();
     }
 

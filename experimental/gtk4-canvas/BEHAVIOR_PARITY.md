@@ -40,8 +40,9 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; top-layer editable stroke suffix extracted losslessly into live ink (`Point::NO_PRESSURE` normalized) while preserving lower layers, z-order, text/images/audio/fills/dashes |
 | Preferences import (`settings.xml`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure sensitivity/min/multiplier, zoom steps, `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`), autosave enable/timeout, and `colorPalette`; eliminates legacy `Settings::load` disk writes/`setenv("LANGUAGE")`, `parseData` `nullptr` crashes, `tempg_ascii_strtod` locale sensitivity, and `ToolHandler::loadSettings` missing-`current` skips |
 | Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
-| Rectangle stroke selection | `Selector.cpp` / `Stroke::isInSelection`: all-point containment, `EDGE_TOUCHING_THRESHOLD=1.0` | Matched for live/editable native strokes on one page; Ctrl+Shift+R, Ctrl+A, Delete and Escape |
-| Selection move | `EditSelection` uses a transformation matrix for interaction | Cairo translation preview; one delta undo step on release, retains pressure/style/z-order and committed autosave geometry |
+| Stroke selection | `Selector.cpp`, `LassoSelector.cpp`, `SmartSelect.cpp`, and `Stroke::isInSelection`: all-point rectangle/lasso winding containment with 1 pt page-edge extension; object picking follows stroke path distance | Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), Smart Select (`S`), Shift-add rectangle, active-page `Ctrl+A`, Delete and Escape. Currently selects only editable strokes from the visible top-layer suffix. |
+| Selection transforms | `EditSelection.cpp` affine transform, eight resize handles and rotation anchor; `Stroke::scale` applies geometric-mean width scaling | Move, axis-side resize, aspect-preserving corner resize, mirror, rotate and cross-page transfer use preview matrices. Preview leaves committed autosave geometry unchanged; release records one undo step and retains pressure/style. |
+| Selection clipboard | `ClipboardHandler.cpp`: native `application/xournal` object stream, plus text/SVG/PNG targets | Bounded strict decoder and native encoder support editable pen, highlighter and opaque whiteout strokes. GDK Copy/Cut/Paste and duplicate append as one undoable group. Unsupported native objects, custom caps, fill, dash, audio and alpha are rejected atomically; SVG/PNG export, text/image clipboard and editable non-stroke objects remain pending. |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
 GTK 3 disables motion-event compression for its custom widget. The GTK 4 adapter
@@ -84,8 +85,7 @@ to the real native model when saving.
   scrolling, and gesture zoom. The experiment has only a small input subset.
 - The original stroke renderer handles pressure geometry, caps, line styles,
   fill, and blend modes beyond the experiment's simple Cairo segments.
-- Original shortcut bindings, clipboard, IME, plugins, accessibility, platform
-  behavior, and release packaging still need a complete migration.
+- Remaining work includes other clipboard formats and native object types, IME, plugins, accessibility, platform behavior, and release packaging.
 - The input adapter preserves core sequence behavior but still uses simplified
   stroke geometry and a single mouse/stylus owner category. It does not yet reuse
   the production device-ID routing, full stroke handler, or eraser geometry.
@@ -117,8 +117,6 @@ file semantics remain migration work.
 
 ## Selection scope
 
-Rectangle selection and moving/deleting apply to the editable stroke suffix
-already extracted from the top layer. Smart Select, lasso, other native object
-types, lower layers, clipboard and resize/rotate remain outstanding. Movement is
-currently clamped to the source page to satisfy the existing transfer protocol's
-page bounds; the production cross-page move behavior still needs migration.
+Selection and transforms apply to editable standard strokes in the visible top-layer suffix. Rectangle and lasso use all-point containment; both extend a boundary within one point of the page edge. Smart Select picks the topmost editable stroke by path distance. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
+
+Move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text/images/shapes, lower-layer objects, other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.

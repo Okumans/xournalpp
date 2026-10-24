@@ -4,6 +4,7 @@
 #include <clocale>
 #include <filesystem>
 #include <iomanip>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -27,6 +28,10 @@
 #include "DocumentAutosave.h"
 #include "DocumentPublish.h"
 #include "DocumentTransfer.h"
+#include "StrokeClipboard.h"
+#include "util/serializing/ObjectInputStream.h"
+#include "util/serializing/ObjectOutputStream.h"
+#include "util/serializing/BinObjectEncoding.h"
 
 namespace {
 
@@ -83,9 +88,6 @@ void appendInk(Document& document, const std::vector<prototype::bridge::StrokePa
                                    static_cast<uint8_t>(std::lround(packet.color[2] * 255))});
         }
         for (const auto& point: packet.points) {
-            if (point.x < 0 || point.y < 0 || point.x > page->getWidth() || point.y > page->getHeight()) {
-                throw std::runtime_error("Transferred stroke lies outside its page");
-            }
             if (packet.pressureSensitive && !packet.highlighter && !packet.whiteout) {
                 stroke->addPoint(Point(point.x, point.y, point.pressure * packet.width));
             } else {
@@ -101,8 +103,7 @@ void appendInk(Document& document, const std::vector<prototype::bridge::StrokePa
     }
 }
 
-std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& element, const XojPage& page,
-                                                                int pageIndex) {
+std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& element, int pageIndex) {
     if (element.getType() != ELEMENT_STROKE) {
         return std::nullopt;
     }
@@ -148,12 +149,9 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
                     static_cast<double>((rgb >> 8U) & 0xffU) / 255.0,
                     static_cast<double>(rgb & 0xffU) / 255.0};
     packet.points.reserve(pts.size());
-    const double pageWidth = page.getWidth();
-    const double pageHeight = page.getHeight();
     for (size_t i = 0; i < pts.size(); ++i) {
         const auto& point = pts[i];
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) || point.x < 0.0 || point.y < 0.0 ||
-            point.x > pageWidth || point.y > pageHeight) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
             return std::nullopt;
         }
         double pressure = 1.0;
@@ -189,7 +187,7 @@ std::vector<prototype::bridge::StrokePacket> extractEditableInk(Document& docume
         size_t suffixStart = elements.size();
         std::vector<prototype::bridge::StrokePacket> pagePackets;
         while (suffixStart > 0) {
-            auto candidate = toEditablePacket(*elements[suffixStart - 1], *page, static_cast<int>(pageIndex));
+            auto candidate = toEditablePacket(*elements[suffixStart - 1], static_cast<int>(pageIndex));
             if (!candidate || candidate->points.size() > prototype::bridge::maxTransferPoints - totalPoints) {
                 break;
             }
@@ -393,6 +391,42 @@ int main(int argc, char** argv) {
         const auto input = std::string(argv[2]).empty() ? fs::path{} : fs::absolute(argv[2]);
         if (command == "version" && argc == 3) {
             std::cout << prototype::bridge::documentVersion(input).token << '\n';
+            return 0;
+        }
+        if (command == "clipboard-roundtrip" && argc == 4) {
+            std::ifstream file(input, std::ios::binary | std::ios::ate);
+            if (!file || file.tellg() < 0 || static_cast<size_t>(file.tellg()) > prototype::clipboard::maxBytes)
+                throw std::runtime_error("Invalid clipboard input size");
+            const auto length = static_cast<size_t>(file.tellg());
+            file.seekg(0);
+            std::string bytes(length, '\0');
+            if (!file.read(bytes.data(), static_cast<std::streamsize>(length)))
+                throw std::runtime_error("Cannot read clipboard input");
+            // The legacy reader is only invoked after strict structural and
+            // allocation-limit preflight. Exercise the actual production codec.
+            prototype::clipboard::decode(bytes);
+            ObjectInputStream in;
+            if (!in.read(bytes.data(), bytes.size())) throw std::runtime_error("Native clipboard header rejected");
+            ObjectOutputStream out(new BinObjectEncoding());
+            out.writeString(in.readString());
+            in.readObject("EditSelection"); out.writeObject("EditSelection");
+            for (int n = 0; n < 9; ++n) out.writeDouble(in.readDouble());
+            in.readObject("EditSelectionContents"); out.writeObject("EditSelectionContents");
+            for (int n = 0; n < 11; ++n) out.writeDouble(in.readDouble());
+            in.endObject(); out.endObject();
+            in.endObject(); out.endObject();
+            const auto count = in.readInt(); out.writeInt(count);
+            for (int n = 0; n < count; ++n) {
+                Stroke stroke;
+                stroke.readSerialized(in);
+                stroke.serialize(out);
+            }
+            auto* encoded = out.stealData();
+            std::ofstream output(argv[3], std::ios::binary);
+            output.write(encoded->str, static_cast<std::streamsize>(encoded->len));
+            g_string_free(encoded, true);
+            output.close();
+            if (!output) throw std::runtime_error("Cannot write clipboard output");
             return 0;
         }
         auto document = load(input, originalContext);

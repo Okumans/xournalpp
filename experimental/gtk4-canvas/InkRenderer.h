@@ -7,7 +7,7 @@
 
 namespace prototype {
 
-inline void drawInk(cairo_t* cr, const Ink& ink) {
+inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}) {
     if (ink.points.empty()) {
         return;
     }
@@ -22,9 +22,9 @@ inline void drawInk(cairo_t* cr, const Ink& ink) {
     cairo_set_source_rgb(cr, color[0], color[1], color[2]);
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     for (size_t i = 0; i < ink.points.size(); ++i) {
-        const auto& a = ink.points[i ? i - 1 : 0];
-        const auto& b = ink.points[i];
-        const auto width = ink.brush.width * ((highlight || whiteout) ? 1.0 : (a.pressure + b.pressure) / 2);
+        const auto a = matrix.apply(ink.points[i ? i - 1 : 0]);
+        const auto b = matrix.apply(ink.points[i]);
+        const auto width = ink.brush.width * matrix.widthScale * ((highlight || whiteout) ? 1.0 : (a.pressure + b.pressure) / 2);
         if (a.x == b.x && a.y == b.y) {
             cairo_arc(cr, b.x, b.y, width / 2, 0, 6.283185307179586);
             cairo_fill(cr);
@@ -44,15 +44,7 @@ inline void drawInk(cairo_t* cr, const Ink& ink) {
 }
 
 inline void drawInkPreview(cairo_t* cr, const CanvasState& state, size_t index) {
-    const auto translation = state.selectionOffset(index);
-    if (translation.x == 0 && translation.y == 0) {
-        drawInk(cr, state.ink.at(index));
-        return;
-    }
-    cairo_save(cr);
-    cairo_translate(cr, translation.x, translation.y);
-    drawInk(cr, state.ink.at(index));
-    cairo_restore(cr);
+    drawInk(cr, state.ink.at(index), state.selectionMatrix(index));
 }
 
 inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
@@ -60,10 +52,20 @@ inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
     if (!bounds || bounds->page != page) {
         return;
     }
-    const auto padding = state.selecting() && state.selected.empty() ? 0.0 : 4 / state.zoom;
     cairo_save(cr);
-    cairo_rectangle(cr, bounds->x0 - padding, bounds->y0 - padding,
-                    bounds->x1 - bounds->x0 + 2 * padding, bounds->y1 - bounds->y0 + 2 * padding);
+    const auto path = state.selectionPath();
+    if (!path.empty()) {
+        cairo_move_to(cr, path.front().x, path.front().y);
+        for (const auto& p: path) cairo_line_to(cr, p.x, p.y);
+        cairo_close_path(cr);
+    } else if (!state.selected.empty()) {
+        const auto handles = state.selectionHandles();
+        cairo_move_to(cr, handles[0].x, handles[0].y);
+        for (auto n: {2, 4, 6}) cairo_line_to(cr, handles[n].x, handles[n].y);
+        cairo_close_path(cr);
+    } else {
+        cairo_rectangle(cr, bounds->x0, bounds->y0, bounds->x1 - bounds->x0, bounds->y1 - bounds->y0);
+    }
     cairo_set_source_rgba(cr, 0.2, 0.52, 0.9, 0.08);
     cairo_fill_preserve(cr);
     cairo_set_source_rgba(cr, 0.2, 0.52, 0.9, 1);
@@ -71,6 +73,22 @@ inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
     const double dashes[] = {5 / state.zoom, 3 / state.zoom};
     cairo_set_dash(cr, dashes, 2, 0);
     cairo_stroke(cr);
+    if (!state.selected.empty()) {
+        const auto handles = state.selectionHandles();
+        cairo_set_dash(cr, nullptr, 0, 0);
+        cairo_move_to(cr, handles[3].x, handles[3].y);
+        cairo_line_to(cr, handles[8].x, handles[8].y);
+        cairo_stroke(cr);
+        for (size_t i = 0; i < handles.size(); ++i) {
+            const auto& p = handles[i];
+            if (i == 8) cairo_arc(cr, p.x, p.y, 4 / state.zoom, 0, 6.283185307179586);
+            else cairo_rectangle(cr, p.x - 3/state.zoom, p.y - 3/state.zoom, 6/state.zoom, 6/state.zoom);
+            cairo_set_source_rgb(cr, 1, 1, 1);
+            cairo_fill_preserve(cr);
+            cairo_set_source_rgb(cr, .2, .52, .9);
+            cairo_stroke(cr);
+        }
+    }
     cairo_restore(cr);
 }
 
