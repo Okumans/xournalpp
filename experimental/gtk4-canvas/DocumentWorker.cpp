@@ -20,6 +20,7 @@
 #include "model/Document.h"
 #include "model/DocumentHandler.h"
 #include "model/Layer.h"
+#include "model/Image.h"
 #include "model/Point.h"
 #include "model/Stroke.h"
 #include "model/Text.h"
@@ -35,12 +36,14 @@
 #include "DocumentAutosave.h"
 #include "DocumentLayers.h"
 #include "DocumentTextTransfer.h"
+#include "DocumentImageTransfer.h"
 #include "DocumentPublish.h"
 #include "DocumentTransfer.h"
 #include "StrokeClipboard.h"
 #include "util/serializing/ObjectInputStream.h"
 #include "util/serializing/ObjectOutputStream.h"
 #include "util/serializing/BinObjectEncoding.h"
+#include "util/Matrix.h"
 
 class GTK4DocumentLayerAccess {
 public:
@@ -126,8 +129,20 @@ void appendText(Layer& layer, const prototype::TextItem& item) {
     layer.addElement(std::move(text));
 }
 
+void appendImage(Layer& layer, const prototype::bridge::ImagePacket& packet) {
+    auto image = std::make_unique<Image>();
+    image->setImage(packet.encodedData);
+    if (const auto error = image->renderBuffer()) {
+        throw std::runtime_error("Cannot decode transferred image: " + *error);
+    }
+    const auto& m = packet.transform;
+    image->setTransformation(xoj::util::Matrix{m.xx, m.yx, m.xy, m.yy, {m.x, m.y}});
+    layer.addElement(std::move(image));
+}
+
 void appendLayerAwareObjects(Document& document, const std::vector<prototype::bridge::StrokePacket>& strokes,
                              const std::vector<prototype::TextItem>& texts,
+                             const std::vector<prototype::bridge::ImagePacket>& images,
                              const prototype::bridge::LayerDocument& layerDocument) {
     struct OrderedObject {
         int page;
@@ -136,16 +151,21 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
         size_t order;
         const prototype::bridge::StrokePacket* stroke;
         const prototype::TextItem* text;
+        const prototype::bridge::ImagePacket* image;
     };
     std::vector<OrderedObject> objects;
     objects.reserve(strokes.size() + texts.size());
     for (const auto& stroke: strokes) {
         prototype::bridge::validate(stroke);
-        objects.push_back({stroke.page, stroke.layerId, stroke.originLayer, stroke.layerOrder, &stroke, nullptr});
+        objects.push_back({stroke.page, stroke.layerId, stroke.originLayer, stroke.layerOrder, &stroke, nullptr, nullptr});
     }
     for (const auto& text: texts) {
         prototype::bridge::text_transfer_detail::validateTextItem(text);
-        objects.push_back({text.page, text.layerId, text.originLayer, text.layerOrder, nullptr, &text});
+        objects.push_back({text.page, text.layerId, text.originLayer, text.layerOrder, nullptr, &text, nullptr});
+    }
+    for (const auto& image: images) {
+        prototype::bridge::validate(image);
+        objects.push_back({image.page, image.layerId, image.originLayer, image.layerOrder, nullptr, nullptr, &image});
     }
     if (layerDocument.size() != document.getPageCount()) {
         throw std::runtime_error("Layer transfer page count does not match the document");
@@ -214,7 +234,13 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
                                                     });
                 for (auto item = first; item != objects.end() && item->page == static_cast<int>(pageIndex) &&
                                         item->layerId == targetIndex + 1 && item->origin == origin; ++item) {
-                    item->stroke ? appendStroke(*target, *item->stroke) : appendText(*target, *item->text);
+                    if (item->stroke) {
+                        appendStroke(*target, *item->stroke);
+                    } else if (item->text) {
+                        appendText(*target, *item->text);
+                    } else {
+                        appendImage(*target, *item->image);
+                    }
                 }
             }
         }
@@ -359,14 +385,50 @@ std::optional<prototype::TextItem> toEditableTextPacket(const Element& element, 
 struct EditableSuffixItem {
     std::optional<prototype::bridge::StrokePacket> stroke;
     std::optional<prototype::TextItem> text;
+    std::optional<prototype::bridge::ImagePacket> image;
 };
 
+std::optional<prototype::bridge::ImagePacket> toEditableImagePacket(const Element& element, int page, size_t layerId,
+                                                                     size_t originLayer, size_t order) {
+    if (element.getType() != ELEMENT_IMAGE) {
+        return std::nullopt;
+    }
+    const auto* image = dynamic_cast<const Image*>(&element);
+    if (!image || !image->hasData() || image->getBinaryData().empty() ||
+        image->getBinaryData().size() > prototype::maxCanvasImageBytes) {
+        return std::nullopt;
+    }
+    if (image->renderBuffer()) {
+        return std::nullopt;
+    }
+    const auto size = image->getNaturalSize();
+    prototype::bridge::ImagePacket packet;
+    packet.page = page;
+    packet.layerId = layerId;
+    packet.originLayer = originLayer;
+    packet.layerOrder = order;
+    packet.pixelWidth = static_cast<int>(std::lround(size.width));
+    packet.pixelHeight = static_cast<int>(std::lround(size.height));
+    const auto& matrix = image->getTransformation();
+    packet.transform = {matrix.xx, matrix.yx, matrix.xy, matrix.yy, matrix.shift.x, matrix.shift.y};
+    packet.encodedData = image->getBinaryData();
+    try {
+        prototype::bridge::validate(packet);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    return packet;
+}
+
 std::vector<prototype::bridge::StrokePacket> extractEditableInk(Document& document,
-                                                                 std::vector<prototype::TextItem>* extractedTexts = nullptr) {
+                                                                 std::vector<prototype::TextItem>* extractedTexts = nullptr,
+                                                                 std::vector<prototype::bridge::ImagePacket>* extractedImages = nullptr) {
     std::vector<prototype::bridge::StrokePacket> extracted;
     size_t totalPoints = 0;
     size_t totalTextBytes = 0;
     size_t totalTextRuns = 0;
+    size_t totalImageBytes = 0;
+    size_t totalImages = 0;
     for (size_t pageIndex = 0; pageIndex < document.getPageCount(); ++pageIndex) {
         auto page = document.getPage(pageIndex);
         for (size_t layerIndex = 0; layerIndex < page->getLayerCount(); ++layerIndex) {
@@ -382,19 +444,33 @@ std::vector<prototype::bridge::StrokePacket> extractEditableInk(Document& docume
                         break;
                     }
                     totalPoints += candidate.stroke->points.size();
-                } else if (extractedTexts) {
-                    candidate.text = toEditableTextPacket(*elements[suffixStart - 1], static_cast<int>(pageIndex),
-                                                          layerIndex + 1, layerIndex, suffixStart - 1);
-                    if (!candidate.text || candidate.text->text.size() >
-                                                   prototype::bridge::maxEditableTextBytes - totalTextBytes ||
-                        candidate.text->styleRuns.size() >
-                                prototype::bridge::maxEditableTextStyleRuns - totalTextRuns) {
+                } else {
+                    if (extractedTexts) {
+                        candidate.text = toEditableTextPacket(*elements[suffixStart - 1], static_cast<int>(pageIndex),
+                                                              layerIndex + 1, layerIndex, suffixStart - 1);
+                    }
+                    if (candidate.text) {
+                        if (candidate.text->text.size() >
+                                    prototype::bridge::maxEditableTextBytes - totalTextBytes ||
+                            candidate.text->styleRuns.size() >
+                                    prototype::bridge::maxEditableTextStyleRuns - totalTextRuns) {
+                            break;
+                        }
+                        totalTextBytes += candidate.text->text.size();
+                        totalTextRuns += candidate.text->styleRuns.size();
+                    } else if (extractedImages) {
+                        candidate.image = toEditableImagePacket(*elements[suffixStart - 1], static_cast<int>(pageIndex),
+                                                                layerIndex + 1, layerIndex, suffixStart - 1);
+                        if (!candidate.image || totalImages >= prototype::bridge::maxEditableImages ||
+                            candidate.image->encodedData.size() >
+                                    prototype::bridge::maxImageTransferFileBytes - totalImageBytes) {
+                            break;
+                        }
+                        ++totalImages;
+                        totalImageBytes += candidate.image->encodedData.size();
+                    } else {
                         break;
                     }
-                    totalTextBytes += candidate.text->text.size();
-                    totalTextRuns += candidate.text->styleRuns.size();
-                } else {
-                    break;
                 }
                 pagePackets.push_back(std::move(candidate));
                 --suffixStart;
@@ -407,6 +483,9 @@ std::vector<prototype::bridge::StrokePacket> extractEditableInk(Document& docume
                     }
                     if (item->text && extractedTexts) {
                         extractedTexts->push_back(std::move(*item->text));
+                    }
+                    if (item->image && extractedImages) {
+                        extractedImages->push_back(std::move(*item->image));
                     }
                 }
             }
@@ -701,11 +780,12 @@ int main(int argc, char** argv) {
         if (argc < 3) {
             throw std::runtime_error(
                     "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
-                "export-pdf INPUT PDF INK [TEXT [LAYERS]] | open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS]]] | "
+                    "export-pdf INPUT PDF INK [TEXT [LAYERS [IMAGES]]] | "
+                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES]]]] | "
                     "insert-page INPUT SNAPSHOT PDF AFTER_PAGE | delete-page INPUT SNAPSHOT PDF PAGE_INDEX | "
-                "save-copy INPUT XOPP INK [TEXT [LAYERS]] | save INPUT XOPP INK VERSION [TEXT [LAYERS]] | "
-                "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS]] | "
-                    "version PATH");
+                    "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
+                    "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES]]] | "
+                    "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS [IMAGES]]] | version PATH");
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
@@ -755,13 +835,15 @@ int main(int argc, char** argv) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
-        } else if (command == "export-pdf" && (argc == 5 || argc == 6 || argc == 7)) {
+        } else if (command == "export-pdf" && (argc >= 5 && argc <= 8)) {
             const auto output = fs::absolute(argv[3]);
             const auto texts = argc >= 6 ? prototype::bridge::readTextTransfer(fs::absolute(argv[5])) :
                                            std::vector<prototype::TextItem>{};
-            const auto layers = argc == 7 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[6])) :
+            const auto layers = argc >= 7 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[6])) :
                                             readLayerDocument(*document);
-            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, layers);
+            const auto images = argc >= 8 ? prototype::bridge::readImageTransfer(fs::absolute(argv[7])) :
+                                            std::vector<prototype::bridge::ImagePacket>{};
+            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
             exportPdfDocument(*document, output);
         } else if (command == "insert-page" && argc == 6) {
             const auto afterPage = parsePageIndex(argv[5], document->getPageCount(), "after-page index");
@@ -786,7 +868,7 @@ int main(int argc, char** argv) {
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat");
-        } else if (command == "open" && (argc == 5 || argc == 6 || argc == 7 || argc == 8)) {
+        } else if (command == "open" && (argc >= 5 && argc <= 9)) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&
                                     g_ascii_strcasecmp(input.extension().string().c_str(), ".xopp") == 0;
@@ -798,54 +880,67 @@ int main(int argc, char** argv) {
                 const auto extractedPath = fs::absolute(argv[5]);
                 requireNewTarget(extractedPath);
                 std::vector<prototype::TextItem> extractedTexts;
-                const auto extracted = extractEditableInk(*document, argc >= 7 ? &extractedTexts : nullptr);
+                std::vector<prototype::bridge::ImagePacket> extractedImages;
+                const auto extracted = extractEditableInk(*document, argc >= 7 ? &extractedTexts : nullptr,
+                                                          argc >= 9 ? &extractedImages : nullptr);
                 prototype::bridge::writeTransfer(extractedPath, extracted);
                 if (argc >= 7) {
                     const auto extractedTextPath = fs::absolute(argv[6]);
                     requireNewTarget(extractedTextPath);
                     prototype::bridge::writeTextTransfer(extractedTextPath, extractedTexts);
                 }
+                if (argc >= 9) {
+                    const auto extractedImagePath = fs::absolute(argv[8]);
+                    requireNewTarget(extractedImagePath);
+                    prototype::bridge::writeImageTransfer(extractedImagePath, extractedImages);
+                }
             }
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
-            if (argc == 8) {
+            if (argc >= 8) {
                 renderPreviewBundle(*document, pdf, fs::absolute(argv[7]));
             } else {
                 render(*document, pdf);
             }
             std::cout << (nativeSave ? "NATIVE_SAVE\n" : "SAVE_AS\n");
-        } else if (command == "save-copy" && (argc == 5 || argc == 6 || argc == 7)) {
+        } else if (command == "save-copy" && (argc >= 5 && argc <= 8)) {
             if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
                 throw std::runtime_error("Save-copy target must use the .xopp extension");
             }
             const auto texts = argc >= 6 ? prototype::bridge::readTextTransfer(fs::absolute(argv[5])) :
                                            std::vector<prototype::TextItem>{};
-            const auto layers = argc == 7 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[6])) :
+            const auto layers = argc >= 7 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[6])) :
                                             readLayerDocument(*document);
-            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, layers);
+            const auto images = argc >= 8 ? prototype::bridge::readImageTransfer(fs::absolute(argv[7])) :
+                                            std::vector<prototype::bridge::ImagePacket>{};
+            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
             saveCopy(*document, fs::absolute(argv[3]));
-        } else if (command == "save" && (argc == 6 || argc == 7 || argc == 8)) {
+        } else if (command == "save" && (argc >= 6 && argc <= 9)) {
             if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
                 throw std::runtime_error("Save target must use the .xopp extension");
             }
             const auto texts = argc >= 7 ? prototype::bridge::readTextTransfer(fs::absolute(argv[6])) :
                                            std::vector<prototype::TextItem>{};
-            const auto layers = argc == 8 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[7])) :
+            const auto layers = argc >= 8 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[7])) :
                                             readLayerDocument(*document);
-            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, layers);
+            const auto images = argc >= 9 ? prototype::bridge::readImageTransfer(fs::absolute(argv[8])) :
+                                            std::vector<prototype::bridge::ImagePacket>{};
+            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
             const auto output = fs::absolute(argv[3]);
             saveDocument(*document, output, argv[5], false);
             std::cout << prototype::bridge::documentVersion(output).token << '\n';
-        } else if (command == "autosave" && (argc == 5 || argc == 6 || argc == 7)) {
+        } else if (command == "autosave" && (argc >= 5 && argc <= 8)) {
             const auto output = fs::absolute(argv[3]);
             if (!prototype::bridge::isRecoveryArtifact(output)) {
                 throw std::runtime_error("Autosave target must use an .autosave.xopp or emergencysave.xopp filename");
             }
             const auto texts = argc >= 6 ? prototype::bridge::readTextTransfer(fs::absolute(argv[5])) :
                                            std::vector<prototype::TextItem>{};
-            const auto layers = argc == 7 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[6])) :
+            const auto layers = argc >= 7 ? prototype::bridge::readLayerTransfer(fs::absolute(argv[6])) :
                                             readLayerDocument(*document);
-            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, layers);
+            const auto images = argc >= 8 ? prototype::bridge::readImageTransfer(fs::absolute(argv[7])) :
+                                            std::vector<prototype::bridge::ImagePacket>{};
+            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
             autosaveDocument(*document, output);
         } else {
             throw std::runtime_error("Invalid document-worker command");

@@ -60,6 +60,12 @@ target_compile_options(document-text-transfer-test PRIVATE -Wall -Wextra -Wpedan
 target_link_libraries(document-text-transfer-test PRIVATE PkgConfig::UI)
 add_test(NAME document-text-transfer COMMAND document-text-transfer-test)
 
+add_executable(document-image-transfer-test DocumentImageTransferTest.cpp)
+target_compile_features(document-image-transfer-test PRIVATE cxx_std_20)
+target_compile_options(document-image-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(document-image-transfer-test PRIVATE PkgConfig::UI)
+add_test(NAME document-image-transfer COMMAND document-image-transfer-test)
+
 add_executable(text-renderer-test TextRendererTest.cpp)
 target_compile_features(text-renderer-test PRIVATE cxx_std_20)
 target_compile_options(text-renderer-test PRIVATE -Wall -Wextra -Wpedantic)
@@ -96,6 +102,12 @@ target_compile_features(settings-import-test PRIVATE cxx_std_20)
 target_compile_options(settings-import-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(settings-import-test PRIVATE PkgConfig::UI)
 add_test(NAME settings-import COMMAND settings-import-test)
+
+add_executable(preferences-store-test PreferencesStoreTest.cpp)
+target_compile_features(preferences-store-test PRIVATE cxx_std_20)
+target_compile_options(preferences-store-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(preferences-store-test PRIVATE PkgConfig::UI)
+add_test(NAME preferences-store COMMAND preferences-store-test)
 
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-invalid-autosave-interval COMMAND xournalpp-gtk4-canvas --autosave-seconds 0)

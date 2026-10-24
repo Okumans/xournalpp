@@ -29,6 +29,14 @@ enum class ThemeVariant {
     ForceDark,
 };
 
+enum class ButtonToolAction {
+    None,
+    Pen,
+    Highlighter,
+    Eraser,
+    Hand,
+};
+
 struct ImportedSettings {
     Tool activeTool = Tool::Pen;
     std::array<double, 3> penColor = behavior::defaultPenColor;
@@ -53,6 +61,8 @@ struct ImportedSettings {
     bool autosaveEnabled = true;
     int autosaveTimeoutMinutes = 3;
     std::filesystem::path colorPalettePath;
+    ButtonToolAction stylusButtonOne = ButtonToolAction::None;
+    ButtonToolAction stylusButtonTwo = ButtonToolAction::None;
 
     int effectiveAutosaveSeconds() const {
         if (!autosaveEnabled || autosaveTimeoutMinutes <= 0) {
@@ -318,6 +328,32 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
     }
 }
 
+inline void applyButtonAttribute(ImportedSettings& out, const std::vector<std::string>& dataStack,
+                                 std::string_view name, std::string_view type, std::string_view value) {
+    if (dataStack.size() != 2 || dataStack[0] != "buttonConfig" || name != "tool" || type != "string") {
+        return;
+    }
+
+    ButtonToolAction action = ButtonToolAction::None;
+    if (value == "pen") {
+        action = ButtonToolAction::Pen;
+    } else if (value == "highlighter") {
+        action = ButtonToolAction::Highlighter;
+    } else if (value == "eraser") {
+        action = ButtonToolAction::Eraser;
+    } else if (value == "hand") {
+        action = ButtonToolAction::Hand;
+    } else if (value != "none") {
+        return;
+    }
+
+    if (dataStack[1] == "stylus") {
+        out.stylusButtonOne = action;
+    } else if (dataStack[1] == "stylus2") {
+        out.stylusButtonTwo = action;
+    }
+}
+
 struct MarkupContextDeleter {
     void operator()(GMarkupParseContext* ctx) const {
         if (ctx) {
@@ -386,6 +422,7 @@ inline SettingsParseResult parseSettingsXml(std::string_view xmlContent) {
             const char* attrValue = settings_detail::findAttr(attrNames, attrValues, "value");
             if (attrName && attrType && attrValue) {
                 settings_detail::applyToolAttribute(st->candidate, st->dataStack, attrName, attrType, attrValue);
+                settings_detail::applyButtonAttribute(st->candidate, st->dataStack, attrName, attrType, attrValue);
             }
         }
         st->elementStack.emplace_back(tag);

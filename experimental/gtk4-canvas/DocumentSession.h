@@ -10,6 +10,7 @@
 
 #include "DocumentAutosave.h"
 #include "DocumentTextTransfer.h"
+#include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
@@ -57,15 +58,19 @@ public:
             const auto before = nativeFile ? documentVersion(input).token : std::string{};
             const auto extracted = path / "initial.ink";
             const auto extractedTexts = path / "initial.text";
+            const auto extractedImages = path / "initial.images";
             const auto layers = activeDir / "layers.dat";
             const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string(),
-                                                 extracted.string(), extractedTexts.string(), layers.string()});
+                                                 extracted.string(), extractedTexts.string(), layers.string(),
+                                                 extractedImages.string()});
             initialInk = readTransfer(extracted);
             initialTexts = readTextTransfer(extractedTexts);
+            initialImages = readImageTransfer(extractedImages);
             initialLayers = readLayerTransfer(layers);
             layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
             std::filesystem::remove(extracted);
             std::filesystem::remove(extractedTexts);
+            std::filesystem::remove(extractedImages);
             if (nativeFile) {
                 requireUnchangedInput(input, before);
                 if (kind == "NATIVE_SAVE\n") {
@@ -85,28 +90,33 @@ public:
 
     void saveCopy(const std::string& worker, const std::string& output,
                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                  const std::vector<ImagePacket>& images,
                   const LayerDocument& layers) const {
         const auto transfer = path / "session.ink";
         const auto textTransfer = path / "session.text";
         const auto layerTransfer = path / "session.layers";
+        const auto imageTransfer = path / "session.images";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
+        writeImageTransfer(imageTransfer, images);
         runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
-                           layerTransfer.string()});
+                           layerTransfer.string(), imageTransfer.string()});
     }
 
     std::string save(const std::string& worker, const std::string& output, const std::vector<StrokePacket>& packets,
-                     const std::vector<TextItem>& texts, const LayerDocument& layers,
-                     const std::string& expected) const {
+                     const std::vector<TextItem>& texts, const std::vector<ImagePacket>& images,
+                     const LayerDocument& layers, const std::string& expected) const {
         const auto transfer = path / "session.ink";
         const auto textTransfer = path / "session.text";
         const auto layerTransfer = path / "session.layers";
+        const auto imageTransfer = path / "session.images";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
+        writeImageTransfer(imageTransfer, images);
         auto version = runWorker(worker, {"save", snapshotPath().string(), output, transfer.string(), expected,
-                                          textTransfer.string(), layerTransfer.string()});
+                                          textTransfer.string(), layerTransfer.string(), imageTransfer.string()});
         if (!version.empty() && version.back() == '\n') {
             version.pop_back();
         }
@@ -115,28 +125,34 @@ public:
 
     void autosave(const std::string& worker, const std::string& output,
                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                  const std::vector<ImagePacket>& images,
                   const LayerDocument& layers) const {
         const auto transfer = path / "autosave.ink";
         const auto textTransfer = path / "autosave.text";
         const auto layerTransfer = path / "autosave.layers";
+        const auto imageTransfer = path / "autosave.images";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
+        writeImageTransfer(imageTransfer, images);
         runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
-                           layerTransfer.string()});
+                           layerTransfer.string(), imageTransfer.string()});
     }
 
     void exportPdf(const std::string& worker, const std::string& output,
                    const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                   const std::vector<ImagePacket>& images,
                    const LayerDocument& layers) const {
         const auto transfer = path / "export.ink";
         const auto textTransfer = path / "export.text";
         const auto layerTransfer = path / "export.layers";
+        const auto imageTransfer = path / "export.images";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
+        writeImageTransfer(imageTransfer, images);
         runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
-                           layerTransfer.string()});
+                           layerTransfer.string(), imageTransfer.string()});
     }
 
     StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
@@ -168,6 +184,7 @@ public:
     std::string originalVersion;
     std::vector<StrokePacket> initialInk;
     std::vector<TextItem> initialTexts;
+    std::vector<ImagePacket> initialImages;
     LayerDocument initialLayers;
     std::vector<std::filesystem::path> layerPreviewPaths;
 

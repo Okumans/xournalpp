@@ -14,19 +14,31 @@ and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sid
 narrower windows. Its per-page Layers panel selects, shows/hides, adds, deletes,
 and merges foreground layers. With a document worker, Open, Save, Save As, Export as PDF,
 Insert Page After, and Delete Current Page run in the
-background. New ink and text edits are saved as native objects in their active
+background. New ink, text, and image edits are saved as native objects in their active
 foreground layers alongside the original content. Open and Close protect
 unsaved changes with Save, Discard and Cancel. Save updates the associated
 `.xopp` file; Save As changes its filename after a successful save; Export as PDF
-writes a flattened PDF including live session ink and text edits without clearing
+writes a flattened PDF including live session ink, text, and images without clearing
 `.xopp` dirty state. Imported PDFs,
 legacy files requiring conversion, symlink inputs and blank notebooks use Save As
 for their first save. Without a worker, ink remains temporary.
 
+With a document worker, the header's Insert Image action opens a local image
+chooser. The image is placed at the center of the active page, scaled to fit
+within 60% of the page, and selected in Smart Select. Drag the image to move it
+or drag a corner handle to resize it proportionally. Delete removes the selected
+image, and insertion, move, resize, and deletion share the native undo history.
+Embedded image orientation is honored, and images larger than 32 megapixels are
+scaled down for display. The original encoded bytes and transforms survive
+`.xopp` save, autosave, reopen, and PDF export. The current image workflow does
+not provide rotation, crop, or image clipboard support.
+
 Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
 settings are remembered separately during a session, initialized from read-only
 import of `<XDG_CONFIG_HOME>/xournalpp/settings.xml` (or `--config-dir DIRECTORY`)
-when present and falling back cleanly to `ToolHandler` `MEDIUM` presets (`1.41 pt`
+when present, then overridden by the prototype's saved Preferences values. The
+GTK 4 overlay never rewrites `settings.xml`. Missing values fall back cleanly to
+`ToolHandler` `MEDIUM` presets (`1.41 pt`
 royal-blue pen, `8.50 pt` yellow highlighter, `8.50 pt` standard eraser) and the
 11-color `Palette::default_palette()` (`palettes/xournal.gpl`). Configured `.gpl`
 palettes populate the multi-column swatch popover with bordered Cairo swatches.
@@ -36,6 +48,15 @@ constant-width strokes serialized natively as `tool="eraser"`.
 Undo/redo stores value-semantic stroke slice deltas across insertions, whole-stroke
 deletions, and multi-sample partial splits while retaining session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
+
+The header's Preferences button opens an `AdwPreferencesDialog` with Appearance,
+Input, and Behavior pages. Color scheme, page-sidebar visibility, pressure
+thresholds, stylus side-button actions, autosave cadence, and keyboard/wheel zoom
+steps save immediately to `gtk4-canvas.ini` in the selected configuration
+directory. These values take precedence over imported GTK 3 settings. Stylus
+side buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
+releasing a mapped button restores the toolbar tool. Middle-mouse panning remains
+available.
 
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text (when a document worker
 is enabled), `Ctrl+Z` undo, `Ctrl+Shift+Z` or
@@ -50,8 +71,8 @@ least two pages exist.
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
-different zoom levels. For native documents, the worker extracts supported ink
-and text from the editable suffix of every foreground layer, including hidden
+different zoom levels. For native documents, the worker extracts supported ink,
+text, and images from the editable suffix of every foreground layer, including hidden
 layers. Drawing, erasing, and stroke selection target the active visible layer;
 background and other layers are not affected. The Layers sidebar selects layers,
 shows or hides them, and adds, deletes, or merges them down. Editable strokes can
@@ -93,10 +114,10 @@ process, then displayed in a GTK 4 Cairo drawing area through Poppler.
   display, D-Bus session, settings, or installed application.
 
 This is **not a port of the complete application or its custom `GtkXournal`
-widget**. The session ink and text models are experimental and independent of the
+widget**. The session ink, text, and image models are experimental and independent of the
 existing document models. A separate document worker reuses the existing native
 loader, saver, and renderer without linking GTK 3 into the GTK 4 process. The
-worker extracts supported stroke and text suffixes from every foreground layer
+worker extracts supported stroke, text, and image suffixes from every foreground layer
 for interactive editing; other original objects remain in their native snapshot
 and render in per-layer previews. The current
 PDF rasterization runs synchronously on the prototype's UI thread.
@@ -120,9 +141,10 @@ The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`,
 mode, pressure sensitivity/minimum/multiplier, keyboard/wheel zoom steps,
 `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`),
 `autosaveEnabled`/`autosaveTimeout`, and `.gpl` color palettes strictly read-only
-without creating directories, rewriting `settings.xml`, or mutating process
-environment variables; explicit `--dark` and `--autosave-seconds` CLI flags
-override imported values. A worker can also accompany `--pdf`, or be used alone to
+from `settings.xml` without rewriting that file or mutating process environment
+variables. Preferences edits are stored in `gtk4-canvas.ini` only after a value
+changes. Explicit `--dark` and `--autosave-seconds` CLI flags override imported
+values. A worker can also accompany `--pdf`, or be used alone to
 create a blank A4 notebook. Without an input it displays a blank page.
 
 To open native documents, build the optional worker using the normal application's
@@ -146,26 +168,27 @@ also preserves the current document.
 Each loaded document has a private native snapshot and rendered previews, removed
 when the session ends. When opening a native `.xopp`, the worker extracts the
 contiguous suffix of lossless `pen`, `highlighter`, and `#ffffffff` `eraser`
-strokes plus eligible non-audio native text from every foreground layer,
-regardless of visibility. It writes strokes, text, and layer metadata to bounded
+strokes, eligible non-audio native text, and bounded native images from every
+foreground layer, regardless of visibility. It writes strokes, text, images,
+and layer metadata to bounded
 transfer files before creating the native snapshot and per-layer previews.
-Images, filled/dashed/non-round strokes, unsupported objects, and text outside
+Filled/dashed/non-round strokes, unsupported objects, and text or images outside
 the editable suffix stay in their original layer and z-order as visible
 non-editable content. Save, autosave, and export reconstruct the layer groups and
-reinsert editable ink and text in order, preserving visibility and avoiding
+reinsert editable ink, text, and images in order, preserving visibility and avoiding
 duplication.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
-`export-pdf INPUT OUT.pdf INK_TRANSFER [TEXT_TRANSFER]`,
-`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK [EXTRACTED_TEXT]]`,
+`export-pdf INPUT OUT.pdf INK_TRANSFER [TEXT_TRANSFER [LAYERS [IMAGES]]]`,
+`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [EXTRACTED_IMAGES]]]]`,
 `insert-page INPUT SNAPSHOT.xopp NEW.pdf AFTER_PAGE`,
 `delete-page INPUT SNAPSHOT.xopp NEW.pdf PAGE_INDEX`, `version PATH`,
-`save INPUT TARGET.xopp INK_TRANSFER VERSION [TEXT_TRANSFER]`,
-`autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER [TEXT_TRANSFER]`, and
-`save-copy INPUT NEW.xopp INK_TRANSFER [TEXT_TRANSFER]`.
-Save operations accept versioned ink, bounded text packets, and layer metadata;
+`save INPUT TARGET.xopp INK_TRANSFER VERSION [TEXT_TRANSFER [LAYERS [IMAGES]]]`,
+`autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER [TEXT_TRANSFER [LAYERS [IMAGES]]]`, and
+`save-copy INPUT NEW.xopp INK_TRANSFER [TEXT_TRANSFER [LAYERS [IMAGES]]]`.
+Save operations accept versioned ink, bounded text and image packets, and layer metadata;
 they rebuild the foreground stack and place native pen/highlighter/whiteout
-strokes and text in their recorded layers and order, then use the real saver.
+strokes, text, and images in their recorded layers and order, then use the real saver.
 They stage the
 file and attached backgrounds in the destination directory and publish the
 native document last. Normal Save checks a content version for the file and
@@ -341,13 +364,13 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of unsupported native objects, layer rename/reorder/lock, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
+The experiment still needs editing of unsupported native objects, layer rename/reorder/lock, multi-column/paired-page layout modes, page-level undo/redo, image rotation/cropping and image clipboard support, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
 ## Stroke selection
 
-Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), and Smart Select (`S`) select editable strokes from the active visible foreground layer. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select picks the topmost stroke by path distance. Hold Shift to add a rectangle to an existing selection.
+Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes from the active visible foreground layer. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select (`S`) picks the topmost stroke by path distance or an editable image by its bounds. Selected images can be moved and resized from a corner handle while preserving aspect ratio. Hold Shift to add a rectangle to an existing selection.
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 

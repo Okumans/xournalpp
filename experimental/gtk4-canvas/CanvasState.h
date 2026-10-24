@@ -15,6 +15,7 @@
 #include "CanvasText.h"
 #include "CanvasLayers.h"
 #include "CanvasDrawing.h"
+#include "CanvasImage.h"
 
 namespace prototype {
 
@@ -103,6 +104,7 @@ public:
     double textFontSize = 12;
     std::vector<Ink> ink;
     std::vector<TextItem> texts;
+    std::vector<CanvasImage> images;
     std::optional<Ink> current;
     std::vector<Point> rawCurrent;
     std::vector<Point> splineKnots;
@@ -233,6 +235,11 @@ public:
                 ++text.layerId;
             }
         }
+        for (auto& image: images) {
+            if (image.page == page && image.layerId >= pageState.selectedLayer) {
+                ++image.layerId;
+            }
+        }
         recordLayerMutation(std::move(before));
         clearSelection();
         return true;
@@ -299,6 +306,16 @@ public:
                 text.layerId = topId - 1;
             } else if (text.layerId > topId) {
                 --text.layerId;
+            }
+        }
+        for (auto& image: images) {
+            if (image.page != page) {
+                continue;
+            }
+            if (image.layerId == topId) {
+                image.layerId = topId - 1;
+            } else if (image.layerId > topId) {
+                --image.layerId;
             }
         }
         recordLayerMutation(std::move(before));
@@ -951,6 +968,7 @@ public:
         };
         shiftStrokes(ink);
         shiftTexts(texts, insertedIndex);
+        shiftImages(images, insertedIndex);
         for (auto& edit: undoStates) {
             for (auto& change: edit.changes) {
                 shiftStrokes(change.before);
@@ -959,6 +977,10 @@ public:
             for (auto& change: edit.textChanges) {
                 shiftTexts(change.before, insertedIndex);
                 shiftTexts(change.after, insertedIndex);
+            }
+            for (auto& change: edit.imageChanges) {
+                shiftImages(change.before, insertedIndex);
+                shiftImages(change.after, insertedIndex);
             }
             shiftLayerMutationPage(edit.layerMutation, insertedIndex);
         }
@@ -970,6 +992,10 @@ public:
             for (auto& change: edit.textChanges) {
                 shiftTexts(change.before, insertedIndex);
                 shiftTexts(change.after, insertedIndex);
+            }
+            for (auto& change: edit.imageChanges) {
+                shiftImages(change.before, insertedIndex);
+                shiftImages(change.after, insertedIndex);
             }
             shiftLayerMutationPage(edit.layerMutation, insertedIndex);
         }
@@ -996,6 +1022,12 @@ public:
         for (auto& text: texts) {
             if (text.page > removeIndex) {
                 --text.page;
+            }
+        }
+        std::erase_if(images, [&](const CanvasImage& image) { return image.page == removeIndex; });
+        for (auto& image: images) {
+            if (image.page > removeIndex) {
+                --image.page;
             }
         }
         undoStates.clear();
@@ -1260,6 +1292,77 @@ public:
         return true;
     }
 
+    bool insertImage(CanvasImage image) {
+        if (!validCanvasImage(image) || image.page >= pageCount() || current || eraseGesture || selectionGesture) {
+            return false;
+        }
+        image.layerId = activeLayerId(image.page);
+        image.originLayer = activeLayerOrigin(image.page);
+        image.layerOrder = nextOriginOrder(image.page, image.originLayer);
+        Edit edit;
+        edit.imageChanges.push_back({images.size(), {}, images.size(), {image}});
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    bool replaceImage(size_t index, CanvasImage image) {
+        if (index >= images.size() || !validCanvasImage(image) || current || eraseGesture || selectionGesture ||
+            image.page != images[index].page) {
+            return false;
+        }
+        image.layerOrder = images[index].layerOrder;
+        image.layerId = images[index].layerId;
+        image.originLayer = images[index].originLayer;
+        Edit edit;
+        edit.imageChanges.push_back({index, {images[index]}, index, {std::move(image)}});
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    bool deleteImage(size_t index) {
+        if (index >= images.size() || current || eraseGesture || selectionGesture) {
+            return false;
+        }
+        Edit edit;
+        edit.imageChanges.push_back({index, {images[index]}, index, {}});
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    std::optional<size_t> pickImage(int pageIndex, Point point) const {
+        const size_t active = activeLayerId(pageIndex);
+        if (!layerVisible(pageIndex, active)) {
+            return std::nullopt;
+        }
+        std::optional<size_t> best;
+        size_t bestOrder = 0;
+        for (size_t index = 0; index < images.size(); ++index) {
+            const auto& image = images[index];
+            if (image.page != pageIndex || image.layerId != active || !validCanvasImage(image)) {
+                continue;
+            }
+            const auto bounds = canvasImageBounds(image);
+            const auto& m = image.transform;
+            const double determinant = m.xx * m.yy - m.xy * m.yx;
+            const double dx = point.x - m.x;
+            const double dy = point.y - m.y;
+            const double localX = (m.yy * dx - m.xy * dy) / determinant;
+            const double localY = (-m.yx * dx + m.xx * dy) / determinant;
+            if (point.x < bounds.x0 || point.x > bounds.x1 || point.y < bounds.y0 || point.y > bounds.y1 ||
+                localX < 0 || localX > image.pixelWidth || localY < 0 || localY > image.pixelHeight) {
+                continue;
+            }
+            if (!best || image.layerOrder >= bestOrder) {
+                best = index;
+                bestOrder = image.layerOrder;
+            }
+        }
+        return best;
+    }
+
     void cancel() {
         cancelSelection();
         finishErase();
@@ -1422,6 +1525,13 @@ private:
         std::vector<TextItem> after;
     };
 
+    struct ImageChange {
+        size_t beforeIndex = 0;
+        std::vector<CanvasImage> before;
+        size_t afterIndex = 0;
+        std::vector<CanvasImage> after;
+    };
+
     template <typename T>
     struct IndexedObject {
         size_t index;
@@ -1436,11 +1546,14 @@ private:
         std::vector<IndexedObject<Ink>> afterInk;
         std::vector<IndexedObject<TextItem>> beforeTexts;
         std::vector<IndexedObject<TextItem>> afterTexts;
+        std::vector<IndexedObject<CanvasImage>> beforeImages;
+        std::vector<IndexedObject<CanvasImage>> afterImages;
     };
 
     struct Edit {
         std::vector<Change> changes;
         std::vector<TextChange> textChanges;
+        std::vector<ImageChange> imageChanges;
         std::optional<LayerMutation> layerMutation;
         size_t revision = 0;
         std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
@@ -1464,6 +1577,11 @@ private:
         for (const auto& text: texts) {
             if (text.page == pageIndex && text.originLayer == origin) {
                 next = std::max(next, text.layerOrder + 1);
+            }
+        }
+        for (const auto& image: images) {
+            if (image.page == pageIndex && image.originLayer == origin) {
+                next = std::max(next, image.layerOrder + 1);
             }
         }
         return next;
@@ -1495,6 +1613,11 @@ private:
                 mutation.beforeTexts.push_back({i, texts[i]});
             }
         }
+        for (size_t i = 0; i < images.size(); ++i) {
+            if (images[i].page == pageIndex) {
+                mutation.beforeImages.push_back({i, images[i]});
+            }
+        }
         return mutation;
     }
 
@@ -1509,6 +1632,11 @@ private:
         for (size_t i = 0; i < texts.size(); ++i) {
             if (texts[i].page == mutation.page) {
                 mutation.afterTexts.push_back({i, texts[i]});
+            }
+        }
+        for (size_t i = 0; i < images.size(); ++i) {
+            if (images[i].page == mutation.page) {
+                mutation.afterImages.push_back({i, images[i]});
             }
         }
         Edit edit;
@@ -1543,9 +1671,25 @@ private:
                 --text.layerId;
             }
         }
+        std::erase_if(images, [pageIndex, deletedId](const CanvasImage& image) {
+            return image.page == pageIndex && image.layerId == deletedId;
+        });
+        for (auto& image: images) {
+            if (image.page == pageIndex && image.layerId > deletedId) {
+                --image.layerId;
+            }
+        }
     }
 
     static void shiftTexts(std::vector<TextItem>& items, int insertedIndex) {
+        for (auto& item: items) {
+            if (item.page >= insertedIndex) {
+                ++item.page;
+            }
+        }
+    }
+
+    static void shiftImages(std::vector<CanvasImage>& items, int insertedIndex) {
         for (auto& item: items) {
             if (item.page >= insertedIndex) {
                 ++item.page;
@@ -1568,6 +1712,12 @@ private:
             ++indexed.value.page;
         }
         for (auto& indexed: mutation->afterTexts) {
+            ++indexed.value.page;
+        }
+        for (auto& indexed: mutation->beforeImages) {
+            ++indexed.value.page;
+        }
+        for (auto& indexed: mutation->afterImages) {
             ++indexed.value.page;
         }
     }
@@ -1956,6 +2106,7 @@ private:
             pageState = layers;
             restoreIndexedObjects(ink, mutation.page, forward ? mutation.afterInk : mutation.beforeInk);
             restoreIndexedObjects(texts, mutation.page, forward ? mutation.afterTexts : mutation.beforeTexts);
+            restoreIndexedObjects(images, mutation.page, forward ? mutation.afterImages : mutation.beforeImages);
         }
         for (auto it = edit.textChanges.rbegin(); it != edit.textChanges.rend(); ++it) {
             if (forward) {
@@ -1968,6 +2119,19 @@ private:
                 texts.erase(pos, pos + static_cast<std::ptrdiff_t>(it->after.size()));
                 texts.insert(texts.begin() + static_cast<std::ptrdiff_t>(it->afterIndex), it->before.begin(),
                              it->before.end());
+            }
+        }
+        for (auto it = edit.imageChanges.rbegin(); it != edit.imageChanges.rend(); ++it) {
+            if (forward) {
+                const auto pos = images.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex);
+                images.erase(pos, pos + static_cast<std::ptrdiff_t>(it->before.size()));
+                images.insert(images.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex), it->after.begin(),
+                              it->after.end());
+            } else {
+                const auto pos = images.begin() + static_cast<std::ptrdiff_t>(it->afterIndex);
+                images.erase(pos, pos + static_cast<std::ptrdiff_t>(it->after.size()));
+                images.insert(images.begin() + static_cast<std::ptrdiff_t>(it->afterIndex), it->before.begin(),
+                              it->before.end());
             }
         }
         for (auto it = edit.changes.rbegin(); it != edit.changes.rend(); ++it) {
