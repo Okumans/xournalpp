@@ -83,6 +83,7 @@ public:
             std::cerr << "xournalpp-gtk4-canvas: " << importedConfig.warning << '\n';
         }
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
+        input.setStabilizerConfig(importedConfig.settings.stabilizer);
         penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth};
         highlightBrush = {Tool::Highlighter, importedConfig.settings.highlighterColor,
                           importedConfig.settings.highlighterWidth};
@@ -1306,6 +1307,13 @@ private:
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionActions, prototype::isSelectionTool(tool));
+        const bool drawingTool = tool == Tool::Pen || tool == Tool::Highlighter;
+        gtk_widget_set_visible(drawingOptionsExpander, drawingTool);
+        const bool stabilizeFreehand = drawingTool &&
+                (state.drawingMode == prototype::DrawingMode::Freehand ||
+                 state.drawingMode == prototype::DrawingMode::ShapeRecognizer);
+        gtk_widget_set_visible(averagingDropdown, stabilizeFreehand);
+        gtk_widget_set_visible(preprocessorDropdown, stabilizeFreehand);
         gtk_widget_set_visible(textFontEntry, tool == Tool::Text);
         gtk_widget_set_visible(textFontSize, tool == Tool::Text);
         gtk_widget_set_visible(textFormatBox, tool == Tool::Text);
@@ -1317,6 +1325,11 @@ private:
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
         gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), static_cast<guint>(state.eraserMode));
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(averagingDropdown),
+                                   static_cast<guint>(input.stabilizerConfig.averaging));
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(preprocessorDropdown),
+                                   static_cast<guint>(input.stabilizerConfig.preprocessor));
         gtk_spin_button_set_value(GTK_SPIN_BUTTON(widthButton), state.brush.width);
         syncSizeDropdown();
         syncingBrush = false;
@@ -1334,6 +1347,7 @@ private:
         palettePopover = gtk_popover_new();
 
         auto* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        paletteContent = box;
         gtk_widget_set_margin_top(box, 6);
         gtk_widget_set_margin_bottom(box, 6);
         gtk_widget_set_margin_start(box, 6);
@@ -1755,6 +1769,85 @@ private:
                          }),
                          this);
         gtk_box_append(GTK_BOX(toolbar), widthButton);
+
+        auto* drawingOptions = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+        gtk_widget_set_margin_top(drawingOptions, 10);
+        gtk_widget_set_margin_bottom(drawingOptions, 10);
+        gtk_widget_set_margin_start(drawingOptions, 10);
+        gtk_widget_set_margin_end(drawingOptions, 10);
+
+        const char* const drawingModes[] = {"Freehand", "Line", "Rectangle", "Ellipse", "Arrow",
+                                            "Double arrow", "Coordinate axes", "Shape recognizer", "Spline", nullptr};
+        drawingModeDropdown = gtk_drop_down_new_from_strings(drawingModes);
+        gtk_widget_set_tooltip_text(drawingModeDropdown, "Drawing tool");
+        g_signal_connect(drawingModeDropdown, "notify::selected",
+                         G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingBrush) {
+                                 const auto selected = gtk_drop_down_get_selected(
+                                         GTK_DROP_DOWN(self->drawingModeDropdown));
+                                 if (selected <= static_cast<guint>(prototype::DrawingMode::Spline)) {
+                                     self->input.cancel();
+                                     self->state.drawingMode = static_cast<prototype::DrawingMode>(selected);
+                                     const bool supportsStabilizer =
+                                             self->state.drawingMode == prototype::DrawingMode::Freehand ||
+                                             self->state.drawingMode == prototype::DrawingMode::ShapeRecognizer;
+                                     gtk_widget_set_visible(self->averagingDropdown,
+                                                            supportsStabilizer);
+                                     gtk_widget_set_visible(self->preprocessorDropdown,
+                                                            supportsStabilizer);
+                                     self->update();
+                                 }
+                             }
+                         }), this);
+        gtk_box_append(GTK_BOX(drawingOptions), gtk_label_new("Tool"));
+        gtk_box_append(GTK_BOX(drawingOptions), drawingModeDropdown);
+
+        const char* const averagingModes[] = {"No smoothing", "Arithmetic", "Velocity Gaussian", nullptr};
+        averagingDropdown = gtk_drop_down_new_from_strings(averagingModes);
+        gtk_widget_set_tooltip_text(averagingDropdown, "Stroke averaging; defaults to the Xournal++ no-stabilizer setting");
+        g_signal_connect(averagingDropdown, "notify::selected",
+                         G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingBrush) {
+                                 const auto selected = gtk_drop_down_get_selected(
+                                         GTK_DROP_DOWN(self->averagingDropdown));
+                                 if (selected <= static_cast<guint>(prototype::AveragingMethod::VelocityGaussian)) {
+                                     self->input.cancel();
+                                     auto config = self->input.stabilizerConfig;
+                                     config.averaging = static_cast<prototype::AveragingMethod>(selected);
+                                     self->input.setStabilizerConfig(config);
+                                 }
+                             }
+                         }), this);
+        gtk_box_append(GTK_BOX(drawingOptions), gtk_label_new("Averaging"));
+        gtk_box_append(GTK_BOX(drawingOptions), averagingDropdown);
+
+        const char* const preprocessors[] = {"No preprocessor", "Deadzone", "Inertia", nullptr};
+        preprocessorDropdown = gtk_drop_down_new_from_strings(preprocessors);
+        gtk_widget_set_tooltip_text(preprocessorDropdown, "Stroke preprocessor");
+        g_signal_connect(preprocessorDropdown, "notify::selected",
+                         G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingBrush) {
+                                 const auto selected = gtk_drop_down_get_selected(
+                                         GTK_DROP_DOWN(self->preprocessorDropdown));
+                                 if (selected <= static_cast<guint>(prototype::StrokePreprocessor::Inertia)) {
+                                     self->input.cancel();
+                                     auto config = self->input.stabilizerConfig;
+                                     config.preprocessor = static_cast<prototype::StrokePreprocessor>(selected);
+                                     self->input.setStabilizerConfig(config);
+                                 }
+                             }
+                         }), this);
+        gtk_box_append(GTK_BOX(drawingOptions), gtk_label_new("Preprocessor"));
+        gtk_box_append(GTK_BOX(drawingOptions), preprocessorDropdown);
+        drawingOptionsExpander = gtk_expander_new("Drawing tools and stabilization");
+        gtk_expander_set_child(GTK_EXPANDER(drawingOptionsExpander), drawingOptions);
+        gtk_box_append(GTK_BOX(paletteContent), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+        gtk_box_append(GTK_BOX(paletteContent), drawingOptionsExpander);
+        gtk_widget_set_tooltip_text(paletteButton, "Quick colors and drawing tools");
+
         const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", nullptr};
         selectionModeDropdown = gtk_drop_down_new_from_strings(selectionModes);
         g_signal_connect(selectionModeDropdown, "notify::selected", G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
@@ -2093,17 +2186,18 @@ private:
     }
 
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
-               bool eraserEnd = false) {
+               bool eraserEnd = false, uint32_t timeMs = 0) {
         gtk_widget_grab_focus(canvas);
-        input.begin(device, {x, y, pressure}, eraserEnd);
+        input.begin(device, {x, y, pressure, timeMs}, eraserEnd);
         if (input.panning()) {
             gtk_widget_set_cursor_from_name(canvas, "grabbing");
         }
         update();
     }
 
-    void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt) {
-        input.motion(device, {x, y, pressure});
+    void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
+                uint32_t timeMs = 0) {
+        input.motion(device, {x, y, pressure, timeMs});
         if (input.panning()) {
             fitted = true;
             fitMode = false;
@@ -2146,7 +2240,8 @@ private:
             }
             g_free(samples);
         }
-        motion(Device::Stylus, x, y, pressure(gesture));
+        auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+        motion(Device::Stylus, x, y, pressure(gesture), event ? gdk_event_get_time(event) : 0);
     }
 
     struct PanState {
@@ -2160,25 +2255,32 @@ private:
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(mouse), GDK_BUTTON_PRIMARY);
         g_signal_connect(mouse, "drag-begin",
                          G_CALLBACK(+[](GtkGestureDrag* gesture, double x, double y, gpointer data) {
-                             if (mouseEvent(GTK_EVENT_CONTROLLER(gesture))) {
-                                 auto* self = static_cast<Prototype*>(data);
+                             auto* self = static_cast<Prototype*>(data);
+                             if (mouseEvent(GTK_EVENT_CONTROLLER(gesture)) &&
+                                 self->state.drawingMode != prototype::DrawingMode::Spline) {
                                  self->dragX = x;
                                  self->dragY = y;
-                                 self->begin(Device::Mouse, x, y);
+                                 auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                                 self->begin(Device::Mouse, x, y, std::nullopt, false,
+                                             event ? gdk_event_get_time(event) : 0);
                              }
                          }),
                          this);
         g_signal_connect(mouse, "drag-update",
                          G_CALLBACK(+[](GtkGestureDrag* gesture, double dx, double dy, gpointer data) {
-                             if (mouseEvent(GTK_EVENT_CONTROLLER(gesture))) {
-                                 auto* self = static_cast<Prototype*>(data);
-                                 self->motion(Device::Mouse, self->dragX + dx, self->dragY + dy);
+                             auto* self = static_cast<Prototype*>(data);
+                             if (mouseEvent(GTK_EVENT_CONTROLLER(gesture)) &&
+                                 self->state.drawingMode != prototype::DrawingMode::Spline) {
+                                 auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                                 self->motion(Device::Mouse, self->dragX + dx, self->dragY + dy, std::nullopt,
+                                              event ? gdk_event_get_time(event) : 0);
                              }
                          }),
                          this);
         g_signal_connect(mouse, "drag-end", G_CALLBACK(+[](GtkGestureDrag* gesture, double, double, gpointer data) {
-                             if (mouseEvent(GTK_EVENT_CONTROLLER(gesture))) {
-                                 auto* self = static_cast<Prototype*>(data);
+                             auto* self = static_cast<Prototype*>(data);
+                             if (mouseEvent(GTK_EVENT_CONTROLLER(gesture)) &&
+                                 self->state.drawingMode != prototype::DrawingMode::Spline) {
                                  self->finish(Device::Mouse);
                                  self->update();
                              }
@@ -2188,12 +2290,27 @@ private:
 
         textClick = GTK_GESTURE_CLICK(gtk_gesture_click_new());
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(textClick), GDK_BUTTON_PRIMARY);
+        g_signal_connect(textClick, "pressed",
+                         G_CALLBACK(+[](GtkGestureClick* gesture, int presses, double x, double y, gpointer data) {
+                             if (!mouseEvent(GTK_EVENT_CONTROLLER(gesture))) return;
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->state.drawingMode == prototype::DrawingMode::Spline &&
+                                 (self->state.brush.tool == Tool::Pen || self->state.brush.tool == Tool::Highlighter)) {
+                                 self->input.splinePress(Device::Mouse, {x, y, std::nullopt}, presses >= 2);
+                                 self->update();
+                             }
+                         }), this);
         g_signal_connect(textClick, "released",
                          G_CALLBACK(+[](GtkGestureClick* gesture, int presses, double x, double y, gpointer data) {
-                             if (presses != 1 || !mouseEvent(GTK_EVENT_CONTROLLER(gesture))) {
+                             if (!mouseEvent(GTK_EVENT_CONTROLLER(gesture))) return;
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->state.drawingMode == prototype::DrawingMode::Spline &&
+                                 (self->state.brush.tool == Tool::Pen || self->state.brush.tool == Tool::Highlighter)) {
+                                 self->input.finish(Device::Mouse);
+                                 self->update();
                                  return;
                              }
-                             auto* self = static_cast<Prototype*>(data);
+                             if (presses != 1) return;
                              const auto tool = self->state.brush.tool;
                              if (tool == Tool::Text) {
                                  self->startTextEditing(x, y);
@@ -2205,7 +2322,33 @@ private:
                              }
                          }),
                          this);
+        g_signal_connect(textClick, "cancel", G_CALLBACK(+[](GtkGesture*, GdkEventSequence*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->state.drawingMode == prototype::DrawingMode::Spline && self->input.active()) {
+                                 self->input.finish(Device::Mouse);
+                                 self->update();
+                             }
+                         }), this);
         addGesture(GTK_GESTURE(textClick));
+
+        pointerMotion = gtk_event_controller_motion_new();
+        g_signal_connect(pointerMotion, "motion", G_CALLBACK(+[](GtkEventControllerMotion* controller,
+                                                                   double x, double y, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->state.drawingMode != prototype::DrawingMode::Spline ||
+                                 (self->state.brush.tool != Tool::Pen && self->state.brush.tool != Tool::Highlighter)) {
+                                 return;
+                             }
+                             if (self->input.active()) {
+                                 auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(controller));
+                                 self->input.motion(Device::Mouse, {x, y, std::nullopt,
+                                                                    event ? gdk_event_get_time(event) : 0});
+                             } else {
+                                 self->input.splineHover(x, y);
+                             }
+                             self->update();
+                         }), this);
+        gtk_widget_add_controller(canvas, pointerMotion);
 
         stylus = gtk_gesture_stylus_new();
         gtk_gesture_stylus_set_stylus_only(GTK_GESTURE_STYLUS(stylus), true);
@@ -2214,7 +2357,9 @@ private:
                                                   gtk_gesture_stylus_get_device_tool(gesture) :
                                                   nullptr;
                              const bool eraser = tool && prototype::isEraserEnd(gdk_device_tool_get_tool_type(tool));
-                             static_cast<Prototype*>(data)->begin(Device::Stylus, x, y, pressure(gesture), eraser);
+                             auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                             static_cast<Prototype*>(data)->begin(Device::Stylus, x, y, pressure(gesture), eraser,
+                                                                   event ? gdk_event_get_time(event) : 0);
                          }),
                          this);
         g_signal_connect(stylus, "motion",
@@ -2401,7 +2546,34 @@ private:
                             return false;
                         }
                     }
-                    self->input.shiftHeld = (modifiers & GDK_SHIFT_MASK) || key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R;
+                    self->input.setModifiers((modifiers & GDK_SHIFT_MASK) || key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R,
+                                             (modifiers & GDK_CONTROL_MASK) || key == GDK_KEY_Control_L || key == GDK_KEY_Control_R,
+                                             (modifiers & GDK_ALT_MASK) || key == GDK_KEY_Alt_L || key == GDK_KEY_Alt_R);
+                    if (self->input.splineInProgress && !editingText &&
+                        !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))) {
+                        if (key == GDK_KEY_BackSpace) {
+                            self->input.removeSplineKnot();
+                            self->update();
+                            return true;
+                        }
+                        if (key == GDK_KEY_Left || key == GDK_KEY_Right || key == GDK_KEY_Up || key == GDK_KEY_Down) {
+                            const double delta = key == GDK_KEY_Left ? -1 : key == GDK_KEY_Right ? 1 : 0;
+                            const double vertical = key == GDK_KEY_Up ? -1 : key == GDK_KEY_Down ? 1 : 0;
+                            self->input.moveLastSplineKnot(delta, vertical);
+                            self->update();
+                            return true;
+                        }
+                        if (key == GDK_KEY_r || key == GDK_KEY_R) {
+                            self->input.rotateLastSplineTangent(key == GDK_KEY_R ? -5 : 5);
+                            self->update();
+                            return true;
+                        }
+                        if (key == GDK_KEY_s || key == GDK_KEY_S) {
+                            self->input.scaleLastSplineTangent(key == GDK_KEY_S ? 1.0 / 1.05 : 1.05);
+                            self->update();
+                            return true;
+                        }
+                    }
                     if (!editingText && !GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_c || key == GDK_KEY_C)) {
                             self->copySelection(); return true;
@@ -2454,8 +2626,12 @@ private:
                         return true;
                     }
                     if (key == GDK_KEY_Escape) {
-                        self->resetInput();
-                        self->state.clearSelection();
+                        if (self->input.splineInProgress) {
+                            self->input.finalizeSpline();
+                        } else {
+                            self->resetInput();
+                            self->state.clearSelection();
+                        }
                     } else if (editingText || GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         return false;
                     } else if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
@@ -2521,16 +2697,21 @@ private:
                 this);
         gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
         g_signal_connect(keys, "key-released",
-                         G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType, gpointer data) {
-                             if (key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R) {
-                                 static_cast<Prototype*>(data)->input.shiftHeld = false;
-                             }
+                         G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType modifiers, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             bool shift = modifiers & GDK_SHIFT_MASK;
+                             bool control = modifiers & GDK_CONTROL_MASK;
+                             bool alt = modifiers & GDK_ALT_MASK;
+                             if (key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R) shift = false;
+                             if (key == GDK_KEY_Control_L || key == GDK_KEY_Control_R) control = false;
+                             if (key == GDK_KEY_Alt_L || key == GDK_KEY_Alt_R) alt = false;
+                             self->input.setModifiers(shift, control, alt);
                              if (key == GDK_KEY_space) {
-                                 auto* self = static_cast<Prototype*>(data);
                                  self->input.spaceHeld = false;
                                  gtk_widget_set_cursor_from_name(self->canvas,
                                                                  self->input.panning() ? "grabbing" : nullptr);
                              }
+                             self->update();
                          }),
                          this);
         gtk_widget_add_controller(window, keys);
@@ -2543,7 +2724,7 @@ private:
         g_signal_connect(gesture, "cancel", G_CALLBACK(+[](GtkGesture* gesture, GdkEventSequence*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              const auto owner = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(gesture), "ink-owner"));
-                             if (owner) {
+                             if (owner && !(owner == 1 && self->state.drawingMode == prototype::DrawingMode::Spline)) {
                                  auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
                                  if (event && gdk_event_get_event_type(event) == GDK_GRAB_BROKEN) {
                                      self->finish(owner == 1 ? Device::Mouse : Device::Stylus);
@@ -2831,6 +3012,65 @@ private:
         update();
     }
 
+    void smokeDrawingTools() {
+        const auto before = state.ink.size();
+        selectTool(Tool::Pen);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::Rectangle));
+        const auto start = state.pageScreenPoint(0, 190, 230);
+        begin(Device::Mouse, start.x, start.y);
+        gboolean handled = false;
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Shift_L, 0u, GdkModifierType(0), &handled);
+        g_signal_emit_by_name(mouse, "drag-update", 60.0 * state.zoom, 35.0 * state.zoom);
+        require(state.current && state.current->points.size() == 5 &&
+                        std::abs(std::abs(state.current->points[2].x - state.current->points[0].x) -
+                                 std::abs(state.current->points[2].y - state.current->points[0].y)) < 1e-6,
+                "Toolbar rectangle and live Shift constraint did not update the preview");
+        g_signal_emit_by_name(mouse, "drag-end", 60.0 * state.zoom, 35.0 * state.zoom);
+        g_signal_emit_by_name(keys, "key-released", GDK_KEY_Shift_L, 0u, GdkModifierType(0));
+        require(state.ink.size() == before + 1 && state.ink.back().points.size() == 5,
+                "Constrained rectangle did not commit through the canvas input path");
+        capture("shape-tools");
+        state.undo();
+
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::ShapeRecognizer));
+        const double centerX = 300, centerY = 330, radius = 54;
+        const auto first = state.pageScreenPoint(0, centerX + radius, centerY);
+        begin(Device::Mouse, first.x, first.y);
+        for (int i = 1; i <= 48; ++i) {
+            const double angle = 2.0 * M_PI * i / 48.0;
+            const auto next = state.pageScreenPoint(0, centerX + radius * std::cos(angle),
+                                                    centerY + radius * std::sin(angle));
+            input.motion(Device::Mouse, {next.x, next.y, std::nullopt});
+        }
+        finish(Device::Mouse);
+        require(state.ink.size() == before + 1 && state.ink.back().points.size() > 20,
+                "Shape recognizer did not replace the circular stroke in the GTK smoke path");
+        state.undo();
+        require(state.ink.size() == before, "Shape tool smoke operations did not undo cleanly");
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::Spline));
+        auto firstKnot = state.pageScreenPoint(0, 400, 260);
+        g_signal_emit_by_name(textClick, "pressed", 1, firstKnot.x, firstKnot.y);
+        g_signal_emit_by_name(textClick, "released", 1, firstKnot.x, firstKnot.y);
+        auto secondKnot = state.pageScreenPoint(0, 460, 275);
+        g_signal_emit_by_name(textClick, "pressed", 1, secondKnot.x, secondKnot.y);
+        auto tangentPoint = state.pageScreenPoint(0, 475, 305);
+        g_signal_emit_by_name(pointerMotion, "motion", tangentPoint.x, tangentPoint.y);
+        g_signal_emit_by_name(textClick, "released", 1, tangentPoint.x, tangentPoint.y);
+        require(input.splineInProgress && state.current && state.current->points.size() > 2,
+                "Toolbar spline clicks and tangent drag did not update the live path");
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Escape, 0u, GdkModifierType(0), &handled);
+        require(!input.splineInProgress && state.ink.size() == before + 1 && state.ink.back().points.size() > 2,
+                "Escape did not finalize the interactive spline through the GTK key path");
+        state.undo();
+        require(state.ink.size() == before, "Interactive spline should commit as a single undo action");
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::Freehand));
+        update();
+    }
+
     gboolean stepCrashHelper() {
         require(++crashHelperTicks < 240, "Crash helper timed out waiting for autosave");
         if (busy || !frames || pageCache.empty() || !nativeSession) {
@@ -2983,6 +3223,10 @@ private:
                 break;  // Let the .gpl palette popover finish opening before snapshot.
             case 2: {
                 require(gtk_widget_get_visible(palettePopover), "Palette popover did not open");
+                gtk_expander_set_expanded(GTK_EXPANDER(drawingOptionsExpander), true);
+                break;
+            }
+            case 3: {
                 capture("palette-popover");
                 g_signal_emit_by_name(paletteSwatchButtons[2], "clicked");
                 require(!gtk_widget_get_visible(palettePopover) &&
@@ -3011,7 +3255,7 @@ private:
                         "Imported Eraser deleteStroke mode or BIG 12pt preset mismatch");
                 break;
             }
-            case 3:
+            case 4:
                 capture("palette-drawn");
                 saveCopyTo(savedOut);
                 break;
@@ -3180,6 +3424,7 @@ private:
                 require(cairo_image_surface_get_width(cached2x.surface.get()) <= 4096 &&
                                 cairo_image_surface_get_height(cached2x.surface.get()) <= 4096,
                         "Cache exceeds dimension limit");
+                smokeDrawingTools();
                 if (pageCount > 1) {
                     const double zoomBeforeNav = state.zoom;
                     gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, 1));
@@ -3298,7 +3543,7 @@ private:
                     "Unmap dropped delivered ink or left temporary input active");
             std::cout << "PASS: GTK4 Cairo canvas, real PDF, colors, widths, highlight, undo/redo, eraser, "
                          "sidebar navigation/overlay, stylus/backlog/Space adapters, cancel, pinch, narrow "
-                         "viewport, rich text, 2x raster cache"
+                         "viewport, geometric drawing, shape recognition, stabilization, rich text, 2x raster cache"
                       << "\nframes=" << frames << " rasterizations=" << rasterizations
                       << " device_scale=" << gtk_widget_get_scale_factor(canvas)
                       << " viewport_width=" << gtk_widget_get_width(canvas)
@@ -4282,10 +4527,15 @@ private:
     GtkWidget* colorButton = nullptr;
     GtkWidget* paletteButton = nullptr;
     GtkWidget* palettePopover = nullptr;
+    GtkWidget* paletteContent = nullptr;
     std::vector<GtkWidget*> paletteSwatchButtons;
     GtkWidget* eraserModeDropdown = nullptr;
     GtkWidget* sizeDropdown = nullptr;
     GtkWidget* widthButton = nullptr;
+    GtkWidget* drawingOptionsExpander = nullptr;
+    GtkWidget* drawingModeDropdown = nullptr;
+    GtkWidget* averagingDropdown = nullptr;
+    GtkWidget* preprocessorDropdown = nullptr;
     std::array<GtkWidget*, 4> toolButtons{};
     GtkWidget* selectionLabel = nullptr;
     GtkWidget* selectionModeDropdown = nullptr;
@@ -4310,6 +4560,7 @@ private:
     bool syncingTools = false;
     GtkGesture* mouse = nullptr;
     GtkGesture* stylus = nullptr;
+    GtkEventController* pointerMotion = nullptr;
     std::vector<GtkGesture*> panGestures;
     GtkGesture* pinch = nullptr;
     GtkEventController* keys = nullptr;

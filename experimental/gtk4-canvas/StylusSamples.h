@@ -20,7 +20,7 @@ inline std::optional<InputSample> historySample(const GdkTimeCoord& sample) {
         pressure = sample.axes[GDK_AXIS_PRESSURE];
     }
     // GtkGestureStylus::get_backlog already returns widget-local positions.
-    return InputSample{sample.axes[GDK_AXIS_X], sample.axes[GDK_AXIS_Y], pressure};
+    return InputSample{sample.axes[GDK_AXIS_X], sample.axes[GDK_AXIS_Y], pressure, sample.time};
 }
 
 }  // namespace prototype
