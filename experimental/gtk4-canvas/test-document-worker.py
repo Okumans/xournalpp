@@ -51,9 +51,9 @@ def main():
         env = dict(os.environ)
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS"):
             env.pop(key, None)
-        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "TMPDIR"):
+        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "TMPDIR"):
             path = temporary / key
-            path.mkdir()
+            path.mkdir(mode=0o700)
             env[key] = str(path)
         env.update(G_DEBUG="fatal-criticals", GSETTINGS_BACKEND="memory")
 
@@ -120,6 +120,36 @@ def main():
         assert inspected["pages"][0]["strokes"] == 2
         run("render", output, temporary / "saved.pdf")
 
+        normal = temporary / "normal.xopp"
+        normal_ink = temporary / "normal.ink"
+        normal_ink.write_text("XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 0 0 1 2\n30 40 1\n80 90 1\n")
+        expected = run("version", normal).strip()
+        version = run("save", snapshot, normal, normal_ink, expected).strip()
+        assert version == run("version", normal).strip()
+        assert len(xml(normal).findall(".//stroke")) == 1
+        normal.chmod(0o600)
+        version = run("save", snapshot, normal, normal_ink, version).strip()
+        assert len(xml(normal).findall(".//stroke")) == 1, "Repeated normal Save duplicated ink"
+        assert normal.stat().st_mode & 0o777 == 0o600
+        backup = Path(str(normal) + "~")
+        assert not backup.exists(), "Successful Save left its temporary backup"
+        changed = xml(normal)
+        ET.SubElement(changed.find("page/layer"), "text", {
+            "font": "Sans", "size": "12", "x": "40", "y": "50", "color": "#000000ff"}).text = "External edit"
+        normal.write_bytes(gzip.compress(ET.tostring(changed)))
+        external_hash = digest(normal)
+        run("save", snapshot, normal, normal_ink, version, succeeds=False)
+        assert digest(normal) == external_hash and not backup.exists()
+        fresh = run("version", normal).strip()
+        backup.write_bytes(b"recoverable existing backup")
+        run("save", snapshot, normal, normal_ink, fresh, succeeds=False)
+        assert digest(normal) == external_hash and backup.read_bytes() == b"recoverable existing backup"
+        backup.unlink()
+        alias = temporary / "normal-link.xopp"
+        alias.symlink_to(normal)
+        run("save", snapshot, alias, normal_ink, fresh, succeeds=False)
+        assert alias.is_symlink() and digest(normal) == external_hash
+
         saved_hash = digest(output)
         run("save-copy", snapshot, output, ink, succeeds=False)
         assert digest(output) == saved_hash
@@ -166,6 +196,19 @@ def main():
             run("save-copy", snapshot_path, second, empty)
             assert [content(p) for p in xml(snapshot_path).findall("page")] == [
                 content(p) for p in xml(second).findall("page")]
+            before_save = run("version", second).strip()
+            after_save = run("save", snapshot_path, second, empty, before_save).strip()
+            assert after_save == run("version", second).strip()
+            assert [content(p) for p in xml(snapshot_path).findall("page")] == [
+                content(p) for p in xml(second).findall("page")]
+            assert not Path(str(second) + "~").exists()
+            if name.startswith("pdfBackground"):
+                pdf_sidecar = folder / "copy.xopp.bg.pdf"
+                saved_hash = digest(second)
+                pdf_sidecar.write_bytes(pdf_sidecar.read_bytes() + b"\n% external PDF edit\n")
+                changed_pdf = digest(pdf_sidecar)
+                run("save", snapshot_path, second, empty, after_save, succeeds=False)
+                assert digest(second) == saved_hash and digest(pdf_sidecar) == changed_pdf
 
         # A plain PDF remains external and resolves after saving in a different folder.
         external = temporary / "external"

@@ -122,6 +122,8 @@ private:
             status = "Unsaved changes";
         } else if (!savedCopyPath.empty()) {
             status = "Copy saved: " + std::filesystem::path(savedCopyPath).filename().string();
+        } else if (savedNormally) {
+            status = "Saved";
         } else if (nativeSession) {
             status = "Document loaded";
         } else {
@@ -172,6 +174,7 @@ private:
                     showError(exception.what());
                 }
             }
+            lastDocumentCompletion = g_get_monotonic_time();
             if (!closed) {
                 update();
             }
@@ -205,12 +208,15 @@ private:
         state.brush = brush;
         savedRevision = 0;
         savedCopyPath.clear();
+        savedNormally = false;
         g_clear_object(&page);
         g_clear_object(&document);
         document = candidate;
         pageCount = count;
         nativeSession = session;
         sourcePath = source;
+        saveTarget = session->originalSavePath;
+        saveVersion = session->originalVersion;
         cache.reset();
         thumbnails.clear();
         thumbnailWidgets.clear();
@@ -241,6 +247,43 @@ private:
                        [this, revision, path, after = std::move(after)] {
             savedRevision = revision;
             savedCopyPath = path;
+            if (after) {
+                after();
+            }
+        });
+    }
+
+    void save(std::function<void()> after = {}) {
+        if (!nativeSession || busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (saveTarget.empty()) {
+            chooseSave(std::move(after));
+        } else {
+            saveTo(saveTarget, saveVersion, std::move(after));
+        }
+    }
+
+    void saveTo(const std::string& path, const std::string& expected = {}, std::function<void()> after = {}) {
+        if (!nativeSession || busy) {
+            return;
+        }
+        resetInput(true);
+        const auto revision = state.revision();
+        const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto version = std::make_shared<std::string>();
+        runDocumentJob("Saving…", [session, worker, path, expected, packets, version] {
+            const auto before = expected.empty() ? prototype::bridge::documentVersion(path).token : expected;
+            *version = session->save(worker, path, packets, before);
+        }, [this, path, revision, version, after = std::move(after)] {
+            saveTarget = path;
+            saveVersion = *version;
+            sourcePath = path;
+            savedNormally = true;
+            savedCopyPath.clear();
+            savedRevision = revision;
             if (after) {
                 after();
             }
@@ -279,7 +322,7 @@ private:
         resetInput(true);
         if (!options.smokeDirectory.empty() && !smokeSaveChoice.empty()) {
             const auto path = std::exchange(smokeSaveChoice, {});
-            saveCopyTo(path, std::move(after));
+            saveTo(path, {}, std::move(after));
             return;
         }
         choosingFile = true;
@@ -288,9 +331,9 @@ private:
             std::function<void()> after;
         };
         auto* dialog = gtk_file_dialog_new();
-        gtk_file_dialog_set_title(dialog, "Save a copy");
+        gtk_file_dialog_set_title(dialog, "Save As");
         const auto name = sourcePath.empty() ? std::string("Notebook.xopp") :
-                                              std::filesystem::path(sourcePath).stem().string() + "-copy.xopp";
+                                              std::filesystem::path(sourcePath).stem().string() + ".xopp";
         gtk_file_dialog_set_initial_name(dialog, name.c_str());
         gtk_file_dialog_save(dialog, GTK_WINDOW(window), nullptr, +[](GObject* source, GAsyncResult* result,
                                                                       gpointer data) {
@@ -300,7 +343,7 @@ private:
             GError* error = nullptr;
             auto* file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &error);
             self->finishFileChoice(file, error, [self, after = std::move(choice->after)](const std::string& path) {
-                self->saveCopyTo(path, after);
+                self->saveTo(path, {}, after);
             });
         }, new Choice{this, std::move(after)});
         g_object_unref(dialog);
@@ -336,9 +379,9 @@ private:
         }
         afterConfirmation = std::move(after);
         messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Save changes?",
-                                       "This document has unsaved changes. Save a copy before continuing?"));
+                                       "This document has unsaved changes. Save them before continuing?"));
         adw_alert_dialog_add_responses(messageDialog, "cancel", "Cancel", "discard", "Discard", "save",
-                                         "Save a Copy…", nullptr);
+                                         saveTarget.empty() ? "Save As…" : "Save", nullptr);
         adw_alert_dialog_set_response_enabled(messageDialog, "save", bool(nativeSession));
         adw_alert_dialog_set_response_appearance(messageDialog, "discard", ADW_RESPONSE_DESTRUCTIVE);
         adw_alert_dialog_set_response_appearance(messageDialog, "save", ADW_RESPONSE_SUGGESTED);
@@ -352,7 +395,7 @@ private:
             if (std::string(response) == "discard") {
                 after();
             } else if (std::string(response) == "save") {
-                self->chooseSave(std::move(after));
+                self->save(std::move(after));
             }
         }), this);
         adw_dialog_present(ADW_DIALOG(messageDialog), window);
@@ -555,9 +598,12 @@ private:
             self->protectDocument([self] { self->chooseOpen(); });
         }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), openButton);
-        saveButton = button("document-save-as-symbolic", "Save a copy (Ctrl+Shift+S)",
-                            G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->chooseSave(); }));
+        saveButton = button("document-save-symbolic", "Save (Ctrl+S)",
+                            G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->save(); }));
         adw_header_bar_pack_end(ADW_HEADER_BAR(header), saveButton);
+        saveAsButton = button("document-save-as-symbolic", "Save As (Ctrl+Shift+S)",
+                              G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->chooseSave(); }));
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), saveAsButton);
         undoButton = button("edit-undo-symbolic", "Undo ink (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
                                 self->input.cancel();
@@ -787,6 +833,7 @@ private:
         updateTitle();
         gtk_widget_set_sensitive(openButton, !options.worker.empty());
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
+        gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
         const auto label = std::to_string(state.page + 1) + " / " + std::to_string(pageCount);
         gtk_label_set_text(GTK_LABEL(pageLabel), label.c_str());
         gtk_label_set_text(GTK_LABEL(zoomLabel), (std::to_string(static_cast<int>(state.zoom * 100)) + "%").c_str());
@@ -1097,9 +1144,12 @@ private:
                         }
                         return true;
                     }
-                    if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
-                        (key == GDK_KEY_s || key == GDK_KEY_S)) {
-                        self->chooseSave();
+                    if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_s || key == GDK_KEY_S)) {
+                        if (modifiers & GDK_SHIFT_MASK) {
+                            self->chooseSave();
+                        } else {
+                            self->save();
+                        }
                         return true;
                     }
                     if (key == GDK_KEY_Escape) {
@@ -1323,6 +1373,9 @@ private:
             return G_SOURCE_CONTINUE;
         }
         documentWaits = 0;
+        if (g_get_monotonic_time() - lastDocumentCompletion < 250000) {
+            return G_SOURCE_CONTINUE;  // Let disabled-control/dialog transitions settle before snapshots.
+        }
         if (paints <= lastSmokePaint) {
             if (++paintWaits < 60) {
                 return G_SOURCE_CONTINUE;
@@ -1575,19 +1628,27 @@ private:
             }
             case 6:
                 capture("save-prompt");
-                smokeSaveChoice = second;
                 answerDialog("save");
                 require(busy && !smokeContinued, "Save continuation ran before completion");
                 break;
             case 7:
-                require(smokeContinued && !modified() && std::filesystem::is_regular_file(second),
-                        "Save from the unsaved prompt failed to finish before continuing");
+                require(smokeContinued && !modified() && saveTarget == first && std::filesystem::is_regular_file(first),
+                        "Normal Save from the prompt failed before continuing");
+                require(!std::filesystem::exists(first + "~"), "Successful Save retained its temporary backup");
+                smokeSaveChoice = second;
+                chooseSave();
+                require(busy, "Save As did not start");
+                break;
+            case 8:
+                require(!modified() && saveTarget == second && sourcePath == second &&
+                                std::filesystem::is_regular_file(second),
+                        "Save As did not associate the new filename");
                 capture("saved-again");
                 state.undo();
                 smokeContinued = false;
                 protectDocument([this] { smokeContinued = true; });
                 break;
-            case 8:
+            case 9:
                 capture("discard-prompt");
                 answerDialog("discard");
                 require(smokeContinued && !messageDialog, "Discard did not continue the requested action");
@@ -1596,37 +1657,101 @@ private:
                 answerDialog("cancel");
                 require(!closed && gtk_widget_get_visible(window), "Cancel did not keep the window open");
                 break;
-            case 9:
+            case 10:
                 chooseOpen();
                 require(choosingFile, "Open action did not request a native file chooser");
                 break;
-            case 10:
+            case 11:
                 if (!cancelPrivateChooser()) {
                     require(++chooserWaits < 60, "Native Open chooser did not appear");
                     --documentSmokeStep;
                 }
                 break;
-            case 11:
-                require(!choosingFile && !messageDialog && sourcePath == first && modified(),
+            case 12:
+                require(!choosingFile && !messageDialog && sourcePath == second && modified(),
                         "Cancelling Open changed the current document");
                 chooseSave();
                 require(choosingFile, "Save action did not request a native file chooser");
                 break;
-            case 12:
+            case 13:
                 if (!cancelPrivateChooser()) {
                     require(++chooserWaits < 60, "Native Save chooser did not appear");
                     --documentSmokeStep;
                 }
                 break;
-            case 13:
+            case 14:
                 require(!choosingFile && !messageDialog && modified() && !closed,
                         "Cancelling Save discarded changes or closed the document");
                 break;
+            case 15:
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "normal-save.xopp").string();
+                chooseSave();
+                break;
+            case 16: {
+                require(!modified() && saveTarget.ends_with("normal-save.xopp"), "New Save As failed");
+                const auto x = state.offsetX + 140 * state.zoom;
+                const auto y = state.offsetY + 160 * state.zoom;
+                input.begin(Device::Mouse, {x, y, std::nullopt});
+                input.finish(Device::Mouse);
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_s, 0, GDK_CONTROL_MASK, &handled);
+                require(handled && busy, "Ctrl+S did not start normal Save");
+                break;
+            }
+            case 17: {
+                require(!modified() && !std::filesystem::exists(saveTarget + "~"),
+                        "Normal Save did not complete or remove its temporary backup");
+                capture("normal-saved");
+                auto packets = prototype::bridge::transferInk(state.ink);
+                packets.push_back({0, false, false, 2, {0, 1, 0}, {{200, 220, 1}, {230, 220, 1}}});
+                const auto session = nativeSession;
+                const auto worker = options.worker;
+                const auto target = saveTarget;
+                const auto before = saveVersion;
+                runDocumentJob("Testing external edit…", [session, worker, target, before, packets] {
+                    session->save(worker, target, packets, before);
+                }, [] {});
+                break;
+            }
+            case 18: {
+                smokeExternalVersion = prototype::bridge::documentVersion(saveTarget).token;
+                require(smokeExternalVersion != saveVersion, "External edit simulation did not change the native file");
+                const auto x = state.offsetX + 170 * state.zoom;
+                const auto y = state.offsetY + 190 * state.zoom;
+                input.begin(Device::Mouse, {x, y, std::nullopt});
+                input.finish(Device::Mouse);
+                save();
+                break;
+            }
+            case 19:
+                require(ioErrors == 3 && messageDialog && modified() && state.ink.size() == 2 &&
+                                prototype::bridge::documentVersion(saveTarget).token == smokeExternalVersion,
+                        "A stale Save overwrote the external edit or lost pending session ink");
+                capture("save-conflict");
+                answerDialog("close");
+                break;
+            case 20:
+                // Explicit Save As may replace a chosen current filename after
+                // the native chooser's overwrite confirmation. Ctrl+S may not.
+                smokeSaveChoice = saveTarget;
+                chooseSave();
+                break;
+            case 21: {
+                require(!modified() && prototype::bridge::documentVersion(saveTarget).token == saveVersion &&
+                                saveVersion != smokeExternalVersion && !std::filesystem::exists(saveTarget + "~"),
+                        "Explicit Save As did not resolve the selected filename conflict");
+                capture("conflict-resolved");
+                const auto x = state.offsetX + 210 * state.zoom;
+                const auto y = state.offsetY + 230 * state.zoom;
+                input.begin(Device::Mouse, {x, y, std::nullopt});
+                input.finish(Device::Mouse);
+                break;
+            }
             default:
                 require(busyHeartbeats > 0, "The UI main loop did not run during document I/O");
                 std::cout << "PASS: document actions, async open/save, saved revisions, native reopen, "
                              "pressure transfer, failed-open/save retention, Save/Discard/Cancel, close protection, "
-                             "native Open/Save chooser cancellation\n"
+                             "native Open/Save chooser cancellation, normal Save/Save As, external-edit conflict\n"
                           << "busy_main_loop_ticks=" << busyHeartbeats << '\n';
                 gtk_window_close(GTK_WINDOW(window));
                 require(messageDialog, "Close prompt disappeared");
@@ -1643,6 +1768,9 @@ private:
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;
     std::string savedCopyPath;
+    std::string saveTarget;
+    std::string saveVersion;
+    bool savedNormally = false;
     std::string busyText;
     size_t savedRevision = 0;
     bool busy = false;
@@ -1654,13 +1782,16 @@ private:
     GtkWidget* heading = nullptr;
     GtkWidget* openButton = nullptr;
     GtkWidget* saveButton = nullptr;
+    GtkWidget* saveAsButton = nullptr;
     int documentSmokeStep = -1;
     int documentWaits = 0;
+    gint64 lastDocumentCompletion = 0;
     int chooserWaits = 0;
     guint heartbeatSource = 0;
     int busyHeartbeats = 0;
     bool smokeContinued = false;
     std::string smokeSaveChoice;
+    std::string smokeExternalVersion;
     CanvasState state;
     prototype::CanvasInput input{state};
     PopplerDocument* document = nullptr;

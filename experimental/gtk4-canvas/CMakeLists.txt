@@ -40,6 +40,12 @@ target_compile_options(document-job-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(document-job-test PRIVATE PkgConfig::UI)
 add_test(NAME document-job COMMAND document-job-test)
 
+add_executable(document-publish-test DocumentPublishTest.cpp)
+target_compile_features(document-publish-test PRIVATE cxx_std_20)
+target_compile_options(document-publish-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(document-publish-test PRIVATE PkgConfig::UI)
+add_test(NAME document-publish COMMAND document-publish-test)
+
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-missing-pdf COMMAND xournalpp-gtk4-canvas --pdf ${CMAKE_CURRENT_BINARY_DIR}/missing.pdf)
 set_tests_properties(reject-unknown-option reject-missing-pdf PROPERTIES WILL_FAIL TRUE)

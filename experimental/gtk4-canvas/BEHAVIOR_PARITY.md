@@ -22,7 +22,9 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Broken grab | `StylusInputHandler`/`MouseInputHandler` call `actionEnd` | Delivered points finalize; explicit gesture cancellation discards unfinished ink |
 | Eraser undo | `EraseHandler` adds all deletions to one `DeleteUndoAction` | One whole-stroke eraser drag is one undo/redo action |
 | Saved status | `UndoRedoHandler::savedUndo` tracks edit identity | Revision identities track saved state through undo, redo and history branching |
-| Unsaved changes | `Control::close` offers Save, Discard and Cancel | Same decision flow with Save a Copy; normal overwrite/save is pending |
+| Unsaved changes | `Control::close` offers Save, Discard and Cancel | Save/Save As, Discard and Cancel; failed saves do not continue pending actions |
+| Save / Save As | `Control::saveImpl` associates the filename and `SaveJob` writes it | Matched for the prototype native model bridge; new/legacy/PDF inputs use Save As |
+| Temporary backup | `SaveJob` uses `filename~`, removes it after success | Matched; existing backups are preserved, and staged attachment rollback is tested |
 | Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; text/styles/layers and attachments round-trip tested |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
@@ -35,7 +37,7 @@ events. Per-device identities and configurable mappings still need migration.
 These match the original **defaults**. Importing existing preferences, per-device
 mappings, palettes, and toolbar configuration is still required for full parity.
 The prototype uses an independent model for session edits and transfers them
-to the real native model when saving a copy.
+to the real native model when saving.
 
 ## Known differences that block application replacement
 
@@ -65,3 +67,14 @@ to the real native model when saving a copy.
 Each subsequent migration change should identify its source behavior, add a
 regression check, and update this ledger. Passing synthetic input checks is not
 evidence of physical pen, touchscreen, or touchpad parity.
+
+## Save publication limits
+
+Save compares content versions for the primary file and attached PDF/pixmap
+sidecars before overwriting, and checks again during publication. It cannot make
+multiple filesystem paths atomic against unrelated external writers. Save uses
+a private staging directory, publishes the document last, and preserves recovery
+copies if attachment rollback is unsafe. The tests inject failures before commit;
+they do not simulate power loss. An existing `filename~` is not overwritten.
+Autosave, recovery dialogs, settings import and platform-specific file semantics
+remain migration work.
