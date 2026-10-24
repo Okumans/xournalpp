@@ -1632,8 +1632,10 @@ private:
                 gtk_button_set_label(select, title.c_str());
                 gtk_widget_set_tooltip_text(GTK_WIDGET(select), title.c_str());
                 if (active) {
+                    gtk_widget_remove_css_class(GTK_WIDGET(select), "flat");
                     gtk_widget_add_css_class(GTK_WIDGET(select), "suggested-action");
                 } else {
+                    gtk_widget_add_css_class(GTK_WIDGET(select), "flat");
                     gtk_widget_remove_css_class(GTK_WIDGET(select), "suggested-action");
                 }
             }
@@ -1677,6 +1679,7 @@ private:
             gtk_widget_set_halign(select, GTK_ALIGN_FILL);
             gtk_widget_add_css_class(select, "flat");
             if (active) {
+                gtk_widget_remove_css_class(select, "flat");
                 gtk_widget_add_css_class(select, "suggested-action");
             }
             gtk_widget_set_tooltip_text(select, title.c_str());
