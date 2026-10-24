@@ -8,6 +8,7 @@
 #include <gio/gio.h>
 
 #include "DocumentTransfer.h"
+#include "DocumentVersion.h"
 
 namespace prototype::bridge {
 
@@ -25,7 +26,17 @@ public:
         path = directory;
         g_free(directory);
         try {
-            runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string()});
+            const bool nativeFile = g_ascii_strcasecmp(fs::path(input).extension().string().c_str(), ".xopp") == 0 &&
+                                    fs::is_regular_file(fs::symlink_status(input));
+            const auto before = nativeFile ? documentVersion(input).token : std::string{};
+            const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string()});
+            if (nativeFile) {
+                requireUnchangedInput(input, before);
+                if (kind == "NATIVE_SAVE\n") {
+                    originalSavePath = input;
+                    originalVersion = before;
+                }
+            }
         } catch (...) {
             cleanup();
             throw;
@@ -43,27 +54,52 @@ public:
         runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string()});
     }
 
+    std::string save(const std::string& worker, const std::string& output, const std::vector<StrokePacket>& packets,
+                     const std::string& expected) const {
+        const auto transfer = path / "session.ink";
+        writeTransfer(transfer, packets);
+        auto version = runWorker(worker, {"save", snapshotPath().string(), output, transfer.string(), expected});
+        if (!version.empty() && version.back() == '\n') {
+            version.pop_back();
+        }
+        return version;
+    }
+
+    std::string originalSavePath;
+    std::string originalVersion;
+
     std::filesystem::path snapshotPath() const { return path / "snapshot.xopp"; }
     std::filesystem::path previewPath() const { return path / "preview.pdf"; }
 
 private:
-    static void runWorker(const std::string& worker, const std::vector<std::string>& arguments) {
+    static void requireUnchangedInput(const std::string& input, const std::string& before) {
+        if (documentVersion(input).token != before) {
+            throw std::runtime_error("The document changed while opening. Open it again to load the current file.");
+        }
+    }
+
+    static std::string runWorker(const std::string& worker, const std::vector<std::string>& arguments) {
         std::vector<const gchar*> command{worker.c_str()};
         for (const auto& argument: arguments) {
             command.push_back(argument.c_str());
         }
         command.push_back(nullptr);
         GError* error = nullptr;
-        auto* process = g_subprocess_newv(command.data(), G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+        auto* process = g_subprocess_newv(command.data(),
+                                          GSubprocessFlags(G_SUBPROCESS_FLAGS_STDERR_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE),
+                                          &error);
         if (!process) {
             throwError(error);
         }
         gchar* diagnostics = nullptr;
-        const bool communicated = g_subprocess_communicate_utf8(process, nullptr, nullptr, nullptr,
+        gchar* output = nullptr;
+        const bool communicated = g_subprocess_communicate_utf8(process, nullptr, nullptr, &output,
                                                                 &diagnostics, &error);
         const bool succeeded = communicated && g_subprocess_get_successful(process);
         const std::string message = diagnostics ? diagnostics : "";
+        const std::string result = output ? output : "";
         g_free(diagnostics);
+        g_free(output);
         if (!communicated) {
             g_subprocess_force_exit(process);
             g_subprocess_wait(process, nullptr, nullptr);
@@ -75,6 +111,7 @@ private:
         if (!succeeded) {
             throw std::runtime_error(message.empty() ? "Document worker failed" : message);
         }
+        return result;
     }
 
     [[noreturn]] static void throwError(GError* error) {

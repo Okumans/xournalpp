@@ -21,26 +21,11 @@
 #include "view/DocumentView.h"
 
 #include "DocumentTransfer.h"
+#include "DocumentPublish.h"
 
 namespace {
 
 namespace fs = std::filesystem;
-
-class StagingDirectory {
-public:
-    explicit StagingDirectory(const fs::path& parent) {
-        std::string pattern = (parent / ".xournalpp-gtk4-save-XXXXXX").string();
-        if (!g_mkdtemp(pattern.data())) {
-            throw std::runtime_error("Cannot create private save staging directory");
-        }
-        path = pattern;
-    }
-    ~StagingDirectory() {
-        std::error_code error;
-        fs::remove_all(path, error);
-    }
-    fs::path path;
-};
 
 struct LoadContext {
     DocumentHandler handler;
@@ -148,11 +133,12 @@ void render(Document& document, const fs::path& output) {
     }
 }
 
-void saveCopy(Document& document, const fs::path& output) {
-    if (fs::exists(fs::symlink_status(output))) {
-        throw std::runtime_error("Save-copy target already exists; choose a new filename");
+void saveDocument(Document& document, const fs::path& output, const std::string& expected, bool copy) {
+    if (copy) {
+        requireNewTarget(output);
     }
-    StagingDirectory staging(output.parent_path());
+    prototype::bridge::requireVersion(output, expected);
+    prototype::bridge::SaveStaging staging(output.parent_path());
     const auto staged = staging.path / output.filename();
     document.setFilepath(staged);
     updatePreview(document);
@@ -167,24 +153,11 @@ void saveCopy(Document& document, const fs::path& output) {
     if (!saver.getErrorMessage().empty()) {
         throw std::runtime_error(saver.getErrorMessage());
     }
-    std::vector<fs::path> published;
-    try {
-        for (const auto& file: fs::directory_iterator(staging.path)) {
-            if (file.path() != staged) {
-                const auto destination = output.parent_path() / file.path().filename();
-                fs::create_hard_link(file.path(), destination);
-                published.push_back(destination);
-            }
-        }
-        // Publish the complete document last, without overwriting any existing file.
-        fs::create_hard_link(staged, output);
-    } catch (...) {
-        for (const auto& path: published) {
-            std::error_code error;
-            fs::remove(path, error);
-        }
-        throw;
-    }
+    prototype::bridge::publishDocument(staging, output, expected);
+}
+
+void saveCopy(Document& document, const fs::path& output) {
+    saveDocument(document, output, prototype::bridge::documentVersion(output).token, true);
 }
 
 void inspect(const Document& document) {
@@ -218,17 +191,23 @@ int main(int argc, char** argv) {
     try {
         if (argc < 3) {
             throw std::runtime_error("Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | open INPUT "
-                                     "SNAPSHOT PDF | save-copy INPUT XOPP INK");
+                                     "SNAPSHOT PDF | save-copy INPUT XOPP INK | save INPUT XOPP INK VERSION | version PATH");
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
         const auto input = std::string(argv[2]).empty() ? fs::path{} : fs::absolute(argv[2]);
+        if (command == "version" && argc == 3) {
+            std::cout << prototype::bridge::documentVersion(input).token << '\n';
+            return 0;
+        }
         auto document = load(input, originalContext);
         if (command == "inspect" && argc == 3) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
         } else if (command == "open" && argc == 5) {
+            const bool nativeSave = document->getFilepath() == input && !input.empty() &&
+                                    g_ascii_strcasecmp(input.extension().string().c_str(), ".xopp") == 0;
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
@@ -236,12 +215,21 @@ int main(int argc, char** argv) {
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             render(*document, pdf);
+            std::cout << (nativeSave ? "NATIVE_SAVE\n" : "SAVE_AS\n");
         } else if (command == "save-copy" && argc == 5) {
             if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
                 throw std::runtime_error("Save-copy target must use the .xopp extension");
             }
             appendInk(*document, prototype::bridge::readTransfer(argv[4]));
             saveCopy(*document, fs::absolute(argv[3]));
+        } else if (command == "save" && argc == 6) {
+            if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
+                throw std::runtime_error("Save target must use the .xopp extension");
+            }
+            appendInk(*document, prototype::bridge::readTransfer(argv[4]));
+            const auto output = fs::absolute(argv[3]);
+            saveDocument(*document, output, argv[5], false);
+            std::cout << prototype::bridge::documentVersion(output).token << '\n';
         } else {
             throw std::runtime_error("Invalid document-worker command");
         }

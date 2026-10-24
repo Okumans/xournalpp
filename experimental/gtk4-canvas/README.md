@@ -8,11 +8,12 @@ The prototype opens a PDF or native `.xopp` document and adds pressure-aware pen
 strokes and translucent highlights. It supports custom colors, quick color
 presets, stroke width, whole-stroke erasing, undo/redo, and zoom/pan with
 cancellation. A thumbnail sidebar navigates pages and becomes an overlay in
-narrower windows. With a document worker, Open and Save a Copy run in the
-background. New ink is
-saved as native objects alongside the original content. Open and Close protect
-unsaved changes with Save a Copy, Discard and Cancel. The prototype never saves
-over an input document. Without a worker, ink remains temporary.
+narrower windows. With a document worker, Open, Save and Save As run in the
+background. New ink is saved as native objects alongside the original content. Open and Close protect
+unsaved changes with Save, Discard and Cancel. Save updates the associated
+`.xopp` file; Save As changes its filename after a successful save. Imported PDFs,
+legacy files requiring conversion, symlink inputs and blank notebooks use Save As
+for their first save. Without a worker, ink remains temporary.
 
 Each stroke retains its own tool, color, and width. Pen and highlighter settings
 are remembered separately during a session. Highlight segments are composited
@@ -23,7 +24,8 @@ include session ink, with up to 16 small PDF backgrounds cached at a time.
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 `Ctrl+Y` redo, `Page Up`/`Page Down` navigation, and `Ctrl+0` fit. Tool shortcuts
 leave editable controls alone. Use the header's Pages button to show/hide the
-sidebar. With a worker, `Ctrl+O` opens a document and `Ctrl+Shift+S` saves a copy.
+sidebar. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves, and
+`Ctrl+Shift+S` opens Save As.
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
@@ -82,7 +84,7 @@ build-gtk4-canvas/xournalpp-gtk4-canvas --document notebook.xopp \
   --worker build-document-worker/xournalpp-document-worker
 ```
 
-Native loading, snapshot creation, rendering and save-copy jobs run on a
+Native loading, snapshot creation, rendering and save jobs run on a
 background task, with completion on the main context. The header shows progress,
 editing is blocked during the operation, and Close waits for it to finish. A
 failed open leaves the current document intact; a failed save retains its dirty
@@ -92,17 +94,35 @@ also preserves the current document.
 Each loaded document has a private native snapshot and rendered PDF, removed when
 the session ends. The native object data is retained; external linked assets
 remain external. Saving appends all current session ink to that snapshot, so
-repeated copies do not duplicate previously saved ink. Reopening a saved copy
+repeated saves do not duplicate previously saved ink. Reopening a saved copy
 loads its ink as original objects, which are not yet editable in the frontend.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
-`open INPUT SNAPSHOT.xopp NEW.pdf`, and `save-copy INPUT NEW.xopp INK_TRANSFER`.
-Save-copy accepts the versioned ink packets in `DocumentTransfer.h`, appends native
-pen/highlighter objects to the top layer, and uses the real saver. It stages the
-file and attached backgrounds in the destination directory and publishes the
-native document last. Existing destinations and sidecar collisions are rejected.
-This temporary publication method requires a filesystem supporting hard links;
-normal overwrite/save, backups and autosave have not been migrated.
+`open INPUT SNAPSHOT.xopp NEW.pdf`, `version PATH`,
+`save INPUT TARGET.xopp INK_TRANSFER VERSION`, and `save-copy INPUT NEW.xopp INK_TRANSFER`.
+Save operations accept the versioned ink packets in `DocumentTransfer.h`, append native
+pen/highlighter objects to the top layer, and use the real saver. They stage the
+file and attached backgrounds in the destination directory and publish the
+native document last. Normal Save checks a content version for the file and
+attached PDF/pixmap sidecars, including a recheck before publication. External
+changes produce an error while preserving the current edits. Explicit Save As
+uses the chosen destination version, allowing a confirmed replacement of that
+filename. GTK 4 handles overwrite confirmation in Save-mode file choosers
+([migration guide](https://docs.gtk.org/gtk4/migrating-3to4.html)). Existing document
+and attachment permissions are retained.
+
+For replacement, Save creates a temporary `filename~` backup, removes it after
+success, and retains it after a failed publication. Attachment originals are
+copied into the private staging directory before replacement, restored on a
+pre-commit failure, and retained with a recovery path in the error if rollback
+cannot safely restore them. An already existing backup is preserved and blocks
+replacement; use Save As or recover that backup first. Save-copy remains a
+backend operation that refuses existing filenames and sidecars.
+
+The current publication code targets Linux and requires hard links plus atomic
+replacement via rename. The multi-file document/attachment publication is not a
+single filesystem transaction. Power-loss durability and Windows/macOS behavior
+have not been validated. Autosave and automatic recovery are still pending.
 
 ```sh
 python experimental/gtk4-canvas/test-document-worker.py \
@@ -161,7 +181,8 @@ pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
 Transfer serialization, background task/main-context checks and CLI rejection
-checks bring the standalone suite to ten tests.
+checks plus filesystem backup/publication checks bring the standalone suite to
+eleven tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -176,7 +197,7 @@ the headless compositor reports device scale 1.
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. The prototype has no rich-text
-editor, selection tools, normal overwrite/save, full undo system, plugins, or toolbar
+editor, selection tools, autosave/recovery, full undo system, plugins, or toolbar
 configuration import. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
@@ -190,7 +211,9 @@ checks do not verify actual tablet firmware or physical hardware event delivery.
 With a worker, the graphical test also saves/reopens actual native copies,
 checks retained text and pressure data, exercises the real unsaved-dialog buttons,
 verifies failed-open/save retention and Close protection, and cancels native
-Open/Save choosers. A 10 ms test timer must execute while document work is active;
+Open/Save choosers. It also checks Ctrl+S replacement, Save As filename association,
+backup cleanup, and rejected saves after a separate worker changes the file.
+A 10 ms test timer must execute while document work is active;
 this checks main-loop responsiveness, not an input latency target. Tests select
 save destinations directly for deterministic persistence checks. Platform portal
 chooser selection remains unverified.
@@ -203,7 +226,6 @@ or toolbar configuration features.
 ## Remaining migration work
 
 The experiment still needs the real editing and selection models, full stroke
-geometry and partial erasing, continuous-page layout, document actions, native
-save/backup/autosave behavior, clipboard, dialogs, IME, settings, plugins and
+geometry and partial erasing, continuous-page layout, document recovery and autosave, clipboard, dialogs, IME, settings, plugins and
 configurable toolbars. Platform packaging, accessibility, hardware input and GPU
 validation remain required before replacing the existing application.

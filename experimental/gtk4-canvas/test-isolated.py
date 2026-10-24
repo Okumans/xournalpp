@@ -53,8 +53,9 @@ def inside(args):
         screenshots = ("initial", "ink", "tools", "zoom", "narrow", "sidebar")
         if args.worker:
             screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
-                            "save-prompt", "saved-again", "discard-prompt")
-            for filename in ("saved-copy.xopp", "saved-again.xopp"):
+                            "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
+                            "conflict-resolved")
+            for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp"):
                 (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
@@ -76,8 +77,11 @@ def inside(args):
                 raise RuntimeError("Document action checks did not finish")
             first = ET.fromstring(gzip.decompress((output / "saved-copy.xopp").read_bytes()))
             second = ET.fromstring(gzip.decompress((output / "saved-again.xopp").read_bytes()))
-            if len(first.findall(".//stroke")) != 3 or len(second.findall(".//stroke")) != 4:
+            if len(first.findall(".//stroke")) != 4 or len(second.findall(".//stroke")) != 4:
                 raise RuntimeError("Saved/reopened copies duplicated or lost session ink")
+            normal = ET.fromstring(gzip.decompress((output / "normal-save.xopp").read_bytes()))
+            if len(normal.findall(".//stroke")) != 5 or (output / "normal-save.xopp~").exists():
+                raise RuntimeError("Normal Save lost or duplicated ink, or retained a successful-save backup")
             if len(first.findall(".//text")) != len(root.findall(".//text")):
                 raise RuntimeError("Saving session ink lost original text")
             width = list(map(float, second.findall(".//stroke")[-1].attrib["width"].split()))
