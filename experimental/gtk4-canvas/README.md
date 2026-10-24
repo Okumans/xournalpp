@@ -14,7 +14,7 @@ document.
 Each stroke retains its own tool, color, and width. Pen and highlighter settings
 are remembered separately during a session. Highlight segments are composited
 once per stroke to avoid dark joints; multiplying the result preserves document
-text underneath. Undo/redo stores stroke deltas for at most 128 edits. Thumbnails
+text underneath. Undo/redo stores stroke deltas and retains session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
 
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
@@ -22,6 +22,12 @@ Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 leave editable controls alone. Use the header's Pages button to show/hide the
 sidebar. Widths are measured in document points; they remain consistent at
 different zoom levels. The eraser acts only on session ink.
+
+Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
+Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,
+and 2% pointer-centered wheel zoom. Hold Space and drag, or start a drag in a page
+margin, to temporarily pan without changing the selected brush. A stylus eraser
+end temporarily erases session strokes; an entire eraser drag is one undo step.
 
 ## What this experiment establishes
 
@@ -98,9 +104,11 @@ The state test checks anchor-preserving zoom, coordinate conversion, pressure,
 device ownership, sparse-segment erasing, undo/redo, page isolation, cancellation,
 bounded pinch cooldown, and narrow-view fitting. It also verifies per-stroke
 styles, ordered multi-stroke erase restoration, redo invalidation, and the undo
-history limit. A separate Cairo pixel test checks colors, widths, uniform
+history retention. A separate normalized-input test covers pressure fallback,
+pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
+temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
-The other two CTest checks reject missing files and unknown options.
+Two further CTest checks reject missing files and unknown options (five tests total).
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -120,9 +128,11 @@ configuration import. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
 
-Hardware eraser-end mapping and processing of stylus event backlogs are not yet
-implemented. The Pen/Eraser buttons control the session tool. The standalone
-tests are intended to expose migration risks before implementing these adapters.
+The backend now recognizes a stylus eraser end and processes its motion backlog.
+Synthetic tests cover the normalized adapter and axis conversion. The graphical
+test also checks Space press/release, margin dragging, stylus signals with a
+synthetic backlog, temporary erasing, release-tail prevention, and cleanup. These
+checks do not verify actual tablet firmware or physical hardware event delivery.
 
 The prototype's full color-chooser dialog is not opened in the isolated test;
 the color button's actual color-change signal is exercised. This is a separate

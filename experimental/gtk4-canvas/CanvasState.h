@@ -6,6 +6,8 @@
 #include <optional>
 #include <vector>
 
+#include "BehaviorDefaults.h"
+
 namespace prototype {
 
 struct Point {
@@ -47,7 +49,7 @@ public:
 
     Point documentPoint(double x, double y, double pressure = 1) const {
         return {(x - offsetX) / zoom, (y - offsetY) / zoom,
-                std::isfinite(pressure) ? std::clamp(pressure, 0.05, 1.0) : 1.0};
+                std::isfinite(pressure) ? std::max(behavior::minimumPressure, pressure) : 1.0};
     }
 
     bool contains(const Point& p) const {
@@ -74,7 +76,8 @@ public:
     }
 
     bool begin(Device source, double x, double y, double pressure = 1) {
-        if (brush.tool == Tool::Eraser || pinching || current || !contains(documentPoint(x, y, pressure))) {
+        if (brush.tool == Tool::Eraser || pinching || current || eraseEdit ||
+            !contains(documentPoint(x, y, pressure))) {
             return false;
         }
         owner = source;
@@ -88,19 +91,36 @@ public:
         }
         const auto p = documentPoint(x, y, pressure);
         if (contains(p)) {
+            auto& last = current->points.back();
+            if (std::hypot(p.x - last.x, p.y - last.y) < behavior::motionThreshold) {
+                if (current->points.size() == 1 && current->brush.tool == Tool::Pen) {
+                    last.pressure = std::max(last.pressure, p.pressure);
+                }
+                return;
+            }
             current->points.push_back(p);
         }
     }
 
-    void finish(Device source) {
+    void finish(Device source, std::optional<double> releasePressure = std::nullopt) {
         if (current && source == owner) {
+            if (current->points.size() == 1) {
+                const auto point = current->points.front();
+                if (releasePressure && std::isfinite(*releasePressure) && current->brush.tool == Tool::Pen) {
+                    current->points.front().pressure = std::max(point.pressure, *releasePressure);
+                }
+                current->points.push_back(point);
+            }
             record(Edit{true, {{ink.size(), *current}}});
             ink.push_back(std::move(*current));
             current.reset();
         }
     }
 
-    void cancel() { current.reset(); }
+    void cancel() {
+        finishErase();
+        current.reset();
+    }
 
     void cancel(Device source) {
         if (current && owner == source) {
@@ -128,6 +148,21 @@ public:
 
     bool canUndo() const { return !undoStates.empty(); }
     bool canRedo() const { return !redoStates.empty(); }
+
+    void beginErase() {
+        if (!eraseEdit) {
+            eraseEdit = Edit{false, {}};
+        }
+    }
+
+    void finishErase() {
+        if (eraseEdit) {
+            if (!eraseEdit->strokes.empty()) {
+                record(std::move(*eraseEdit));
+            }
+            eraseEdit.reset();
+        }
+    }
 
     void erase(double x, double y) {
         if (current || pinching) {
@@ -158,7 +193,26 @@ public:
             }
         }
         if (!edit.strokes.empty()) {
-            record(std::move(edit));
+            if (eraseEdit) {
+                // Translate current positions back to the pre-gesture order so
+                // one undo restores deletions made by many eraser samples.
+                for (auto& entry: edit.strokes) {
+                    for (const auto& removed: eraseEdit->strokes) {
+                        if (removed.index <= entry.index) {
+                            ++entry.index;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                for (auto& entry: edit.strokes) {
+                    eraseEdit->strokes.push_back(std::move(entry));
+                }
+                std::sort(eraseEdit->strokes.begin(), eraseEdit->strokes.end(),
+                          [](const auto& a, const auto& b) { return a.index < b.index; });
+            } else {
+                record(std::move(edit));
+            }
             std::erase_if(ink, hits);
         }
     }
@@ -197,9 +251,6 @@ private:
     void record(Edit edit) {
         redoStates.clear();
         // Keep stroke deltas, rather than a full document copy for each edit.
-        if (undoStates.size() == 128) {
-            undoStates.erase(undoStates.begin());
-        }
         undoStates.push_back(std::move(edit));
     }
 
@@ -218,6 +269,7 @@ private:
     Device owner = Device::Mouse;
     std::vector<Edit> undoStates;
     std::vector<Edit> redoStates;
+    std::optional<Edit> eraseEdit;
 };
 
 }  // namespace prototype

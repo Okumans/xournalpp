@@ -2,6 +2,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -9,8 +10,10 @@
 #include <poppler.h>
 
 #include "BehaviorDefaults.h"
+#include "CanvasInput.h"
 #include "CanvasState.h"
 #include "InkRenderer.h"
+#include "StylusSamples.h"
 
 using prototype::CanvasState;
 using prototype::Device;
@@ -91,7 +94,7 @@ private:
         if (number < 0 || number >= pageCount) {
             return;
         }
-        state.resetInput();
+        resetInput();
         state.page = number;
         if (document) {
             if (page) {
@@ -120,7 +123,7 @@ private:
         } else if (state.brush.tool == Tool::Highlighter) {
             highlightBrush = state.brush;
         }
-        state.cancel();
+        input.cancel();
         state.brush = tool == Tool::Highlighter ? highlightBrush : penBrush;
         state.brush.tool = tool;
         syncingBrush = true;
@@ -283,12 +286,14 @@ private:
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), sidebarButton);
         undoButton = button("edit-undo-symbolic", "Undo ink (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
+                                self->input.cancel();
                                 self->state.undo();
                                 self->update();
                             }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), undoButton);
         redoButton = button("edit-redo-symbolic", "Redo ink (Ctrl+Shift+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
+                                self->input.cancel();
                                 self->state.redo();
                                 self->update();
                             }));
@@ -333,7 +338,7 @@ private:
                                  self->state.brush.color[0] = color->red;
                                  self->state.brush.color[1] = color->green;
                                  self->state.brush.color[2] = color->blue;
-                                 self->state.cancel();
+                                 self->input.cancel();
                                  self->update();
                              }
                          }),
@@ -349,7 +354,7 @@ private:
         g_signal_connect(widthButton, "value-changed", G_CALLBACK(+[](GtkSpinButton* button, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              if (!self->syncingBrush) {
-                                 self->state.cancel();
+                                 self->input.cancel();
                                  self->state.brush.width = gtk_spin_button_get_value(button);
                                  self->update();
                              }
@@ -401,6 +406,7 @@ private:
         g_signal_connect(canvas, "resize", G_CALLBACK(+[](GtkDrawingArea*, int width, int height, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              if (self->fitMode || !self->fitted) {
+                                 self->input.cancel();
                                  self->state.fit(width, height);
                                  self->fitted = true;
                                  self->fitMode = true;
@@ -433,15 +439,14 @@ private:
         g_signal_connect(window, "notify::is-active", G_CALLBACK(+[](GObject* window, GParamSpec*, gpointer data) {
                              if (!gtk_window_is_active(GTK_WINDOW(window))) {
                                  auto* self = static_cast<Prototype*>(data);
-                                 self->state.resetInput();
+                                 self->resetInput(true);
                                  self->update();
                              }
                          }),
                          this);
-        g_signal_connect(canvas, "unmap", G_CALLBACK(+[](GtkWidget*, gpointer data) {
-                             static_cast<Prototype*>(data)->state.resetInput();
-                         }),
-                         this);
+        g_signal_connect(
+                canvas, "unmap",
+                G_CALLBACK(+[](GtkWidget*, gpointer data) { static_cast<Prototype*>(data)->resetInput(true); }), this);
         update();
         windowPaintable = gtk_widget_paintable_new(window);
         gtk_window_present(GTK_WINDOW(window));
@@ -497,6 +502,9 @@ private:
     }
 
     void zoom(double value, double x, double y) {
+        if (input.active()) {
+            return;
+        }
         state.zoomAt(value, x, y);
         fitMode = false;
         fitted = true;
@@ -535,30 +543,81 @@ private:
         return {gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
     }
 
-    void begin(Device device, double x, double y, double pressure = 1) {
+    void resetInput(bool interrupted = false) {
+        if (interrupted) {
+            input.interrupt();
+        } else {
+            input.reset();
+        }
+        for (auto* pan: panGestures) {
+            static_cast<PanState*>(g_object_get_data(G_OBJECT(pan), "pan-state"))->enabled = false;
+        }
+        if (canvas) {
+            gtk_widget_set_cursor_from_name(canvas, nullptr);
+        }
+    }
+
+    void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
+               bool eraserEnd = false) {
         gtk_widget_grab_focus(canvas);
-        if (state.brush.tool == Tool::Eraser) {
-            state.erase(x, y);
-        } else {
-            state.begin(device, x, y, pressure);
+        input.begin(device, {x, y, pressure}, eraserEnd);
+        if (input.panning()) {
+            gtk_widget_set_cursor_from_name(canvas, "grabbing");
         }
         update();
     }
 
-    void motion(Device device, double x, double y, double pressure = 1) {
-        if (state.brush.tool == Tool::Eraser) {
-            state.erase(x, y);
-        } else {
-            state.append(device, x, y, pressure);
+    void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt) {
+        input.motion(device, {x, y, pressure});
+        if (input.panning()) {
+            fitted = true;
+            fitMode = false;
         }
         update();
     }
 
-    static double pressure(GtkGestureStylus* stylus) {
-        double value = 1;
-        gtk_gesture_stylus_get_axis(stylus, GDK_AXIS_PRESSURE, &value);
-        return value;
+    void finish(Device device, std::optional<double> releasePressure = std::nullopt) {
+        input.finish(device, releasePressure);
+        if (!input.active()) {
+            gtk_widget_set_cursor_from_name(canvas, input.spaceHeld ? "grab" : nullptr);
+        }
+        update();
     }
+
+    static std::optional<double> pressure(GtkGestureStylus* stylus) {
+        double value;
+        if (gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(stylus)) &&
+            gtk_gesture_stylus_get_axis(stylus, GDK_AXIS_PRESSURE, &value) && std::isfinite(value)) {
+            return value;
+        }
+        return std::nullopt;
+    }
+
+    void consumeBacklog(std::span<const GdkTimeCoord> samples) {
+        for (const auto& sample: samples) {
+            if (const auto point = prototype::historySample(sample)) {
+                input.motion(Device::Stylus, *point);
+            }
+        }
+    }
+
+    void stylusMotion(GtkGestureStylus* gesture, double x, double y) {
+        if (gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture))) {
+            GdkTimeCoord* samples = nullptr;
+            guint count = 0;
+            if (gtk_gesture_stylus_get_backlog(gesture, &samples, &count)) {
+                consumeBacklog({samples, count});
+            }
+            g_free(samples);
+        }
+        motion(Device::Stylus, x, y, pressure(gesture));
+    }
+
+    struct PanState {
+        double x = 0;
+        double y = 0;
+        bool enabled = false;
+    };
 
     void connectInput() {
         mouse = gtk_gesture_drag_new();
@@ -581,66 +640,91 @@ private:
                              }
                          }),
                          this);
-        g_signal_connect(mouse, "drag-end",
-                         G_CALLBACK(+[](GtkGestureDrag* gesture, double dx, double dy, gpointer data) {
+        g_signal_connect(mouse, "drag-end", G_CALLBACK(+[](GtkGestureDrag* gesture, double, double, gpointer data) {
                              if (mouseEvent(GTK_EVENT_CONTROLLER(gesture))) {
                                  auto* self = static_cast<Prototype*>(data);
-                                 self->motion(Device::Mouse, self->dragX + dx, self->dragY + dy);
-                                 self->state.finish(Device::Mouse);
+                                 self->finish(Device::Mouse);
                                  self->update();
                              }
                          }),
                          this);
         addGesture(mouse, Device::Mouse);
 
-        auto* stylus = gtk_gesture_stylus_new();
+        stylus = gtk_gesture_stylus_new();
         gtk_gesture_stylus_set_stylus_only(GTK_GESTURE_STYLUS(stylus), true);
         g_signal_connect(stylus, "down", G_CALLBACK(+[](GtkGestureStylus* gesture, double x, double y, gpointer data) {
-                             static_cast<Prototype*>(data)->begin(Device::Stylus, x, y, pressure(gesture));
+                             auto* tool = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture)) ?
+                                                  gtk_gesture_stylus_get_device_tool(gesture) :
+                                                  nullptr;
+                             const bool eraser = tool && prototype::isEraserEnd(gdk_device_tool_get_tool_type(tool));
+                             static_cast<Prototype*>(data)->begin(Device::Stylus, x, y, pressure(gesture), eraser);
                          }),
                          this);
         g_signal_connect(stylus, "motion",
                          G_CALLBACK(+[](GtkGestureStylus* gesture, double x, double y, gpointer data) {
-                             static_cast<Prototype*>(data)->motion(Device::Stylus, x, y, pressure(gesture));
+                             static_cast<Prototype*>(data)->stylusMotion(gesture, x, y);
                          }),
                          this);
-        g_signal_connect(stylus, "up", G_CALLBACK(+[](GtkGestureStylus* gesture, double x, double y, gpointer data) {
+        g_signal_connect(stylus, "up", G_CALLBACK(+[](GtkGestureStylus* gesture, double, double, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
-                             self->motion(Device::Stylus, x, y, pressure(gesture));
-                             self->state.finish(Device::Stylus);
+                             self->finish(Device::Stylus, pressure(gesture));
                              self->update();
                          }),
                          this);
         addGesture(stylus, Device::Stylus);
 
-        // Touch pans instead of drawing; a distinct middle-button gesture pans with a mouse.
+        // Each pan sequence keeps its own incremental offsets. A pinch or pen
+        // sequence permanently suppresses that pan until a new drag begins.
         for (bool touch: {false, true}) {
             auto* pan = gtk_gesture_drag_new();
             gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(pan), touch ? GDK_BUTTON_PRIMARY : GDK_BUTTON_MIDDLE);
             gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(pan), touch);
-            g_signal_connect(pan, "drag-begin", G_CALLBACK(+[](GtkGestureDrag*, double, double, gpointer data) {
+            g_object_set_data_full(
+                    G_OBJECT(pan), "pan-state", new PanState,
+                    +[](gpointer data) { delete static_cast<PanState*>(data); });
+            g_object_set_data(G_OBJECT(pan), "touch-pan", GINT_TO_POINTER(touch));
+            g_signal_connect(pan, "drag-begin", G_CALLBACK(+[](GtkGestureDrag* gesture, double, double, gpointer data) {
                                  auto* self = static_cast<Prototype*>(data);
-                                 self->panX = self->state.offsetX;
-                                 self->panY = self->state.offsetY;
+                                 auto* pan = static_cast<PanState*>(g_object_get_data(G_OBJECT(gesture), "pan-state"));
+                                 const bool touch = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(gesture), "touch-pan"));
+                                 pan->x = 0;
+                                 pan->y = 0;
+                                 pan->enabled = (touch || mouseEvent(GTK_EVENT_CONTROLLER(gesture))) &&
+                                                !self->input.active() &&
+                                                !self->state.blocksScroll(false, g_get_monotonic_time());
                              }),
                              this);
-            g_signal_connect(pan, "drag-update", G_CALLBACK(+[](GtkGestureDrag*, double dx, double dy, gpointer data) {
+            g_signal_connect(pan, "drag-update",
+                             G_CALLBACK(+[](GtkGestureDrag* gesture, double dx, double dy, gpointer data) {
                                  auto* self = static_cast<Prototype*>(data);
-                                 if (!self->state.current && !self->state.blocksScroll(false, g_get_monotonic_time())) {
-                                     self->state.offsetX = self->panX + dx;
-                                     self->state.offsetY = self->panY + dy;
+                                 auto* pan = static_cast<PanState*>(g_object_get_data(G_OBJECT(gesture), "pan-state"));
+                                 if (self->input.active() || self->state.blocksScroll(false, g_get_monotonic_time())) {
+                                     pan->enabled = false;
+                                 }
+                                 if (pan->enabled) {
+                                     self->state.offsetX += dx - pan->x;
+                                     self->state.offsetY += dy - pan->y;
                                      self->fitted = true;
                                      self->fitMode = false;
                                      self->update();
                                  }
+                                 pan->x = dx;
+                                 pan->y = dy;
                              }),
                              this);
+            g_signal_connect(pan, "cancel", G_CALLBACK(+[](GtkGesture* gesture, GdkEventSequence*, gpointer) {
+                                 static_cast<PanState*>(g_object_get_data(G_OBJECT(gesture), "pan-state"))->enabled =
+                                         false;
+                             }),
+                             nullptr);
             addGesture(pan);
+            panGestures.push_back(pan);
         }
 
         pinch = gtk_gesture_zoom_new();
         g_signal_connect(pinch, "begin", G_CALLBACK(+[](GtkGesture*, GdkEventSequence*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
+                             self->input.cancel();
                              self->state.beginPinch();
                              self->pinchZoom = self->state.zoom;
                              self->pinchX = gtk_widget_get_width(self->canvas) / 2.0;
@@ -668,7 +752,13 @@ private:
                     auto* self = static_cast<Prototype*>(data);
                     auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(controller));
                     const bool discrete = event && gdk_scroll_event_get_unit(event) == GDK_SCROLL_UNIT_WHEEL;
-                    if (self->state.current || self->state.blocksScroll(discrete, g_get_monotonic_time())) {
+                    const auto modifiers =
+                            gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller)) &
+                            gtk_accelerator_get_default_mod_mask();
+                    if (modifiers & ~(GDK_CONTROL_MASK | GDK_SHIFT_MASK)) {
+                        return true;
+                    }
+                    if (self->input.active() || self->state.blocksScroll(discrete, g_get_monotonic_time())) {
                         return true;
                     }
                     if (gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller)) &
@@ -697,16 +787,22 @@ private:
                                gpointer data) -> gboolean {
                     auto* self = static_cast<Prototype*>(data);
                     if (key == GDK_KEY_Escape) {
-                        self->state.resetInput();
+                        self->resetInput();
                     } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         return false;
+                    } else if (key == GDK_KEY_space && !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {
+                        self->input.spaceHeld = true;
+                        gtk_widget_set_cursor_from_name(self->canvas, "grab");
                     } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_Z)) {
                         if (modifiers & GDK_SHIFT_MASK) {
+                            self->input.cancel();
                             self->state.redo();
                         } else {
+                            self->input.cancel();
                             self->state.undo();
                         }
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
+                        self->input.cancel();
                         self->state.redo();
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0) {
                         self->fitted = false;
@@ -728,6 +824,16 @@ private:
                 }),
                 this);
         gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+        g_signal_connect(keys, "key-released",
+                         G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType, gpointer data) {
+                             if (key == GDK_KEY_space) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 self->input.spaceHeld = false;
+                                 gtk_widget_set_cursor_from_name(self->canvas,
+                                                                 self->input.panning() ? "grabbing" : nullptr);
+                             }
+                         }),
+                         this);
         gtk_widget_add_controller(window, keys);
     }
 
@@ -739,7 +845,12 @@ private:
                              auto* self = static_cast<Prototype*>(data);
                              const auto owner = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(gesture), "ink-owner"));
                              if (owner) {
-                                 self->state.cancel(owner == 1 ? Device::Mouse : Device::Stylus);
+                                 auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                                 if (event && gdk_event_get_event_type(event) == GDK_GRAB_BROKEN) {
+                                     self->finish(owner == 1 ? Device::Mouse : Device::Stylus);
+                                 } else {
+                                     self->input.cancel(owner == 1 ? Device::Mouse : Device::Stylus);
+                                 }
                              }
                              if (gesture == self->pinch && self->state.pinching) {
                                  self->state.endPinch(g_get_monotonic_time());
@@ -776,6 +887,7 @@ private:
 
     void draw(cairo_t* cr, int width, int height) {
         if (!fitted || (fitMode && (width != lastWidth || height != lastHeight))) {
+            input.cancel();
             state.fit(width, height);
             fitted = true;
             fitMode = true;
@@ -836,6 +948,57 @@ private:
         if (!condition) {
             throw std::runtime_error(message);
         }
+    }
+
+    void checkInputParity(double x, double y) {
+        const auto count = state.ink.size();
+        begin(Device::Stylus, x, y + 100, 0.2);
+        std::array<GdkTimeCoord, 2> history{};
+        for (size_t i = 0; i < history.size(); ++i) {
+            history[i].flags = GdkAxisFlags(GDK_AXIS_FLAG_X | GDK_AXIS_FLAG_Y);
+            history[i].axes[GDK_AXIS_X] = x + 20 + 20 * i;
+            history[i].axes[GDK_AXIS_Y] = y + 100;
+        }
+        history[0].flags = GdkAxisFlags(history[0].flags | GDK_AXIS_FLAG_PRESSURE);
+        history[0].axes[GDK_AXIS_PRESSURE] = 0.6;
+        consumeBacklog(history);
+        g_signal_emit_by_name(stylus, "motion", x + 60, y + 100);
+        g_signal_emit_by_name(stylus, "up", x + 1000, y + 1000);
+        require(state.ink.size() == count + 1 && state.ink.back().points.size() == 4 &&
+                        state.ink.back().points.back().pressure == 0.6,
+                "Stylus backlog/release lost samples or added a hover tail");
+        state.undo();
+
+        begin(Device::Stylus, x, y, 0.5, true);
+        g_signal_emit_by_name(stylus, "up", x, y);
+        require(state.ink.size() == count - 1 && state.brush.tool == Tool::Pen,
+                "Eraser end changed toolbar selection or failed to erase");
+        state.undo();
+
+        const auto oldX = state.offsetX;
+        const auto oldY = state.offsetY;
+        gboolean handled = false;
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_space, 0u, GdkModifierType(0), &handled);
+        require(handled && input.spaceHeld, "Space key did not enable temporary hand tool");
+        g_signal_emit_by_name(mouse, "drag-begin", x, y);
+        g_signal_emit_by_name(mouse, "drag-update", 10.0, 5.0);
+        g_signal_emit_by_name(keys, "key-released", GDK_KEY_space, 0u, GdkModifierType(0));
+        g_signal_emit_by_name(mouse, "drag-update", 20.0, 10.0);
+        g_signal_emit_by_name(mouse, "drag-end", 400.0, 300.0);
+        require(!input.active() && !input.spaceHeld && state.ink.size() == count &&
+                        std::abs(state.offsetX - oldX - 20) < 0.001 && std::abs(state.offsetY - oldY - 10) < 0.001,
+                "Space drag drew ink, jumped on release, or left the hand tool stuck");
+        state.offsetX = oldX;
+        state.offsetY = oldY;
+        g_signal_emit_by_name(mouse, "drag-begin", 2.0, 2.0);
+        require(input.panning(), "A drag in the page margin must use the hand tool");
+        g_signal_emit_by_name(mouse, "drag-update", 8.0, 6.0);
+        g_signal_emit_by_name(mouse, "drag-end", 100.0, 100.0);
+        require(state.ink.size() == count && std::abs(state.offsetX - oldX - 8) < 0.001,
+                "Margin drag unexpectedly drew or jumped on release");
+        state.offsetX = oldX;
+        state.offsetY = oldY;
+        update();
     }
 
     gboolean smoke() {
@@ -915,6 +1078,7 @@ private:
                 g_signal_emit_by_name(mouse, "drag-begin", x, y);
                 g_signal_emit_by_name(mouse, "cancel", nullptr);
                 require(!state.current, "Gesture cancellation left ink active");
+                checkInputParity(x, y);
                 g_signal_emit_by_name(pinch, "begin", nullptr);
                 g_signal_emit_by_name(pinch, "scale-changed", 1.5);
                 g_signal_emit_by_name(pinch, "end", nullptr);
@@ -961,11 +1125,14 @@ private:
                             "Selecting a page did not dismiss the overlay");
                 }
                 require(state.ink.size() == 2, "Session ink did not survive sidebar navigation");
-                state.begin(Device::Mouse, x, y);
+                begin(Device::Mouse, x, y);
                 gtk_widget_set_visible(window, false);
-                require(!state.current && !state.pinching, "Unmap left input active");
+                require(!state.current && !state.pinching && !input.active() && !input.spaceHeld &&
+                                state.ink.size() == 3,
+                        "Unmap dropped delivered ink or left temporary input active");
                 std::cout << "PASS: GTK4 Cairo canvas, real PDF, colors, widths, highlight, undo/redo, eraser, "
-                             "sidebar navigation/overlay, cancel, pinch, narrow viewport, 2x raster cache"
+                             "sidebar navigation/overlay, stylus/backlog/Space adapters, cancel, pinch, narrow "
+                             "viewport, 2x raster cache"
                           << "\nframes=" << frames << " rasterizations=" << rasterizations
                           << " device_scale=" << gtk_widget_get_scale_factor(canvas)
                           << " viewport_width=" << gtk_widget_get_width(canvas) << " cache_bytes=" << cacheBytes
@@ -981,6 +1148,7 @@ private:
 
     Options options;
     CanvasState state;
+    prototype::CanvasInput input{state};
     PopplerDocument* document = nullptr;
     PopplerPage* page = nullptr;
     int pageCount = 1;
@@ -1010,14 +1178,14 @@ private:
     prototype::Brush highlightBrush{Tool::Highlighter, {1, 0.88, 0.4}, 14};
     bool syncingBrush = false;
     GtkGesture* mouse = nullptr;
+    GtkGesture* stylus = nullptr;
+    std::vector<GtkGesture*> panGestures;
     GtkGesture* pinch = nullptr;
     GtkEventController* keys = nullptr;
     std::unique_ptr<cairo_surface_t, SurfaceDeleter> cache;
     double cacheScale = 0;
     double dragX = 0;
     double dragY = 0;
-    double panX = 0;
-    double panY = 0;
     double pinchX = 0;
     double pinchY = 0;
     double pinchZoom = 1;
