@@ -291,6 +291,47 @@ def verify_layer_management(args, evidence):
     return str(output)
 
 
+def verify_preferences(args, evidence):
+    directory = evidence / "preferences"
+    config = directory / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    settings_path = config / "settings.xml"
+    settings_path.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <data name="buttonConfig">
+    <data name="stylus"><attribute name="tool" type="string" value="highlighter"/></data>
+    <data name="stylus2"><attribute name="tool" type="string" value="hand"/></data>
+  </data>
+</settings>
+""", encoding="utf-8")
+    settings_hash = hashlib.sha256(settings_path.read_bytes()).hexdigest()
+
+    for mode in ("edit", "reload"):
+        output = directory / mode
+        output.mkdir(parents=True, exist_ok=True)
+        result = run(
+            [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output)],
+            env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PREFERENCES_VERIFY_MODE=mode),
+        )
+        expected = "PASS: Adw Preferences editing" if mode == "edit" else "PASS: GTK 4 preferences survive application restart"
+        if expected not in result:
+            raise RuntimeError(f"GTK 4 Preferences verification did not finish for {mode}")
+        if hashlib.sha256(settings_path.read_bytes()).hexdigest() != settings_hash:
+            raise RuntimeError("GTK 4 Preferences modified the original settings.xml")
+
+    for name in ("preferences-dialog", "preferences-edited", "preferences-reloaded"):
+        path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
+        if not path.is_file() or path.stat().st_size < 1000:
+            raise RuntimeError(f"Missing GTK 4 Preferences screenshot: {path}")
+    stored = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
+    for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
+                     "button-one=1", "button-two=4"):
+        if expected not in stored:
+            raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
+    print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)
+    return str(directory)
+
+
 def inside(args):
     evidence = args.evidence.resolve()
     if args.layer_only:
@@ -449,6 +490,7 @@ def inside(args):
         verify_crash_recovery(args, evidence, copy, root)
         verify_settings_import(args, evidence, copy)
         results["layer-management"] = verify_layer_management(args, evidence)
+    results["preferences"] = verify_preferences(args, evidence)
     if hashlib.sha256(fixture.read_bytes()).hexdigest() != original_hash:
         raise RuntimeError("Input fixture changed")
     report = {

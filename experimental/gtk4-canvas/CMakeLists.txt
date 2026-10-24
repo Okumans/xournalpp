@@ -97,6 +97,12 @@ target_compile_options(settings-import-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(settings-import-test PRIVATE PkgConfig::UI)
 add_test(NAME settings-import COMMAND settings-import-test)
 
+add_executable(preferences-store-test PreferencesStoreTest.cpp)
+target_compile_features(preferences-store-test PRIVATE cxx_std_20)
+target_compile_options(preferences-store-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(preferences-store-test PRIVATE PkgConfig::UI)
+add_test(NAME preferences-store COMMAND preferences-store-test)
+
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-invalid-autosave-interval COMMAND xournalpp-gtk4-canvas --autosave-seconds 0)
 add_test(NAME reject-invalid-config-dir COMMAND xournalpp-gtk4-canvas --config-dir ${CMAKE_CURRENT_BINARY_DIR}/missing-config-dir)

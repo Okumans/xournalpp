@@ -26,7 +26,9 @@ for their first save. Without a worker, ink remains temporary.
 Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
 settings are remembered separately during a session, initialized from read-only
 import of `<XDG_CONFIG_HOME>/xournalpp/settings.xml` (or `--config-dir DIRECTORY`)
-when present and falling back cleanly to `ToolHandler` `MEDIUM` presets (`1.41 pt`
+when present, then overridden by the prototype's saved Preferences values. The
+GTK 4 overlay never rewrites `settings.xml`. Missing values fall back cleanly to
+`ToolHandler` `MEDIUM` presets (`1.41 pt`
 royal-blue pen, `8.50 pt` yellow highlighter, `8.50 pt` standard eraser) and the
 11-color `Palette::default_palette()` (`palettes/xournal.gpl`). Configured `.gpl`
 palettes populate the multi-column swatch popover with bordered Cairo swatches.
@@ -36,6 +38,15 @@ constant-width strokes serialized natively as `tool="eraser"`.
 Undo/redo stores value-semantic stroke slice deltas across insertions, whole-stroke
 deletions, and multi-sample partial splits while retaining session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
+
+The header's Preferences button opens an `AdwPreferencesDialog` with Appearance,
+Input, and Behavior pages. Color scheme, page-sidebar visibility, pressure
+thresholds, stylus side-button actions, autosave cadence, and keyboard/wheel zoom
+steps save immediately to `gtk4-canvas.ini` in the selected configuration
+directory. These values take precedence over imported GTK 3 settings. Stylus
+side buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
+releasing a mapped button restores the toolbar tool. Middle-mouse panning remains
+available.
 
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text (when a document worker
 is enabled), `Ctrl+Z` undo, `Ctrl+Shift+Z` or
@@ -120,9 +131,10 @@ The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`,
 mode, pressure sensitivity/minimum/multiplier, keyboard/wheel zoom steps,
 `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`),
 `autosaveEnabled`/`autosaveTimeout`, and `.gpl` color palettes strictly read-only
-without creating directories, rewriting `settings.xml`, or mutating process
-environment variables; explicit `--dark` and `--autosave-seconds` CLI flags
-override imported values. A worker can also accompany `--pdf`, or be used alone to
+from `settings.xml` without rewriting that file or mutating process environment
+variables. Preferences edits are stored in `gtk4-canvas.ini` only after a value
+changes. Explicit `--dark` and `--autosave-seconds` CLI flags override imported
+values. A worker can also accompany `--pdf`, or be used alone to
 create a blank A4 notebook. Without an input it displays a blank page.
 
 To open native documents, build the optional worker using the normal application's
@@ -341,7 +353,7 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of unsupported native objects, layer rename/reorder/lock, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
+The experiment still needs editing of unsupported native objects, layer rename/reorder/lock, multi-column/paired-page layout modes, page-level undo/redo, image insertion and transformation, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 

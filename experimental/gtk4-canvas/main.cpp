@@ -28,6 +28,7 @@
 #include "TextRenderer.h"
 #include "PaletteImport.h"
 #include "SettingsImport.h"
+#include "PreferencesStore.h"
 #include "StylusSamples.h"
 #include "StrokeClipboard.h"
 #include "TextEditorOverlay.h"
@@ -76,12 +77,16 @@ struct PageCacheEntry {
 class Prototype {
 public:
     explicit Prototype(Options options): options(std::move(options)) {
-        const auto cfgDir = !this->options.configDirectory.empty() ?
-                                    std::filesystem::path(this->options.configDirectory) :
-                                    (configRoot() / "xournalpp");
-        importedConfig = prototype::importSettingsFromConfigDir(cfgDir);
+        preferencesConfigDir = !this->options.configDirectory.empty() ?
+                                       std::filesystem::path(this->options.configDirectory) :
+                                       (configRoot() / "xournalpp");
+        importedConfig = prototype::importSettingsFromConfigDir(preferencesConfigDir);
         if (!importedConfig.warning.empty()) {
             std::cerr << "xournalpp-gtk4-canvas: " << importedConfig.warning << '\n';
+        }
+        const auto preferenceLoad = prototype::loadGtk4Preferences(preferencesConfigDir, importedConfig.settings);
+        if (!preferenceLoad.warning.empty()) {
+            std::cerr << "xournalpp-gtk4-canvas: " << preferenceLoad.warning << '\n';
         }
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         input.setStabilizerConfig(importedConfig.settings.stabilizer);
@@ -118,6 +123,7 @@ public:
         if (closed) {
             cleanupActiveAutosave();
         }
+        g_clear_object(&preferencesDialog);
         if (paintClock) {
             g_signal_handlers_disconnect_by_data(paintClock, this);
             g_clear_object(&paintClock);
@@ -364,16 +370,264 @@ private:
         adw_window_title_set_subtitle(ADW_WINDOW_TITLE(heading), status.c_str());
     }
 
-    void showError(const std::string& message) {
+    void showAlert(const char* title, const std::string& message) {
         ++ioErrors;
-        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Document operation failed",
-                                                                  message.c_str()));
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(title, message.c_str()));
         adw_alert_dialog_add_response(messageDialog, "close", "Close");
         adw_alert_dialog_set_close_response(messageDialog, "close");
         g_signal_connect(messageDialog, "response", G_CALLBACK(+[](AdwAlertDialog*, const char*, gpointer data) {
             static_cast<Prototype*>(data)->messageDialog = nullptr;
         }), this);
         adw_dialog_present(ADW_DIALOG(messageDialog), window);
+    }
+
+    void showError(const std::string& message) { showAlert("Document operation failed", message); }
+
+    enum class PreferenceKey : guint {
+        Theme = 1,
+        Sidebar,
+        PressureSensitivity,
+        MinimumPressure,
+        PressureMultiplier,
+        StylusButtonOne,
+        StylusButtonTwo,
+        AutosaveEnabled,
+        AutosaveTimeout,
+        ZoomStep,
+        ScrollZoomStep,
+    };
+
+    GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
+                               const char* const* options, guint selected, PreferenceKey key) {
+        auto* row = ADW_COMBO_ROW(adw_combo_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+        auto* model = gtk_string_list_new(options);
+        adw_combo_row_set_model(row, G_LIST_MODEL(model));
+        g_object_unref(model);
+        adw_combo_row_set_selected(row, selected);
+        g_object_set_data(G_OBJECT(row), "gtk4-preference-key", GUINT_TO_POINTER(static_cast<guint>(key)));
+        g_signal_connect(row, "notify::selected",
+                         G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto key = static_cast<PreferenceKey>(
+                                     GPOINTER_TO_UINT(g_object_get_data(object, "gtk4-preference-key")));
+                             self->changePreference(key, GTK_WIDGET(object));
+                         }),
+                         this);
+        preferenceControls[static_cast<size_t>(key)] = GTK_WIDGET(row);
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return GTK_WIDGET(row);
+    }
+
+    GtkWidget* preferenceSwitch(AdwPreferencesGroup* group, const char* title, const char* subtitle, bool active,
+                                PreferenceKey key) {
+        auto* row = ADW_SWITCH_ROW(adw_switch_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+        adw_switch_row_set_active(row, active);
+        g_object_set_data(G_OBJECT(row), "gtk4-preference-key", GUINT_TO_POINTER(static_cast<guint>(key)));
+        g_signal_connect(row, "notify::active",
+                         G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto key = static_cast<PreferenceKey>(
+                                     GPOINTER_TO_UINT(g_object_get_data(object, "gtk4-preference-key")));
+                             self->changePreference(key, GTK_WIDGET(object));
+                         }),
+                         this);
+        preferenceControls[static_cast<size_t>(key)] = GTK_WIDGET(row);
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return GTK_WIDGET(row);
+    }
+
+    GtkWidget* preferenceSpin(AdwPreferencesGroup* group, const char* title, const char* subtitle, double value,
+                              double minimum, double maximum, double step, guint digits, const char* suffix,
+                              PreferenceKey key) {
+        auto* row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        adw_action_row_set_subtitle(row, subtitle);
+        auto* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        auto* spin = gtk_spin_button_new_with_range(minimum, maximum, step);
+        gtk_spin_button_set_digits(GTK_SPIN_BUTTON(spin), digits);
+        gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(spin), true);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin), value);
+        gtk_widget_set_size_request(spin, 96, -1);
+        gtk_box_append(GTK_BOX(box), spin);
+        if (suffix && *suffix) {
+            gtk_box_append(GTK_BOX(box), gtk_label_new(suffix));
+        }
+        adw_action_row_add_suffix(row, box);
+        adw_action_row_set_activatable_widget(row, spin);
+        g_object_set_data(G_OBJECT(spin), "gtk4-preference-key", GUINT_TO_POINTER(static_cast<guint>(key)));
+        g_signal_connect(spin, "value-changed",
+                         G_CALLBACK(+[](GtkSpinButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto key = static_cast<PreferenceKey>(g_object_get_data(
+                                     G_OBJECT(button), "gtk4-preference-key") ?
+                                     GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "gtk4-preference-key")) : 0);
+                             self->changePreference(key, GTK_WIDGET(button));
+                         }),
+                         this);
+        preferenceControls[static_cast<size_t>(key)] = GTK_WIDGET(spin);
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return GTK_WIDGET(spin);
+    }
+
+    void changePreference(PreferenceKey key, GtkWidget* control) {
+        auto& settings = importedConfig.settings;
+        switch (key) {
+            case PreferenceKey::Theme:
+                switch (adw_combo_row_get_selected(ADW_COMBO_ROW(control))) {
+                    case 1:
+                        settings.themeVariant = prototype::ThemeVariant::ForceLight;
+                        break;
+                    case 2:
+                        settings.themeVariant = prototype::ThemeVariant::ForceDark;
+                        break;
+                    default:
+                        settings.themeVariant = prototype::ThemeVariant::UseSystem;
+                        break;
+                }
+                break;
+            case PreferenceKey::Sidebar:
+                settings.showSidebar = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::PressureSensitivity:
+                settings.pressureSensitivity = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::MinimumPressure:
+                settings.minimumPressure = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
+            case PreferenceKey::PressureMultiplier:
+                settings.pressureMultiplier = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
+            case PreferenceKey::StylusButtonOne:
+                settings.stylusButtonOne = static_cast<prototype::ButtonToolAction>(
+                        adw_combo_row_get_selected(ADW_COMBO_ROW(control)));
+                break;
+            case PreferenceKey::StylusButtonTwo:
+                settings.stylusButtonTwo = static_cast<prototype::ButtonToolAction>(
+                        adw_combo_row_get_selected(ADW_COMBO_ROW(control)));
+                break;
+            case PreferenceKey::AutosaveEnabled:
+                settings.autosaveEnabled = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::AutosaveTimeout:
+                settings.autosaveTimeoutMinutes = static_cast<int>(
+                        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)));
+                break;
+            case PreferenceKey::ZoomStep:
+                settings.zoomStep = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control)) / 100.0;
+                break;
+            case PreferenceKey::ScrollZoomStep:
+                settings.scrollZoomStep = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control)) / 100.0;
+                break;
+        }
+
+        prototype::applyImportedSettingsToCanvas(state, settings);
+        input.setStabilizerConfig(settings.stabilizer);
+        effectiveAutosaveSeconds = settings.effectiveAutosaveSeconds();
+        scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
+        if (splitView) {
+            adw_overlay_split_view_set_show_sidebar(splitView, settings.showSidebar);
+        }
+        if (!options.explicitDark) {
+            const auto scheme = settings.themeVariant == prototype::ThemeVariant::ForceLight ? ADW_COLOR_SCHEME_FORCE_LIGHT :
+                                settings.themeVariant == prototype::ThemeVariant::ForceDark ? ADW_COLOR_SCHEME_FORCE_DARK :
+                                                                                              ADW_COLOR_SCHEME_DEFAULT;
+            adw_style_manager_set_color_scheme(adw_style_manager_get_default(), scheme);
+        }
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, settings, error)) {
+            showAlert("Could not save preferences", error);
+        }
+        update();
+    }
+
+    void openPreferences() {
+        if (preferencesDialog) {
+            adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
+            return;
+        }
+
+        preferencesDialog = ADW_PREFERENCES_DIALOG(g_object_ref_sink(adw_preferences_dialog_new()));
+        adw_preferences_dialog_set_search_enabled(preferencesDialog, true);
+
+        auto* appearance = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+        adw_preferences_page_set_name(appearance, "appearance");
+        adw_preferences_page_set_title(appearance, "Appearance");
+        adw_preferences_page_set_icon_name(appearance, "applications-graphics-symbolic");
+        auto* appearanceGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(appearanceGroup, "Window");
+        static const char* const themes[] = {"Follow system", "Light", "Dark", nullptr};
+        preferenceCombo(appearanceGroup, "Color scheme", "Choose how the canvas follows the desktop appearance",
+                        themes, static_cast<guint>(settingsThemeIndex(importedConfig.settings.themeVariant)),
+                        PreferenceKey::Theme);
+        preferenceSwitch(appearanceGroup, "Show pages sidebar", "Keep page thumbnails beside the canvas",
+                         importedConfig.settings.showSidebar, PreferenceKey::Sidebar);
+        adw_preferences_page_add(appearance, appearanceGroup);
+        adw_preferences_dialog_add(preferencesDialog, appearance);
+
+        auto* inputPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+        adw_preferences_page_set_name(inputPage, "input");
+        adw_preferences_page_set_title(inputPage, "Input");
+        adw_preferences_page_set_icon_name(inputPage, "input-tablet-symbolic");
+        auto* pressureGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(pressureGroup, "Stylus pressure");
+        preferenceSwitch(pressureGroup, "Use pressure sensitivity", "Apply pen pressure to stroke width",
+                         importedConfig.settings.pressureSensitivity, PreferenceKey::PressureSensitivity);
+        preferenceSpin(pressureGroup, "Minimum pressure", "Pressure floor for a light stroke",
+                       importedConfig.settings.minimumPressure, 0.01, 1.0, 0.01, 2, "", PreferenceKey::MinimumPressure);
+        preferenceSpin(pressureGroup, "Pressure multiplier", "Scale reported pressure before drawing",
+                       importedConfig.settings.pressureMultiplier, 0.05, 10.0, 0.05, 2, "×",
+                       PreferenceKey::PressureMultiplier);
+        adw_preferences_page_add(inputPage, pressureGroup);
+        auto* buttonsGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(buttonsGroup, "Stylus buttons");
+        adw_preferences_group_set_description(buttonsGroup, "Button mappings apply while a stylus side button is held.");
+        static const char* const buttonActions[] = {"No action", "Pen", "Highlighter", "Eraser", "Hand tool", nullptr};
+        preferenceCombo(buttonsGroup, "Button 1", "First side button", buttonActions,
+                        static_cast<guint>(importedConfig.settings.stylusButtonOne), PreferenceKey::StylusButtonOne);
+        preferenceCombo(buttonsGroup, "Button 2", "Second side button", buttonActions,
+                        static_cast<guint>(importedConfig.settings.stylusButtonTwo), PreferenceKey::StylusButtonTwo);
+        adw_preferences_page_add(inputPage, buttonsGroup);
+        adw_preferences_dialog_add(preferencesDialog, inputPage);
+
+        auto* behavior = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+        adw_preferences_page_set_name(behavior, "behavior");
+        adw_preferences_page_set_title(behavior, "Behavior");
+        adw_preferences_page_set_icon_name(behavior, "preferences-system-symbolic");
+        auto* autosaveGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(autosaveGroup, "Autosave");
+        preferenceSwitch(autosaveGroup, "Autosave changes", "Save recovery data while editing a document",
+                         importedConfig.settings.autosaveEnabled, PreferenceKey::AutosaveEnabled);
+        preferenceSpin(autosaveGroup, "Autosave interval", "Set to 0 to disable periodic saves",
+                       importedConfig.settings.autosaveTimeoutMinutes, 0, 1440, 1, 0, "minutes",
+                       PreferenceKey::AutosaveTimeout);
+        adw_preferences_page_add(behavior, autosaveGroup);
+        auto* navigationGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(navigationGroup, "Zoom");
+        preferenceSpin(navigationGroup, "Keyboard zoom step", "Change zoom with the keyboard",
+                       importedConfig.settings.zoomStep * 100.0, 0.5, 200.0, 0.5, 1, "%",
+                       PreferenceKey::ZoomStep);
+        preferenceSpin(navigationGroup, "Scroll zoom step", "Change zoom with the pointer wheel",
+                       importedConfig.settings.scrollZoomStep * 100.0, 0.5, 200.0, 0.5, 1, "%",
+                       PreferenceKey::ScrollZoomStep);
+        adw_preferences_page_add(behavior, navigationGroup);
+        adw_preferences_dialog_add(preferencesDialog, behavior);
+        adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
+    }
+
+    static guint settingsThemeIndex(prototype::ThemeVariant theme) {
+        switch (theme) {
+            case prototype::ThemeVariant::ForceLight:
+                return 1;
+            case prototype::ThemeVariant::ForceDark:
+                return 2;
+            case prototype::ThemeVariant::UseSystem:
+            default:
+                return 0;
+        }
     }
 
     void runDocumentJob(const char* status, std::function<void()> work, std::function<void()> success,
@@ -1839,6 +2093,11 @@ private:
         gtk_button_set_icon_name(GTK_BUTTON(sidebarButton), "view-sidebar-start-symbolic");
         gtk_widget_set_tooltip_text(sidebarButton, "Show pages");
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), sidebarButton);
+        preferencesButton = button("preferences-system-symbolic", "Preferences",
+                                   G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                       static_cast<Prototype*>(data)->openPreferences();
+                                   }));
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), preferencesButton);
         openButton = button("document-open-symbolic", "Open (Ctrl+O)", G_CALLBACK(+[](GtkButton*, gpointer data) {
             auto* self = static_cast<Prototype*>(data);
             self->protectDocument([self] { self->chooseOpen(); });
@@ -2339,6 +2598,9 @@ private:
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_PREFERENCES_VERIFY_MODE"); verifyMode && *verifyMode) {
+                preferencesVerifyMode = verifyMode;
+            }
             if (const char* verifyMode = g_getenv("XOURNALPP_LAYER_VERIFY_MODE"); verifyMode && *verifyMode) {
                 layerVerifyMode = verifyMode;
                 layerVerifyStep = 0;
@@ -2489,7 +2751,29 @@ private:
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
         gtk_widget_grab_focus(canvas);
+        const auto toolbarBrush = state.brush;
+        const bool previousSpaceHeld = input.spaceHeld;
+        if (device == Device::Stylus && !eraserEnd) {
+            switch (activeStylusAction) {
+                case prototype::ButtonToolAction::Pen:
+                    state.brush = penBrush;
+                    break;
+                case prototype::ButtonToolAction::Highlighter:
+                    state.brush = highlightBrush;
+                    break;
+                case prototype::ButtonToolAction::Eraser:
+                    state.brush = eraserBrush;
+                    break;
+                case prototype::ButtonToolAction::Hand:
+                    input.spaceHeld = true;
+                    break;
+                case prototype::ButtonToolAction::None:
+                    break;
+            }
+        }
         input.begin(device, {x, y, pressure, timeMs}, eraserEnd);
+        state.brush = toolbarBrush;
+        input.spaceHeld = previousSpaceHeld;
         if (input.panning()) {
             gtk_widget_set_cursor_from_name(canvas, "grabbing");
         }
@@ -2675,6 +2959,69 @@ private:
                          }),
                          this);
         addGesture(stylus, Device::Stylus);
+
+        stylusButtonClick = GTK_GESTURE_CLICK(gtk_gesture_click_new());
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(stylusButtonClick), 0);
+        g_signal_connect(stylusButtonClick, "pressed",
+                         G_CALLBACK(+[](GtkGestureClick* gesture, int, double x, double y, gpointer data) {
+                             auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                             if (!event || !gdk_event_get_device_tool(event)) {
+                                 return;
+                             }
+                             const auto button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto next = button == GDK_BUTTON_MIDDLE ?
+                                                       self->importedConfig.settings.stylusButtonOne :
+                                               button == GDK_BUTTON_SECONDARY ?
+                                                       self->importedConfig.settings.stylusButtonTwo :
+                                                                               prototype::ButtonToolAction::None;
+                             if (button != GDK_BUTTON_MIDDLE && button != GDK_BUTTON_SECONDARY) {
+                                 return;
+                             }
+                             if (next == self->activeStylusAction && self->activeStylusButton == button) {
+                                 return;
+                             }
+                             const bool restart = self->input.active(Device::Stylus) &&
+                                                  (self->activeStylusAction != prototype::ButtonToolAction::None ||
+                                                   next != prototype::ButtonToolAction::None);
+                             if (restart) {
+                                 self->input.finish(Device::Stylus);
+                             }
+                             self->activeStylusButton = button;
+                             self->activeStylusAction = next;
+                             if (restart) {
+                                 self->begin(Device::Stylus, x, y);
+                             } else {
+                                 self->update();
+                             }
+                         }),
+                         this);
+        g_signal_connect(stylusButtonClick, "released",
+                         G_CALLBACK(+[](GtkGestureClick* gesture, int, double x, double y, gpointer data) {
+                             auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                             if (!event || !gdk_event_get_device_tool(event)) {
+                                 return;
+                             }
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+                             if (button != self->activeStylusButton) {
+                                 return;
+                             }
+                             const bool restart = self->activeStylusAction != prototype::ButtonToolAction::None &&
+                                                  self->input.active(Device::Stylus);
+                             if (restart) {
+                                 self->input.finish(Device::Stylus);
+                             }
+                             self->activeStylusButton = 0;
+                             self->activeStylusAction = prototype::ButtonToolAction::None;
+                             if (restart) {
+                                 self->begin(Device::Stylus, x, y);
+                             } else {
+                                 self->update();
+                             }
+                         }),
+                         this);
+        addGesture(GTK_GESTURE(stylusButtonClick));
 
         // Each pan sequence keeps its own incremental offsets. A pinch or pen
         // sequence permanently suppresses that pan until a new drag begins.
@@ -3656,6 +4003,104 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    gboolean smokePreferencesVerify() {
+        const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
+        if (preferencesVerifyMode == "edit") {
+            switch (preferencesVerifyStep++) {
+                case 0:
+                    require(importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Highlighter &&
+                                    importedConfig.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand,
+                            "Legacy stylus mappings were not imported before opening Preferences");
+                    openPreferences();
+                    break;
+                case 1:
+                    require(control(PreferenceKey::Theme) && control(PreferenceKey::StylusButtonOne) &&
+                                    control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout),
+                            "Preferences dialog is missing appearance, stylus or autosave controls");
+                    require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
+                                            static_cast<guint>(prototype::ButtonToolAction::Highlighter) &&
+                                    adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonTwo))) ==
+                                            static_cast<guint>(prototype::ButtonToolAction::Hand),
+                            "Preferences rows did not show imported stylus mappings");
+                    capture("preferences-dialog");
+                    adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
+                    adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne)),
+                                               static_cast<guint>(prototype::ButtonToolAction::Pen));
+                    adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity)), false);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::AutosaveTimeout)), 9);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::ZoomStep)), 22.0);
+                    require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
+                                    importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
+                                    !importedConfig.settings.pressureSensitivity &&
+                                    importedConfig.settings.autosaveTimeoutMinutes == 9 &&
+                                    std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
+                                    std::filesystem::is_regular_file(preferencesConfigDir / "gtk4-canvas.ini"),
+                            "Changing preferences did not immediately save and apply the edited values");
+                    {
+                        const auto pageStart = state.pageScreenPoint(0, 230, 310);
+                        const auto pageEnd = state.pageScreenPoint(0, 280, 310);
+                        selectTool(Tool::Highlighter);
+                        activeStylusAction = importedConfig.settings.stylusButtonOne;
+                        begin(Device::Stylus, pageStart.x, pageStart.y, 0.5);
+                        motion(Device::Stylus, pageEnd.x, pageEnd.y, 0.75);
+                        finish(Device::Stylus, 0.75);
+                        activeStylusAction = prototype::ButtonToolAction::None;
+                        require(state.ink.back().brush.tool == Tool::Pen && state.brush.tool == Tool::Highlighter,
+                                "A stylus button override did not apply temporarily or changed the toolbar tool");
+                        state.undo();
+                        selectTool(Tool::Pen);
+                        const auto handStart = state.pageScreenPoint(0, 300, 330);
+                        const auto handOffset = state.offsetX;
+                        activeStylusAction = prototype::ButtonToolAction::Hand;
+                        begin(Device::Stylus, handStart.x, handStart.y);
+                        const bool handStarted = input.panning();
+                        motion(Device::Stylus, handStart.x + 15, handStart.y + 10);
+                        finish(Device::Stylus);
+                        activeStylusAction = prototype::ButtonToolAction::None;
+                        require(handStarted && std::abs(state.offsetX - handOffset - 15) < 1e-6 &&
+                                        state.brush.tool == Tool::Pen,
+                                "The stylus Hand mapping did not pan without changing the toolbar tool");
+                    }
+                    break;
+                default:
+                    capture("preferences-edited");
+                    std::cout << "PASS: Adw Preferences editing, legacy stylus mapping import and persistent GTK 4 settings\n";
+                    adw_dialog_close(ADW_DIALOG(preferencesDialog));
+                    gtk_window_close(GTK_WINDOW(window));
+                    return G_SOURCE_REMOVE;
+            }
+        } else if (preferencesVerifyMode == "reload") {
+            switch (preferencesVerifyStep++) {
+                case 0:
+                    require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
+                                    importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
+                                    importedConfig.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand &&
+                                    !importedConfig.settings.pressureSensitivity &&
+                                    importedConfig.settings.autosaveTimeoutMinutes == 9 &&
+                                    std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8,
+                            "GTK 4 preference edits were not restored at next startup");
+                    openPreferences();
+                    break;
+                default:
+                    require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme))) == 1 &&
+                                    adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
+                                            static_cast<guint>(prototype::ButtonToolAction::Pen) &&
+                                    !adw_switch_row_get_active(
+                                            ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity))),
+                            "Preferences dialog did not display restored values");
+                    capture("preferences-reloaded");
+                    std::cout << "PASS: GTK 4 preferences survive application restart\n";
+                    adw_dialog_close(ADW_DIALOG(preferencesDialog));
+                    gtk_window_close(GTK_WINDOW(window));
+                    return G_SOURCE_REMOVE;
+            }
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokeSettingsVerify() {
         if (settingsVerifyMode == "fallback") {
             require(importedConfig.usedSettingsFallback, "Expected corrupt settings.xml to trigger fallback");
@@ -3785,9 +4230,12 @@ private:
             throw std::runtime_error("Window did not finish painting the requested state");
         }
         paintWaits = 0;
-        if (!frames || pageCache.empty()) {
+        if (preferencesVerifyMode.empty() && (!frames || pageCache.empty())) {
             require(++smokeWaits < 60, "Canvas has not rendered");
             return G_SOURCE_CONTINUE;
+        }
+        if (!preferencesVerifyMode.empty()) {
+            return smokePreferencesVerify();
         }
         if (!settingsVerifyMode.empty()) {
             return smokeSettingsVerify();
@@ -4939,10 +5387,13 @@ private:
     }
 
     Options options;
+    std::filesystem::path preferencesConfigDir;
     prototype::SettingsImportResult importedConfig;
     int effectiveAutosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
     std::string settingsVerifyMode;
     int settingsVerifyStep = 0;
+    std::string preferencesVerifyMode;
+    int preferencesVerifyStep = 0;
     std::string layerVerifyMode;
     int layerVerifyStep = -1;
     size_t layerVerifyInitialInk = 0;
@@ -4989,6 +5440,7 @@ private:
     GtkWidget* prevPageButton = nullptr;
     GtkWidget* nextPageButton = nullptr;
     GtkWidget* pageButton = nullptr;
+    GtkWidget* preferencesButton = nullptr;
     GtkWidget* insertPageButton = nullptr;
     GtkWidget* deletePageButton = nullptr;
     int documentSmokeStep = -1;
@@ -5023,6 +5475,7 @@ private:
     GtkWidget* textFormatBox = nullptr;
     std::array<GtkWidget*, 6> textFormatButtons{};
     GtkGestureClick* textClick = nullptr;
+    GtkGestureClick* stylusButtonClick = nullptr;
     GtkWidget* pageLabel = nullptr;
     GtkWidget* zoomLabel = nullptr;
     GtkWidget* undoButton = nullptr;
@@ -5033,6 +5486,8 @@ private:
     GtkWidget* paletteButton = nullptr;
     GtkWidget* palettePopover = nullptr;
     GtkWidget* paletteContent = nullptr;
+    prototype::ButtonToolAction activeStylusAction = prototype::ButtonToolAction::None;
+    guint activeStylusButton = 0;
     std::vector<GtkWidget*> paletteSwatchButtons;
     GtkWidget* eraserModeDropdown = nullptr;
     GtkWidget* sizeDropdown = nullptr;
@@ -5049,6 +5504,8 @@ private:
     GCancellable* clipboardCancellation = nullptr;
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
+    AdwPreferencesDialog* preferencesDialog = nullptr;
+    std::array<GtkWidget*, 12> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;

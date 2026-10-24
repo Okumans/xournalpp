@@ -249,6 +249,8 @@ public:
 
     bool active() const { return owner.has_value(); }
 
+    bool active(Device device) const { return owner && *owner == device; }
+
     void interrupt() {
         // PenInputHandler ends an action when its grab is broken. Preserve the
         // delivered samples, while explicit sequence cancellation discards ink.
