@@ -360,6 +360,13 @@ endif ()
 ## Source building ##
 add_subdirectory(src)
 
+option(ENABLE_GTK4_DOCUMENT_WORKER "Build the experimental GTK 3 document bridge for the GTK 4 frontend" OFF)
+if (ENABLE_GTK4_DOCUMENT_WORKER)
+    add_executable(xournalpp-document-worker EXCLUDE_FROM_ALL experimental/gtk4-canvas/DocumentWorker.cpp)
+    target_compile_features(xournalpp-document-worker PRIVATE cxx_std_20)
+    target_link_libraries(xournalpp-document-worker PRIVATE xoj::core xoj::util)
+endif ()
+
 # Keep the build-tree executable runnable without requiring a system install.
 # XournalMain searches next to the executable first, so mirror the runtime
 # resources into the build directory for developer builds.  The generated
@@ -392,6 +399,12 @@ option (ENABLE_GTEST "Enable gtest build for xournalpp application" OFF)
 if (ENABLE_GTEST)
   enable_testing()
   add_subdirectory (test ${CMAKE_BINARY_DIR}/test EXCLUDE_FROM_ALL)
+  if (ENABLE_GTK4_DOCUMENT_WORKER)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME gtk4-document-worker
+             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/experimental/gtk4-canvas/test-document-worker.py
+                     --worker $<TARGET_FILE:xournalpp-document-worker> --fixtures ${PROJECT_SOURCE_DIR}/test/files)
+  endif ()
 endif (ENABLE_GTEST)
 
 ## Man page generation ##

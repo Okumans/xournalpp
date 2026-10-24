@@ -4,7 +4,7 @@ This is the first migration experiment, built as a separate executable with GTK 
 libadwaita, and Poppler. The normal Xournal++ build, executable, settings, and
 document format are unchanged. There is no installation target.
 
-The prototype displays a PDF and adds temporary pressure-aware pen strokes and
+The prototype opens a PDF or native `.xopp` document and adds temporary pressure-aware pen strokes and
 translucent highlights. It supports custom colors, quick color presets, stroke
 width, whole-stroke erasing, undo/redo, and zoom/pan with cancellation. A thumbnail
 sidebar navigates pages and becomes an overlay in narrower windows. Ink is
@@ -43,8 +43,9 @@ end temporarily erases session strokes; an entire eraser drag is one undo step.
 
 This is **not a port of the complete application or its custom `GtkXournal`
 widget**. The session ink model is experimental and independent of the existing
-stroke model. The GTK 3 renderer is reused through CLI PDF export, not linked into
-the GTK 4 process. Original layers and editable text are flattened for display.
+stroke model. A separate document worker reuses the existing native loader, saver,
+and renderer without linking GTK 3 into the GTK 4 process. Original layers and
+editable text are flattened only for display; the worker retains their native data.
 The current PDF rasterization runs synchronously on the prototype's UI thread.
 
 ## Build
@@ -60,9 +61,44 @@ cmake --build build-gtk4-canvas -j2
 ctest --test-dir build-gtk4-canvas --output-on-failure
 ```
 
-The prototype accepts `--pdf FILE`, `--dark`, and `--smoke-dir DIRECTORY`. Without
-a PDF it displays a blank page. It does not accept `.xopp` directly: export a
-disposable PDF through the existing application, as the isolated test does.
+The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`, `--dark`,
+and `--smoke-dir DIRECTORY`. Without an input it displays a blank page.
+
+To open native documents, build the optional worker using the normal application's
+GTK 3 dependencies. It has no installation target and is disabled by default:
+
+```sh
+cmake -S . -B build-document-worker -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DENABLE_CPPTRACE=OFF -DENABLE_GTK4_DOCUMENT_WORKER=ON -DENABLE_GTEST=ON
+cmake --build build-document-worker --target xournalpp-document-worker -j2
+build-gtk4-canvas/xournalpp-gtk4-canvas --document notebook.xopp \
+  --worker build-document-worker/xournalpp-document-worker
+```
+
+Opening runs the worker before creating the window. It creates a private native
+snapshot and rendered PDF, removed when the session ends. The native object data
+is retained; external linked assets remain external. Large documents may delay
+startup. Asynchronous opening and saving from the GTK 4 UI remain to be connected.
+
+The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
+`open INPUT SNAPSHOT.xopp NEW.pdf`, and `save-copy INPUT NEW.xopp INK_TRANSFER`.
+Save-copy accepts the versioned ink packets in `DocumentTransfer.h`, appends native
+pen/highlighter objects to the top layer, and uses the real saver. It stages the
+file and attached backgrounds in the destination directory and publishes the
+native document last. Existing destinations and sidecar collisions are rejected.
+This temporary publication method requires a filesystem supporting hard links;
+normal overwrite/save, backups and autosave have not been migrated.
+
+```sh
+python experimental/gtk4-canvas/test-document-worker.py \
+  --worker build-document-worker/xournalpp-document-worker --fixtures test/files \
+  --report build-document-worker/evidence/validation.json
+```
+
+The worker test covers native content/style/layer preservation, pressure and
+highlighter serialization, image/PDF attachments, cross-directory external PDF
+paths, malformed input, collisions and unchanged source fixtures. Host image
+loaders must be allowed to decode the test images.
 
 ## Test without disturbing the desktop
 
@@ -74,6 +110,7 @@ binary for CLI export; the test does not build, install, or replace that binary.
 python experimental/gtk4-canvas/test-isolated.py \
   --binary build-gtk4-canvas/xournalpp-gtk4-canvas \
   --renderer /home/okumnas/Tmp/xournalpp/build/xournalpp \
+  --worker build-document-worker/xournalpp-document-worker \
   --evidence build-gtk4-canvas/evidence
 ```
 
@@ -108,7 +145,7 @@ history retention. A separate normalized-input test covers pressure fallback,
 pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
-Two further CTest checks reject missing files and unknown options (five tests total).
+Transfer serialization and CLI rejection checks bring the standalone suite to nine tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -123,7 +160,7 @@ the headless compositor reports device scale 1.
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. The prototype has no rich-text
-editor, selection tools, `.xopp` persistence, full undo system, plugins, or toolbar
+editor, selection tools, saving session ink from the UI, full undo system, plugins, or toolbar
 configuration import. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
@@ -139,21 +176,10 @@ the color button's actual color-change signal is exercised. This is a separate
 native experiment, not an implementation of the main application's annotation
 or toolbar configuration features.
 
-## Proposed PR stack
+## Remaining migration work
 
-1. **Canvas/input experiment (this branch).** Separate build, isolated tests,
-   reproducible screenshots, and explicit limits. Establish hardware behavior
-   and baseline measurements before proceeding with application integration.
-2. **Rendering/input adapters.** Extract reusable interfaces around the current
-   document renderer and normalized input events; retain GTK 3 behavior and
-   tests. Replace the experimental ink implementation with the real model.
-3. **Functional GTK 4 application port.** Port `GtkXournal`, toolbar construction,
-   clipboard, dialogs, drag-and-drop, IME, and GtkSourceView; preserve action IDs,
-   existing documents, editing behavior, and undo.
-4. **Libadwaita application design.** Integrate the header/toolbar, adaptive
-   sidebar, preferences, appearance, and contextual annotation controls.
-5. **Platform and release validation.** Update packaging and CI, validate GPU and
-   display scaling behavior, and run physical pen/touch and document round trips.
-
-Each later branch should be based on the previous PR's head, with its PR base set
-to that preceding branch. This experiment creates no remote branches or PRs.
+The experiment still needs the real editing and selection models, full stroke
+geometry and partial erasing, continuous-page layout, document actions, native
+save/backup/autosave behavior, clipboard, dialogs, IME, settings, plugins and
+configurable toolbars. Platform packaging, accessibility, hardware input and GPU
+validation remain required before replacing the existing application.

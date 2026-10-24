@@ -54,7 +54,11 @@ def inside(args):
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
         env = dict(os.environ, G_DEBUG="fatal-criticals")
-        command = [str(args.binary.resolve()), "--pdf", str(pdf), "--smoke-dir", str(output)]
+        command = [str(args.binary.resolve()), "--smoke-dir", str(output)]
+        if args.worker:
+            command.extend(["--document", str(copy), "--worker", str(args.worker.resolve())])
+        else:
+            command.extend(["--pdf", str(pdf)])
         if dark:
             command.append("--dark")
         if os.environ.get("XOURNALPP_PROTOTYPE_GDB"):
@@ -79,6 +83,7 @@ def inside(args):
         "fixture": str(fixture),
         "fixture_sha256": original_hash,
         "renderer_sha256": hashlib.sha256(args.renderer.read_bytes()).hexdigest(),
+        "document_worker_sha256": hashlib.sha256(args.worker.read_bytes()).hexdigest() if args.worker else None,
         "input_coverage": "Synthetic controller signals; no physical hardware events",
         "rendering": "Private headless Wayland, Pixman and Cairo; device scale 1; explicit 2x raster-cache test",
     }
@@ -90,6 +95,7 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--renderer", type=Path, required=True,
                         help="Existing GTK 3 xournalpp executable, used only for CLI export")
+    parser.add_argument("--worker", type=Path, help="Open native XOPP through the separate document worker")
     parser.add_argument("--fixture", type=Path,
                         default=Path(__file__).resolve().parents[2] / "test/files/benchmark/typed-text.xopp")
     parser.add_argument("--evidence", type=Path, required=True)
@@ -135,6 +141,8 @@ def main():
         command = ["dbus-run-session", f"--config-file={bus_config}", "--", "cage", "--", sys.executable, str(Path(__file__).resolve()),
                    "--inside", "--binary", str(args.binary.resolve()), "--renderer", str(args.renderer.resolve()),
                    "--fixture", str(args.fixture.resolve()), "--evidence", str(args.evidence.resolve())]
+        if args.worker:
+            command.extend(["--worker", str(args.worker.resolve())])
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 
