@@ -29,6 +29,16 @@ target_compile_options(canvas-input-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(canvas-input-test PRIVATE PkgConfig::UI)
 add_test(NAME canvas-input COMMAND canvas-input-test)
 
+add_executable(document-transfer-test DocumentTransferTest.cpp)
+target_compile_features(document-transfer-test PRIVATE cxx_std_20)
+target_compile_options(document-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME document-transfer COMMAND document-transfer-test)
+
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-missing-pdf COMMAND xournalpp-gtk4-canvas --pdf ${CMAKE_CURRENT_BINARY_DIR}/missing.pdf)
 set_tests_properties(reject-unknown-option reject-missing-pdf PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject-worker-without-document COMMAND xournalpp-gtk4-canvas --worker missing-worker)
+add_test(NAME reject-document-without-worker COMMAND xournalpp-gtk4-canvas --document missing.xopp)
+add_test(NAME reject-missing-worker COMMAND xournalpp-gtk4-canvas --document missing.xopp --worker missing-worker)
+set_tests_properties(reject-worker-without-document reject-document-without-worker reject-missing-worker
+                     PROPERTIES WILL_FAIL TRUE)

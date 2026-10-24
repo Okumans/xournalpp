@@ -21,6 +21,7 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Outside-page drag | `PenInputHandler::actionStart` temporarily selects Hand | Matched for prototype page margins |
 | Broken grab | `StylusInputHandler`/`MouseInputHandler` call `actionEnd` | Delivered points finalize; explicit gesture cancellation discards unfinished ink |
 | Eraser undo | `EraseHandler` adds all deletions to one `DeleteUndoAction` | One whole-stroke eraser drag is one undo/redo action |
+| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; text/styles/layers and attachments round-trip tested |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
 GTK 3 disables motion-event compression for its custom widget. The GTK 4 adapter
@@ -41,8 +42,9 @@ The prototype continues to use its independent session-only document model.
   constraints, Shift-click connection, stroke/tap filtering, and device-specific
   button mappings have not been migrated.
 - The original uses its document, selection, layer, undo, and rich-text models.
-  PDF export flattens those into the prototype background. Session ink cannot
-  yet be saved to `.xopp` or edited by the production tools.
+  The native worker retains those objects, while rendering flattens them into
+  the prototype background. Session ink is not yet connected to the worker's
+  save-copy operation. Existing objects cannot be edited in the prototype.
 - The prototype shows a single page at a time and refits on page changes. It
   does not reproduce continuous-page layout, scroll positioning, or page history.
 - The prototype's initial brush presets and continuous width control still differ

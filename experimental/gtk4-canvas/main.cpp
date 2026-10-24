@@ -12,6 +12,7 @@
 #include "BehaviorDefaults.h"
 #include "CanvasInput.h"
 #include "CanvasState.h"
+#include "DocumentSession.h"
 #include "InkRenderer.h"
 #include "StylusSamples.h"
 
@@ -26,6 +27,8 @@ struct SnapshotPending {};
 
 struct Options {
     std::string pdf;
+    std::string nativeDocument;
+    std::string worker;
     std::string smokeDirectory;
     bool dark = false;
     int width = 1100;
@@ -39,6 +42,11 @@ struct SurfaceDeleter {
 class Prototype {
 public:
     explicit Prototype(Options options): options(std::move(options)) {
+        if (!this->options.nativeDocument.empty()) {
+            nativeSession = std::make_unique<prototype::bridge::DocumentSession>(this->options.worker,
+                                                                               this->options.nativeDocument);
+            this->options.pdf = nativeSession->previewPath().string();
+        }
         if (!this->options.pdf.empty()) {
             GError* error = nullptr;
             auto* uri = g_filename_to_uri(this->options.pdf.c_str(), nullptr, &error);
@@ -276,8 +284,9 @@ private:
         auto* view = adw_toolbar_view_new();
         contentView = view;
         auto* header = adw_header_bar_new();
-        const auto title = options.pdf.empty() ? std::string("Blank notebook") :
-                                                 std::filesystem::path(options.pdf).filename().string();
+        const auto source = options.nativeDocument.empty() ? options.pdf : options.nativeDocument;
+        const auto title = source.empty() ? std::string("Blank notebook") :
+                                           std::filesystem::path(source).filename().string();
         auto* heading = adw_window_title_new(title.c_str(), "Session ink · not saved");
         adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), heading);
         sidebarButton = gtk_toggle_button_new();
@@ -1147,6 +1156,7 @@ private:
     }
 
     Options options;
+    std::unique_ptr<prototype::bridge::DocumentSession> nativeSession;
     CanvasState state;
     prototype::CanvasInput input{state};
     PopplerDocument* document = nullptr;
@@ -1211,17 +1221,27 @@ int main(int argc, char** argv) {
             const std::string argument = argv[i];
             if (argument == "--dark") {
                 options.dark = true;
-            } else if ((argument == "--pdf" || argument == "--smoke-dir") && i + 1 < argc) {
+            } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
+                        argument == "--smoke-dir") && i + 1 < argc) {
                 const auto path = std::filesystem::absolute(argv[++i]).string();
                 if (argument == "--pdf") {
                     options.pdf = path;
+                } else if (argument == "--document") {
+                    options.nativeDocument = path;
+                } else if (argument == "--worker") {
+                    options.worker = path;
                 } else {
                     options.smokeDirectory = path;
                     std::filesystem::create_directories(path);
                 }
             } else {
-                throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE] [--dark] [--smoke-dir DIRECTORY]");
+                throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
+                                         "[--dark] [--smoke-dir DIRECTORY]");
             }
+        }
+        if ((!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) ||
+            (options.nativeDocument.empty() && !options.worker.empty())) {
+            throw std::runtime_error("Use --document with --worker, separately from --pdf");
         }
         Prototype app(std::move(options));
         return app.run();
