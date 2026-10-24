@@ -60,6 +60,12 @@ target_compile_options(document-text-transfer-test PRIVATE -Wall -Wextra -Wpedan
 target_link_libraries(document-text-transfer-test PRIVATE PkgConfig::UI)
 add_test(NAME document-text-transfer COMMAND document-text-transfer-test)
 
+add_executable(document-image-transfer-test DocumentImageTransferTest.cpp)
+target_compile_features(document-image-transfer-test PRIVATE cxx_std_20)
+target_compile_options(document-image-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(document-image-transfer-test PRIVATE PkgConfig::UI)
+add_test(NAME document-image-transfer COMMAND document-image-transfer-test)
+
 add_executable(text-renderer-test TextRendererTest.cpp)
 target_compile_features(text-renderer-test PRIVATE cxx_std_20)
 target_compile_options(text-renderer-test PRIVATE -Wall -Wextra -Wpedantic)

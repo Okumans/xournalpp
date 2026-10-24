@@ -96,6 +96,45 @@ static void savedHistory() {
     check(state.revision() == current, "undo eraser restores the saved revision");
 }
 
+static void editableImageHistory() {
+    CanvasState state;
+    CanvasImage image;
+    image.page = 0;
+    image.pixelWidth = 40;
+    image.pixelHeight = 20;
+    image.transform = {2, 0, 0, 2, 30, 50};
+    image.encodedData = "bounded image bytes";
+    check(state.insertImage(image) && state.images.size() == 1 && state.images[0].layerOrder == 0,
+          "image insertion should assign the active page and editable layer order");
+    check(state.revision() == 1, "image insertion should advance the saved revision");
+
+    auto resized = state.images[0];
+    resized.transform.xx = 3;
+    resized.transform.yy = 3;
+    resized.transform.x = 45;
+    resized.transform.y = 65;
+    check(state.replaceImage(0, resized) && state.images[0].transform.xx == 3,
+          "image resize should replace its transform");
+    state.undo();
+    check(state.images[0].transform.xx == 2 && state.images[0].transform.x == 30,
+          "image resize should restore its prior transform on undo");
+    state.redo();
+    check(state.images[0].transform.xx == 3 && state.images[0].transform.x == 45,
+          "image resize should be redoable");
+
+    check(state.addLayerAboveCurrent() && state.images[0].layerId == 1 &&
+                  state.layersForPage(0).selectedLayer == 2,
+          "adding a layer above the image should preserve its original layer");
+    state.undo();
+    check(state.images[0].layerId == 1 && state.layersForPage(0).selectedLayer == 1 &&
+                  state.layersForPage(0).layers.size() == 1,
+          "undoing a layer insertion should restore image layer assignment");
+    check(state.deleteImage(0) && state.images.empty(), "image deletion should remove the selected object");
+    state.undo();
+    check(state.images.size() == 1 && state.images[0].encodedData == "bounded image bytes",
+          "image deletion should restore image bytes and transform");
+}
+
 static void editableTextHistory() {
     CanvasState state;
     state.setPages({{595, 842}, {595, 842}});
@@ -424,6 +463,7 @@ static void layerManagement() {
 int main() {
     try {
         savedHistory();
+        editableImageHistory();
         editableTextHistory();
         brushAndHistory();
         partialAndWhiteoutEraser();

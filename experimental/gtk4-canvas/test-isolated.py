@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import struct
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import zlib
 
 
 def run(command, *, env=None, private_group=False):
@@ -261,6 +263,7 @@ def verify_layer_management(args, evidence):
     fixture = directory / "two-layers.xopp"
     fixture.write_bytes(gzip.compress(ET.tostring(root, encoding="utf-8", xml_declaration=True)))
     output = directory / "run"
+    shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True, exist_ok=True)
     result = run(
         [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
@@ -293,6 +296,7 @@ def verify_layer_management(args, evidence):
 
 def verify_preferences(args, evidence):
     directory = evidence / "preferences"
+    shutil.rmtree(directory, ignore_errors=True)
     config = directory / "config"
     config.mkdir(parents=True, exist_ok=True)
     settings_path = config / "settings.xml"
@@ -332,8 +336,73 @@ def verify_preferences(args, evidence):
     return str(directory)
 
 
+def make_png(path, width=32, height=24):
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data +
+                struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows.extend((32 + x * 6, 80 + y * 5, 210 if (x + y) % 2 else 250, 255))
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    payload = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+    path.write_bytes(payload)
+
+
+def verify_images(args, evidence):
+    directory = evidence / "image-insertion"
+    directory.mkdir(parents=True, exist_ok=True)
+    fixture = directory / "blank.xopp"
+    root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
+    ET.SubElement(root, "title").text = "GTK4 image insertion"
+    page = ET.SubElement(root, "page", {"width": "595", "height": "842"})
+    ET.SubElement(page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+    ET.SubElement(page, "layer", {"name": "Layer 1"})
+    fixture.write_bytes(gzip.compress(ET.tostring(root, encoding="utf-8", xml_declaration=True)))
+    image = directory / "fixture.png"
+    make_png(image)
+    output = directory / "run"
+    shutil.rmtree(output, ignore_errors=True)
+    output.mkdir(parents=True, exist_ok=True)
+    result = run(
+        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
+         "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_IMAGE_VERIFY_MODE="insert-resize-save-reopen",
+                 XOURNALPP_IMAGE_VERIFY_SOURCE=str(image)),
+    )
+    if "PASS: GTK image insertion, resize, move, native save/reopen and PDF export" not in result:
+        raise RuntimeError("GTK image insertion verification did not finish")
+    for name in ("image-inserted", "image-resized", "image-reopened"):
+        screenshot = output / f"{name}.png"
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing or empty image insertion screenshot: {screenshot}")
+    saved = ET.fromstring(gzip.decompress((output / "image-saved.xopp").read_bytes()))
+    images = saved.findall(".//image")
+    if len(images) != 1:
+        raise RuntimeError(f"Native image save contains {len(images)} images instead of one")
+    stored = saved.find(".//image")
+    if stored is None or not stored.text or len(stored.text.strip()) < 16:
+        raise RuntimeError("Native image save lost its encoded image data")
+    exported = output / "image-exported.pdf"
+    if not exported.is_file() or not exported.read_bytes().startswith(b"%PDF-"):
+        raise RuntimeError("Image PDF export is missing or invalid")
+    image_list = run(["pdfimages", "-list", str(exported)])
+    if not any(re.match(r"^\s*\d+\s+\d+\s+image\s", line) for line in image_list.splitlines()):
+        raise RuntimeError("Exported PDF does not contain the inserted image")
+    print("PASS: private GTK4 image insertion, resize, move, native persistence and PDF export", flush=True)
+    return str(output)
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.image_only:
+        image_evidence = verify_images(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"image-insertion": image_evidence}, "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.layer_only:
         layer_evidence = verify_layer_management(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -490,6 +559,7 @@ def inside(args):
         verify_crash_recovery(args, evidence, copy, root)
         verify_settings_import(args, evidence, copy)
         results["layer-management"] = verify_layer_management(args, evidence)
+        results["image-insertion"] = verify_images(args, evidence)
     results["preferences"] = verify_preferences(args, evidence)
     if hashlib.sha256(fixture.read_bytes()).hexdigest() != original_hash:
         raise RuntimeError("Input fixture changed")
@@ -515,6 +585,7 @@ def main():
                         default=Path(__file__).resolve().parents[2] / "test/files/benchmark/typed-text.xopp")
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--layer-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--image-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -561,6 +632,8 @@ def main():
             command.extend(["--worker", str(args.worker.resolve())])
         if args.layer_only:
             command.append("--layer-only")
+        if args.image_only:
+            command.append("--image-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

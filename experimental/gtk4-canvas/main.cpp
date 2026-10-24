@@ -24,6 +24,7 @@
 #include "DocumentSession.h"
 #include "DocumentJob.h"
 #include "DocumentInk.h"
+#include "ImageRenderer.h"
 #include "InkRenderer.h"
 #include "TextRenderer.h"
 #include "PaletteImport.h"
@@ -72,6 +73,19 @@ struct PageCacheEntry {
     double scale = 0;
     uint64_t stamp = 0;
     std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface;
+};
+
+struct ImageGesture {
+    enum class Mode { Move, Resize };
+
+    prototype::Device owner = prototype::Device::Mouse;
+    Mode mode = Mode::Move;
+    size_t index = 0;
+    size_t corner = 0;
+    prototype::Point start;
+    prototype::CanvasImage original;
+    prototype::CanvasImage preview;
+    bool changed = false;
 };
 
 class Prototype {
@@ -288,6 +302,7 @@ private:
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.committedInk());
         const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
@@ -297,8 +312,8 @@ private:
         auto* application = G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
         g_application_hold(application);
         prototype::bridge::documentJob(
-                [session, worker, target, packets, texts, layers] {
-                    session->autosave(worker, target, packets, texts, layers);
+                [session, worker, target, packets, texts, images, layers] {
+                    session->autosave(worker, target, packets, texts, images, layers);
                 },
                 [this, application, session, revision, target, previous](const std::string& error) {
                     autosaving = false;
@@ -673,10 +688,23 @@ private:
         auto [candidate, pageSizes] = openPreviewPdf(session->previewPath().string());
         const int count = static_cast<int>(pageSizes.size());
         std::vector<PopplerDocument*> candidateLayers;
-        auto hydratedInk = [&] {
+        auto [hydratedInk, hydratedImages] = [&] {
             try {
                 candidateLayers = openLayerPreviewPdfs(session->layerPreviewPaths, count);
-                return prototype::bridge::sessionInk(session->initialInk);
+                auto ink = prototype::bridge::sessionInk(session->initialInk);
+                std::vector<prototype::CanvasImage> images;
+                images.reserve(session->initialImages.size());
+                for (const auto& packet: session->initialImages) {
+                    auto image = prototype::bridge::canvasImage(packet);
+                    int width = 0;
+                    int height = 0;
+                    image.surface = prototype::decodeCanvasImage(image.encodedData, width, height);
+                    if (width != image.pixelWidth || height != image.pixelHeight) {
+                        throw std::runtime_error("Transferred image dimensions changed during decoding");
+                    }
+                    images.push_back(std::move(image));
+                }
+                return std::pair{std::move(ink), std::move(images)};
             } catch (...) {
                 g_object_unref(candidate);
                 releaseLayerPreviewPdfs(candidateLayers);
@@ -689,6 +717,8 @@ private:
             cleanupActiveAutosave();
         }
         input.reset();
+        imageGesture.reset();
+        selectedImageIndex.reset();
         const auto brush = state.brush;
         const auto eraserMode = state.eraserMode;
         const auto eraserWidth = state.eraserWidth;
@@ -699,6 +729,7 @@ private:
         state.setLayerDocument(session->initialLayers);
         state.ink = std::move(hydratedInk);
         state.texts = session->initialTexts;
+        state.images = std::move(hydratedImages);
         state.brush = brush;
         state.eraserMode = eraserMode;
         state.eraserWidth = eraserWidth;
@@ -824,7 +855,7 @@ private:
                 [loaded, worker, recoveryPath, adopted] {
                     *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath);
                     (*loaded)->autosave(worker, adopted, (*loaded)->initialInk, (*loaded)->initialTexts,
-                                        (*loaded)->initialLayers);
+                                        (*loaded)->initialImages, (*loaded)->initialLayers);
                     if (adopted != recoveryPath) {
                         prototype::bridge::removeAutosaveFiles(recoveryPath);
                     }
@@ -916,11 +947,12 @@ private:
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.ink);
         const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
-        runDocumentJob("Saving copy…", [session, worker, path, packets, texts, layers] {
-            session->saveCopy(worker, path, packets, texts, layers);
+        runDocumentJob("Saving copy…", [session, worker, path, packets, texts, images, layers] {
+            session->saveCopy(worker, path, packets, texts, images, layers);
         },
                        [this, revision, path, after = std::move(after)] {
             savedRevision = revision;
@@ -964,13 +996,14 @@ private:
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.ink);
         const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto version = std::make_shared<std::string>();
-        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, layers, version] {
+        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, images, layers, version] {
             const auto before = expected.empty() ? prototype::bridge::documentVersion(path).token : expected;
-            *version = session->save(worker, path, packets, texts, layers, before);
+            *version = session->save(worker, path, packets, texts, images, layers, before);
         }, [this, path, revision, version, after = std::move(after)] {
             saveTarget = path;
             saveVersion = *version;
@@ -1116,6 +1149,9 @@ private:
         if (number < 0 || number >= pageCount) {
             return;
         }
+        if (number != state.page) {
+            selectedImageIndex.reset();
+        }
         resetInput();
         if (canvas) {
             state.scrollToPage(number, gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
@@ -1190,13 +1226,14 @@ private:
         resetInput(true);
         const auto packets = prototype::bridge::transferInk(state.ink);
         const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
         // Exporting to PDF never alters .xopp savedRevision, saveTarget, or active autosave artifacts.
         runDocumentJob("Exporting PDF…",
-                       [session, worker, path, packets, texts, layers] {
-                           session->exportPdf(worker, path, packets, texts, layers);
+                       [session, worker, path, packets, texts, images, layers] {
+                           session->exportPdf(worker, path, packets, texts, images, layers);
                        },
                        [this, path] { exportedPdfPath = path; });
     }
@@ -1579,6 +1616,9 @@ private:
         if (textEditor && textEditor->active()) {
             finishTextEditing();
         }
+        if (tool != Tool::SmartSelect) {
+            selectedImageIndex.reset();
+        }
         syncingTools = true;
         if (textButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(textButton), tool == Tool::Text);
@@ -1802,6 +1842,7 @@ private:
                                     auto* self = static_cast<Prototype*>(data);
                                     self->resetInput(true);
                                     if (self->state.addLayerAboveCurrent()) {
+                                        self->selectedImageIndex.reset();
                                         self->rebuildLayerStack();
                                         self->update();
                                     }
@@ -1811,6 +1852,7 @@ private:
                                        auto* self = static_cast<Prototype*>(data);
                                        self->resetInput(true);
                                        if (self->state.deleteCurrentLayer()) {
+                                           self->selectedImageIndex.reset();
                                            self->rebuildLayerStack();
                                            self->update();
                                        }
@@ -1822,6 +1864,7 @@ private:
                              auto* self = static_cast<Prototype*>(data);
                              self->resetInput(true);
                              if (self->state.mergeCurrentLayerDown()) {
+                                 self->selectedImageIndex.reset();
                                  self->rebuildLayerStack();
                                  self->update();
                              }
@@ -1924,6 +1967,12 @@ private:
                                                                                      "view-conceal-symbolic");
                                  gtk_widget_set_tooltip_text(GTK_WIDGET(button), shown ? "Hide layer" : "Show layer");
                                  if (self->state.setLayerVisible(self->state.page, id, shown)) {
+                                     if (self->selectedImageIndex &&
+                                         *self->selectedImageIndex < self->state.images.size() &&
+                                         self->state.images[*self->selectedImageIndex].page == self->state.page &&
+                                         self->state.images[*self->selectedImageIndex].layerId == id) {
+                                         self->selectedImageIndex.reset();
+                                     }
                                      self->thumbnails.clear();
                                      self->update();
                                  }
@@ -1944,6 +1993,7 @@ private:
                                          g_object_get_data(G_OBJECT(button), "layer-id")));
                                  self->resetInput(true);
                                  if (self->state.selectLayer(self->state.page, id)) {
+                                     self->selectedImageIndex.reset();
                                      self->rebuildLayerStack();
                                      self->update();
                                  }
@@ -2010,9 +2060,10 @@ private:
         cairo_set_source_surface(cr, thumbnails.at(number).first.get(), 0, 0);
         cairo_paint(cr);
         cairo_scale(cr, thumbnails.at(number).second, thumbnails.at(number).second);
+        enum class EditableKind { Ink, Text, Image };
         struct LayerItem {
             size_t order;
-            bool text;
+            EditableKind kind;
             size_t index;
         };
         const auto& pageLayers = state.layersForPage(number);
@@ -2034,20 +2085,28 @@ private:
                 for (size_t index = 0; index < state.ink.size(); ++index) {
                     if (state.displayPage(index) == number && state.displayLayerId(index) == layerId &&
                         state.displayLayerOrigin(index) == origin) {
-                        items.push_back({state.ink[index].layerOrder, false, index});
+                        items.push_back({state.ink[index].layerOrder, EditableKind::Ink, index});
                     }
                 }
                 for (size_t index = 0; index < state.texts.size(); ++index) {
                     if (state.texts[index].page == number && state.texts[index].layerId == layerId &&
                         state.texts[index].originLayer == origin) {
-                        items.push_back({state.texts[index].layerOrder, true, index});
+                        items.push_back({state.texts[index].layerOrder, EditableKind::Text, index});
+                    }
+                }
+                for (size_t index = 0; index < state.images.size(); ++index) {
+                    const auto& image = state.images[index];
+                    if (image.page == number && image.layerId == layerId && image.originLayer == origin) {
+                        items.push_back({image.layerOrder, EditableKind::Image, index});
                     }
                 }
                 std::stable_sort(items.begin(), items.end(),
                                  [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
                 for (const auto& item: items) {
-                    if (item.text) {
+                    if (item.kind == EditableKind::Text) {
                         prototype::drawText(cr, state.texts[item.index]);
+                    } else if (item.kind == EditableKind::Image) {
+                        prototype::drawCanvasImage(cr, displayedImage(item.index));
                     } else {
                         prototype::drawInkPreview(cr, state, item.index);
                     }
@@ -2116,6 +2175,7 @@ private:
         adw_header_bar_pack_end(ADW_HEADER_BAR(header), exportPdfButton);
         undoButton = button("edit-undo-symbolic", "Undo ink (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
+                                self->selectedImageIndex.reset();
                                 self->input.cancel();
                                 self->state.undo();
                                 self->update();
@@ -2123,6 +2183,7 @@ private:
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), undoButton);
         redoButton = button("edit-redo-symbolic", "Redo ink (Ctrl+Shift+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
+                                self->selectedImageIndex.reset();
                                 self->input.cancel();
                                 self->state.redo();
                                 self->update();
@@ -2172,6 +2233,11 @@ private:
                          }),
                          this);
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), textButton);
+        imageButton = button("insert-image-symbolic", "Insert Image",
+                             G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                 static_cast<Prototype*>(data)->chooseImage();
+                             }));
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), imageButton);
         gtk_box_append(GTK_BOX(toolbar), toolGroup);
 
         textFontEntry = gtk_entry_new();
@@ -2605,6 +2671,12 @@ private:
                 layerVerifyMode = verifyMode;
                 layerVerifyStep = 0;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_IMAGE_VERIFY_MODE"); verifyMode && *verifyMode) {
+                imageVerifyMode = verifyMode;
+                imageVerifySource = g_getenv("XOURNALPP_IMAGE_VERIFY_SOURCE") ?
+                                            g_getenv("XOURNALPP_IMAGE_VERIFY_SOURCE") : "";
+                imageVerifyStep = 0;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -2625,6 +2697,8 @@ private:
                             if (++self->snapshotWaits < 60) {
                                 if (!self->settingsVerifyMode.empty()) {
                                     --self->settingsVerifyStep;
+                                } else if (!self->imageVerifyMode.empty()) {
+                                    --self->imageVerifyStep;
                                 } else if (!self->layerVerifyMode.empty()) {
                                     --self->layerVerifyStep;
                                 } else if (self->documentSmokeStep >= 0) {
@@ -2670,6 +2744,7 @@ private:
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
         gtk_widget_set_sensitive(exportPdfButton, bool(nativeSession));
         gtk_widget_set_sensitive(textButton, bool(nativeSession));
+        gtk_widget_set_sensitive(imageButton, bool(nativeSession));
         gtk_widget_set_sensitive(prevPageButton, state.page > 0);
         gtk_widget_set_sensitive(nextPageButton, state.page + 1 < pageCount);
         gtk_widget_set_sensitive(insertPageButton, bool(nativeSession));
@@ -2734,7 +2809,189 @@ private:
         return {gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
     }
 
+    const prototype::CanvasImage& displayedImage(size_t index) const {
+        if (imageGesture && imageGesture->index == index) {
+            return imageGesture->preview;
+        }
+        return state.images.at(index);
+    }
+
+    std::optional<size_t> imageHandleAt(const prototype::CanvasImage& image, const prototype::Point& point) const {
+        const auto corners = prototype::canvasImageCorners(image);
+        const double radius = 8.0 / std::max(0.1, state.zoom);
+        for (size_t index = 0; index < corners.size(); ++index) {
+            if (std::hypot(corners[index].x - point.x, corners[index].y - point.y) <= radius) {
+                return index;
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool beginImageGesture(Device device, double x, double y) {
+        if (state.brush.tool != Tool::SmartSelect || input.spaceHeld || input.panning() ||
+            (device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
+            return false;
+        }
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            return false;
+        }
+
+        std::optional<size_t> picked = state.pickImage(hit->page, hit->local);
+        std::optional<size_t> handle;
+        if (selectedImageIndex && *selectedImageIndex < state.images.size()) {
+            const auto& selectedImage = state.images[*selectedImageIndex];
+            if (selectedImage.page == hit->page && selectedImage.layerId == state.activeLayerId(hit->page) &&
+                state.layerVisible(hit->page, selectedImage.layerId)) {
+                handle = imageHandleAt(selectedImage, hit->local);
+                if (handle) {
+                    picked = selectedImageIndex;
+                }
+            }
+        }
+        if (!picked) {
+            selectedImageIndex.reset();
+            return false;
+        }
+
+        const auto& image = state.images[*picked];
+        if (image.page != hit->page || image.layerId != state.activeLayerId(hit->page) ||
+            !state.layerVisible(hit->page, image.layerId)) {
+            return false;
+        }
+        if (*picked != selectedImageIndex.value_or(state.images.size())) {
+            state.clearSelection();
+        }
+        state.selectActivePage(hit->page);
+        selectedImageIndex = *picked;
+        ImageGesture gesture;
+        gesture.owner = device;
+        gesture.index = *picked;
+        gesture.mode = handle ? ImageGesture::Mode::Resize : ImageGesture::Mode::Move;
+        gesture.corner = handle.value_or(0);
+        gesture.start = hit->local;
+        gesture.original = image;
+        gesture.preview = image;
+        imageGesture = std::move(gesture);
+        return true;
+    }
+
+    void updateImageGesture(double x, double y) {
+        if (!imageGesture) {
+            return;
+        }
+        auto& gesture = *imageGesture;
+        const auto point = state.pageLocalPoint(gesture.original.page, x, y);
+        if (gesture.mode == ImageGesture::Mode::Move) {
+            gesture.preview.transform.x = gesture.original.transform.x + point.x - gesture.start.x;
+            gesture.preview.transform.y = gesture.original.transform.y + point.y - gesture.start.y;
+        } else {
+            constexpr std::array<prototype::Point, 4> localCorners = {
+                    prototype::Point{0, 0}, prototype::Point{1, 0}, prototype::Point{1, 1},
+                    prototype::Point{0, 1}};
+            const auto corners = prototype::canvasImageCorners(gesture.original);
+            const size_t opposite = (gesture.corner + 2) % corners.size();
+            const auto anchor = corners[opposite];
+            const double diagonalX = corners[gesture.corner].x - anchor.x;
+            const double diagonalY = corners[gesture.corner].y - anchor.y;
+            const double denominator = diagonalX * diagonalX + diagonalY * diagonalY;
+            if (denominator > 1e-8) {
+                const double factor = std::clamp(((point.x - anchor.x) * diagonalX +
+                                                  (point.y - anchor.y) * diagonalY) / denominator,
+                                                 0.05, 10.0);
+                const auto& source = gesture.original.transform;
+                auto& target = gesture.preview.transform;
+                target.xx = source.xx * factor;
+                target.yx = source.yx * factor;
+                target.xy = source.xy * factor;
+                target.yy = source.yy * factor;
+                const double anchorX = localCorners[opposite].x * gesture.original.pixelWidth;
+                const double anchorY = localCorners[opposite].y * gesture.original.pixelHeight;
+                target.x = anchor.x - target.xx * anchorX - target.xy * anchorY;
+                target.y = anchor.y - target.yx * anchorX - target.yy * anchorY;
+            }
+        }
+        const auto& before = gesture.original.transform;
+        const auto& after = gesture.preview.transform;
+        gesture.changed = before.xx != after.xx || before.yx != after.yx || before.xy != after.xy ||
+                          before.yy != after.yy || before.x != after.x || before.y != after.y;
+    }
+
+    void finishImageGesture() {
+        if (!imageGesture) {
+            return;
+        }
+        auto gesture = std::move(*imageGesture);
+        imageGesture.reset();
+        if (gesture.changed && state.replaceImage(gesture.index, std::move(gesture.preview))) {
+            selectedImageIndex = gesture.index;
+            thumbnails.clear();
+        }
+        update();
+    }
+
+    void insertImageFromPath(const std::string& path) {
+        if (!nativeSession) {
+            return;
+        }
+        try {
+            auto image = prototype::readCanvasImageFile(path);
+            const auto page = state.pageSize(state.page);
+            image.page = state.page;
+            const double scale = std::min(page.width * 0.6 / image.pixelWidth,
+                                          page.height * 0.6 / image.pixelHeight);
+            const double width = image.pixelWidth * scale;
+            const double height = image.pixelHeight * scale;
+            image.transform = {scale, 0, 0, scale, (page.width - width) / 2, (page.height - height) / 2};
+            selectTool(Tool::SmartSelect);
+            if (!state.insertImage(std::move(image))) {
+                showError("The image could not be inserted into the active page.");
+                return;
+            }
+            selectedImageIndex = state.images.size() - 1;
+            thumbnails.clear();
+            update();
+        } catch (const std::exception& error) {
+            showError(std::string("Cannot insert image: ") + error.what());
+        }
+    }
+
+    void chooseImage() {
+        if (!nativeSession || busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this] { chooseImage(); });
+            return;
+        }
+        finishTextEditing();
+        resetInput(true);
+        choosingFile = true;
+        auto* dialog = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(dialog, "Insert Image");
+        auto* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, "Images");
+        for (const char* mime: {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"}) {
+            gtk_file_filter_add_mime_type(filter, mime);
+        }
+        gtk_file_dialog_set_default_filter(dialog, filter);
+        g_object_unref(filter);
+        gtk_file_dialog_open(dialog, GTK_WINDOW(window), nullptr,
+                             +[](GObject* source, GAsyncResult* result, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 self->choosingFile = false;
+                                 GError* error = nullptr;
+                                 auto* file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+                                 self->finishFileChoice(file, error, [self](const std::string& path) {
+                                     self->insertImageFromPath(path);
+                                 });
+                             },
+                             this);
+        g_object_unref(dialog);
+    }
+
     void resetInput(bool interrupted = false) {
+        imageGesture.reset();
         if (interrupted) {
             input.interrupt();
         } else {
@@ -2750,6 +3007,11 @@ private:
 
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        if (beginImageGesture(device, x, y)) {
+            gtk_widget_grab_focus(canvas);
+            update();
+            return;
+        }
         gtk_widget_grab_focus(canvas);
         const auto toolbarBrush = state.brush;
         const bool previousSpaceHeld = input.spaceHeld;
@@ -2782,6 +3044,11 @@ private:
 
     void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                 uint32_t timeMs = 0) {
+        if (imageGesture && imageGesture->owner == device) {
+            updateImageGesture(x, y);
+            update();
+            return;
+        }
         input.motion(device, {x, y, pressure, timeMs});
         if (input.panning()) {
             fitted = true;
@@ -2792,6 +3059,10 @@ private:
     }
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt) {
+        if (imageGesture && imageGesture->owner == device) {
+            finishImageGesture();
+            return;
+        }
         input.finish(device, releasePressure);
         if (!input.active()) {
             gtk_widget_set_cursor_from_name(canvas, input.spaceHeld ? "grab" : nullptr);
@@ -3274,7 +3545,12 @@ private:
                         return true;
                     }
                     if (key == GDK_KEY_Escape) {
-                        if (self->input.splineInProgress) {
+                        if (self->imageGesture) {
+                            self->resetInput();
+                            self->selectedImageIndex.reset();
+                        } else if (self->selectedImageIndex) {
+                            self->selectedImageIndex.reset();
+                        } else if (self->input.splineInProgress) {
                             self->input.finalizeSpline();
                         } else {
                             self->resetInput();
@@ -3290,6 +3566,12 @@ private:
                         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[3]), true);
                         self->state.selectAllOnPage();
                     } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_Delete || key == GDK_KEY_BackSpace) && self->selectedImageIndex) {
+                        self->resetInput();
+                        self->state.deleteImage(*self->selectedImageIndex);
+                        self->selectedImageIndex.reset();
+                        self->thumbnails.clear();
+                    } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
                                (key == GDK_KEY_Delete || key == GDK_KEY_BackSpace) && !self->state.selected.empty()) {
                         self->input.cancel();
                         self->state.deleteSelection();
@@ -3297,6 +3579,7 @@ private:
                         self->input.spaceHeld = true;
                         gtk_widget_set_cursor_from_name(self->canvas, "grab");
                     } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_Z)) {
+                        self->selectedImageIndex.reset();
                         if (modifiers & GDK_SHIFT_MASK) {
                             self->input.cancel();
                             self->state.redo();
@@ -3305,6 +3588,7 @@ private:
                             self->state.undo();
                         }
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
+                        self->selectedImageIndex.reset();
                         self->input.cancel();
                         self->state.redo();
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0) {
@@ -3570,9 +3854,10 @@ private:
                 cairo_paint(cr);
                 cairo_restore(cr);
             }
+            enum class EditableKind { Ink, Text, Image };
             struct LayerItem {
                 size_t order;
-                bool text;
+                EditableKind kind;
                 size_t index;
             };
             for (size_t layerIndex = 0; layerIndex < state.layersForPage(i).layers.size(); ++layerIndex) {
@@ -3596,20 +3881,28 @@ private:
                     for (size_t index = 0; index < state.ink.size(); ++index) {
                         if (state.displayPage(index) == i && state.displayLayerId(index) == layerId &&
                             state.displayLayerOrigin(index) == origin) {
-                            layerItems.push_back({state.ink[index].layerOrder, false, index});
+                            layerItems.push_back({state.ink[index].layerOrder, EditableKind::Ink, index});
                         }
                     }
                     for (size_t index = 0; index < state.texts.size(); ++index) {
                         if (state.texts[index].page == i && state.texts[index].layerId == layerId &&
                             state.texts[index].originLayer == origin) {
-                            layerItems.push_back({state.texts[index].layerOrder, true, index});
+                            layerItems.push_back({state.texts[index].layerOrder, EditableKind::Text, index});
+                        }
+                    }
+                    for (size_t index = 0; index < state.images.size(); ++index) {
+                        const auto& image = state.images[index];
+                        if (image.page == i && image.layerId == layerId && image.originLayer == origin) {
+                            layerItems.push_back({image.layerOrder, EditableKind::Image, index});
                         }
                     }
                     std::stable_sort(layerItems.begin(), layerItems.end(),
                                      [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
                     for (const auto& item: layerItems) {
-                        if (item.text) {
+                        if (item.kind == EditableKind::Text) {
                             prototype::drawText(cr, state.texts[item.index]);
+                        } else if (item.kind == EditableKind::Image) {
+                            prototype::drawCanvasImage(cr, displayedImage(item.index));
                         } else {
                             prototype::drawInkPreview(cr, state, item.index);
                         }
@@ -3621,6 +3914,11 @@ private:
                 }
             }
             prototype::drawSelection(cr, state, i);
+            if (selectedImageIndex && *selectedImageIndex < state.images.size() &&
+                state.images[*selectedImageIndex].page == i &&
+                state.layerVisible(i, state.images[*selectedImageIndex].layerId)) {
+                prototype::drawCanvasImageHandles(cr, displayedImage(*selectedImageIndex), state.zoom);
+            }
             cairo_restore(cr);
         }
         if (!drewAny) {
@@ -3637,7 +3935,10 @@ private:
                                gtk_widget_get_height(window));
         // A window paintable may lag a just-queued drawing-area frame. Overlay a
         // fresh canvas snapshot so smoke captures include the state being tested.
-        if (!target && canvas) {
+        const bool overlayDialogVisible = messageDialog ||
+                                          (preferencesDialog &&
+                                           gtk_widget_get_visible(GTK_WIDGET(preferencesDialog)));
+        if (!target && canvas && !overlayDialogVisible) {
             graphene_rect_t canvasBounds;
             if (gtk_widget_compute_bounds(canvas, window, &canvasBounds)) {
                 auto* canvasPaintable = gtk_widget_paintable_new(canvas);
@@ -4101,6 +4402,110 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    gboolean smokeImages() {
+        require(imageVerifyMode == "insert-resize-save-reopen" && !imageVerifySource.empty(),
+                "Image verification requires a source fixture and supported mode");
+        if (imageVerifyStep == 5 && (busy || autosaving)) {
+            return G_SOURCE_CONTINUE;
+        }
+        switch (imageVerifyStep++) {
+            case 0:
+                if (!nativeSession || !gtk_widget_get_sensitive(imageButton)) {
+                    --imageVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                require(state.images.empty(), "Image verification document should start without editable images");
+                g_signal_emit_by_name(imageButton, "clicked");
+                require(choosingFile, "Insert Image action did not open its native image chooser");
+                break;
+            case 1:
+                if (!cancelPrivateChooser()) {
+                    require(++chooserWaits < 60, "Insert Image chooser did not appear");
+                    --imageVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                break;
+            case 2:
+                require(!choosingFile, "Cancelling Insert Image did not close the image chooser");
+                insertImageFromPath(imageVerifySource);
+                require(state.images.size() == 1 && selectedImageIndex == 0 && modified(),
+                        "Insert Image did not add a selected, undoable image");
+                break;
+            case 3: {
+                capture("image-inserted");
+                break;
+            }
+            case 4: {
+                const auto originalScale = state.images.at(0).transform.xx;
+                const auto corners = prototype::canvasImageCorners(state.images.at(0));
+                const auto start = state.pageScreenPoint(state.images[0].page, corners[2].x, corners[2].y);
+                const auto releasePoint = state.pageScreenPoint(state.images[0].page, corners[2].x + 40,
+                                                                corners[2].y + 30);
+                begin(Device::Mouse, start.x, start.y);
+                motion(Device::Mouse, releasePoint.x, releasePoint.y);
+                finish(Device::Mouse);
+                require(state.images[0].transform.xx > originalScale && state.canUndo(),
+                        "Dragging an image corner did not resize the image");
+                capture("image-resized");
+                break;
+            }
+            case 5: {
+                const auto& image = state.images.at(0);
+                const auto center = prototype::canvasImagePoint(image, image.pixelWidth / 2.0,
+                                                                image.pixelHeight / 2.0);
+                const auto start = state.pageScreenPoint(image.page, center.x, center.y);
+                const auto releasePoint = state.pageScreenPoint(image.page, center.x + 24, center.y + 19);
+                const double originalX = image.transform.x;
+                const double originalY = image.transform.y;
+                begin(Device::Mouse, start.x, start.y);
+                motion(Device::Mouse, releasePoint.x, releasePoint.y);
+                finish(Device::Mouse);
+                require(std::abs(state.images[0].transform.x - originalX - 24) < 1e-6 &&
+                                std::abs(state.images[0].transform.y - originalY - 19) < 1e-6,
+                        "Dragging an image body did not move the image");
+                imageVerifyExpected = state.images[0].transform;
+                saveCopyTo((std::filesystem::path(options.smokeDirectory) / "image-saved.xopp").string());
+                break;
+            }
+            case 6: {
+                if (busy || autosaving) {
+                    --imageVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                const auto path = (std::filesystem::path(options.smokeDirectory) / "image-saved.xopp").string();
+                require(!modified(), "Saving a document with an edited image left it modified");
+                require(savedCopyPath == path, "Saving an image copy did not update its destination");
+                require(std::filesystem::is_regular_file(path), "Saving an image copy did not create the file");
+                requestOpenDocument(path);
+                break;
+            }
+            case 7: {
+                require(state.images.size() == 1 && state.images[0].encodedData.size() > 0 &&
+                                std::abs(state.images[0].transform.xx - imageVerifyExpected.xx) < 1e-9 &&
+                                std::abs(state.images[0].transform.yy - imageVerifyExpected.yy) < 1e-9 &&
+                                std::abs(state.images[0].transform.x - imageVerifyExpected.x) < 1e-6 &&
+                                std::abs(state.images[0].transform.y - imageVerifyExpected.y) < 1e-6,
+                        "Saving and reopening changed the native image or its resized placement");
+                capture("image-reopened");
+                const auto pdf = (std::filesystem::path(options.smokeDirectory) / "image-exported.pdf").string();
+                exportPdfTo(pdf);
+                break;
+            }
+            default: {
+                const auto pdf = (std::filesystem::path(options.smokeDirectory) / "image-exported.pdf").string();
+                require(exportedPdfPath == pdf && std::filesystem::is_regular_file(pdf),
+                        "Exporting the image document did not create a PDF");
+                std::cout << "PASS: GTK image insertion, resize, move, native save/reopen and PDF export\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+            }
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokeSettingsVerify() {
         if (settingsVerifyMode == "fallback") {
             require(importedConfig.usedSettingsFallback, "Expected corrupt settings.xml to trigger fallback");
@@ -4230,7 +4635,7 @@ private:
             throw std::runtime_error("Window did not finish painting the requested state");
         }
         paintWaits = 0;
-        if (preferencesVerifyMode.empty() && (!frames || pageCache.empty())) {
+        if (preferencesVerifyMode.empty() && imageVerifyMode.empty() && (!frames || pageCache.empty())) {
             require(++smokeWaits < 60, "Canvas has not rendered");
             return G_SOURCE_CONTINUE;
         }
@@ -4242,6 +4647,9 @@ private:
         }
         if (!layerVerifyMode.empty()) {
             return smokeLayers();
+        }
+        if (!imageVerifyMode.empty()) {
+            return smokeImages();
         }
         if (documentSmokeStep >= 0) {
             return smokeDocuments();
@@ -4692,14 +5100,16 @@ private:
                 capture("normal-saved");
                 auto packets = prototype::bridge::transferInk(state.ink);
                 auto texts = state.texts;
+                auto images = prototype::bridge::transferImages(state.images);
                 auto layers = state.pageLayers;
                 packets.push_back({0, false, false, 2, {0, 1, 0}, {{200, 220, 1}, {230, 220, 1}}});
                 const auto session = nativeSession;
                 const auto worker = options.worker;
                 const auto target = saveTarget;
                 const auto before = saveVersion;
-                runDocumentJob("Testing external edit…", [session, worker, target, before, packets, texts, layers] {
-                    session->save(worker, target, packets, texts, layers, before);
+                runDocumentJob("Testing external edit…",
+                               [session, worker, target, before, packets, texts, images, layers] {
+                    session->save(worker, target, packets, texts, images, layers, before);
                 }, [] {});
                 break;
             }
@@ -5397,6 +5807,10 @@ private:
     std::string layerVerifyMode;
     int layerVerifyStep = -1;
     size_t layerVerifyInitialInk = 0;
+    std::string imageVerifyMode;
+    std::string imageVerifySource;
+    int imageVerifyStep = -1;
+    prototype::CanvasImageTransform imageVerifyExpected;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;
     std::string savedCopyPath;
@@ -5455,6 +5869,8 @@ private:
     std::string smokeExternalVersion;
     CanvasState state;
     prototype::CanvasInput input{state};
+    std::optional<size_t> selectedImageIndex;
+    std::optional<ImageGesture> imageGesture;
     PopplerDocument* document = nullptr;
     std::vector<PopplerDocument*> layerDocuments;
     int pageCount = 1;
@@ -5470,6 +5886,7 @@ private:
     GtkWidget* canvasOverlay = nullptr;
     std::unique_ptr<prototype::TextEditorOverlay> textEditor;
     GtkWidget* textButton = nullptr;
+    GtkWidget* imageButton = nullptr;
     GtkWidget* textFontEntry = nullptr;
     GtkWidget* textFontSize = nullptr;
     GtkWidget* textFormatBox = nullptr;
