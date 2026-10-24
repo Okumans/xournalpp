@@ -142,8 +142,8 @@ inline void publishDocument(SaveStaging& staging, const fs::path& target, const 
         }
         if (!restored) {
             staging.retain = true;
-            throw std::runtime_error("Save failed; original attachments are retained for recovery in " +
-                                     staging.path.string() + ". The document backup is " + backup.string());
+            const auto detail = replacing ? ". The document backup is " + backup.string() : std::string{};
+            throw std::runtime_error("Save failed; recovery files are retained in " + staging.path.string() + detail);
         }
         // Leave a recoverable backup after a failed replacement, like SaveJob.
         std::rethrow_exception(error);
