@@ -255,7 +255,8 @@ def inside(args):
     for dark in (False, True):
         name = 'dark' if dark else 'light'
         output = evidence / name
-        screenshots = ("initial", "ink", "tools", "eraser-split", "eraser-whiteout", "zoom", "narrow", "sidebar")
+        screenshots = ("initial", "ink", "tools", "eraser-split", "eraser-whiteout", "zoom", "drawing-controls",
+                       "shape-tools", "shape-recognized", "spline-tools", "narrow", "sidebar")
         if args.worker:
             screenshots += ("text-editor", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",

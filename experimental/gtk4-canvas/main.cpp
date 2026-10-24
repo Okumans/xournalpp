@@ -2901,6 +2901,21 @@ private:
         auto* snapshot = gtk_snapshot_new();
         gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), gtk_widget_get_width(window),
                                gtk_widget_get_height(window));
+        // A window paintable may lag a just-queued drawing-area frame. Overlay a
+        // fresh canvas snapshot so smoke captures include the state being tested.
+        if (!target && canvas) {
+            graphene_rect_t canvasBounds;
+            if (gtk_widget_compute_bounds(canvas, window, &canvasBounds)) {
+                auto* canvasPaintable = gtk_widget_paintable_new(canvas);
+                const graphene_point_t offset{canvasBounds.origin.x, canvasBounds.origin.y};
+                gtk_snapshot_save(snapshot);
+                gtk_snapshot_translate(snapshot, &offset);
+                gdk_paintable_snapshot(GDK_PAINTABLE(canvasPaintable), GDK_SNAPSHOT(snapshot),
+                                       gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
+                gtk_snapshot_restore(snapshot);
+                g_object_unref(canvasPaintable);
+            }
+        }
         // Wayland GtkPopover renders into a child popup surface; composite it when open.
         if (!target && palettePopover && gtk_widget_get_visible(palettePopover) && paletteButton) {
             const int popW = gtk_widget_get_width(palettePopover);
@@ -2936,6 +2951,17 @@ private:
         if (!saved) {
             throw std::runtime_error("Cannot write screenshot");
         }
+    }
+
+    void waitForNextPaint() {
+        const int previousPaints = paints;
+        gtk_widget_queue_draw(canvas);
+        const gint64 deadline = g_get_monotonic_time() + 500000;
+        while (paints == previousPaints && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(paints > previousPaints, "Canvas did not paint the requested demo state");
     }
 
     static void require(bool condition, const char* message) {
@@ -3016,9 +3042,18 @@ private:
         const auto before = state.ink.size();
         selectTool(Tool::Pen);
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::Freehand));
+        gtk_menu_button_popup(GTK_MENU_BUTTON(paletteButton));
+        gtk_expander_set_expanded(GTK_EXPANDER(drawingOptionsExpander), true);
+        waitForNextPaint();
+        require(gtk_widget_get_visible(palettePopover), "Drawing controls popover did not open");
+        capture("drawing-controls");
+        gtk_popover_popdown(GTK_POPOVER(palettePopover));
+
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
                                    static_cast<guint>(prototype::DrawingMode::Rectangle));
         const auto start = state.pageScreenPoint(0, 190, 230);
-        begin(Device::Mouse, start.x, start.y);
+        g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
         gboolean handled = false;
         g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Shift_L, 0u, GdkModifierType(0), &handled);
         g_signal_emit_by_name(mouse, "drag-update", 60.0 * state.zoom, 35.0 * state.zoom);
@@ -3030,6 +3065,7 @@ private:
         g_signal_emit_by_name(keys, "key-released", GDK_KEY_Shift_L, 0u, GdkModifierType(0));
         require(state.ink.size() == before + 1 && state.ink.back().points.size() == 5,
                 "Constrained rectangle did not commit through the canvas input path");
+        waitForNextPaint();
         capture("shape-tools");
         state.undo();
 
@@ -3047,6 +3083,8 @@ private:
         finish(Device::Mouse);
         require(state.ink.size() == before + 1 && state.ink.back().points.size() > 20,
                 "Shape recognizer did not replace the circular stroke in the GTK smoke path");
+        waitForNextPaint();
+        capture("shape-recognized");
         state.undo();
         require(state.ink.size() == before, "Shape tool smoke operations did not undo cleanly");
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
@@ -3064,6 +3102,8 @@ private:
         g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Escape, 0u, GdkModifierType(0), &handled);
         require(!input.splineInProgress && state.ink.size() == before + 1 && state.ink.back().points.size() > 2,
                 "Escape did not finalize the interactive spline through the GTK key path");
+        waitForNextPaint();
+        capture("spline-tools");
         state.undo();
         require(state.ink.size() == before, "Interactive spline should commit as a single undo action");
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
