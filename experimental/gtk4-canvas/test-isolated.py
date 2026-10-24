@@ -262,14 +262,15 @@ def inside(args):
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",
                             "continuous-pages", "goto-page-dialog", "page-inserted", "selection",
-                            "selection-moved", "selection-deleted")
+                            "selection-moved", "selection-deleted", "lasso-selection", "selection-resized",
+                            "selection-rotated", "selection-pasted", "selection-transferred", "smart-selection")
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
                              "autosave-note.xopp", ".autosave-note.autosave.xopp",
                              "discard-autosave.xopp", ".discard-autosave.autosave.xopp",
                              "recover-autosave.xopp", ".recover-autosave.autosave.xopp",
                              "eraser-modes.xopp", "native-edited.xopp",
                              "exported-notes.pdf", "multipage-edited.xopp", "after-delete-page.xopp",
-                             "selection-moved.xopp", "selection-deleted.xopp"):
+                             "selection-moved.xopp", "selection-deleted.xopp", "selection-transforms.xopp"):
                 (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
@@ -352,6 +353,24 @@ def inside(args):
                 raise RuntimeError("Selection move changed native pressure widths")
             if [ET.tostring(t) for t in moved.findall(".//text")] != [ET.tostring(t) for t in deleted.findall(".//text")]:
                 raise RuntimeError("Selection operations changed original native text")
+            transformed = ET.fromstring(gzip.decompress((output / "selection-transforms.xopp").read_bytes()))
+            transformed_pages = transformed.findall("page")
+            source_stroke = transformed_pages[0].findall(".//stroke")[-1]
+            pasted_stroke = transformed_pages[1].findall(".//stroke")[-1]
+            source_points = list(map(float, source_stroke.text.split()))
+            pasted_points = list(map(float, pasted_stroke.text.split()))
+            # The original 100x80 stroke becomes 120x150 after uniform resize
+            # and a quarter turn. Cross-page paste preserves relative geometry.
+            if abs(source_points[2]-source_points[0]+30) > 1e-5 or abs(source_points[3]-source_points[1]-150) > 1e-5:
+                raise RuntimeError("Native resize/rotation geometry mismatch")
+            for index in range(2,len(source_points)):
+                axis=index%2
+                if abs((source_points[index]-source_points[axis])-(pasted_points[index]-pasted_points[axis]))>1e-5:
+                    raise RuntimeError("Clipboard/cross-page transfer changed relative geometry")
+            if source_stroke.attrib["width"] != pasted_stroke.attrib["width"]:
+                raise RuntimeError("Clipboard/cross-page transfer changed pressure widths")
+            if [ET.tostring(t) for t in transformed.findall(".//text")] != [ET.tostring(t) for t in moved.findall(".//text")]:
+                raise RuntimeError("Transforms changed native text")
             ad_pages = after_delete.findall("page")
             if len(ad_pages) != 2 or len(ad_pages[1].findall(".//stroke")) != 1:
                 raise RuntimeError("Deleting Page 2 did not shift Page 3 and its stroke cleanly to Page 2")

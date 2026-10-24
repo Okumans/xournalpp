@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--worker", type=Path, required=True)
     parser.add_argument("--fixtures", type=Path, required=True)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--clipboard-test", type=Path, help="selection-transforms-test executable for native codec interoperability")
     args = parser.parse_args()
     worker = str(args.worker.resolve())
     fixtures = args.fixtures.resolve()
@@ -204,11 +205,29 @@ def main():
                                       "XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 1 0 0 1000001\n",
                                       "XOURNALPP_GTK4_INK_V1 1\n99 0 0 3 1 0 0 1\n1 1 1\n",
                                       "XOURNALPP_GTK4_INK_V1 1\n0 3 0 3 1 0 0 1\n1 1 1\n",
-                                      "XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 1 0 0 1\n-1 1 1\n")):
+                                      "XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 1 0 0 1\nnan 1 1\n")):
             ink.write_text(data)
             rejected = temporary / f"rejected-{index}.xopp"
             run("save-copy", snapshot, rejected, ink, succeeds=False)
             assert not rejected.exists()
+        # Native transformations can leave finite ink outside a page. It must
+        # remain editable after save/reopen, rather than fail or be flattened.
+        offpage_ink = temporary / "offpage.ink"
+        offpage_ink.write_text("XOURNALPP_GTK4_INK_V1 1\n0 0 1 4 1 0 0 2\n-20 -30 .25\n900 950 .75\n")
+        offpage = temporary / "offpage.xopp"
+        run("save-copy", snapshot, offpage, offpage_ink)
+        extracted_offpage = temporary / "offpage-extracted.ink"
+        run("open", offpage, temporary / "offpage-base.xopp", temporary / "offpage.pdf", extracted_offpage)
+        assert "-20 -30 0.25" in extracted_offpage.read_text() and "900 950" in extracted_offpage.read_text()
+        if args.clipboard_test:
+            encoded = temporary / "clipboard.bin"
+            decoded = temporary / "clipboard-native.bin"
+            subprocess.run([str(args.clipboard_test.resolve()), "--encode", str(encoded)], env=env, check=True, timeout=10)
+            run("clipboard-roundtrip", encoded, decoded)
+            subprocess.run([str(args.clipboard_test.resolve()), "--verify", str(decoded)], env=env, check=True, timeout=10)
+            encoded.write_bytes(encoded.read_bytes()[:-1])
+            run("clipboard-roundtrip", encoded, temporary / "rejected-clipboard.bin", succeeds=False)
+            assert not (temporary / "rejected-clipboard.bin").exists()
         # Corrupt/recoverable input must not silently become a partial saved copy.
         corrupt = temporary / "corrupt.xopp"
         corrupt.write_bytes(gzip.compress(b'<xournal><page width="500" height="500">'))

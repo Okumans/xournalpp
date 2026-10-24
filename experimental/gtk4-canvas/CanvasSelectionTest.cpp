@@ -44,17 +44,18 @@ int main() {
         const auto end = state.pageScreenPoint(0, 55, 75);
         check(state.beginSelection(start.x, start.y), "Selected area should start a move");
         state.moveSelectionPointer(end.x, end.y);
-        check(state.selectionBox()->x0 == 40 && state.ink[0].points[0].x == 20 && state.committedInk()[0].points[0].x == 20,
+        check(state.selectionBox()->x0 == 40 && state.ink[0].points[0].x == 20 &&
+                      state.committedInk()[0].points[0].x == 20,
               "Move preview must not leak into autosave's committed snapshot");
         state.finishSelection();
         const auto movedRevision = state.revision();
-        check(movedRevision != 0 && state.ink[2].points[0].y == 90 &&
-                      state.ink[0].pressureSensitive && state.ink[0].points[0].pressure == .25 &&
-                      state.ink[0].brush.color[0] == 1 && state.ink[1].points[0].x == 0,
+        check(movedRevision != 0 && state.ink[2].points[0].y == 90 && state.ink[0].pressureSensitive &&
+                      state.ink[0].points[0].pressure == .25 && state.ink[0].brush.color[0] == 1 &&
+                      state.ink[1].points[0].x == 0,
               "Moving changed stroke style, pressure, z-order or unselected content");
         state.undo();
-        check(state.ink[0].points[0].x == 20 && state.revision() == 0 &&
-                      state.selected == std::vector<size_t>({0, 2}), "Move undo failed to restore geometry/selection");
+        check(state.ink[0].points[0].x == 20 && state.revision() == 0 && state.selected == std::vector<size_t>({0, 2}),
+              "Move undo failed to restore geometry/selection");
         state.redo();
         check(state.revision() == movedRevision && state.ink[0].points[0].x == 40,
               "Move redo failed to restore the saved revision");
@@ -93,8 +94,8 @@ int main() {
         state.beginSelection(p.x, p.y);
         state.moveSelectionPointer(p.x + 10000, p.y + 10000);
         state.finishSelection();
-        check(state.ink[3].points.back().x <= 300 && state.ink[3].points.back().y <= 200,
-              "Move must remain serializable inside the current page");
+        check(state.ink[3].points.back().x > 300 && state.ink[3].points.back().y > 200,
+              "Native selection transforms must permit off-page coordinates");
         state.clearSelection();
         const auto rev = state.revision();
         state.deleteSelection();
@@ -102,8 +103,10 @@ int main() {
         state = fixture();
         state.ink[0].points = {{.2, 30}, {20, 40}};
         rectangle(state, 0, .8, 20, 30, 50);
-        check(state.selected == std::vector<size_t>({0}), "Page-edge selection must extend at the source's 1 pt threshold");
-        std::cout << "PASS: rectangle containment, move/delete delta undo, pressure/style/order, cancellation, autosave snapshot, pages\n";
+        check(state.selected == std::vector<size_t>({0}),
+              "Page-edge selection must extend at the source's 1 pt threshold");
+        std::cout << "PASS: rectangle containment, move/delete delta undo, pressure/style/order, cancellation, "
+                     "autosave snapshot, pages\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

@@ -29,7 +29,10 @@ struct PageHit {
     Point local{};
 };
 
-enum class Tool { Pen, Highlighter, Eraser, SelectRectangle };
+enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect };
+inline bool isSelectionTool(Tool tool) {
+    return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect;
+}
 enum class EraserMode { Standard, Whiteout, DeleteStroke };
 
 inline constexpr const std::array<double, 5>& widthsForTool(Tool tool) {
@@ -60,6 +63,14 @@ struct Ink {
 struct SelectionBox {
     int page;
     double x0, y0, x1, y1;
+};
+
+struct SelectionTransform {
+    double xx = 1, yx = 0, xy = 0, yy = 1, x0 = 0, y0 = 0;
+    double widthScale = 1;
+
+    Point apply(Point p) const { return {xx * p.x + xy * p.y + x0, yx * p.x + yy * p.y + y0, p.pressure}; }
+    bool identity() const { return xx == 1 && yy == 1 && xy == 0 && yx == 0 && x0 == 0 && y0 == 0; }
 };
 
 enum class Device { Mouse, Stylus };
@@ -94,8 +105,13 @@ public:
     std::optional<SelectionBox> selectionBox() const {
         if (selectionGesture && selectionGesture->moving) {
             const auto& g = *selectionGesture;
-            return SelectionBox{g.page, g.bounds.x0 + g.dx, g.bounds.y0 + g.dy,
-                                 g.bounds.x1 + g.dx, g.bounds.y1 + g.dy};
+            const auto corners = transformedCorners(g.bounds, g.transform);
+            SelectionBox box{g.targetPage, corners[0].x, corners[0].y, corners[0].x, corners[0].y};
+            for (const auto& p: corners) {
+                box.x0 = std::min(box.x0, p.x); box.y0 = std::min(box.y0, p.y);
+                box.x1 = std::max(box.x1, p.x); box.y1 = std::max(box.y1, p.y);
+            }
+            return box;
         }
         if (selectionGesture) {
             const auto& g = *selectionGesture;
@@ -125,12 +141,65 @@ public:
 
     const std::vector<Ink>& committedInk() const { return ink; }
 
-    Point selectionOffset(size_t index) const {
-        if (selectionGesture && selectionGesture->moving &&
-            std::binary_search(selected.begin(), selected.end(), index)) {
-            return {selectionGesture->dx, selectionGesture->dy};
+    static std::array<Point, 4> transformedCorners(const SelectionBox& b, const SelectionTransform& matrix = {}) {
+        return {matrix.apply({b.x0, b.y0}), matrix.apply({b.x1, b.y0}),
+                matrix.apply({b.x1, b.y1}), matrix.apply({b.x0, b.y1})};
+    }
+
+    SelectionTransform selectionMatrix(size_t index) const {
+        if (selectionGesture && selectionGesture->moving && std::binary_search(selected.begin(), selected.end(), index)) {
+            return selectionGesture->transform;
         }
-        return {0, 0};
+        return {};
+    }
+
+    int displayPage(size_t index) const {
+        if (selectionGesture && selectionGesture->moving && std::binary_search(selected.begin(), selected.end(), index)) {
+            return selectionGesture->targetPage;
+        }
+        return ink.at(index).page;
+    }
+
+    std::vector<Point> selectionPath() const {
+        if (selectionGesture && !selectionGesture->moving && selectionGesture->lasso) {
+            return selectionGesture->boundary;
+        }
+        return {};
+    }
+
+    SelectionBox handleBounds(SelectionBox box) const {
+        const auto extent = 20 / zoom;
+        if (box.x1-box.x0 < extent) {
+            const auto center = (box.x0+box.x1)/2;
+            box.x0 = center-extent/2; box.x1 = center+extent/2;
+        }
+        if (box.y1-box.y0 < extent) {
+            const auto center = (box.y0+box.y1)/2;
+            box.y0 = center-extent/2; box.y1 = center+extent/2;
+        }
+        return box;
+    }
+
+    std::array<Point, 9> selectionHandles() const {
+        const auto b = selectionBox();
+        if (!b) return {};
+        auto corners = selectionGesture && selectionGesture->moving ?
+                               transformedCorners(selectionGesture->bounds, selectionGesture->transform) :
+                               transformedCorners(handleBounds(*b));
+        auto mid = [](Point a, Point b) { return Point{(a.x + b.x) / 2, (a.y + b.y) / 2}; };
+        const auto right = mid(corners[1], corners[2]);
+        const auto center = mid(corners[0], corners[2]);
+        const auto length = std::hypot(right.x - center.x, right.y - center.y);
+        const Point rotation = length > 1e-8 ? Point{right.x + 24 / zoom * (right.x-center.x)/length,
+                                                    right.y + 24 / zoom * (right.y-center.y)/length} :
+                                                 Point{right.x + 24 / zoom, right.y};
+        return {corners[0], mid(corners[0], corners[1]), corners[1], right, corners[2],
+                mid(corners[2], corners[3]), corners[3], mid(corners[3], corners[0]), rotation};
+    }
+
+    Point selectionOffset(size_t index) const {
+        const auto matrix = selectionMatrix(index);
+        return {matrix.x0, matrix.y0};
     }
 
     void cancelSelection() {
@@ -145,25 +214,91 @@ public:
         selected.clear();
     }
 
-    bool beginSelection(double x, double y) {
+    std::optional<size_t> pickStroke(int pageIndex, Point point) const {
+        for (size_t i = ink.size(); i-- > 0;) {
+            const auto& stroke = ink[i];
+            if (stroke.page != pageIndex) continue;
+            for (size_t n = 0; n < stroke.points.size(); ++n) {
+                const auto& a = stroke.points[n ? n-1 : 0];
+                const auto& b = stroke.points[n];
+                const auto dx = b.x-a.x, dy = b.y-a.y;
+                const auto length2 = dx*dx+dy*dy;
+                const auto t = length2 ? std::clamp(((point.x-a.x)*dx+(point.y-a.y)*dy)/length2, 0.0, 1.0) : 0;
+                const auto pressure = stroke.pressureSensitive ? a.pressure + t*(b.pressure-a.pressure) : 1;
+                if (std::hypot(point.x-a.x-t*dx, point.y-a.y-t*dy) <= .5 + stroke.brush.width*pressure/2) return i;
+            }
+        }
+        return std::nullopt;
+    }
+
+    static void extendLassoAtPageEdges(std::vector<Point>& boundary, const PageSize& size) {
+        if (boundary.size() <= 2 || size.width <= 0 || size.height <= 0) return;
+        const auto onEdge = [&](const Point& p) {
+            return p.x <= 1 || p.x >= size.width - 1 || p.y <= 1 || p.y >= size.height - 1;
+        };
+        if (std::none_of(boundary.begin(), boundary.end(), onEdge)) return;
+        const auto project = [&](const Point& p) {
+            return Point{p.x <= 1 ? std::numeric_limits<double>::lowest() :
+                                 p.x >= size.width - 1 ? std::numeric_limits<double>::max() : p.x,
+                         p.y <= 1 ? std::numeric_limits<double>::lowest() :
+                                 p.y >= size.height - 1 ? std::numeric_limits<double>::max() : p.y};
+        };
+        std::vector<Point> extended;
+        extended.reserve(boundary.size() * 2);
+        for (size_t i = 0; i < boundary.size(); ++i) {
+            const auto& current = boundary[i];
+            if (!onEdge(current)) {
+                extended.push_back(current);
+                continue;
+            }
+            const bool previousOnEdge = onEdge(boundary[(i + boundary.size() - 1) % boundary.size()]);
+            const bool nextOnEdge = onEdge(boundary[(i + 1) % boundary.size()]);
+            if (!previousOnEdge) extended.push_back(current);
+            if (!previousOnEdge || nextOnEdge) extended.push_back(project(current));
+            if (previousOnEdge && !nextOnEdge) extended.push_back(current);
+        }
+        boundary = std::move(extended);
+    }
+
+    bool beginSelection(double x, double y, bool forceRectangle = false) {
         const auto hit = hitPage(x, y);
         if (!hit || current || eraseGesture || selectionGesture || pinching) {
             return false;
         }
         SelectionGesture gesture;
         gesture.page = hit->page;
+        gesture.targetPage = hit->page;
         gesture.start = gesture.latest = hit->local;
         gesture.previousSelection = selected;
-        const auto bounds = selectionBox();
+        auto bounds = selectionBox();
+        if (bounds && bounds->page == hit->page && !forceRectangle) {
+            const auto handles = selectionHandles();
+            for (int n = 0; n < 9; ++n) {
+                if (std::hypot(handles[n].x-hit->local.x, handles[n].y-hit->local.y) <= 5/zoom) {
+                    gesture.handle = n;
+                    break;
+                }
+            }
+        }
         const auto padding = 5 / zoom;
-        gesture.moving = bounds && bounds->page == hit->page && hit->local.x >= bounds->x0 - padding &&
+        gesture.moving = !forceRectangle && (gesture.handle >= 0 || (bounds && bounds->page == hit->page && hit->local.x >= bounds->x0 - padding &&
                          hit->local.x <= bounds->x1 + padding && hit->local.y >= bounds->y0 - padding &&
-                         hit->local.y <= bounds->y1 + padding;
+                         hit->local.y <= bounds->y1 + padding));
+        if (!gesture.moving && brush.tool == Tool::SmartSelect && !forceRectangle) {
+            if (auto picked = pickStroke(hit->page, hit->local)) {
+                selected = {*picked};
+                bounds = selectionBox();
+                gesture.moving = true;
+            }
+        }
         if (gesture.moving) {
             gesture.indices = selected;
-            gesture.bounds = *bounds;
+            gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds) : *bounds;
         } else {
             selected.clear();
+            gesture.lasso = brush.tool == Tool::SelectLasso && !forceRectangle;
+            gesture.boundary.push_back(hit->local);
+            gesture.additive = forceRectangle && bounds && bounds->page == hit->page;
         }
         selectActivePage(hit->page);
         selectionGesture = std::move(gesture);
@@ -175,13 +310,44 @@ public:
             return;
         }
         auto& g = *selectionGesture;
-        g.latest = pageLocalPoint(g.page, x, y);
-        const auto size = pageSize(g.page);
-        g.latest.x = std::clamp(g.latest.x, 0.0, size.width);
-        g.latest.y = std::clamp(g.latest.y, 0.0, size.height);
+        if (g.moving && g.handle < 0) {
+            if (const auto hit = hitPage(x, y)) g.targetPage = hit->page;
+        }
+        g.latest = pageLocalPoint(g.targetPage, x, y);
         if (g.moving) {
-            g.dx = std::clamp(g.latest.x - g.start.x, -g.bounds.x0, size.width - g.bounds.x1);
-            g.dy = std::clamp(g.latest.y - g.start.y, -g.bounds.y0, size.height - g.bounds.y1);
+            const auto previous = g.transform;
+            g.transform = {};
+            if (g.handle < 0) {
+                g.transform.x0 = g.latest.x - g.start.x;
+                g.transform.y0 = g.latest.y - g.start.y;
+            } else if (g.handle == 8) {
+                const auto cx = (g.bounds.x0+g.bounds.x1)/2, cy = (g.bounds.y0+g.bounds.y1)/2;
+                const auto angle = std::atan2(g.latest.y-cy, g.latest.x-cx) - std::atan2(g.start.y-cy, g.start.x-cx);
+                const auto cosine = std::cos(angle), sine = std::sin(angle);
+                g.transform = {cosine,sine,-sine,cosine,cx-cosine*cx+sine*cy,cy-sine*cx-cosine*cy,1};
+            } else {
+                constexpr int sx[] = {-1,0,1,1,1,0,-1,-1};
+                constexpr int sy[] = {-1,-1,-1,0,1,1,1,0};
+                const auto xs = sx[g.handle], ys = sy[g.handle];
+                const auto width = std::max(g.bounds.x1-g.bounds.x0,5/zoom);
+                const auto height = std::max(g.bounds.y1-g.bounds.y0,5/zoom);
+                const auto ax = xs < 0 ? g.bounds.x1 : g.bounds.x0;
+                const auto ay = ys < 0 ? g.bounds.y1 : g.bounds.y0;
+                const auto vx = xs*width, vy = ys*height;
+                const auto projection = (xs ? (g.latest.x-ax)*vx : 0) + (ys ? (g.latest.y-ay)*vy : 0);
+                auto factor = projection/(vx*vx+vy*vy);
+                const auto constrained = xs && ys ? std::min(width, height) : (xs ? width : height);
+                factor = std::copysign(std::max(std::abs(factor), (5 / zoom) / constrained), factor);
+                const auto fx = xs ? factor : 1, fy = ys ? factor : 1;
+                g.transform = {fx,0,0,fy,ax*(1-fx),ay*(1-fy),std::sqrt(std::abs(fx*fy))};
+            }
+            const auto& m = g.transform;
+            if (!std::isfinite(m.xx) || !std::isfinite(m.xy) || !std::isfinite(m.yx) || !std::isfinite(m.yy) ||
+                !std::isfinite(m.x0) || !std::isfinite(m.y0) || !std::isfinite(m.widthScale) || m.widthScale <= 0)
+                g.transform = previous;
+        } else if (g.lasso && g.boundary.size() < 1000000 &&
+                   std::hypot(g.latest.x-g.boundary.back().x,g.latest.y-g.boundary.back().y) >= .3) {
+            g.boundary.push_back(g.latest);
         }
     }
 
@@ -193,36 +359,59 @@ public:
         selectionGesture.reset();
         if (g.moving) {
             Edit edit;
-            if (g.dx != 0 || g.dy != 0) {
+            if (!g.transform.identity() || g.targetPage != g.page) {
+                std::vector<Ink> transferred;
                 for (auto index: g.indices) {
                     auto moved = ink.at(index);
                     for (auto& point: moved.points) {
-                        point.x += g.dx;
-                        point.y += g.dy;
+                        point = g.transform.apply(point);
                     }
-                    edit.changes.push_back({index, {ink[index]}, index, {std::move(moved)}});
+                    moved.brush.width *= g.transform.widthScale;
+                    if (!std::isfinite(moved.brush.width) || moved.brush.width <= 0 ||
+                        !std::all_of(moved.points.begin(), moved.points.end(), [](const Point& p) {
+                            return std::isfinite(p.x) && std::isfinite(p.y);
+                        })) return;
+                    moved.page = g.targetPage;
+                    if (g.targetPage == g.page) {
+                        edit.changes.push_back({index, {ink[index]}, index, {std::move(moved)}});
+                    } else {
+                        const auto removed = transferred.size();
+                        edit.changes.push_back({index, {ink[index]}, index-removed, {}});
+                        transferred.push_back(std::move(moved));
+                    }
                 }
+                if (!transferred.empty()) edit.changes.push_back({ink.size(), {}, ink.size()-transferred.size(), std::move(transferred)});
             }
             if (!edit.changes.empty()) {
                 edit.selectionBefore = edit.selectionAfter = selected;
+                if (g.targetPage != g.page) {
+                    edit.selectionAfter = std::vector<size_t>{};
+                    for (size_t n = ink.size()-selected.size(); n < ink.size(); ++n) edit.selectionAfter->push_back(n);
+                }
                 apply(edit, true);
                 record(std::move(edit));
+                selectActivePage(g.targetPage);
             }
         } else {
             const auto size = pageSize(g.page);
             const auto x0 = std::min(g.start.x, g.latest.x), x1 = std::max(g.start.x, g.latest.x);
             const auto y0 = std::min(g.start.y, g.latest.y), y1 = std::max(g.start.y, g.latest.y);
+            if (g.additive) selected = g.previousSelection;
+            if (g.lasso) extendLassoAtPageEdges(g.boundary, size);
             // RectangularSelector extends at page edges (1 pt). Stroke selection
             // tests every point, rather than accepting a crossing segment.
             for (size_t i = 0; i < ink.size(); ++i) {
                 if (ink[i].page == g.page && !ink[i].points.empty() &&
                     std::all_of(ink[i].points.begin(), ink[i].points.end(), [&](const Point& p) {
+                        if (g.lasso) return polygonContains(g.boundary, p);
                         return (x0 <= 1 || p.x >= x0) && (x1 >= size.width - 1 || p.x <= x1) &&
                                (y0 <= 1 || p.y >= y0) && (y1 >= size.height - 1 || p.y <= y1);
                     })) {
                     selected.push_back(i);
                 }
             }
+            std::sort(selected.begin(),selected.end());
+            selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
         }
     }
 
@@ -249,6 +438,59 @@ public:
         }
         apply(edit, true);
         record(std::move(edit));
+    }
+
+    static bool polygonContains(const std::vector<Point>& polygon, Point p) {
+        if (polygon.size() < 3) return false;
+        int winding = 0;
+        for (size_t i = 0; i < polygon.size(); ++i) {
+            const auto a = polygon[i], b = polygon[(i+1)%polygon.size()];
+            const long double cross = (static_cast<long double>(b.x)-a.x)*(static_cast<long double>(p.y)-a.y)-
+                                      (static_cast<long double>(p.x)-a.x)*(static_cast<long double>(b.y)-a.y);
+            if (cross == 0 && p.x >= std::min(a.x,b.x) && p.x <= std::max(a.x,b.x) &&
+                p.y >= std::min(a.y,b.y) && p.y <= std::max(a.y,b.y)) return true;
+            if (a.y <= p.y && b.y > p.y && cross > 0) ++winding;
+            if (a.y > p.y && b.y <= p.y && cross < 0) --winding;
+        }
+        return winding != 0;
+    }
+
+    std::vector<Ink> copySelection() const {
+        std::vector<Ink> copied;
+        for (auto index: selected) copied.push_back(ink.at(index));
+        return copied;
+    }
+
+    bool pasteStrokes(std::vector<Ink> pasted, int targetPage, Point center) {
+        if (pasted.empty() || targetPage < 0 || targetPage >= pageCount()) return false;
+        if (!std::isfinite(center.x) || !std::isfinite(center.y)) return false;
+        for (const auto& stroke: pasted) {
+            if (stroke.points.empty() || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0 || isSelectionTool(stroke.brush.tool)) return false;
+            for (const auto& p: stroke.points) {
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.pressure) || p.pressure <= 0) return false;
+            }
+        }
+        const auto previousSelection = selected;
+        SelectionBox b{targetPage, pasted[0].points[0].x,pasted[0].points[0].y,pasted[0].points[0].x,pasted[0].points[0].y};
+        for (const auto& stroke: pasted) for (const auto& p: stroke.points) {
+            b.x0=std::min(b.x0,p.x);b.y0=std::min(b.y0,p.y);b.x1=std::max(b.x1,p.x);b.y1=std::max(b.y1,p.y);
+        }
+        const auto dx = std::max(0.0,center.x-(b.x1-b.x0)/2)-b.x0;
+        const auto dy = std::max(0.0,center.y-(b.y1-b.y0)/2)-b.y0;
+        for (auto& stroke: pasted) {
+            stroke.page=targetPage;
+            for (auto& p: stroke.points) {
+                p.x+=dx;p.y+=dy;
+                if (!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
+            }
+        }
+        clearSelection();
+        Edit edit{{{ink.size(),{},ink.size(),std::move(pasted)}}};
+        edit.selectionBefore = previousSelection;
+        edit.selectionAfter = std::vector<size_t>{};
+        for (size_t i=0;i<edit.changes[0].after.size();++i) edit.selectionAfter->push_back(ink.size()+i);
+        apply(edit,true);record(std::move(edit));selectActivePage(targetPage);
+        return true;
     }
 
     PageSize pageSize(int index) const {
@@ -508,7 +750,7 @@ public:
     }
 
     bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false) {
-        if (brush.tool == Tool::SelectRectangle && !eraserEnd) {
+        if (isSelectionTool(brush.tool) && !eraserEnd) {
             return false;
         }
         clearSelection();
@@ -718,10 +960,13 @@ private:
         int page = 0;
         Point start{}, latest{};
         bool moving = false;
+        bool lasso = false, additive = false;
+        int handle = -1, targetPage = 0;
         std::vector<size_t> previousSelection;
         std::vector<size_t> indices;
         SelectionBox bounds{};
-        double dx = 0, dy = 0;
+        SelectionTransform transform;
+        std::vector<Point> boundary;
     };
 
     struct EraseGesture {

@@ -40,7 +40,7 @@ Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 `Ctrl+Home`/`Ctrl+End` first/last page, `Ctrl+G` or `:` (or clicking `1 / N`) Go
 to Page, and `Ctrl+0` fit. Tool and navigation shortcuts
 leave editable controls alone. Use the header's Pages button to show/hide the
-sidebar. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves,
+sidebar. Selection modes use `Ctrl+Shift+R` (rectangle), `Ctrl+Shift+G` (lasso), or `S` (Smart Select); drag handles to resize/rotate, hold Shift to add a rectangle, and use `Ctrl+C`/`Ctrl+X`/`Ctrl+V` to copy, cut, or paste supported native strokes. The selection toolbar also has duplicate. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves,
 `Ctrl+Shift+S` opens Save As, `Ctrl+E` exports a PDF, `Ctrl+D` inserts a page
 after the active page, and `Ctrl+Shift+Delete` deletes the current page when at
 least two pages exist.
@@ -51,7 +51,7 @@ different zoom levels. When opened through the worker, editable top-layer native
 `.xopp` strokes (above the last non-editable element on a visible top layer) are
 loaded as live ink that can be erased, split, undone/redone, and saved without
 duplication; lower layers and flattened PDF/text/image content are not affected by
-the eraser.
+the eraser. Editable strokes can also be selected, resized, rotated, moved across pages, copied and pasted with native `.xopp` pressure/color/style retained. The clipboard reader limits input to 64 MiB and one million samples, validates the entire supported selection before inserting it, and leaves ink unchanged on malformed input.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
 Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,
@@ -279,31 +279,14 @@ or toolbar configuration features.
 
 ## Remaining migration work
 
-The experiment still needs Smart Select, lasso, resize/rotate, clipboard, and editing of lower-layer or
-non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo,
-signal-crash emergency handling, clipboard, dialogs, IME, interactive preferences
-editing/persistence, per-device button mappings, plugins and configurable toolbars.
+The experiment still needs editing of lower-layer/non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
 ## Stroke selection
 
-Select (Ctrl+Shift+R) draws a rectangle around editable strokes on one page.
-All stroke points must be inside it, matching the existing rectangle selector;
-rectangles within one document point of a page edge extend to that edge. Drag
-inside the selected bounds to move the group. Delete/Backspace removes it,
-Ctrl+A selects editable strokes on the active page, and Escape cancels a drag
-and clears the selection. Editable top-layer native strokes participate alongside
-new ink; unsupported native objects remain preserved in the background.
+Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), and Smart Select (`S`) select editable strokes from the visible top-layer suffix. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select picks the topmost stroke by path distance. Hold Shift to add a rectangle to an existing selection.
 
-Selecting alone leaves the modified state unchanged. A move or deletion is one
-undo step and restores its selection on undo/redo. Transient moves use a Cairo
-translation; geometry changes only on release. Autosave therefore receives the
-last committed geometry during a drag. Explicit gesture cancellation restores
-the previous selection; interrupted input finalizes delivered motion.
+Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-Selection movement currently stays within the source page because the native
-transfer format only accepts points within their page. Cross-page moves,
-Smart Select/object picking, lasso, resize/rotate, clipboard, and selection of
-text/images or lower-layer objects still need migration. This is the rectangle
-stroke subset, not a complete replacement for the production selection system.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Text, images, shapes and lower-layer objects remain preserved in the document background but are not selectable yet. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
