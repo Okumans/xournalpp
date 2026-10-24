@@ -3232,6 +3232,7 @@ private:
                     require(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(textButton)) &&
                                     !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toolButtons[0])),
                             "Text tool did not show its selected state in the header");
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), 24.0);
                     const auto createAt = state.pageScreenPoint(0, blank->x, blank->y);
                     g_signal_emit_by_name(textClick, "released", 1, createAt.x, createAt.y);
                     require(textEditor->active(), "Text tool click did not open an inline editor");
@@ -3260,8 +3261,9 @@ private:
                 const auto newTextIndex = state.texts.size();
                 finishTextEditing();
                 require(state.texts.size() == newTextIndex + 1 && state.texts.back().text == "GTK rich π" &&
-                                !state.texts.back().styleRuns.empty() && state.canUndo(),
-                        "Inline text creation did not preserve its UTF-8 content and formatting");
+                                state.texts.back().fontSize == 24.0 && !state.texts.back().styleRuns.empty() &&
+                                state.canUndo(),
+                        "Inline text creation did not preserve its UTF-8 content, size and formatting");
                 state.undo();
                 require(state.texts.size() == newTextIndex, "Undo did not remove a newly created text item");
                 state.redo();
