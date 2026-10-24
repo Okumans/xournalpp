@@ -3747,12 +3747,12 @@ private:
                 break;
             }
             case 58:
-                capture("selection-transferred");
                 smokeSaveChoice=(std::filesystem::path(options.smokeDirectory)/"selection-transforms.xopp").string();
                 chooseSave();
                 break;
             case 59: {
                 require(!modified() && state.ink.back().page==1,"Saving selection transforms failed");
+                capture("selection-transferred");
                 gboolean handled=false;
                 g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_Escape,0u,GdkModifierType(0),&handled);
                 g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_s,0u,GdkModifierType(0),&handled);
