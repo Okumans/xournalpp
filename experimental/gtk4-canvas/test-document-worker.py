@@ -215,6 +215,76 @@ def main():
         run("save-copy", corrupt, temporary / "recovered.xopp", empty, succeeds=False)
         assert not (temporary / "recovered.xopp").exists()
 
+        # 5-argument open extracts only the contiguous top-layer editable stroke suffix,
+        # preserving z-order relative to underlying strokes/text, lower layers, filled/dashed/butt-cap
+        # strokes, and audio-attached strokes, and round-trips losslessly on save.
+        mixed = temporary / "mixed.xopp"
+        mixed_root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
+        ET.SubElement(mixed_root, "title").text = "Mixed z-order extraction check"
+        mixed_page = ET.SubElement(mixed_root, "page", {"width": "595", "height": "842"})
+        ET.SubElement(mixed_page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+        lower_layer = ET.SubElement(mixed_page, "layer", {"name": "Lower"})
+        ET.SubElement(lower_layer, "stroke", {"tool": "pen", "capStyle": "round", "color": "#112233ff",
+                                              "width": "2"}).text = "10 10 50 10"
+        top_layer = ET.SubElement(mixed_page, "layer", {"name": "Top"})
+        ET.SubElement(top_layer, "stroke", {"tool": "pen", "capStyle": "round", "color": "#445566ff",
+                                            "width": "2"}).text = "10 20 50 20"
+        ET.SubElement(top_layer, "text", {"font": "Sans", "size": "12", "x": "10", "y": "25",
+                                          "color": "#000000ff"}).text = "Text above early stroke"
+        ET.SubElement(top_layer, "stroke", {"tool": "pen", "capStyle": "round", "style": "dash",
+                                            "color": "#000000ff", "width": "2"}).text = "10 40 50 40"
+        ET.SubElement(top_layer, "stroke", {"tool": "pen", "capStyle": "round", "fill": "128",
+                                            "color": "#008800ff", "width": "2"}).text = "10 50 50 50 30 70"
+        ET.SubElement(top_layer, "stroke", {"tool": "pen", "capStyle": "square",
+                                            "color": "#880000ff", "width": "2"}).text = "10 80 50 80"
+        ET.SubElement(top_layer, "stroke", {"tool": "pen", "capStyle": "round",
+                                            "color": "#ff0000ff", "width": "4 1 2"}).text = "20 100 40 120 60 100"
+        ET.SubElement(top_layer, "stroke", {"tool": "highlighter", "capStyle": "round",
+                                            "color": "#ffff007f", "width": "8.5"}).text = "20 140 120 140"
+        ET.SubElement(top_layer, "stroke", {"tool": "eraser", "capStyle": "round",
+                                            "color": "#ffffffff", "width": "12"}).text = "30 160 90 160"
+        mixed.write_bytes(gzip.compress(ET.tostring(mixed_root, encoding="utf-8", xml_declaration=True)))
+        mixed_snap = temporary / "mixed-snap.xopp"
+        mixed_pdf = temporary / "mixed-snap.pdf"
+        mixed_ink = temporary / "mixed.ink"
+        existing_ink = temporary / "existing.ink"
+        existing_ink.write_text("do not overwrite")
+        run("open", mixed, temporary / "bad-snap.xopp", temporary / "bad-snap.pdf", existing_ink, succeeds=False)
+        assert existing_ink.read_text() == "do not overwrite" and not (temporary / "bad-snap.xopp").exists()
+        assert run("open", mixed, mixed_snap, mixed_pdf, mixed_ink) == "NATIVE_SAVE\n"
+        mixed_lines = mixed_ink.read_text().splitlines()
+        assert mixed_lines[0] == "XOURNALPP_GTK4_INK_V1 3"
+        snap_info = json.loads(run("inspect", mixed_snap))["pages"][0]
+        assert snap_info["layers"] == 2 and snap_info["strokes"] == 5 and snap_info["texts"] == 1
+        mixed_roundtrip = temporary / "mixed-roundtrip.xopp"
+        run("save-copy", mixed_snap, mixed_roundtrip, mixed_ink)
+        rt_strokes = xml(mixed_roundtrip).findall("page/layer")[-1].findall("stroke")
+        assert len(rt_strokes) == 7
+        assert rt_strokes[-3].attrib["tool"] == "pen" and list(map(float, rt_strokes[-3].attrib["width"].split())) == [4, 1, 2]
+        assert rt_strokes[-2].attrib["tool"] == "highlighter" and float(rt_strokes[-2].attrib["width"]) == 8.5
+        assert rt_strokes[-1].attrib["tool"] == "eraser" and rt_strokes[-1].attrib["color"] == "#ffffffff"
+        assert [content(p) for p in xml(mixed_roundtrip).findall("page")] == [
+            content(p) for p in xml(mixed).findall("page")]
+
+        # Audio-linked strokes must remain in snapshot.xopp rather than losing fn/ts attributes.
+        audio_snap = temporary / "audio-snap.xopp"
+        audio_pdf = temporary / "audio-snap.pdf"
+        audio_ink = temporary / "audio.ink"
+        run("open", fixtures / "packaged_xopp/audioAttachment/new.xopp", audio_snap, audio_pdf, audio_ink)
+        assert audio_ink.read_text().strip() == "XOURNALPP_GTK4_INK_V1 0"
+        assert json.loads(run("inspect", audio_snap))["pages"][0]["strokes"] == 1
+
+        # Real 13,064-stroke handwritten notebook extracts completely and round-trips without duplication.
+        hw_snap = temporary / "hw-snap.xopp"
+        hw_pdf = temporary / "hw-snap.pdf"
+        hw_ink = temporary / "hw.ink"
+        run("open", fixtures / "benchmark/handwritten-text.xopp", hw_snap, hw_pdf, hw_ink)
+        assert hw_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V1 13064"
+        assert json.loads(run("inspect", hw_snap))["pages"][0]["strokes"] == 0
+        hw_roundtrip = temporary / "hw-roundtrip.xopp"
+        run("save-copy", hw_snap, hw_roundtrip, hw_ink)
+        assert json.loads(run("inspect", hw_roundtrip))["pages"][0]["strokes"] == 13064
+
         # Exercise both legacy sidecars and packaged attachments across directories.
         for index, name in enumerate(("pdfBackground/old.xopp", "pdfBackground/new.xopp",
                                       "imgBackground/old.xopp", "imgBackground/new.xopp",

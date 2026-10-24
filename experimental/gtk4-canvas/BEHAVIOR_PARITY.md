@@ -10,9 +10,9 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | --- | --- | --- |
 | Highlighter opacity | `src/core/view/StrokeView.h`: `OPACITY_HIGHLIGHTER = 0.47` | Matched, with a pixel test |
 | Tool size presets | `ToolHandler::initTools`: Pen `0.42..5.67`, Highlighter `1.0..30.0`, Eraser `1.0..18.0` pt (`MEDIUM` default) | Matched, with bidirectional `Custom` spin sync and per-tool memory |
-| Standard eraser | `EraseHandler` + `Stroke::intersectWithPaddedBox`: `PaddedBox` (`halfSize`, `+0.4 * width` cap padding) | Matched for session ink, with linear split-pressure interpolation and closed-loop seam merging |
-| Whiteout eraser | `InputHandler` + `SaveHandler::visitStroke`: opaque `#ffffffff` constant-width `tool="eraser"` stroke | Matched in Cairo rendering, stylus eraser-end routing, and native `.xopp` serialization |
-| Delete-stroke eraser | `EraseHandler` (`ERASER_TYPE_DELETE_STROKE`) | Matched, and improved to use exact segment clipping + half stroke width at all segment lengths |
+| Standard eraser | `EraseHandler` + `Stroke::intersectWithPaddedBox`: `PaddedBox` (`halfSize`, `+0.4 * width` cap padding) | Matched across both session and top-layer native `.xopp` strokes, with linear split-pressure interpolation and closed-loop seam merging |
+| Whiteout eraser | `InputHandler` + `SaveHandler::visitStroke`: opaque `#ffffffff` constant-width `tool="eraser"` stroke | Matched in Cairo rendering, stylus eraser-end routing, and lossless native `.xopp` extraction/serialization |
+| Delete-stroke eraser | `EraseHandler` (`ERASER_TYPE_DELETE_STROKE`) | Matched across session and top-layer native `.xopp` strokes, with exact segment clipping + half stroke width at all segment lengths |
 | Keyboard zoom step | `Settings::loadDefault`: 10%; `Control` divides by 100 | Matched, including inverse zoom-out |
 | Wheel zoom step | `Settings::loadDefault`: 2%; `ZoomControl::zoomScroll` | Matched |
 | Wheel zoom focus | `onScrolledwindowMainScrollEvent` uses pointer coordinates | Matched; surface-to-canvas mapping checked with real toolbar/sidebar offsets |
@@ -33,7 +33,7 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Autosave paths & swap | `AutosaveJob::run` + `Util::getAutosaveFilepath`: `.name.autosave.xopp` or `<cache>/xournalpp/autosaves/<pid>.autosave.xopp` via `.swap` | Matched, with `UndoRedoHandler::isChangedAutosave` revision tracking and cleanup on Save, Discard and clean exit |
 | Cache autosave guard | `Control.cpp` `shouldFileOpen`: refuses direct Open under `<cache>/xournalpp` | Matched, including symlink resolution into the cache tree |
 | Crash recovery | `XournalMain::checkForEmergencySave`: `emergencysave.xopp` (`Delete file` / `Restore file`, unnamed & dirty) | Matched for `emergencysave.xopp`; extended to also prompt on dead-PID cache autosaves and `.name.autosave.xopp` sidecars |
-| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; text/styles/layers and attachments round-trip tested |
+| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; top-layer editable stroke suffix extracted losslessly into live ink (`Point::NO_PRESSURE` normalized) while preserving lower layers, z-order, text/images/audio/fills/dashes |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
 GTK 3 disables motion-event compression for its custom widget. The GTK 4 adapter
@@ -53,10 +53,15 @@ to the real native model when saving.
   constraints, Shift-click connection, stroke/tap filtering, and device-specific
   button mappings have not been migrated.
 - The original uses its document, selection, layer, undo, and rich-text models.
-  The native worker retains those objects, while rendering flattens them into
-  the prototype background. New session ink (pen, highlighter, whiteout, and
-  partially split segments) saves as native objects through the worker. Existing
-  objects loaded from `.xopp` cannot yet be edited or erased in the prototype.
+  When opening a `.xopp` via the worker, the contiguous suffix of standard
+  top-layer round-cap unfilled undashed non-audio `pen`, `highlighter`, and
+  `#ffffffff` `eraser` strokes on visible top layers is extracted into live
+  editable/erasable session ink (normalizing legacy `Point::NO_PRESSURE`
+  sentinels into positive per-point pressure multipliers) and omitted from the
+  background snapshot/PDF so saving neither duplicates ink nor alters z-order.
+  Lower layers, strokes underneath text/images/shapes, dashed/filled/non-round
+  strokes, audio-linked strokes, text, LaTeX, and images remain flattened in the
+  background preview and cannot yet be selected or edited interactively.
 - The prototype shows a single page at a time and refits on page changes. It
   does not reproduce continuous-page layout, scroll positioning, or page history.
 - Saved user preferences (`settings.xml`), custom `.gpl` palettes, and toolbar

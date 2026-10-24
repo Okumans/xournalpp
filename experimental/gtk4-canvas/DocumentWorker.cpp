@@ -1,9 +1,11 @@
 #include <algorithm>
+#include <cmath>
 #include <clocale>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <glib.h>
@@ -95,6 +97,111 @@ void appendInk(Document& document, const std::vector<prototype::bridge::StrokePa
         // Existing layers and objects stay intact; the prototype has no layer picker yet.
         page->getLayers().back()->addElement(std::move(stroke));
     }
+}
+
+std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& element, const XojPage& page,
+                                                                int pageIndex) {
+    if (element.getType() != ELEMENT_STROKE) {
+        return std::nullopt;
+    }
+    const auto* stroke = dynamic_cast<const Stroke*>(&element);
+    if (!stroke) {
+        return std::nullopt;
+    }
+    const auto& pts = stroke->getPointVector();
+    const double width = stroke->getWidth();
+    if (pts.size() < 2 || !std::isfinite(width) || width <= 0.0 || stroke->getFill() != -1 ||
+        stroke->getStrokeCapStyle() != StrokeCapStyle::ROUND || stroke->getLineStyle().hasDashes() ||
+        !stroke->getAudioFilename().empty()) {
+        return std::nullopt;
+    }
+    const StrokeTool tool = stroke->getToolType();
+    const uint32_t rgb = static_cast<uint32_t>(stroke->getColor()) & 0xffffffU;
+    bool highlighter = false;
+    bool whiteout = false;
+    bool pressureSensitive = false;
+    if (tool == StrokeTool::PEN) {
+        pressureSensitive = stroke->hasPressure();
+    } else if (tool == StrokeTool::HIGHLIGHTER) {
+        if (stroke->hasPressure()) {
+            return std::nullopt;
+        }
+        highlighter = true;
+    } else if (tool == StrokeTool::ERASER) {
+        if (rgb != 0xffffffU || stroke->hasPressure()) {
+            return std::nullopt;
+        }
+        whiteout = true;
+    } else {
+        return std::nullopt;
+    }
+
+    prototype::bridge::StrokePacket packet;
+    packet.page = pageIndex;
+    packet.highlighter = highlighter;
+    packet.whiteout = whiteout;
+    packet.pressureSensitive = pressureSensitive;
+    packet.width = width;
+    packet.color = {static_cast<double>((rgb >> 16U) & 0xffU) / 255.0,
+                    static_cast<double>((rgb >> 8U) & 0xffU) / 255.0,
+                    static_cast<double>(rgb & 0xffU) / 255.0};
+    packet.points.reserve(pts.size());
+    const double pageWidth = page.getWidth();
+    const double pageHeight = page.getHeight();
+    for (size_t i = 0; i < pts.size(); ++i) {
+        const auto& point = pts[i];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || point.x < 0.0 || point.y < 0.0 ||
+            point.x > pageWidth || point.y > pageHeight) {
+            return std::nullopt;
+        }
+        double pressure = 1.0;
+        if (pressureSensitive) {
+            // Native .xopp XML stores segment widths in pts[0..N-2].z and leaves pts[N-1].z == Point::NO_PRESSURE.
+            const double rawWidth = (i + 1 < pts.size() || point.z > 0.0) ? point.z : pts[i - 1].z;
+            if (!std::isfinite(rawWidth) || rawWidth <= 0.0) {
+                return std::nullopt;
+            }
+            pressure = rawWidth / width;
+            if (!std::isfinite(pressure) || pressure <= 0.0) {
+                return std::nullopt;
+            }
+        }
+        packet.points.push_back({point.x, point.y, pressure});
+    }
+    return packet;
+}
+
+std::vector<prototype::bridge::StrokePacket> extractEditableInk(Document& document) {
+    std::vector<prototype::bridge::StrokePacket> extracted;
+    size_t totalPoints = 0;
+    for (size_t pageIndex = 0; pageIndex < document.getPageCount(); ++pageIndex) {
+        auto page = document.getPage(pageIndex);
+        if (!page->getLayerCount()) {
+            continue;
+        }
+        auto* topLayer = page->getLayers().back();
+        if (!topLayer->isVisible()) {
+            continue;
+        }
+        auto& elements = topLayer->getElements();
+        size_t suffixStart = elements.size();
+        std::vector<prototype::bridge::StrokePacket> pagePackets;
+        while (suffixStart > 0) {
+            auto candidate = toEditablePacket(*elements[suffixStart - 1], *page, static_cast<int>(pageIndex));
+            if (!candidate || candidate->points.size() > prototype::bridge::maxTransferPoints - totalPoints) {
+                break;
+            }
+            totalPoints += candidate->points.size();
+            pagePackets.push_back(std::move(*candidate));
+            --suffixStart;
+        }
+        if (suffixStart < elements.size()) {
+            elements.erase(elements.begin() + static_cast<std::ptrdiff_t>(suffixStart), elements.end());
+            extracted.insert(extracted.end(), std::make_move_iterator(pagePackets.rbegin()),
+                             std::make_move_iterator(pagePackets.rend()));
+        }
+    }
+    return extracted;
 }
 
 void updatePreview(Document& document) {
@@ -218,9 +325,9 @@ int main(int argc, char** argv) {
     try {
         if (argc < 3) {
             throw std::runtime_error(
-                    "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | open INPUT SNAPSHOT PDF | "
-                    "save-copy INPUT XOPP INK | save INPUT XOPP INK VERSION | autosave INPUT AUTOSAVE_XOPP INK | "
-                    "version PATH");
+                    "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
+                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK] | save-copy INPUT XOPP INK | "
+                    "save INPUT XOPP INK VERSION | autosave INPUT AUTOSAVE_XOPP INK | version PATH");
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
@@ -234,7 +341,7 @@ int main(int argc, char** argv) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
-        } else if (command == "open" && argc == 5) {
+        } else if (command == "open" && (argc == 5 || argc == 6)) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&
                                     g_ascii_strcasecmp(input.extension().string().c_str(), ".xopp") == 0;
@@ -242,6 +349,12 @@ int main(int argc, char** argv) {
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
             requireNewTarget(pdf);
+            if (argc == 6) {
+                const auto extractedPath = fs::absolute(argv[5]);
+                requireNewTarget(extractedPath);
+                const auto extracted = extractEditableInk(*document);
+                prototype::bridge::writeTransfer(extractedPath, extracted);
+            }
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             render(*document, pdf);
