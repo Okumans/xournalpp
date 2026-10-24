@@ -10,6 +10,7 @@ local toolShortcuts = {
   { menu = "Pen (P)", shortcut = "p", tool = app.C.Tool_pen },
   { menu = "Eraser (E)", shortcut = "e", tool = app.C.Tool_eraser },
   { menu = "Highlighter (H)", shortcut = "h", tool = app.C.Tool_highlighter },
+  { menu = "Laser Pointer (L)", shortcut = "l", tool = app.C.Tool_laserPointerPen },
 }
 
 function selectTool(tool)
@@ -26,6 +27,10 @@ end
 
 function previousPage()
   app.activateAction("goto-previous")
+end
+
+function gotoPage()
+  app.activateAction("goto-page")
 end
 
 function undo()
@@ -59,6 +64,11 @@ function initUi()
     menu = "Previous Page (Shift+K)",
     callback = "previousPage",
     shortcut = "<Shift>k",
+  })
+  app.registerUi({
+    menu = "Go to Page (:)",
+    callback = "gotoPage",
+    shortcut = "colon",
   })
   app.registerUi({
     menu = "Undo (U)",

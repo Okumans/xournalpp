@@ -51,10 +51,11 @@ Enable `ToolShortcuts` from `Plugin > Plugin Manager` before using the
 canvas-scoped shortcuts. The plugin is disabled by default.
 
 The layout is intentionally inspired by familiar Vim keybindings: `I` enters
-text/insert mode, `V` enters visual-style selection, `Esc` returns to the
-default tool, `U` undoes, and `/` opens search. `J`/`K` page navigation and
-`Ctrl+R` redo extend that keyboard-oriented workflow for Xournal++. This is an
-adaptation for a drawing and note-taking application, not a full Vim mode.
+text/insert mode, `V` enters visual-style selection, `L` activates the laser
+pointer, `Esc` returns to the default tool, `U` undoes, and `/` opens search.
+`J`/`K` page navigation, `:` to open the page jump dialog, and `Ctrl+R` redo
+extend that keyboard-oriented workflow for Xournal++. This is an adaptation
+for a drawing and note-taking application, not a full Vim mode.
 
 | Action | Shortcut |
 | --- | --- |
@@ -64,8 +65,10 @@ adaptation for a drawing and note-taking application, not a full Vim mode.
 | Pen | `P` |
 | Eraser | `E` |
 | Highlighter | `H` |
+| Laser pointer | `L` |
 | Next page | `Shift+J` |
 | Previous page | `Shift+K` |
+| Go to page | `:` |
 | Undo | `U` |
 | Redo | `Ctrl+R` |
 | Search | `/` |
