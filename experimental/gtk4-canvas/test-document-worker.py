@@ -69,6 +69,10 @@ def main():
 
         empty = temporary / "empty.ink"
         empty.write_text("XOURNALPP_GTK4_INK_V1 0\n")
+        blank = temporary / "blank.xopp"
+        run("open", "", blank, temporary / "blank.pdf")
+        assert json.loads(run("inspect", blank))["pages"] == [
+            {"width": 595, "height": 842, "layers": 1, "strokes": 0, "texts": 0, "images": 0}]
         source = temporary / "source.xopp"
         root = xml(fixtures / "benchmark/typed-text.xopp")
         page = root.find("page")

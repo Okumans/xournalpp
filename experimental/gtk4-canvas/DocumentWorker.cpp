@@ -49,6 +49,11 @@ struct LoadContext {
 };
 
 std::unique_ptr<Document> load(const fs::path& input, LoadContext& context) {
+    if (input.empty()) {
+        auto document = std::make_unique<Document>(&context.handler);
+        document->addPage(std::make_shared<XojPage>(595, 842));
+        return document;
+    }
     if (g_ascii_strcasecmp(input.extension().string().c_str(), ".pdf") == 0) {
         auto document = std::make_unique<Document>(&context.handler);
         if (!document->readPdf(input, true, false)) {
@@ -217,7 +222,8 @@ int main(int argc, char** argv) {
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
-        auto document = load(fs::absolute(argv[2]), originalContext);
+        const auto input = std::string(argv[2]).empty() ? fs::path{} : fs::absolute(argv[2]);
+        auto document = load(input, originalContext);
         if (command == "inspect" && argc == 3) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {

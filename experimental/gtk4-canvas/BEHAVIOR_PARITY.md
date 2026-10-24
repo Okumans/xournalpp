@@ -21,6 +21,8 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Outside-page drag | `PenInputHandler::actionStart` temporarily selects Hand | Matched for prototype page margins |
 | Broken grab | `StylusInputHandler`/`MouseInputHandler` call `actionEnd` | Delivered points finalize; explicit gesture cancellation discards unfinished ink |
 | Eraser undo | `EraseHandler` adds all deletions to one `DeleteUndoAction` | One whole-stroke eraser drag is one undo/redo action |
+| Saved status | `UndoRedoHandler::savedUndo` tracks edit identity | Revision identities track saved state through undo, redo and history branching |
+| Unsaved changes | `Control::close` offers Save, Discard and Cancel | Same decision flow with Save a Copy; normal overwrite/save is pending |
 | Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; text/styles/layers and attachments round-trip tested |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
@@ -32,7 +34,8 @@ events. Per-device identities and configurable mappings still need migration.
 
 These match the original **defaults**. Importing existing preferences, per-device
 mappings, palettes, and toolbar configuration is still required for full parity.
-The prototype continues to use its independent session-only document model.
+The prototype uses an independent model for session edits and transfers them
+to the real native model when saving a copy.
 
 ## Known differences that block application replacement
 
@@ -43,8 +46,8 @@ The prototype continues to use its independent session-only document model.
   button mappings have not been migrated.
 - The original uses its document, selection, layer, undo, and rich-text models.
   The native worker retains those objects, while rendering flattens them into
-  the prototype background. Session ink is not yet connected to the worker's
-  save-copy operation. Existing objects cannot be edited in the prototype.
+  the prototype background. New session ink saves as native objects through
+  the worker. Existing objects cannot yet be edited in the prototype.
 - The prototype shows a single page at a time and refits on page changes. It
   does not reproduce continuous-page layout, scroll positioning, or page history.
 - The prototype's initial brush presets and continuous width control still differ

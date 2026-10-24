@@ -1,15 +1,18 @@
 # GTK 4 canvas and input prototype
 
-This is the first migration experiment, built as a separate executable with GTK 4,
+This migration experiment is built as a separate executable with GTK 4,
 libadwaita, and Poppler. The normal Xournal++ build, executable, settings, and
 document format are unchanged. There is no installation target.
 
-The prototype opens a PDF or native `.xopp` document and adds temporary pressure-aware pen strokes and
-translucent highlights. It supports custom colors, quick color presets, stroke
-width, whole-stroke erasing, undo/redo, and zoom/pan with cancellation. A thumbnail
-sidebar navigates pages and becomes an overlay in narrower windows. Ink is
-session-only and is discarded on exit; the prototype never saves over an input
-document.
+The prototype opens a PDF or native `.xopp` document and adds pressure-aware pen
+strokes and translucent highlights. It supports custom colors, quick color
+presets, stroke width, whole-stroke erasing, undo/redo, and zoom/pan with
+cancellation. A thumbnail sidebar navigates pages and becomes an overlay in
+narrower windows. With a document worker, Open and Save a Copy run in the
+background. New ink is
+saved as native objects alongside the original content. Open and Close protect
+unsaved changes with Save a Copy, Discard and Cancel. The prototype never saves
+over an input document. Without a worker, ink remains temporary.
 
 Each stroke retains its own tool, color, and width. Pen and highlighter settings
 are remembered separately during a session. Highlight segments are composited
@@ -20,7 +23,10 @@ include session ink, with up to 16 small PDF backgrounds cached at a time.
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 `Ctrl+Y` redo, `Page Up`/`Page Down` navigation, and `Ctrl+0` fit. Tool shortcuts
 leave editable controls alone. Use the header's Pages button to show/hide the
-sidebar. Widths are measured in document points; they remain consistent at
+sidebar. With a worker, `Ctrl+O` opens a document and `Ctrl+Shift+S` saves a copy.
+The modified flag follows edit identities through undo/redo, including edits made
+after undo. Saving preserves editable session ink and its undo history.
+Widths are measured in document points; they remain consistent at
 different zoom levels. The eraser acts only on session ink.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
@@ -51,7 +57,7 @@ The current PDF rasterization runs synchronously on the prototype's UI thread.
 ## Build
 
 Requirements: CMake 3.20+, a C++20 compiler, pkg-config, GTK 4.10+, libadwaita
-1.4+, and Poppler GLib development libraries. This initial build targets Linux.
+1.5+, and Poppler GLib development libraries. This initial build targets Linux.
 
 From this worktree's root:
 
@@ -62,7 +68,8 @@ ctest --test-dir build-gtk4-canvas --output-on-failure
 ```
 
 The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`, `--dark`,
-and `--smoke-dir DIRECTORY`. Without an input it displays a blank page.
+and `--smoke-dir DIRECTORY`. A worker can also accompany `--pdf`, or be used alone
+to create a blank A4 notebook. Without an input it displays a blank page.
 
 To open native documents, build the optional worker using the normal application's
 GTK 3 dependencies. It has no installation target and is disabled by default:
@@ -75,10 +82,18 @@ build-gtk4-canvas/xournalpp-gtk4-canvas --document notebook.xopp \
   --worker build-document-worker/xournalpp-document-worker
 ```
 
-Opening runs the worker before creating the window. It creates a private native
-snapshot and rendered PDF, removed when the session ends. The native object data
-is retained; external linked assets remain external. Large documents may delay
-startup. Asynchronous opening and saving from the GTK 4 UI remain to be connected.
+Native loading, snapshot creation, rendering and save-copy jobs run on a
+background task, with completion on the main context. The header shows progress,
+editing is blocked during the operation, and Close waits for it to finish. A
+failed open leaves the current document intact; a failed save retains its dirty
+state and does not continue a pending Open or Close. Cancelling a file chooser
+also preserves the current document.
+
+Each loaded document has a private native snapshot and rendered PDF, removed when
+the session ends. The native object data is retained; external linked assets
+remain external. Saving appends all current session ink to that snapshot, so
+repeated copies do not duplicate previously saved ink. Reopening a saved copy
+loads its ink as original objects, which are not yet editable in the frontend.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
 `open INPUT SNAPSHOT.xopp NEW.pdf`, and `save-copy INPUT NEW.xopp INK_TRANSFER`.
@@ -145,7 +160,8 @@ history retention. A separate normalized-input test covers pressure fallback,
 pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
-Transfer serialization and CLI rejection checks bring the standalone suite to nine tests.
+Transfer serialization, background task/main-context checks and CLI rejection
+checks bring the standalone suite to ten tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -160,7 +176,7 @@ the headless compositor reports device scale 1.
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. The prototype has no rich-text
-editor, selection tools, saving session ink from the UI, full undo system, plugins, or toolbar
+editor, selection tools, normal overwrite/save, full undo system, plugins, or toolbar
 configuration import. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
@@ -170,6 +186,14 @@ Synthetic tests cover the normalized adapter and axis conversion. The graphical
 test also checks Space press/release, margin dragging, stylus signals with a
 synthetic backlog, temporary erasing, release-tail prevention, and cleanup. These
 checks do not verify actual tablet firmware or physical hardware event delivery.
+
+With a worker, the graphical test also saves/reopens actual native copies,
+checks retained text and pressure data, exercises the real unsaved-dialog buttons,
+verifies failed-open/save retention and Close protection, and cancels native
+Open/Save choosers. A 10 ms test timer must execute while document work is active;
+this checks main-loop responsiveness, not an input latency target. Tests select
+save destinations directly for deterministic persistence checks. Platform portal
+chooser selection remains unverified.
 
 The prototype's full color-chooser dialog is not opened in the isolated test;
 the color button's actual color-change signal is exercised. This is a separate

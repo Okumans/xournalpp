@@ -36,6 +36,7 @@ public:
             if (!state.begin(device, sample.x, sample.y, pressure(sample.pressure))) {
                 return false;
             }
+            state.current->pressureSensitive = pressureMode && state.brush.tool == Tool::Pen;
         }
         owner = device;
         lastX = sample.x;
