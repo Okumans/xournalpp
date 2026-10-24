@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include "DocumentAutosave.h"
 #include "DocumentTextTransfer.h"
+#include "DocumentLayers.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
 
@@ -23,6 +25,20 @@ public:
         std::filesystem::path directory;
         std::filesystem::path snapshotPath() const { return directory / "snapshot.xopp"; }
         std::filesystem::path previewPath() const { return directory / "preview.pdf"; }
+        std::filesystem::path layerStatePath() const { return directory / "layers.dat"; }
+
+        std::vector<std::filesystem::path> layerPreviewPaths() const {
+            std::vector<std::filesystem::path> paths;
+            const auto pages = readLayerTransfer(layerStatePath());
+            size_t count = 0;
+            for (const auto& page: pages) {
+                count = std::max(count, page.initialLayerCount);
+            }
+            for (size_t index = 0; index < count; ++index) {
+                paths.push_back(directory / ("layer-" + std::to_string(index) + ".pdf"));
+            }
+            return paths;
+        }
     };
 
     DocumentSession(const std::string& worker, const std::string& input) {
@@ -41,10 +57,13 @@ public:
             const auto before = nativeFile ? documentVersion(input).token : std::string{};
             const auto extracted = path / "initial.ink";
             const auto extractedTexts = path / "initial.text";
+            const auto layers = activeDir / "layers.dat";
             const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string(),
-                                                 extracted.string(), extractedTexts.string()});
+                                                 extracted.string(), extractedTexts.string(), layers.string()});
             initialInk = readTransfer(extracted);
             initialTexts = readTextTransfer(extractedTexts);
+            initialLayers = readLayerTransfer(layers);
+            layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
             std::filesystem::remove(extracted);
             std::filesystem::remove(extractedTexts);
             if (nativeFile) {
@@ -65,22 +84,29 @@ public:
     DocumentSession& operator=(const DocumentSession&) = delete;
 
     void saveCopy(const std::string& worker, const std::string& output,
-                  const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts) const {
+                  const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                  const LayerDocument& layers) const {
         const auto transfer = path / "session.ink";
         const auto textTransfer = path / "session.text";
+        const auto layerTransfer = path / "session.layers";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
-        runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string(), textTransfer.string()});
+        writeLayerTransfer(layerTransfer, layers);
+        runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
+                           layerTransfer.string()});
     }
 
     std::string save(const std::string& worker, const std::string& output, const std::vector<StrokePacket>& packets,
-                     const std::vector<TextItem>& texts, const std::string& expected) const {
+                     const std::vector<TextItem>& texts, const LayerDocument& layers,
+                     const std::string& expected) const {
         const auto transfer = path / "session.ink";
         const auto textTransfer = path / "session.text";
+        const auto layerTransfer = path / "session.layers";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
+        writeLayerTransfer(layerTransfer, layers);
         auto version = runWorker(worker, {"save", snapshotPath().string(), output, transfer.string(), expected,
-                                          textTransfer.string()});
+                                          textTransfer.string(), layerTransfer.string()});
         if (!version.empty() && version.back() == '\n') {
             version.pop_back();
         }
@@ -88,21 +114,29 @@ public:
     }
 
     void autosave(const std::string& worker, const std::string& output,
-                  const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts) const {
+                  const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                  const LayerDocument& layers) const {
         const auto transfer = path / "autosave.ink";
         const auto textTransfer = path / "autosave.text";
+        const auto layerTransfer = path / "autosave.layers";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
-        runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string(), textTransfer.string()});
+        writeLayerTransfer(layerTransfer, layers);
+        runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
+                           layerTransfer.string()});
     }
 
     void exportPdf(const std::string& worker, const std::string& output,
-                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts) const {
+                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                   const LayerDocument& layers) const {
         const auto transfer = path / "export.ink";
         const auto textTransfer = path / "export.text";
+        const auto layerTransfer = path / "export.layers";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
-        runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string(), textTransfer.string()});
+        writeLayerTransfer(layerTransfer, layers);
+        runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
+                           layerTransfer.string()});
     }
 
     StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
@@ -116,6 +150,7 @@ public:
     void commitRevision(const StagedRevision& staged) {
         const auto previous = activeDir;
         activeDir = staged.directory;
+        layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
         if (!previous.empty() && previous != activeDir) {
             std::error_code ec;
             std::filesystem::remove_all(previous, ec);
@@ -133,6 +168,8 @@ public:
     std::string originalVersion;
     std::vector<StrokePacket> initialInk;
     std::vector<TextItem> initialTexts;
+    LayerDocument initialLayers;
+    std::vector<std::filesystem::path> layerPreviewPaths;
 
     std::filesystem::path snapshotPath() const { return activeDir / "snapshot.xopp"; }
     std::filesystem::path previewPath() const { return activeDir / "preview.pdf"; }

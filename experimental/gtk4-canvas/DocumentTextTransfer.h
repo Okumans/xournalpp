@@ -39,7 +39,7 @@ inline bool validUtf8(const std::string& value) {
 }
 
 inline void validateTextItem(const TextItem& item) {
-    if (item.page < 0 || item.alignment < 0 || item.alignment > 2 ||
+    if (item.page < 0 || item.layerId == 0 || item.alignment < 0 || item.alignment > 2 ||
         !std::isfinite(item.fontSize) || item.fontSize <= 0 || !std::isfinite(item.wrapWidth) ||
         !std::isfinite(item.xx) || !std::isfinite(item.yx) || !std::isfinite(item.xy) ||
         !std::isfinite(item.yy) || !std::isfinite(item.x) || !std::isfinite(item.y)) {
@@ -124,9 +124,11 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
     std::string magic;
     size_t count = 0;
     text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), magic, count);
-    if (magic != "XOURNALPP_GTK4_TEXT_V1" || count > maxEditableTexts) {
+    if ((magic != "XOURNALPP_GTK4_TEXT_V1" && magic != "XOURNALPP_GTK4_TEXT_V2") ||
+        count > maxEditableTexts) {
         throw std::runtime_error("Invalid text-transfer header");
     }
+    const bool hasLayerIdentity = magic == "XOURNALPP_GTK4_TEXT_V2";
 
     std::vector<TextItem> items;
     items.reserve(count);
@@ -137,9 +139,19 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
         size_t textBytes = 0;
         size_t fontBytes = 0;
         size_t runCount = 0;
-        text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerOrder, item.xx,
-                                        item.yx, item.xy, item.yy, item.x, item.y, item.fontSize, item.color,
-                                        item.wrapWidth, item.alignment, justify, textBytes, fontBytes, runCount);
+        if (hasLayerIdentity) {
+            text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerId,
+                                            item.originLayer, item.layerOrder, item.xx, item.yx, item.xy, item.yy,
+                                            item.x, item.y, item.fontSize, item.color, item.wrapWidth, item.alignment,
+                                            justify, textBytes, fontBytes, runCount);
+        } else {
+            text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerOrder,
+                                            item.xx, item.yx, item.xy, item.yy, item.x, item.y, item.fontSize,
+                                            item.color, item.wrapWidth, item.alignment, justify, textBytes, fontBytes,
+                                            runCount);
+            item.layerId = legacyTopLayer;
+            item.originLayer = newLayerOrigin;
+        }
         if ((justify != 0 && justify != 1) || textBytes > maxEditableTextBytes || fontBytes == 0 ||
             fontBytes > maxEditableFontBytes || runCount > maxEditableTextStyleRuns ||
             runCount > maxEditableTextStyleRuns - totalStyleRuns) {
@@ -211,12 +223,13 @@ inline void writeTextTransfer(const std::filesystem::path& path, const std::vect
     }
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_TEXT_V1 " << items.size() << '\n';
+    stream << "XOURNALPP_GTK4_TEXT_V2 " << items.size() << '\n';
     for (const auto& item: items) {
-        stream << item.page << ' ' << item.layerOrder << ' ' << item.xx << ' ' << item.yx << ' ' << item.xy << ' '
-               << item.yy << ' ' << item.x << ' ' << item.y << ' ' << item.fontSize << ' ' << item.color << ' '
-               << item.wrapWidth << ' ' << item.alignment << ' ' << item.justify << ' ' << item.text.size() << ' '
-               << item.fontName.size() << ' ' << item.styleRuns.size() << '\n';
+        stream << item.page << ' ' << item.layerId << ' ' << item.originLayer << ' ' << item.layerOrder << ' '
+               << item.xx << ' ' << item.yx << ' ' << item.xy << ' ' << item.yy << ' ' << item.x << ' ' << item.y
+               << ' ' << item.fontSize << ' ' << item.color << ' ' << item.wrapWidth << ' ' << item.alignment << ' '
+               << item.justify << ' ' << item.text.size() << ' ' << item.fontName.size() << ' '
+               << item.styleRuns.size() << '\n';
         stream.write(item.fontName.data(), static_cast<std::streamsize>(item.fontName.size()));
         stream.put('\n');
         stream.write(item.text.data(), static_cast<std::streamsize>(item.text.size()));

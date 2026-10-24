@@ -6,12 +6,14 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "BehaviorDefaults.h"
 #include "CanvasText.h"
+#include "CanvasLayers.h"
 #include "CanvasDrawing.h"
 
 namespace prototype {
@@ -56,6 +58,8 @@ struct Ink {
     Brush brush;
     bool pressureSensitive = false;
     size_t layerOrder = 0;
+    size_t layerId = 1;
+    size_t originLayer = newLayerOrigin;
 };
 
 struct SelectionBox {
@@ -84,6 +88,7 @@ public:
     double pageGap = behavior::defaultPageGap;
     int page = 0;
     std::vector<PageSize> pages;
+    std::vector<PageLayers> pageLayers{PageLayers{}};
     Brush brush;
     DrawingMode drawingMode = DrawingMode::Freehand;
     EraserMode eraserMode = EraserMode::Standard;
@@ -111,6 +116,195 @@ public:
     long long scrollBlockedUntil = 0;
 
     int pageCount() const { return pages.empty() ? 1 : static_cast<int>(pages.size()); }
+
+    const PageLayers& layersForPage(int pageIndex) const {
+        static const PageLayers empty{};
+        return pageIndex >= 0 && static_cast<size_t>(pageIndex) < pageLayers.size() ?
+                       pageLayers[static_cast<size_t>(pageIndex)] : empty;
+    }
+
+    size_t activeLayerId(int pageIndex) const { return layersForPage(pageIndex).selectedLayer; }
+
+    size_t activeLayerOrigin(int pageIndex) const {
+        const auto& pageState = layersForPage(pageIndex);
+        if (pageState.selectedLayer == 0 || pageState.selectedLayer > pageState.layers.size()) {
+            return 0;
+        }
+        const auto& origins = pageState.layers[pageState.selectedLayer - 1].origins;
+        return origins.empty() ? newLayerOrigin : origins.back();
+    }
+
+    bool layerVisible(int pageIndex, size_t layerId) const {
+        const auto& pageState = layersForPage(pageIndex);
+        if (layerId == 0) {
+            return pageState.backgroundVisible;
+        }
+        return layerId <= pageState.layers.size() && pageState.layers[layerId - 1].visible;
+    }
+
+    void setLayerDocument(const std::vector<PageLayers>& documentLayers) {
+        if (documentLayers.size() != pageLayers.size()) {
+            throw std::runtime_error("Layer metadata page count does not match the document");
+        }
+        pageLayers = documentLayers;
+        for (auto& item: ink) {
+            if (item.page >= 0 && static_cast<size_t>(item.page) < pageLayers.size()) {
+                const auto& layers = pageLayers[static_cast<size_t>(item.page)].layers;
+                item.layerId = item.layerId == legacyTopLayer ? layers.size() :
+                                                                  std::min(item.layerId, layers.size());
+                if (item.layerId == 0) {
+                    item.layerId = layers.size();
+                }
+                if (item.originLayer == newLayerOrigin && item.layerId > 0) {
+                    item.originLayer = layers[item.layerId - 1].origins.back();
+                }
+            }
+        }
+        for (auto& item: texts) {
+            if (item.page >= 0 && static_cast<size_t>(item.page) < pageLayers.size()) {
+                const auto& layers = pageLayers[static_cast<size_t>(item.page)].layers;
+                item.layerId = item.layerId == legacyTopLayer ? layers.size() :
+                                                                  std::min(item.layerId, layers.size());
+                if (item.layerId == 0) {
+                    item.layerId = layers.size();
+                }
+                if (item.originLayer == newLayerOrigin && item.layerId > 0) {
+                    item.originLayer = layers[item.layerId - 1].origins.back();
+                }
+            }
+        }
+    }
+
+    bool selectLayer(int pageIndex, size_t layerId) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size() || layerId == 0 ||
+            layerId > pageLayers[static_cast<size_t>(pageIndex)].layers.size()) {
+            return false;
+        }
+        cancel();
+        clearSelection();
+        pageLayers[static_cast<size_t>(pageIndex)].selectedLayer = layerId;
+        return true;
+    }
+
+    bool setLayerVisible(int pageIndex, size_t layerId, bool visible) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
+            return false;
+        }
+        auto before = captureLayerMutation(pageIndex);
+        auto& pageState = pageLayers[static_cast<size_t>(pageIndex)];
+        if (layerId == 0) {
+            if (pageState.backgroundVisible == visible) {
+                return false;
+            }
+            pageState.backgroundVisible = visible;
+        } else {
+            if (layerId > pageState.layers.size() || pageState.layers[layerId - 1].visible == visible) {
+                return false;
+            }
+            pageState.layers[layerId - 1].visible = visible;
+        }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool addLayerAboveCurrent() {
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
+            return false;
+        }
+        const size_t pageIndex = static_cast<size_t>(page);
+        auto before = captureLayerMutation(page);
+        const size_t insertion = pageLayers[pageIndex].selectedLayer;
+        if (pageLayers[pageIndex].layers.size() >= 1000) {
+            return false;
+        }
+        const size_t origin = nextLayerOrigin(pageLayers[pageIndex]);
+        auto& pageState = pageLayers[pageIndex];
+        pageState.layers.insert(pageState.layers.begin() + static_cast<std::ptrdiff_t>(insertion),
+                                CanvasLayer{"Layer " + std::to_string(pageState.layers.size() + 1), true, {origin}});
+        pageState.selectedLayer = insertion + 1;
+        for (auto& stroke: ink) {
+            if (stroke.page == page && stroke.layerId >= pageState.selectedLayer) {
+                ++stroke.layerId;
+            }
+        }
+        for (auto& text: texts) {
+            if (text.page == page && text.layerId >= pageState.selectedLayer) {
+                ++text.layerId;
+            }
+        }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool deleteCurrentLayer() {
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
+            return false;
+        }
+        const size_t pageIndex = static_cast<size_t>(page);
+        auto before = captureLayerMutation(page);
+        auto& pageState = pageLayers[pageIndex];
+        const size_t deletedId = pageState.selectedLayer;
+        const size_t oldCount = pageState.layers.size();
+        if (deletedId == 0 || deletedId > oldCount) {
+            return false;
+        }
+        pageState.layers.erase(pageState.layers.begin() + static_cast<std::ptrdiff_t>(deletedId - 1));
+        if (pageState.layers.empty()) {
+            pageState.layers.push_back({"Layer 1", true, {nextLayerOrigin(pageState)}});
+        }
+        pageState.selectedLayer = std::min(deletedId, pageState.layers.size());
+        remapObjectsAfterLayerRemoval(page, deletedId);
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool mergeCurrentLayerDown() {
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
+            return false;
+        }
+        const size_t pageIndex = static_cast<size_t>(page);
+        auto before = captureLayerMutation(page);
+        auto& pageState = pageLayers[pageIndex];
+        const size_t topId = pageState.selectedLayer;
+        if (topId <= 1 || topId > pageState.layers.size()) {
+            return false;
+        }
+        auto& below = pageState.layers[topId - 2];
+        auto& top = pageState.layers[topId - 1];
+        below.origins.insert(below.origins.end(), top.origins.begin(), top.origins.end());
+        below.visible = below.visible || top.visible;
+        if (below.name.empty() || below.name.rfind("Layer ", 0) == 0) {
+            below.name = top.name;
+        }
+        pageState.layers.erase(pageState.layers.begin() + static_cast<std::ptrdiff_t>(topId - 1));
+        pageState.selectedLayer = topId - 1;
+        for (auto& stroke: ink) {
+            if (stroke.page != page) {
+                continue;
+            }
+            if (stroke.layerId == topId) {
+                stroke.layerId = topId - 1;
+            } else if (stroke.layerId > topId) {
+                --stroke.layerId;
+            }
+        }
+        for (auto& text: texts) {
+            if (text.page != page) {
+                continue;
+            }
+            if (text.layerId == topId) {
+                text.layerId = topId - 1;
+            } else if (text.layerId > topId) {
+                --text.layerId;
+            }
+        }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
 
     std::optional<SelectionBox> selectionBox() const {
         if (selectionGesture && selectionGesture->moving) {
@@ -170,6 +364,24 @@ public:
         return ink.at(index).page;
     }
 
+    size_t displayLayerId(size_t index) const {
+        if (selectionGesture && selectionGesture->moving &&
+            std::binary_search(selected.begin(), selected.end(), index) &&
+            selectionGesture->targetPage != ink.at(index).page) {
+            return activeLayerId(selectionGesture->targetPage);
+        }
+        return ink.at(index).layerId;
+    }
+
+    size_t displayLayerOrigin(size_t index) const {
+        if (selectionGesture && selectionGesture->moving &&
+            std::binary_search(selected.begin(), selected.end(), index) &&
+            selectionGesture->targetPage != ink.at(index).page) {
+            return activeLayerOrigin(selectionGesture->targetPage);
+        }
+        return ink.at(index).originLayer;
+    }
+
     std::vector<Point> selectionPath() const {
         if (selectionGesture && !selectionGesture->moving && selectionGesture->lasso) {
             return selectionGesture->boundary;
@@ -225,9 +437,13 @@ public:
     }
 
     std::optional<size_t> pickStroke(int pageIndex, Point point) const {
+        const size_t active = activeLayerId(pageIndex);
+        if (!layerVisible(pageIndex, active)) {
+            return std::nullopt;
+        }
         for (size_t i = ink.size(); i-- > 0;) {
             const auto& stroke = ink[i];
-            if (stroke.page != pageIndex) continue;
+            if (stroke.page != pageIndex || stroke.layerId != active) continue;
             for (size_t n = 0; n < stroke.points.size(); ++n) {
                 const auto& a = stroke.points[n ? n-1 : 0];
                 const auto& b = stroke.points[n];
@@ -385,7 +601,9 @@ public:
                     if (g.targetPage == g.page) {
                         edit.changes.push_back({index, {ink[index]}, index, {std::move(moved)}});
                     } else {
-                        moved.layerOrder = nextLayerOrder(g.targetPage) + transferred.size();
+                        moved.layerId = activeLayerId(g.targetPage);
+                        moved.originLayer = activeLayerOrigin(g.targetPage);
+                        moved.layerOrder = nextOriginOrder(g.targetPage, moved.originLayer) + transferred.size();
                         const auto removed = transferred.size();
                         edit.changes.push_back({index, {ink[index]}, index-removed, {}});
                         transferred.push_back(std::move(moved));
@@ -412,7 +630,8 @@ public:
             // RectangularSelector extends at page edges (1 pt). Stroke selection
             // tests every point, rather than accepting a crossing segment.
             for (size_t i = 0; i < ink.size(); ++i) {
-                if (ink[i].page == g.page && !ink[i].points.empty() &&
+                if (ink[i].page == g.page && ink[i].layerId == activeLayerId(g.page) &&
+                    layerVisible(g.page, ink[i].layerId) && !ink[i].points.empty() &&
                     std::all_of(ink[i].points.begin(), ink[i].points.end(), [&](const Point& p) {
                         if (g.lasso) return polygonContains(g.boundary, p);
                         return (x0 <= 1 || p.x >= x0) && (x1 >= size.width - 1 || p.x <= x1) &&
@@ -429,7 +648,8 @@ public:
     void selectAllOnPage() {
         clearSelection();
         for (size_t i = 0; i < ink.size(); ++i) {
-            if (ink[i].page == page && !ink[i].points.empty()) {
+            if (ink[i].page == page && ink[i].layerId == activeLayerId(page) &&
+                layerVisible(page, ink[i].layerId) && !ink[i].points.empty()) {
                 selected.push_back(i);
             }
         }
@@ -488,9 +708,11 @@ public:
         }
         const auto dx = std::max(0.0,center.x-(b.x1-b.x0)/2)-b.x0;
         const auto dy = std::max(0.0,center.y-(b.y1-b.y0)/2)-b.y0;
-        auto layerOrder = nextLayerOrder(targetPage);
+        auto layerOrder = nextOriginOrder(targetPage, activeLayerOrigin(targetPage));
         for (auto& stroke: pasted) {
             stroke.page=targetPage;
+            stroke.layerId = activeLayerId(targetPage);
+            stroke.originLayer = activeLayerOrigin(targetPage);
             stroke.layerOrder = layerOrder++;
             for (auto& p: stroke.points) {
                 p.x+=dx;p.y+=dy;
@@ -528,6 +750,12 @@ public:
         cancel();
         clearSelection();
         pages = std::move(nextPages);
+        if (pageLayers.size() > pages.size()) {
+            pageLayers.resize(pages.size());
+        }
+        while (pageLayers.size() < pages.size()) {
+            pageLayers.emplace_back();
+        }
         if (!pages.empty()) {
             selectActivePage(std::clamp(page, 0, pageCount() - 1));
         }
@@ -706,10 +934,14 @@ public:
         if (pages.empty()) {
             pages.push_back({pageWidth, pageHeight});
         }
+        while (pageLayers.size() < pages.size()) {
+            pageLayers.emplace_back();
+        }
         const int clamped = std::clamp(afterIndex, 0, pageCount() - 1);
         const int insertedIndex = clamped + 1;
         cancel();
         pages.insert(pages.begin() + insertedIndex, size);
+        pageLayers.insert(pageLayers.begin() + insertedIndex, PageLayers{});
         auto shiftStrokes = [&](std::vector<Ink>& strokes) {
             for (auto& stroke: strokes) {
                 if (stroke.page >= insertedIndex) {
@@ -728,6 +960,7 @@ public:
                 shiftTexts(change.before, insertedIndex);
                 shiftTexts(change.after, insertedIndex);
             }
+            shiftLayerMutationPage(edit.layerMutation, insertedIndex);
         }
         for (auto& edit: redoStates) {
             for (auto& change: edit.changes) {
@@ -738,6 +971,7 @@ public:
                 shiftTexts(change.before, insertedIndex);
                 shiftTexts(change.after, insertedIndex);
             }
+            shiftLayerMutationPage(edit.layerMutation, insertedIndex);
         }
         selectActivePage(insertedIndex);
     }
@@ -749,6 +983,9 @@ public:
         cancel();
         clearSelection();
         pages.erase(pages.begin() + removeIndex);
+        if (static_cast<size_t>(removeIndex) < pageLayers.size()) {
+            pageLayers.erase(pageLayers.begin() + removeIndex);
+        }
         std::erase_if(ink, [&](const Ink& stroke) { return stroke.page == removeIndex; });
         for (auto& stroke: ink) {
             if (stroke.page > removeIndex) {
@@ -802,6 +1039,8 @@ public:
         } else {
             current = Ink{hit->page, {hit->local}, brush, false};
         }
+        current->layerId = activeLayerId(hit->page);
+        current->originLayer = activeLayerOrigin(hit->page);
         rawCurrent = {hit->local};
         if (!useEraser && drawingMode == DrawingMode::Spline) {
             splineKnots = {hit->local};
@@ -968,7 +1207,7 @@ public:
                 }
                 current->points.push_back(point);
             }
-            current->layerOrder = nextLayerOrder(current->page);
+            current->layerOrder = nextOriginOrder(current->page, current->originLayer);
             Edit edit;
             edit.changes.push_back({ink.size(), {}, ink.size(), {*current}});
             record(std::move(edit));
@@ -985,7 +1224,9 @@ public:
         if (!validTextPage(item) || current || eraseGesture || selectionGesture) {
             return false;
         }
-        item.layerOrder = nextLayerOrder(item.page);
+        item.layerId = activeLayerId(item.page);
+        item.originLayer = activeLayerOrigin(item.page);
+        item.layerOrder = nextOriginOrder(item.page, item.originLayer);
         Edit edit;
         edit.textChanges.push_back({texts.size(), {}, texts.size(), {std::move(item)}});
         apply(edit, true);
@@ -999,6 +1240,8 @@ public:
             return false;
         }
         item.layerOrder = texts[index].layerOrder;
+        item.layerId = texts[index].layerId;
+        item.originLayer = texts[index].originLayer;
         Edit edit;
         edit.textChanges.push_back({index, {texts[index]}, index, {std::move(item)}});
         apply(edit, true);
@@ -1179,9 +1422,26 @@ private:
         std::vector<TextItem> after;
     };
 
+    template <typename T>
+    struct IndexedObject {
+        size_t index;
+        T value;
+    };
+
+    struct LayerMutation {
+        int page = 0;
+        PageLayers beforeLayers;
+        PageLayers afterLayers;
+        std::vector<IndexedObject<Ink>> beforeInk;
+        std::vector<IndexedObject<Ink>> afterInk;
+        std::vector<IndexedObject<TextItem>> beforeTexts;
+        std::vector<IndexedObject<TextItem>> afterTexts;
+    };
+
     struct Edit {
         std::vector<Change> changes;
         std::vector<TextChange> textChanges;
+        std::optional<LayerMutation> layerMutation;
         size_t revision = 0;
         std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
@@ -1194,19 +1454,95 @@ private:
                std::isfinite(item.y);
     }
 
-    size_t nextLayerOrder(int pageIndex) const {
+    size_t nextOriginOrder(int pageIndex, size_t origin) const {
         size_t next = 0;
         for (const auto& stroke: ink) {
-            if (stroke.page == pageIndex) {
+            if (stroke.page == pageIndex && stroke.originLayer == origin) {
                 next = std::max(next, stroke.layerOrder + 1);
             }
         }
         for (const auto& text: texts) {
-            if (text.page == pageIndex) {
+            if (text.page == pageIndex && text.originLayer == origin) {
                 next = std::max(next, text.layerOrder + 1);
             }
         }
         return next;
+    }
+
+    static size_t nextLayerOrigin(const PageLayers& pageState) {
+        size_t next = pageState.initialLayerCount;
+        for (const auto& layer: pageState.layers) {
+            for (size_t origin: layer.origins) {
+                if (origin != newLayerOrigin && origin >= next) {
+                    next = origin + 1;
+                }
+            }
+        }
+        return next;
+    }
+
+    LayerMutation captureLayerMutation(int pageIndex) const {
+        LayerMutation mutation;
+        mutation.page = pageIndex;
+        mutation.beforeLayers = pageLayers.at(static_cast<size_t>(pageIndex));
+        for (size_t i = 0; i < ink.size(); ++i) {
+            if (ink[i].page == pageIndex) {
+                mutation.beforeInk.push_back({i, ink[i]});
+            }
+        }
+        for (size_t i = 0; i < texts.size(); ++i) {
+            if (texts[i].page == pageIndex) {
+                mutation.beforeTexts.push_back({i, texts[i]});
+            }
+        }
+        return mutation;
+    }
+
+    void recordLayerMutation(LayerMutation mutation) {
+        const size_t pageIndex = static_cast<size_t>(mutation.page);
+        mutation.afterLayers = pageLayers.at(pageIndex);
+        for (size_t i = 0; i < ink.size(); ++i) {
+            if (ink[i].page == mutation.page) {
+                mutation.afterInk.push_back({i, ink[i]});
+            }
+        }
+        for (size_t i = 0; i < texts.size(); ++i) {
+            if (texts[i].page == mutation.page) {
+                mutation.afterTexts.push_back({i, texts[i]});
+            }
+        }
+        Edit edit;
+        edit.layerMutation = std::move(mutation);
+        record(std::move(edit));
+    }
+
+    template <typename T>
+    static void restoreIndexedObjects(std::vector<T>& objects, int pageIndex,
+                                      const std::vector<IndexedObject<T>>& snapshot) {
+        std::erase_if(objects, [pageIndex](const T& item) { return item.page == pageIndex; });
+        for (const auto& indexed: snapshot) {
+            const auto at = std::min(indexed.index, objects.size());
+            objects.insert(objects.begin() + static_cast<std::ptrdiff_t>(at), indexed.value);
+        }
+    }
+
+    void remapObjectsAfterLayerRemoval(int pageIndex, size_t deletedId) {
+        std::erase_if(ink, [pageIndex, deletedId](const Ink& item) {
+            return item.page == pageIndex && item.layerId == deletedId;
+        });
+        for (auto& stroke: ink) {
+            if (stroke.page == pageIndex && stroke.layerId > deletedId) {
+                --stroke.layerId;
+            }
+        }
+        std::erase_if(texts, [pageIndex, deletedId](const TextItem& item) {
+            return item.page == pageIndex && item.layerId == deletedId;
+        });
+        for (auto& text: texts) {
+            if (text.page == pageIndex && text.layerId > deletedId) {
+                --text.layerId;
+            }
+        }
     }
 
     static void shiftTexts(std::vector<TextItem>& items, int insertedIndex) {
@@ -1214,6 +1550,25 @@ private:
             if (item.page >= insertedIndex) {
                 ++item.page;
             }
+        }
+    }
+
+    static void shiftLayerMutationPage(std::optional<LayerMutation>& mutation, int insertedIndex) {
+        if (!mutation || mutation->page < insertedIndex) {
+            return;
+        }
+        ++mutation->page;
+        for (auto& indexed: mutation->beforeInk) {
+            ++indexed.value.page;
+        }
+        for (auto& indexed: mutation->afterInk) {
+            ++indexed.value.page;
+        }
+        for (auto& indexed: mutation->beforeTexts) {
+            ++indexed.value.page;
+        }
+        for (auto& indexed: mutation->afterTexts) {
+            ++indexed.value.page;
         }
     }
 
@@ -1473,7 +1828,10 @@ private:
             if (pts.size() < 2) {
                 return std::nullopt;
             }
-            return Ink{stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive, stroke.layerOrder};
+            Ink piece{stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive, stroke.layerOrder};
+            piece.layerId = stroke.layerId;
+            piece.originLayer = stroke.originLayer;
+            return piece;
         };
 
         const bool closedStroke = stroke.points.size() >= 3 &&
@@ -1505,8 +1863,10 @@ private:
                 pts.push_back(endPt);
             }
             if (pts.size() >= 2) {
-                out.remaining.push_back(
-                        {stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive, stroke.layerOrder});
+                Ink piece{stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive, stroke.layerOrder};
+                piece.layerId = stroke.layerId;
+                piece.originLayer = stroke.originLayer;
+                out.remaining.push_back(std::move(piece));
             }
             ++firstSec;
             --endSec;
@@ -1540,7 +1900,8 @@ private:
         };
         for (size_t i = 0; i < ink.size(); ++i) {
             const size_t origin = eraseGesture->slotOrigin[i];
-            if (ink[i].page != targetPage) {
+            if (ink[i].page != targetPage || ink[i].layerId != activeLayerId(targetPage) ||
+                !layerVisible(targetPage, ink[i].layerId)) {
                 if (anyChanged) {
                     nextInk.push_back(std::move(ink[i]));
                     nextOrigins.push_back(origin);
@@ -1588,6 +1949,14 @@ private:
     }
 
     void apply(const Edit& edit, bool forward) {
+        if (edit.layerMutation) {
+            const auto& mutation = *edit.layerMutation;
+            const auto& layers = forward ? mutation.afterLayers : mutation.beforeLayers;
+            auto& pageState = pageLayers.at(static_cast<size_t>(mutation.page));
+            pageState = layers;
+            restoreIndexedObjects(ink, mutation.page, forward ? mutation.afterInk : mutation.beforeInk);
+            restoreIndexedObjects(texts, mutation.page, forward ? mutation.afterTexts : mutation.beforeTexts);
+        }
         for (auto it = edit.textChanges.rbegin(); it != edit.textChanges.rend(); ++it) {
             if (forward) {
                 const auto pos = texts.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex);

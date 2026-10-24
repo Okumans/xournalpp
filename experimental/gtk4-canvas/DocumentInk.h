@@ -17,6 +17,8 @@ inline std::vector<StrokePacket> transferInk(const std::vector<Ink>& ink) {
                             whiteout ? behavior::whiteoutColor : stroke.brush.color,
                             {},
                             whiteout};
+        packet.layerId = stroke.layerId;
+        packet.originLayer = stroke.originLayer;
         packet.layerOrder = stroke.layerOrder;
         packet.points.reserve(stroke.points.size());
         for (const auto& point: stroke.points) {
@@ -38,6 +40,8 @@ inline std::vector<Ink> sessionInk(const std::vector<StrokePacket>& packets) {
                    {tool, packet.whiteout ? behavior::whiteoutColor : packet.color, packet.width},
                    packet.pressureSensitive && tool == Tool::Pen,
                    packet.layerOrder};
+        stroke.layerId = packet.layerId;
+        stroke.originLayer = packet.originLayer;
         stroke.points.reserve(packet.points.size());
         for (const auto& point: packet.points) {
             stroke.points.push_back({point.x, point.y, point.pressure});

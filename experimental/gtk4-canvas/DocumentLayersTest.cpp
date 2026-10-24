@@ -1,0 +1,83 @@
+#include "DocumentLayers.h"
+
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+
+using namespace prototype::bridge;
+
+namespace {
+
+void check(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
+template <typename Fn>
+bool throws(Fn&& fn) {
+    try {
+        fn();
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+int main() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("gtk4-layer-transfer-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto path = root / "layers.dat";
+    try {
+        LayerDocument original(2);
+        original[0].initialLayerCount = 2;
+        original[0].selectedLayer = 2;
+        original[0].backgroundVisible = false;
+        original[0].layers = {{"Lower", true, {0}}, {"上の層", false, {1, 2}}};
+        original[1].initialLayerCount = 1;
+        original[1].selectedLayer = 1;
+        original[1].layers = {{"Page 2", true, {0}}};
+
+        writeLayerTransfer(path, original);
+        const auto decoded = readLayerTransfer(path);
+        check(decoded == original, "Layer transfer changed page, visibility, name, origin, or active-layer metadata");
+
+        writeLayerTransfer(path, {});
+        check(readLayerTransfer(path).empty(), "Empty layer transfer did not round-trip");
+
+        auto duplicateOrigin = original;
+        duplicateOrigin[0].layers[1].origins = {0};
+        check(throws([&] { writeLayerTransfer(path, duplicateOrigin); }),
+              "The same source layer was assigned to multiple destination layers");
+
+        auto missingOrigin = original;
+        missingOrigin[0].layers[0].origins.clear();
+        check(throws([&] { writeLayerTransfer(path, missingOrigin); }),
+              "A layer without a source or editable origin was accepted");
+
+        auto invalidSelection = original;
+        invalidSelection[0].selectedLayer = 0;
+        check(throws([&] { writeLayerTransfer(path, invalidSelection); }),
+              "The immutable background was accepted as the active editable layer");
+
+        {
+            std::ofstream truncated(path, std::ios::binary);
+            truncated << "XOURNALPP_GTK4_LAYERS_V1 1\n1 1 1 1\n1 4 1\n0\nLow";
+        }
+        check(throws([&] { static_cast<void>(readLayerTransfer(path)); }),
+              "Truncated layer-transfer metadata was accepted");
+
+        std::filesystem::remove_all(root);
+        std::cout << "PASS: bounded layer transfer preserves per-page stack and rejects invalid origins\n";
+    } catch (const std::exception& error) {
+        std::filesystem::remove_all(root);
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

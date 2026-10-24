@@ -36,6 +36,80 @@ def content(element):
             [content(child) for child in element])
 
 
+def read_ink_v3(path):
+    lines = path.read_text().splitlines()
+    magic, count = lines[0].split()
+    assert magic == "XOURNALPP_GTK4_INK_V3"
+    packets = []
+    cursor = 1
+    for _ in range(int(count)):
+        values = lines[cursor].split()
+        cursor += 1
+        page, layer_id, origin, order, tool, pressure = map(int, values[:6])
+        width = float(values[6])
+        color = tuple(map(float, values[7:10]))
+        point_count = int(values[10])
+        points = [tuple(map(float, lines[cursor + index].split())) for index in range(point_count)]
+        cursor += point_count
+        packets.append({"page": page, "layer_id": layer_id, "origin": origin, "order": order,
+                        "tool": tool, "pressure": pressure, "width": width,
+                        "color": color, "points": points})
+    assert cursor == len(lines)
+    return packets
+
+
+def write_ink_v3(path, packets):
+    lines = [f"XOURNALPP_GTK4_INK_V3 {len(packets)}"]
+    for packet in packets:
+        values = (packet["page"], packet["layer_id"], packet["origin"], packet["order"], packet["tool"],
+                  packet["pressure"], packet["width"], *packet["color"], len(packet["points"]))
+        lines.append(" ".join(map(str, values)))
+        lines.extend(" ".join(map(str, point)) for point in packet["points"])
+    path.write_text("\n".join(lines) + "\n")
+
+
+def write_layers(path, initial_count, selected, background_visible, layers):
+    parts = ["XOURNALPP_GTK4_LAYERS_V1 1",
+             f"{initial_count} {selected} {int(background_visible)} {len(layers)}"]
+    for name, visible, origins in layers:
+        encoded = name.encode("utf-8")
+        parts.append(f"{int(visible)} {len(encoded)} {len(origins)}")
+        parts.extend(map(str, origins))
+        parts.append(encoded.decode("utf-8"))
+    path.write_bytes(("\n".join(parts) + "\n").encode("utf-8"))
+
+
+def read_layers(path):
+    data = path.read_bytes()
+    offset = 0
+
+    def read_line():
+        nonlocal offset
+        end = data.index(b"\n", offset)
+        value = data[offset:end].decode("ascii")
+        offset = end + 1
+        return value
+
+    magic, count = read_line().split()
+    assert magic == "XOURNALPP_GTK4_LAYERS_V1"
+    pages = []
+    for _ in range(int(count)):
+        initial_count, selected, background, layer_count = map(int, read_line().split())
+        layers = []
+        for _ in range(layer_count):
+            visible, name_bytes, origin_count = map(int, read_line().split())
+            origins = [int(read_line()) for _ in range(origin_count)]
+            name = data[offset:offset + name_bytes].decode("utf-8")
+            offset += name_bytes
+            assert data[offset:offset + 1] == b"\n"
+            offset += 1
+            layers.append({"name": name, "visible": bool(visible), "origins": origins})
+        pages.append({"initial_count": initial_count, "selected": selected,
+                      "background_visible": bool(background), "layers": layers})
+    assert offset == len(data)
+    return pages
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", type=Path, required=True)
@@ -147,9 +221,9 @@ def main():
         rich_ink = temporary / "rich.ink"
         rich_transfer = temporary / "rich.text"
         run("open", rich_native, rich_snap, rich_pdf, rich_ink, rich_transfer)
-        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V1 1\n")
+        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V2 1\n")
         assert "Rich π text".encode() in rich_transfer.read_bytes()
-        assert rich_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V2 2"
+        assert rich_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V3 2"
         rich_saved = temporary / "rich-saved.xopp"
         run("save-copy", rich_snap, rich_saved, rich_ink, rich_transfer)
         assert content(xml(rich_saved).find("page")) == content(xml(rich_native).find("page"))
@@ -268,8 +342,8 @@ def main():
         run("save-copy", corrupt, temporary / "recovered.xopp", empty, succeeds=False)
         assert not (temporary / "recovered.xopp").exists()
 
-        # 5-argument open extracts only the contiguous top-layer editable stroke suffix,
-        # preserving z-order relative to underlying strokes/text, lower layers, filled/dashed/butt-cap
+        # 5-argument open extracts the contiguous editable stroke suffix from each layer,
+        # preserving z-order relative to underlying strokes/text, other layers, filled/dashed/butt-cap
         # strokes, and audio-attached strokes, and round-trips losslessly on save.
         mixed = temporary / "mixed.xopp"
         mixed_root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
@@ -306,9 +380,9 @@ def main():
         assert existing_ink.read_text() == "do not overwrite" and not (temporary / "bad-snap.xopp").exists()
         assert run("open", mixed, mixed_snap, mixed_pdf, mixed_ink) == "NATIVE_SAVE\n"
         mixed_lines = mixed_ink.read_text().splitlines()
-        assert mixed_lines[0] == "XOURNALPP_GTK4_INK_V2 3"
+        assert mixed_lines[0] == "XOURNALPP_GTK4_INK_V3 4"
         snap_info = json.loads(run("inspect", mixed_snap))["pages"][0]
-        assert snap_info["layers"] == 2 and snap_info["strokes"] == 5 and snap_info["texts"] == 1
+        assert snap_info["layers"] == 2 and snap_info["strokes"] == 4 and snap_info["texts"] == 1
         mixed_roundtrip = temporary / "mixed-roundtrip.xopp"
         run("save-copy", mixed_snap, mixed_roundtrip, mixed_ink)
         rt_strokes = xml(mixed_roundtrip).findall("page/layer")[-1].findall("stroke")
@@ -319,12 +393,83 @@ def main():
         assert [content(p) for p in xml(mixed_roundtrip).findall("page")] == [
             content(p) for p in xml(mixed).findall("page")]
 
+        # The layered protocol extracts editable suffixes from every foreground
+        # layer, then reconstructs each source layer and a merged stack without
+        # flattening native objects or duplicating transferred ink.
+        layered = temporary / "layered.xopp"
+        layered_root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
+        ET.SubElement(layered_root, "title").text = "Layer-aware round trip"
+        layered_page = ET.SubElement(layered_root, "page", {"width": "595", "height": "842"})
+        ET.SubElement(layered_page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+        layered_lower = ET.SubElement(layered_page, "layer", {"name": "Lower"})
+        ET.SubElement(layered_lower, "stroke", {"tool": "pen", "capStyle": "round", "style": "dash",
+                                                  "color": "#222222ff", "width": "2"}).text = "10 10 50 10"
+        ET.SubElement(layered_lower, "stroke", {"tool": "pen", "capStyle": "round", "color": "#112233ff",
+                                                  "width": "2"}).text = "10 20 50 20"
+        layered_upper = ET.SubElement(layered_page, "layer", {"name": "Upper"})
+        ET.SubElement(layered_upper, "stroke", {"tool": "pen", "capStyle": "round", "fill": "128",
+                                                  "color": "#008800ff", "width": "2"}).text = "10 30 50 30 30 50"
+        ET.SubElement(layered_upper, "stroke", {"tool": "highlighter", "capStyle": "round",
+                                                  "color": "#ffff007f", "width": "8"}).text = "10 60 50 60"
+        layered.write_bytes(gzip.compress(ET.tostring(layered_root, encoding="utf-8", xml_declaration=True)))
+        layered_snap = temporary / "layered-snapshot.xopp"
+        layered_pdf = temporary / "layered-preview.pdf"
+        layered_ink = temporary / "layered.ink"
+        layered_text = temporary / "layered.text"
+        layered_state = temporary / "layered.dat"
+        run("open", layered, layered_snap, layered_pdf, layered_ink, layered_text, layered_state)
+        layer_pages = read_layers(layered_state)
+        assert len(layer_pages) == 1 and layer_pages[0]["initial_count"] == 2
+        assert [(layer["name"], layer["origins"]) for layer in layer_pages[0]["layers"]] == [
+            ("Lower", [0]), ("Upper", [1])]
+        layered_packets = read_ink_v3(layered_ink)
+        assert [(packet["layer_id"], packet["origin"]) for packet in layered_packets] == [(1, 0), (2, 1)]
+        assert json.loads(run("inspect", layered_snap))["pages"][0]["strokes"] == 2
+
+        updated_packets = copy.deepcopy(layered_packets)
+        updated_packets.extend([
+            {"page": 0, "layer_id": 1, "origin": 0, "order": 2, "tool": 0, "pressure": 0,
+             "width": 2.5, "color": (0.1, 0.4, 0.8), "points": [(15, 80, 1), (45, 80, 1)]},
+            {"page": 0, "layer_id": 2, "origin": 1, "order": 2, "tool": 0, "pressure": 0,
+             "width": 3.0, "color": (0.8, 0.2, 0.1), "points": [(15, 90, 1), (45, 90, 1)]},
+        ])
+        updated_ink = temporary / "layered-updated.ink"
+        write_ink_v3(updated_ink, updated_packets)
+        layered_saved = temporary / "layered-saved.xopp"
+        run("save-copy", layered_snap, layered_saved, updated_ink, layered_text, layered_state)
+        saved_page = xml(layered_saved).find("page")
+        saved_layers = saved_page.findall("layer")
+        assert [layer.attrib.get("name") for layer in saved_layers] == ["Lower", "Upper"]
+        lower_items = saved_layers[0].findall("stroke")
+        upper_items = saved_layers[1].findall("stroke")
+        assert len(lower_items) == 3 and lower_items[0].attrib.get("style") == "dash"
+        assert lower_items[1].attrib["tool"] == "pen" and float(lower_items[1].attrib["width"]) == 2
+        assert lower_items[2].attrib["tool"] == "pen" and float(lower_items[2].attrib["width"]) == 2.5
+        assert len(upper_items) == 3 and upper_items[0].attrib.get("fill") == "128"
+        assert upper_items[1].attrib["tool"] == "highlighter" and float(upper_items[1].attrib["width"]) == 8
+        assert upper_items[2].attrib["tool"] == "pen" and float(upper_items[2].attrib["width"]) == 3
+
+        merged_state = temporary / "layered-merged.dat"
+        write_layers(merged_state, 2, 1, True, [("Merged", True, [0, 1])])
+        merged_packets = copy.deepcopy(layered_packets)
+        for packet in merged_packets:
+            packet["layer_id"] = 1
+        merged_ink = temporary / "layered-merged.ink"
+        write_ink_v3(merged_ink, merged_packets)
+        merged_file = temporary / "layered-merged.xopp"
+        run("save-copy", layered_snap, merged_file, merged_ink, layered_text, merged_state)
+        merged_layers = xml(merged_file).findall("page/layer")
+        assert len(merged_layers) == 1 and merged_layers[0].attrib.get("name") == "Merged"
+        merged_items = merged_layers[0].findall("stroke")
+        assert [item.attrib.get("style") or item.attrib.get("fill") or item.attrib["tool"]
+                for item in merged_items] == ["dash", "pen", "128", "highlighter"]
+
         # Audio-linked strokes must remain in snapshot.xopp rather than losing fn/ts attributes.
         audio_snap = temporary / "audio-snap.xopp"
         audio_pdf = temporary / "audio-snap.pdf"
         audio_ink = temporary / "audio.ink"
         run("open", fixtures / "packaged_xopp/audioAttachment/new.xopp", audio_snap, audio_pdf, audio_ink)
-        assert audio_ink.read_text().strip() == "XOURNALPP_GTK4_INK_V2 0"
+        assert audio_ink.read_text().strip() == "XOURNALPP_GTK4_INK_V3 0"
         assert json.loads(run("inspect", audio_snap))["pages"][0]["strokes"] == 1
 
         # Real 13,064-stroke handwritten notebook extracts completely and round-trips without duplication.
@@ -332,7 +477,7 @@ def main():
         hw_pdf = temporary / "hw-snap.pdf"
         hw_ink = temporary / "hw.ink"
         run("open", fixtures / "benchmark/handwritten-text.xopp", hw_snap, hw_pdf, hw_ink)
-        assert hw_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V2 13064"
+        assert hw_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V3 13064"
         assert json.loads(run("inspect", hw_snap))["pages"][0]["strokes"] == 0
         hw_roundtrip = temporary / "hw-roundtrip.xopp"
         run("save-copy", hw_snap, hw_roundtrip, hw_ink)

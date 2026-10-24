@@ -48,6 +48,12 @@ target_compile_features(document-transfer-test PRIVATE cxx_std_20)
 target_compile_options(document-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME document-transfer COMMAND document-transfer-test)
 
+add_executable(document-layers-test DocumentLayersTest.cpp)
+target_compile_features(document-layers-test PRIVATE cxx_std_20)
+target_compile_options(document-layers-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(document-layers-test PRIVATE PkgConfig::UI)
+add_test(NAME document-layers COMMAND document-layers-test)
+
 add_executable(document-text-transfer-test DocumentTextTransferTest.cpp)
 target_compile_features(document-text-transfer-test PRIVATE cxx_std_20)
 target_compile_options(document-text-transfer-test PRIVATE -Wall -Wextra -Wpedantic)

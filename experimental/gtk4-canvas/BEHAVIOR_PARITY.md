@@ -10,9 +10,9 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | --- | --- | --- |
 | Highlighter opacity | `src/core/view/StrokeView.h`: `OPACITY_HIGHLIGHTER = 0.47` | Matched, with a pixel test |
 | Tool size presets | `ToolHandler::initTools`: Pen `0.42..5.67`, Highlighter `1.0..30.0`, Eraser `1.0..18.0` pt (`MEDIUM` default) | Matched, with bidirectional `Custom` spin sync and per-tool memory |
-| Standard eraser | `EraseHandler` + `Stroke::intersectWithPaddedBox`: `PaddedBox` (`halfSize`, `+0.4 * width` cap padding) | Matched across both session and top-layer native `.xopp` strokes, with linear split-pressure interpolation and closed-loop seam merging |
+| Standard eraser | `EraseHandler` + `Stroke::intersectWithPaddedBox`: `PaddedBox` (`halfSize`, `+0.4 * width` cap padding) | Matched across session and active-layer native `.xopp` strokes, with linear split-pressure interpolation and closed-loop seam merging |
 | Whiteout eraser | `InputHandler` + `SaveHandler::visitStroke`: opaque `#ffffffff` constant-width `tool="eraser"` stroke | Matched in Cairo rendering, stylus eraser-end routing, and lossless native `.xopp` extraction/serialization |
-| Delete-stroke eraser | `EraseHandler` (`ERASER_TYPE_DELETE_STROKE`) | Matched across session and top-layer native `.xopp` strokes, with exact segment clipping + half stroke width at all segment lengths |
+| Delete-stroke eraser | `EraseHandler` (`ERASER_TYPE_DELETE_STROKE`) | Matched across session and active-layer native `.xopp` strokes, with exact segment clipping + half stroke width at all segment lengths |
 | Keyboard zoom step | `Settings::loadDefault`: 10%; `Control` divides by 100 | Matched (`zoomStep` percent imported read-only from `settings.xml`), including inverse zoom-out |
 | Wheel zoom step | `Settings::loadDefault`: 2%; `ZoomControl::zoomScroll` | Matched (`zoomStepScroll` percent imported read-only from `settings.xml`) |
 | Wheel zoom focus | `onScrolledwindowMainScrollEvent` uses pointer coordinates | Matched; surface-to-canvas mapping checked with real toolbar/sidebar offsets |
@@ -41,11 +41,12 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Autosave paths & swap | `AutosaveJob::run` + `Util::getAutosaveFilepath`: `.name.autosave.xopp` or `<cache>/xournalpp/autosaves/<pid>.autosave.xopp` via `.swap` | Matched, with `UndoRedoHandler::isChangedAutosave` revision tracking and cleanup on Save, Discard and clean exit |
 | Cache autosave guard | `Control.cpp` `shouldFileOpen`: refuses direct Open under `<cache>/xournalpp` | Matched, including symlink resolution into the cache tree |
 | Crash recovery | `XournalMain::checkForEmergencySave`: `emergencysave.xopp` (`Delete file` / `Restore file`, unnamed & dirty) | Matched for `emergencysave.xopp`; extended to also prompt on dead-PID cache autosaves and `.name.autosave.xopp` sidecars |
-| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; supported top-layer stroke and text suffixes are extracted for editing and reinserted in original order, while lower layers and unsupported native objects stay in the background document |
+| Layer management | `XojPage` layers and `LayerView` | The per-page sidebar selects foreground layers, toggles background/foreground visibility, adds and deletes layers, and merges a layer down. Layer changes participate in undo/redo. Merge into the background, rename, reorder, and lock controls are not implemented. |
+| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; supported stroke and text suffixes from every foreground layer are extracted for editing and saved back into their layer groups in order. Remaining native objects stay in the document snapshot and render in per-layer previews. |
 | Native rich text | `Text`, `TextView`, `TextEditor`, `UndoRedoHandler` | Eligible non-audio native text loads into a Pango renderer and inline `GtkTextView`; UTF-8, font, color, wrap, alignment, transform, and supported style runs round-trip. Text tool creates items; Smart Select click edits them. Bold, italic, underline, strikethrough, superscript, and subscript work on selected text and join shared undo/redo. Text is not yet movable or resizable with object selection, and the editor overlay does not follow rotated/scaled transforms. |
 | Preferences import (`settings.xml`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure sensitivity/min/multiplier, zoom steps, `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`), autosave enable/timeout, and `colorPalette`; eliminates legacy `Settings::load` disk writes/`setenv("LANGUAGE")`, `parseData` `nullptr` crashes, `tempg_ascii_strtod` locale sensitivity, and `ToolHandler::loadSettings` missing-`current` skips |
 | Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
-| Stroke selection | `Selector.cpp`, `LassoSelector.cpp`, `SmartSelect.cpp`, and `Stroke::isInSelection`: all-point rectangle/lasso winding containment with 1 pt page-edge extension; object picking follows stroke path distance | Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), Smart Select (`S`), Shift-add rectangle, active-page `Ctrl+A`, Delete and Escape. Currently selects only editable strokes from the visible top-layer suffix. |
+| Stroke selection | `Selector.cpp`, `LassoSelector.cpp`, `SmartSelect.cpp`, and `Stroke::isInSelection`: all-point rectangle/lasso winding containment with 1 pt page-edge extension; object picking follows stroke path distance | Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), Smart Select (`S`), Shift-add rectangle, active-page `Ctrl+A`, Delete and Escape. Selects editable strokes from the active visible foreground layer. |
 | Selection transforms | `EditSelection.cpp` affine transform, eight resize handles and rotation anchor; `Stroke::scale` applies geometric-mean width scaling | Move, axis-side resize, aspect-preserving corner resize, mirror, rotate and cross-page transfer use preview matrices. Preview leaves committed autosave geometry unchanged; release records one undo step and retains pressure/style. |
 | Selection clipboard | `ClipboardHandler.cpp`: native `application/xournal` object stream, plus text/SVG/PNG targets | Bounded strict decoder and native encoder support editable pen, highlighter and opaque whiteout strokes. GDK Copy/Cut/Paste and duplicate append as one undoable group. Unsupported native objects, custom caps, fill, dash, audio and alpha are rejected atomically; SVG/PNG export, text/image clipboard and editable non-stroke objects remain pending. |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
@@ -76,15 +77,18 @@ transfers them to the real native model when saving.
   placement. Geometric tools output stroke paths rather than native rectangle,
   ellipse, or arrow model objects.
 - The original uses its document, selection, layer, undo, and rich-text models.
-  When opening a `.xopp` via the worker, supported top-layer round-cap,
+  When opening a `.xopp` via the worker, supported round-cap,
   unfilled, undashed, non-audio `pen`, `highlighter`, and `#ffffffff` `eraser`
-  strokes plus valid non-empty native text are extracted from each visible
-  top-layer suffix. Stroke pressure sentinels are normalized into positive
+  strokes plus valid non-empty native text are extracted from the contiguous
+  editable suffix of every foreground layer, including hidden layers. Stroke
+  pressure sentinels are normalized into positive
   per-point multipliers. Text retains UTF-8 content, supported style runs, and
-  its transform. Both are removed from the background snapshot/PDF and written
-  back in their original order, avoiding duplicate objects. Lower layers,
-  objects underneath a non-editable suffix element, unsupported stroke types,
-  audio-linked text, LaTeX, and images remain flattened and cannot yet be edited.
+  its transform. Both are removed from the native snapshot and written back in
+  their original layer groups and order, avoiding duplicate objects. Objects
+  preceding a non-editable suffix element, unsupported stroke types, audio-linked
+  text, LaTeX, and images remain visible in per-layer previews but cannot yet be
+  edited. Layer visibility, selection, add/delete, and merge-down are supported;
+  rename, reorder, lock, and merge into the background are not.
   Text can be created and edited, but is not part of rectangle/lasso selection
   and cannot yet be moved or transformed in the canvas.
 - The prototype renders a continuous single-column vertical multi-page layout
@@ -131,6 +135,6 @@ file semantics remain migration work.
 
 ## Selection scope
 
-Selection and transforms apply to editable standard strokes in the visible top-layer suffix. Rectangle and lasso use all-point containment; both extend a boundary within one point of the page edge. Smart Select picks the topmost editable stroke by path distance, while a Smart Select click opens eligible native text for editing. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
+Selection and transforms apply to editable standard strokes in the active visible foreground layer. Rectangle and lasso use all-point containment; both extend a boundary within one point of the page edge. Smart Select picks the topmost editable stroke by path distance, while a Smart Select click opens eligible native text for editing. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
 
-Move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text can be edited but cannot yet be selected, moved, resized, or rotated; images/shapes, lower-layer objects, other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.
+Move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text can be edited but cannot yet be selected, moved, resized, or rotated; unsupported native objects cannot be selected or edited; other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.

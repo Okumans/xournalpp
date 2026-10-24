@@ -23,7 +23,8 @@ bool same(const prototype::TextStyleRun& a, const prototype::TextStyleRun& b) {
 }
 
 bool same(const prototype::TextItem& a, const prototype::TextItem& b) {
-    if (a.page != b.page || a.layerOrder != b.layerOrder || a.text != b.text || a.fontName != b.fontName ||
+    if (a.page != b.page || a.layerId != b.layerId || a.originLayer != b.originLayer ||
+        a.layerOrder != b.layerOrder || a.text != b.text || a.fontName != b.fontName ||
         a.fontSize != b.fontSize || a.color != b.color || a.wrapWidth != b.wrapWidth || a.alignment != b.alignment ||
         a.justify != b.justify || a.xx != b.xx || a.yx != b.yx || a.xy != b.xy || a.yy != b.yy || a.x != b.x ||
         a.y != b.y || a.styleRuns.size() != b.styleRuns.size()) {
@@ -60,6 +61,8 @@ int main() {
     try {
         prototype::TextItem first;
         first.page = 1;
+        first.layerId = 3;
+        first.originLayer = 8;
         first.layerOrder = 7;
         first.text = "Cafe\xCC\x81 — 测试\nsecond line";
         first.fontName = "Liberation Sans";
@@ -85,12 +88,30 @@ int main() {
 
         const auto path = root / "roundtrip.text";
         prototype::bridge::writeTextTransfer(path, {first, second});
+        {
+            std::ifstream header(path);
+            std::string magic;
+            header >> magic;
+            check(magic == "XOURNALPP_GTK4_TEXT_V2", "Layer-aware text transfers should use version 2");
+        }
         const auto decoded = prototype::bridge::readTextTransfer(path);
         check(decoded.size() == 2 && same(decoded[0], first) && same(decoded[1], second),
               "Native text transfer changed content, style, transform or object order");
 
         prototype::bridge::writeTextTransfer(path, {});
         check(prototype::bridge::readTextTransfer(path).empty(), "Empty native text transfer did not round-trip");
+
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_TEXT_V1 1\n"
+                      "0 4 1 0 0 1 0 0 12 4278190080 -1 0 0 3 4 0\n"
+                      "Sans\nabc\n";
+        }
+        const auto legacyDecoded = prototype::bridge::readTextTransfer(path);
+        check(legacyDecoded.size() == 1 && legacyDecoded[0].text == "abc" &&
+                      legacyDecoded[0].layerId == prototype::legacyTopLayer &&
+                      legacyDecoded[0].originLayer == prototype::newLayerOrigin && legacyDecoded[0].layerOrder == 4,
+              "Legacy V1 text transfer should retain its historical top-layer destination");
 
         auto invalidBoundary = first;
         invalidBoundary.styleRuns = {{5, 6, "Sans", 12, std::nullopt, 1U}};
@@ -104,7 +125,7 @@ int main() {
 
         {
             std::ofstream truncated(path, std::ios::binary);
-            truncated << "XOURNALPP_GTK4_TEXT_V1 1\n0 1 1 0 0 1 0 0 12 4278190080 -1 0 0 5 4 0\nSans\nabc";
+            truncated << "XOURNALPP_GTK4_TEXT_V2 1\n0 1 0 1 1 0 0 1 0 0 12 4278190080 -1 0 0 5 4 0\nSans\nabc";
         }
         check(throws([&] { static_cast<void>(prototype::bridge::readTextTransfer(path)); }),
               "Truncated native text transfer was accepted");
