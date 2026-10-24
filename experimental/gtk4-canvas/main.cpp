@@ -25,6 +25,8 @@
 #include "DocumentJob.h"
 #include "DocumentInk.h"
 #include "InkRenderer.h"
+#include "PaletteImport.h"
+#include "SettingsImport.h"
 #include "StylusSamples.h"
 
 using prototype::CanvasState;
@@ -40,9 +42,12 @@ struct Options {
     std::string pdf;
     std::string nativeDocument;
     std::string worker;
+    std::string configDirectory;
     std::string smokeDirectory;
     int autosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
+    std::optional<int> autosaveSecondsOverride;
     bool dark = false;
+    bool explicitDark = false;
     int width = 1100;
     int height = 820;
 };
@@ -67,6 +72,24 @@ struct PageCacheEntry {
 class Prototype {
 public:
     explicit Prototype(Options options): options(std::move(options)) {
+        const auto cfgDir = !this->options.configDirectory.empty() ?
+                                    std::filesystem::path(this->options.configDirectory) :
+                                    (configRoot() / "xournalpp");
+        importedConfig = prototype::importSettingsFromConfigDir(cfgDir);
+        if (!importedConfig.warning.empty()) {
+            std::cerr << "xournalpp-gtk4-canvas: " << importedConfig.warning << '\n';
+        }
+        prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
+        penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth};
+        highlightBrush = {Tool::Highlighter, importedConfig.settings.highlighterColor,
+                          importedConfig.settings.highlighterWidth};
+        eraserBrush = {Tool::Eraser, prototype::behavior::whiteoutColor, importedConfig.settings.eraserWidth};
+        state.brush = importedConfig.settings.activeTool == Tool::Highlighter ?
+                              highlightBrush :
+                              (importedConfig.settings.activeTool == Tool::Eraser ? eraserBrush : penBrush);
+        effectiveAutosaveSeconds =
+                this->options.autosaveSecondsOverride.value_or(importedConfig.settings.effectiveAutosaveSeconds());
+
         sourcePath = this->options.nativeDocument.empty() ? this->options.pdf : this->options.nativeDocument;
         if (!this->options.pdf.empty() && this->options.worker.empty()) {
             auto [loadedDoc, sizes] = openPreviewPdf(this->options.pdf);
@@ -373,6 +396,7 @@ private:
         const auto eraserMode = state.eraserMode;
         const auto eraserWidth = state.eraserWidth;
         state = CanvasState{};
+        prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.setPages(std::move(pageSizes));
         state.selectActivePage(0);
         state.ink = std::move(hydratedInk);
@@ -1044,36 +1068,84 @@ private:
     }
 
     GtkWidget* createPalette() {
+        paletteSwatchButtons.clear();
         paletteButton = gtk_menu_button_new();
         gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(paletteButton), "view-more-symbolic");
-        gtk_widget_set_tooltip_text(paletteButton, "Quick colors");
+        const auto buttonTip = "Quick colors (" + importedConfig.palette.paletteName + ")";
+        gtk_widget_set_tooltip_text(paletteButton, buttonTip.c_str());
         palettePopover = gtk_popover_new();
-        auto* colors = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-        const std::array names = {"Black", "Blue", "Red", "Green", "Yellow", "Purple"};
-        const std::array values = {"#242424", "#2459c7", "#e33b47", "#218359", "#ffe066", "#9556cb"};
-        for (size_t i = 0; i < values.size(); ++i) {
+
+        auto* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        gtk_widget_set_margin_top(box, 6);
+        gtk_widget_set_margin_bottom(box, 6);
+        gtk_widget_set_margin_start(box, 6);
+        gtk_widget_set_margin_end(box, 6);
+
+        auto* title = gtk_label_new(importedConfig.palette.paletteName.c_str());
+        gtk_widget_add_css_class(title, "heading");
+        gtk_widget_set_halign(title, GTK_ALIGN_START);
+        gtk_box_append(GTK_BOX(box), title);
+
+        auto* grid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
+        gtk_grid_set_column_spacing(GTK_GRID(grid), 4);
+        gtk_widget_set_halign(grid, GTK_ALIGN_CENTER);
+
+        const int columns = std::clamp(importedConfig.palette.columns, 4, 8);
+        for (size_t i = 0; i < importedConfig.palette.swatches.size(); ++i) {
+            const auto& entry = importedConfig.palette.swatches[i];
             auto* swatch = gtk_button_new();
-            auto* label = gtk_label_new(nullptr);
-            auto* markup = g_markup_printf_escaped("<span foreground=\"%s\" size=\"x-large\">●</span>", values[i]);
-            gtk_label_set_markup(GTK_LABEL(label), markup);
-            g_free(markup);
-            gtk_button_set_child(GTK_BUTTON(swatch), label);
-            gtk_widget_set_tooltip_text(swatch, names[i]);
-            gtk_accessible_update_property(GTK_ACCESSIBLE(swatch), GTK_ACCESSIBLE_PROPERTY_LABEL, names[i], -1);
-            g_object_set_data(G_OBJECT(swatch), "color", const_cast<char*>(values[i]));
-            g_signal_connect(swatch, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+            gtk_widget_add_css_class(swatch, "flat");
+            auto* dot = gtk_drawing_area_new();
+            gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(dot), 20);
+            gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(dot), 20);
+            g_object_set_data(G_OBJECT(dot), "swatch-index", GUINT_TO_POINTER(static_cast<guint>(i)));
+            gtk_drawing_area_set_draw_func(
+                    GTK_DRAWING_AREA(dot),
+                    +[](GtkDrawingArea* area, cairo_t* cr, int w, int h, gpointer data) {
+                        auto* self = static_cast<Prototype*>(data);
+                        const auto idx =
+                                static_cast<size_t>(GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(area), "swatch-index")));
+                        if (idx >= self->importedConfig.palette.swatches.size()) {
+                            return;
+                        }
+                        const auto& c = self->importedConfig.palette.swatches[idx].color;
+                        const double cx = w / 2.0;
+                        const double cy = h / 2.0;
+                        const double r = std::max(2.0, std::min(w, h) / 2.0 - 2.0);
+                        cairo_arc(cr, cx, cy, r, 0, 2 * G_PI);
+                        cairo_set_source_rgb(cr, c[0], c[1], c[2]);
+                        cairo_fill_preserve(cr);
+                        cairo_set_source_rgba(cr, 0.45, 0.45, 0.45, 0.65);
+                        cairo_set_line_width(cr, 1.0);
+                        cairo_stroke(cr);
+                    },
+                    this, nullptr);
+            gtk_button_set_child(GTK_BUTTON(swatch), dot);
+            gtk_widget_set_tooltip_text(swatch, entry.name.c_str());
+            gtk_accessible_update_property(GTK_ACCESSIBLE(swatch), GTK_ACCESSIBLE_PROPERTY_LABEL, entry.name.c_str(),
+                                           -1);
+            g_object_set_data(G_OBJECT(swatch), "swatch-index", GUINT_TO_POINTER(static_cast<guint>(i)));
+            g_signal_connect(swatch, "clicked", G_CALLBACK((+[](GtkButton* button, gpointer data) {
                                  auto* self = static_cast<Prototype*>(data);
-                                 GdkRGBA color;
-                                 gdk_rgba_parse(&color,
-                                                static_cast<const char*>(g_object_get_data(G_OBJECT(button), "color")));
-                                 gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(self->colorButton), &color);
+                                 const auto idx = static_cast<size_t>(
+                                         GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "swatch-index")));
+                                 if (idx < self->importedConfig.palette.swatches.size()) {
+                                     const auto& c = self->importedConfig.palette.swatches[idx].color;
+                                     const GdkRGBA rgba{static_cast<float>(c[0]), static_cast<float>(c[1]),
+                                                        static_cast<float>(c[2]), 1.0f};
+                                     gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(self->colorButton),
+                                                                      &rgba);
+                                 }
                                  gtk_popover_popdown(GTK_POPOVER(self->palettePopover));
                                  gtk_widget_grab_focus(self->canvas);
-                             }),
+                             })),
                              this);
-            gtk_box_append(GTK_BOX(colors), swatch);
+            gtk_grid_attach(GTK_GRID(grid), swatch, static_cast<int>(i) % columns, static_cast<int>(i) / columns, 1, 1);
+            paletteSwatchButtons.push_back(swatch);
         }
-        gtk_popover_set_child(GTK_POPOVER(palettePopover), colors);
+        gtk_box_append(GTK_BOX(box), grid);
+        gtk_popover_set_child(GTK_POPOVER(palettePopover), box);
         gtk_menu_button_set_popover(GTK_MENU_BUTTON(paletteButton), palettePopover);
         return paletteButton;
     }
@@ -1171,8 +1243,24 @@ private:
     }
 
     void activate(GtkApplication* app) {
-        adw_style_manager_set_color_scheme(adw_style_manager_get_default(),
-                                           options.dark ? ADW_COLOR_SCHEME_FORCE_DARK : ADW_COLOR_SCHEME_FORCE_LIGHT);
+        AdwColorScheme colorScheme = ADW_COLOR_SCHEME_DEFAULT;
+        if (options.explicitDark) {
+            colorScheme = ADW_COLOR_SCHEME_FORCE_DARK;
+        } else {
+            switch (importedConfig.settings.themeVariant) {
+                case prototype::ThemeVariant::ForceDark:
+                    colorScheme = ADW_COLOR_SCHEME_FORCE_DARK;
+                    break;
+                case prototype::ThemeVariant::ForceLight:
+                    colorScheme = ADW_COLOR_SCHEME_FORCE_LIGHT;
+                    break;
+                case prototype::ThemeVariant::UseSystem:
+                default:
+                    colorScheme = ADW_COLOR_SCHEME_DEFAULT;
+                    break;
+            }
+        }
+        adw_style_manager_set_color_scheme(adw_style_manager_get_default(), colorScheme);
         window = adw_application_window_new(app);
         gtk_window_set_title(GTK_WINDOW(window), "Xournal++ · GTK 4 canvas prototype");
         gtk_window_set_default_size(GTK_WINDOW(window), options.width, options.height);
@@ -1334,7 +1422,9 @@ private:
                          }),
                          this);
         gtk_box_append(GTK_BOX(toolbar), widthButton);
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+        const auto initialToolIdx = static_cast<size_t>(importedConfig.settings.activeTool);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[initialToolIdx]), true);
+        selectTool(importedConfig.settings.activeTool);
         adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), toolbar);
 
         auto* navigation = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -1419,6 +1509,7 @@ private:
         // Sidebar edge swipes could steal drawing gestures. Its button is explicit.
         adw_overlay_split_view_set_enable_show_gesture(splitView, false);
         adw_overlay_split_view_set_enable_hide_gesture(splitView, false);
+        adw_overlay_split_view_set_show_sidebar(splitView, importedConfig.settings.showSidebar);
         g_object_bind_property(splitView, "show-sidebar", sidebarButton, "active",
                                GBindingFlags(G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE));
         auto* adaptive = adw_breakpoint_bin_new();
@@ -1463,7 +1554,7 @@ private:
                          this);
         gtk_widget_grab_focus(canvas);
         if (!options.worker.empty()) {
-            scheduleAutosave(static_cast<guint>(options.autosaveSeconds));
+            scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
         if (const char* marker = g_getenv("XOURNALPP_CRASH_AFTER_AUTOSAVE_MARKER"); marker && *marker) {
@@ -1503,6 +1594,9 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty()) {
+            if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
+                settingsVerifyMode = verifyMode;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -1521,7 +1615,9 @@ private:
                             return self->smoke();
                         } catch (const SnapshotPending&) {
                             if (++self->snapshotWaits < 60) {
-                                if (self->documentSmokeStep >= 0) {
+                                if (!self->settingsVerifyMode.empty()) {
+                                    --self->settingsVerifyStep;
+                                } else if (self->documentSmokeStep >= 0) {
                                     --self->documentSmokeStep;
                                 } else {
                                     --self->smokeStep;
@@ -1843,8 +1939,7 @@ private:
                         GDK_CONTROL_MASK) {
                         if (dy != 0) {
                             const auto anchor = self->scrollAnchor(GTK_EVENT_CONTROLLER(controller));
-                            self->zoom(prototype::behavior::steppedZoom(self->state.zoom, dy < 0, true), anchor.x,
-                                       anchor.y);
+                            self->zoom(self->state.steppedZoom(dy < 0, true), anchor.x, anchor.y);
                         }
                     } else {
                         self->state.offsetX -= dx * 35;
@@ -1925,7 +2020,7 @@ private:
                         self->fitted = false;
                     } else if ((modifiers & GDK_CONTROL_MASK) &&
                                (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_minus)) {
-                        self->zoom(prototype::behavior::steppedZoom(self->state.zoom, key != GDK_KEY_minus, false),
+                        self->zoom(self->state.steppedZoom(key != GDK_KEY_minus, false),
                                    gtk_widget_get_width(self->canvas) / 2.0, gtk_widget_get_height(self->canvas) / 2.0);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_Home) {
                         self->navigateToPage(0);
@@ -2124,6 +2219,24 @@ private:
         auto* snapshot = gtk_snapshot_new();
         gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), gtk_widget_get_width(window),
                                gtk_widget_get_height(window));
+        // Wayland GtkPopover renders into a child popup surface; composite it when open.
+        if (!target && palettePopover && gtk_widget_get_visible(palettePopover) && paletteButton) {
+            const int popW = gtk_widget_get_width(palettePopover);
+            const int popH = gtk_widget_get_height(palettePopover);
+            graphene_rect_t anchorBounds;
+            if (popW > 0 && popH > 0 && gtk_widget_compute_bounds(paletteButton, window, &anchorBounds)) {
+                auto* popPaintable = gtk_widget_paintable_new(palettePopover);
+                const float px = std::clamp(anchorBounds.origin.x + 0.5f * (anchorBounds.size.width - popW), 4.0f,
+                                            std::max(4.0f, static_cast<float>(gtk_widget_get_width(window) - popW - 4)));
+                const float py = anchorBounds.origin.y + anchorBounds.size.height + 2.0f;
+                const graphene_point_t offset{px, py};
+                gtk_snapshot_save(snapshot);
+                gtk_snapshot_translate(snapshot, &offset);
+                gdk_paintable_snapshot(popPaintable, GDK_SNAPSHOT(snapshot), popW, popH);
+                gtk_snapshot_restore(snapshot);
+                g_object_unref(popPaintable);
+            }
+        }
         auto* node = gtk_snapshot_free_to_node(snapshot);
         if (!node) {
             g_object_unref(paintable);
@@ -2305,6 +2418,115 @@ private:
         return G_SOURCE_REMOVE;
     }
 
+    gboolean smokeSettingsVerify() {
+        if (settingsVerifyMode == "fallback") {
+            require(importedConfig.usedSettingsFallback, "Expected corrupt settings.xml to trigger fallback");
+            require(importedConfig.palette.usedFallback && paletteSwatchButtons.size() == 11,
+                    "Expected corrupt or unreferenced palette to fall back to 11-color default");
+            require(state.brush.tool == Tool::Pen && std::abs(state.brush.width - 1.41) < 1e-6 &&
+                            state.eraserMode == prototype::EraserMode::Standard &&
+                            std::abs(state.zoomStep - 0.10) < 1e-6 && autosaveSource != 0,
+                    "Corrupt settings.xml did not restore clean defaults");
+            capture("settings-fallback");
+            std::cout << "PASS: corrupt settings.xml and .gpl fallback\n";
+            closeWindow();
+            return G_SOURCE_REMOVE;
+        }
+
+        const bool expectDark = (settingsVerifyMode == "imported-dark");
+        const auto savedOut = (std::filesystem::path(options.smokeDirectory) / "settings-saved.xopp").string();
+        switch (settingsVerifyStep++) {
+            case 0: {
+                require(!importedConfig.usedSettingsFallback && !importedConfig.palette.usedFallback,
+                        "Valid settings.xml or .gpl unexpectedly fell back to defaults");
+                require(bool(adw_style_manager_get_dark(adw_style_manager_get_default())) == expectDark,
+                        "Imported themeVariant did not set libadwaita light/dark scheme");
+                require(autosaveSource == 0, "autosaveEnabled=false in settings.xml must disable autosave timer");
+                require(state.brush.tool == Tool::Highlighter && std::abs(state.brush.width - 30.0) < 1e-6 &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 4u &&
+                                std::abs(state.brush.color[0] - 1.0) < 1e-2 &&
+                                std::abs(state.brush.color[1] - 0xa1 / 255.0) < 1e-2,
+                        "Imported active Highlighter color or VERY_BIG preset mismatch");
+                require(paletteSwatchButtons.size() == 11 &&
+                                importedConfig.palette.paletteName == "Xournal++ Palette",
+                        "Imported .gpl palette swatches or Name header mismatch");
+                const auto h0 = state.pageScreenPoint(0, 72, 136);
+                const auto h1 = state.pageScreenPoint(0, 290, 136);
+                g_signal_emit_by_name(mouse, "drag-begin", h0.x, h0.y);
+                g_signal_emit_by_name(mouse, "drag-update", h1.x - h0.x, 0.0);
+                g_signal_emit_by_name(mouse, "drag-end", h1.x - h0.x, 0.0);
+                require(state.ink.size() == 1 && state.ink.back().brush.tool == Tool::Highlighter &&
+                                std::abs(state.ink.back().brush.width - 30.0) < 1e-6,
+                        "Imported Highlighter did not commit 30pt stroke");
+                capture("settings-imported");
+
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                require(state.brush.tool == Tool::Pen && std::abs(state.brush.width - 2.26) < 1e-6 &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 3u &&
+                                std::abs(state.brush.color[1] - 0x2e / 255.0) < 1e-2 &&
+                                std::abs(state.brush.color[2] - 0x99 / 255.0) < 1e-2,
+                        "Imported Pen BIG preset or #002e99 color mismatch");
+                const auto p0 = state.pageScreenPoint(0, 72, 188);
+                const auto p1 = state.pageScreenPoint(0, 290, 188);
+                input.begin(Device::Stylus, {p0.x, p0.y, 0.05});
+                input.motion(Device::Stylus, {p1.x, p1.y, 0.50});
+                input.finish(Device::Stylus, 0.50);
+                require(state.ink.size() == 2 && state.ink.back().pressureSensitive &&
+                                std::abs(state.ink.back().points.front().pressure - 0.15) < 1e-6 &&
+                                std::abs(state.ink.back().points.back().pressure - 0.60) < 1e-6,
+                        "Imported minimumPressure=0.15 or pressureMultiplier=1.2 was not applied");
+                gtk_menu_button_popup(GTK_MENU_BUTTON(paletteButton));
+                break;
+            }
+            case 1:
+                break;  // Let the .gpl palette popover finish opening before snapshot.
+            case 2: {
+                require(gtk_widget_get_visible(palettePopover), "Palette popover did not open");
+                capture("palette-popover");
+                g_signal_emit_by_name(paletteSwatchButtons[2], "clicked");
+                require(!gtk_widget_get_visible(palettePopover) &&
+                                std::abs(state.brush.color[0] - 205 / 255.0) < 1e-2 &&
+                                std::abs(state.brush.color[1] - 158 / 255.0) < 1e-2 &&
+                                std::abs(state.brush.color[2] - 247 / 255.0) < 1e-2,
+                        "Clicking .gpl Purple swatch did not update brush color or close popover");
+                const auto p0 = state.pageScreenPoint(0, 72, 232);
+                const auto p1 = state.pageScreenPoint(0, 290, 232);
+                g_signal_emit_by_name(mouse, "drag-begin", p0.x, p0.y);
+                g_signal_emit_by_name(mouse, "drag-update", p1.x - p0.x, 0.0);
+                g_signal_emit_by_name(mouse, "drag-end", p1.x - p0.x, 0.0);
+                require(state.ink.size() == 3 && std::abs(state.ink.back().brush.color[0] - 205 / 255.0) < 1e-2,
+                        "Stroke did not use selected .gpl swatch color");
+
+                const double zoomBefore = state.zoom;
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_plus, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && std::abs(state.zoom / zoomBefore - 1.25) < 1e-6,
+                        "Ctrl++ did not use imported zoomStep=25%");
+
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[2]), true);
+                require(state.brush.tool == Tool::Eraser && state.eraserMode == prototype::EraserMode::DeleteStroke &&
+                                std::abs(state.brush.width - 12.0) < 1e-6 &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 3u,
+                        "Imported Eraser deleteStroke mode or BIG 12pt preset mismatch");
+                break;
+            }
+            case 3:
+                capture("palette-drawn");
+                saveCopyTo(savedOut);
+                break;
+            default:
+                require(!modified() && std::filesystem::is_regular_file(savedOut),
+                        "Saving document after settings/palette import failed");
+                std::cout << "PASS: read-only settings.xml and .gpl palette import (" << settingsVerifyMode << ")\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smoke() {
         if (busy || deferredAction) {
             require(++documentWaits < 120, "Document operation did not finish");
@@ -2324,6 +2546,9 @@ private:
         if (!frames || pageCache.empty()) {
             require(++smokeWaits < 60, "Canvas has not rendered");
             return G_SOURCE_CONTINUE;
+        }
+        if (!settingsVerifyMode.empty()) {
+            return smokeSettingsVerify();
         }
         if (documentSmokeStep >= 0) {
             return smokeDocuments();
@@ -3169,6 +3394,10 @@ private:
     }
 
     Options options;
+    prototype::SettingsImportResult importedConfig;
+    int effectiveAutosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
+    std::string settingsVerifyMode;
+    int settingsVerifyStep = 0;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;
     std::string savedCopyPath;
@@ -3246,6 +3475,7 @@ private:
     GtkWidget* colorButton = nullptr;
     GtkWidget* paletteButton = nullptr;
     GtkWidget* palettePopover = nullptr;
+    std::vector<GtkWidget*> paletteSwatchButtons;
     GtkWidget* eraserModeDropdown = nullptr;
     GtkWidget* sizeDropdown = nullptr;
     GtkWidget* widthButton = nullptr;
@@ -3298,6 +3528,7 @@ int main(int argc, char** argv) {
             const std::string argument = argv[i];
             if (argument == "--dark") {
                 options.dark = true;
+                options.explicitDark = true;
             } else if (argument == "--autosave-seconds" && i + 1 < argc) {
                 const std::string_view raw = argv[++i];
                 int parsed = 0;
@@ -3306,6 +3537,15 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("Autosave interval must be between 1 and 86400 seconds");
                 }
                 options.autosaveSeconds = parsed;
+                options.autosaveSecondsOverride = parsed;
+            } else if (argument == "--config-dir" && i + 1 < argc) {
+                const auto cfgPath = std::filesystem::absolute(argv[++i]);
+                std::error_code ec;
+                const auto st = std::filesystem::symlink_status(cfgPath, ec);
+                if (ec || st.type() != std::filesystem::file_type::directory) {
+                    throw std::runtime_error("Configuration directory is missing or not a directory");
+                }
+                options.configDirectory = cfgPath.string();
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
                         argument == "--smoke-dir") && i + 1 < argc) {
                 const auto path = std::filesystem::absolute(argv[++i]).string();
@@ -3321,7 +3561,8 @@ int main(int argc, char** argv) {
                 }
             } else {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
-                                         "[--autosave-seconds SECONDS] [--dark] [--smoke-dir DIRECTORY]");
+                                         "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
+                                         "[--smoke-dir DIRECTORY]");
             }
         }
         if (!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) {

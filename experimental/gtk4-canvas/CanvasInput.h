@@ -23,7 +23,7 @@ public:
         if (owner || state.current || state.pinching || !finitePosition(sample)) {
             return false;
         }
-        pressureMode = validPressure(sample.pressure);
+        pressureMode = state.pressureSensitivity && validPressure(sample.pressure);
         lastPressure = pressureMode ? *sample.pressure : 1;
         if (spaceHeld || !state.hitPage(sample.x, sample.y)) {
             mode = Mode::Pan;
@@ -129,7 +129,7 @@ private:
         if (validPressure(value)) {
             lastPressure = *value;
         }
-        return std::max(behavior::minimumPressure, lastPressure * behavior::pressureMultiplier);
+        return std::max(state.minimumPressure, lastPressure * state.pressureMultiplier);
     }
 
     CanvasState& state;

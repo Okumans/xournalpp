@@ -73,6 +73,11 @@ public:
     Brush brush;
     EraserMode eraserMode = EraserMode::Standard;
     double eraserWidth = behavior::eraserWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    bool pressureSensitivity = true;
+    double minimumPressure = behavior::minimumPressure;
+    double pressureMultiplier = behavior::pressureMultiplier;
+    double zoomStep = behavior::zoomStep;
+    double scrollZoomStep = behavior::scrollZoomStep;
     std::vector<Ink> ink;
     std::optional<Ink> current;
     bool pinching = false;
@@ -151,9 +156,13 @@ public:
 
     double activeEraserWidth() const { return brush.tool == Tool::Eraser ? brush.width : eraserWidth; }
 
+    double steppedZoom(bool zoomIn, bool scroll) const {
+        return behavior::steppedZoom(zoom, zoomIn, scroll, zoomStep, scrollZoomStep);
+    }
+
     Point documentPoint(double x, double y, double pressure = 1) const {
         return {(x - offsetX) / zoom, (y - offsetY) / zoom,
-                std::isfinite(pressure) ? std::max(behavior::minimumPressure, pressure) : 1.0};
+                std::isfinite(pressure) ? std::max(minimumPressure, pressure) : 1.0};
     }
 
     Point pageLocalPoint(int pageIndex, double x, double y, double pressure = 1) const {

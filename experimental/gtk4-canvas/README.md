@@ -22,11 +22,15 @@ legacy files requiring conversion, symlink inputs and blank notebooks use Save A
 for their first save. Without a worker, ink remains temporary.
 
 Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
-settings are remembered separately during a session, initialized to `ToolHandler`
-`MEDIUM` presets (`1.41 pt` royal-blue pen, `8.50 pt` yellow highlighter, `8.50 pt`
-standard eraser). Highlight segments are composited once per stroke to avoid dark
-joints; multiplying the result preserves document text underneath. Whiteout draws
-opaque white constant-width strokes serialized natively as `tool="eraser"`.
+settings are remembered separately during a session, initialized from read-only
+import of `<XDG_CONFIG_HOME>/xournalpp/settings.xml` (or `--config-dir DIRECTORY`)
+when present and falling back cleanly to `ToolHandler` `MEDIUM` presets (`1.41 pt`
+royal-blue pen, `8.50 pt` yellow highlighter, `8.50 pt` standard eraser) and the
+11-color `Palette::default_palette()` (`palettes/xournal.gpl`). Configured `.gpl`
+palettes populate the multi-column swatch popover with bordered Cairo swatches.
+Highlight segments are composited once per stroke to avoid dark joints; multiplying
+the result preserves document text underneath. Whiteout draws opaque white
+constant-width strokes serialized natively as `tool="eraser"`.
 Undo/redo stores value-semantic stroke slice deltas across insertions, whole-stroke
 deletions, and multi-sample partial splits while retaining session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
@@ -90,9 +94,15 @@ ctest --test-dir build-gtk4-canvas --output-on-failure
 ```
 
 The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`,
-`--autosave-seconds SECONDS`, `--dark`, and `--smoke-dir DIRECTORY`. A worker can
-also accompany `--pdf`, or be used alone to create a blank A4 notebook. Without an
-input it displays a blank page.
+`--config-dir DIRECTORY`, `--autosave-seconds SECONDS`, `--dark`, and
+`--smoke-dir DIRECTORY`. It imports active tool, per-tool colors/sizes, eraser
+mode, pressure sensitivity/minimum/multiplier, keyboard/wheel zoom steps,
+`showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`),
+`autosaveEnabled`/`autosaveTimeout`, and `.gpl` color palettes strictly read-only
+without creating directories, rewriting `settings.xml`, or mutating process
+environment variables; explicit `--dark` and `--autosave-seconds` CLI flags
+override imported values. A worker can also accompany `--pdf`, or be used alone to
+create a blank A4 notebook. Without an input it displays a blank page.
 
 To open native documents, build the optional worker using the normal application's
 GTK 3 dependencies. It has no installation target and is disabled by default:
@@ -223,9 +233,10 @@ history retention. A separate normalized-input test covers pressure fallback,
 pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
-Transfer serialization, background task/main-context checks and CLI rejection
-checks plus filesystem backup/publication and autosave/recovery checks bring the
-standalone suite to thirteen tests.
+Transfer serialization, background task/main-context checks, read-only
+`settings.xml` and `.gpl` palette import/fallback checks, and CLI rejection checks
+plus filesystem backup/publication and autosave/recovery checks bring the
+standalone suite to sixteen tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -270,7 +281,7 @@ or toolbar configuration features.
 
 The experiment still needs object selection and editing of lower-layer or
 non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo,
-signal-crash emergency handling, clipboard, dialogs, IME, settings/palette
-import, plugins and configurable toolbars. Platform packaging, accessibility,
-hardware input and GPU validation remain required before replacing the existing
-application.
+signal-crash emergency handling, clipboard, dialogs, IME, interactive preferences
+editing/persistence, per-device button mappings, plugins and configurable toolbars.
+Platform packaging, accessibility, hardware input and GPU validation remain
+required before replacing the existing application.
