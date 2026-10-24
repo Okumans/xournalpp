@@ -183,6 +183,33 @@ static void interPageGapPanAndCrossPageInput() {
     check(state.ink.size() == 2, "one undo must restore cross-page stylus eraser drag");
 }
 
+void importedPressureOverrides() {
+    CanvasState state;
+    CanvasInput input(state);
+    state.fit(800, 1000);
+    state.minimumPressure = 0.16;
+    state.pressureMultiplier = 1.5;
+
+    const auto x = state.offsetX + 100 * state.zoom;
+    const auto y = state.offsetY + 100 * state.zoom;
+    input.begin(Device::Stylus, {x, y, 0.05});
+    input.motion(Device::Stylus, {x + 40 * state.zoom, y, 0.40});
+    input.finish(Device::Stylus);
+    check(state.ink.size() == 1 && state.ink.back().pressureSensitive &&
+                  std::abs(state.ink.back().points.front().pressure - 0.16) < 1e-9 &&
+                  std::abs(state.ink.back().points.back().pressure - 0.60) < 1e-9,
+          "CanvasInput must apply imported minimumPressure and pressureMultiplier");
+
+    state.pressureSensitivity = false;
+    input.begin(Device::Stylus, {x, y + 40 * state.zoom, 0.30});
+    input.motion(Device::Stylus, {x + 40 * state.zoom, y + 40 * state.zoom, 0.80});
+    input.finish(Device::Stylus);
+    check(state.ink.size() == 2 && !state.ink.back().pressureSensitive &&
+                  std::abs(state.ink.back().points.front().pressure - 1.0) < 1e-9 &&
+                  std::abs(state.ink.back().points.back().pressure - 1.0) < 1e-9,
+          "Disabling pressureSensitivity must force constant-width stylus strokes");
+}
+
 int main() {
     try {
         pressureAndRelease();
@@ -190,6 +217,7 @@ int main() {
         backlog();
         whiteoutAndPartialInput();
         interPageGapPanAndCrossPageInput();
+        importedPressureOverrides();
         std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary pan, backlog flags/order\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

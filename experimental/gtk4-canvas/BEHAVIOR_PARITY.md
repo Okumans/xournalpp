@@ -13,10 +13,10 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Standard eraser | `EraseHandler` + `Stroke::intersectWithPaddedBox`: `PaddedBox` (`halfSize`, `+0.4 * width` cap padding) | Matched across both session and top-layer native `.xopp` strokes, with linear split-pressure interpolation and closed-loop seam merging |
 | Whiteout eraser | `InputHandler` + `SaveHandler::visitStroke`: opaque `#ffffffff` constant-width `tool="eraser"` stroke | Matched in Cairo rendering, stylus eraser-end routing, and lossless native `.xopp` extraction/serialization |
 | Delete-stroke eraser | `EraseHandler` (`ERASER_TYPE_DELETE_STROKE`) | Matched across session and top-layer native `.xopp` strokes, with exact segment clipping + half stroke width at all segment lengths |
-| Keyboard zoom step | `Settings::loadDefault`: 10%; `Control` divides by 100 | Matched, including inverse zoom-out |
-| Wheel zoom step | `Settings::loadDefault`: 2%; `ZoomControl::zoomScroll` | Matched |
+| Keyboard zoom step | `Settings::loadDefault`: 10%; `Control` divides by 100 | Matched (`zoomStep` percent imported read-only from `settings.xml`), including inverse zoom-out |
+| Wheel zoom step | `Settings::loadDefault`: 2%; `ZoomControl::zoomScroll` | Matched (`zoomStepScroll` percent imported read-only from `settings.xml`) |
 | Wheel zoom focus | `onScrolledwindowMainScrollEvent` uses pointer coordinates | Matched; surface-to-canvas mapping checked with real toolbar/sidebar offsets |
-| Pressure default | `Settings::loadDefault`: minimum 0.05, multiplier 1, guessing off | Matched in the normalized input adapter |
+| Pressure default & config | `Settings::loadDefault` + `Settings.cpp`: `pressureSensitivity` (and legacy `presureSensitivity`), `minimumPressure` (`>= 0.01`, default `0.05`), `pressureMultiplier` (`1.0`), guessing off | Matched in the normalized input adapter, with read-only `settings.xml` import |
 | Missing pressure | `PenInputHandler::filterPressure` retains the last device pressure | Matched, with invalid-axis and missing-axis tests |
 | Pen release | `StrokeHandler::onButtonReleaseEvent` finalizes existing samples | Matched; release position does not append a hover tail |
 | Small-motion filtering | `InputHandler::PIXEL_MOTION_THRESHOLD` is 0.3 page points; initial dot may thicken | Matched for this part of the pipeline |
@@ -33,11 +33,13 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Unsaved changes | `Control::close` offers Save, Discard and Cancel | Save/Save As, Discard and Cancel; failed saves do not continue pending actions |
 | Save / Save As | `Control::saveImpl` associates the filename and `SaveJob` writes it | Matched for the prototype native model bridge; new/legacy/PDF inputs use Save As |
 | Temporary backup | `SaveJob` uses `filename~`, removes it after success | Matched; existing backups are preserved, and staged attachment rollback is tested |
-| Autosave interval | `Settings::loadDefault` + `Control::enableAutosave`: 3 min (`180s`), `AutosaveJob` (`Job`) | Matched (`--autosave-seconds` for tests); runs in background without blocking active strokes |
+| Autosave interval | `Settings::loadDefault` + `Control::enableAutosave`: 3 min (`180s`), `AutosaveJob` (`Job`) | Matched (`autosaveEnabled` & `autosaveTimeout` minutes imported read-only from `settings.xml`; `--autosave-seconds` overrides for tests); runs in background without blocking active strokes |
 | Autosave paths & swap | `AutosaveJob::run` + `Util::getAutosaveFilepath`: `.name.autosave.xopp` or `<cache>/xournalpp/autosaves/<pid>.autosave.xopp` via `.swap` | Matched, with `UndoRedoHandler::isChangedAutosave` revision tracking and cleanup on Save, Discard and clean exit |
 | Cache autosave guard | `Control.cpp` `shouldFileOpen`: refuses direct Open under `<cache>/xournalpp` | Matched, including symlink resolution into the cache tree |
 | Crash recovery | `XournalMain::checkForEmergencySave`: `emergencysave.xopp` (`Delete file` / `Restore file`, unnamed & dirty) | Matched for `emergencysave.xopp`; extended to also prompt on dead-PID cache autosaves and `.name.autosave.xopp` sidecars |
 | Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; top-layer editable stroke suffix extracted losslessly into live ink (`Point::NO_PRESSURE` normalized) while preserving lower layers, z-order, text/images/audio/fills/dashes |
+| Preferences import (`settings.xml`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure sensitivity/min/multiplier, zoom steps, `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`), autosave enable/timeout, and `colorPalette`; eliminates legacy `Settings::load` disk writes/`setenv("LANGUAGE")`, `parseData` `nullptr` crashes, `tempg_ascii_strtod` locale sensitivity, and `ToolHandler::loadSettings` missing-`current` skips |
+| Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
 GTK 3 disables motion-event compression for its custom widget. The GTK 4 adapter
@@ -46,16 +48,19 @@ latest motion, checking axis flags and retaining missing pressure. These paths
 are exercised with synthetic samples and controller signals, not physical pen
 events. Per-device identities and configurable mappings still need migration.
 
-These match the original **defaults**. Importing existing preferences, per-device
-mappings, palettes, and toolbar configuration is still required for full parity.
+Core tool presets, colors, zoom steps, pressure thresholds, theme variant,
+autosave cadence, and `.gpl` color palettes are imported strictly read-only from
+`settings.xml` and `.gpl` files without ever modifying GTK 3 configuration files.
+Per-device button mappings (`buttonConfig`, `deviceClasses`), `toolbar.ini`
+layouts, and interactive preference editing/persistence still require migration.
 The prototype uses an independent model for session edits and transfers them
 to the real native model when saving.
 
 ## Known differences that block application replacement
 
-- Existing stabilization, pressure inference and configuration, Shift drawing
-  constraints, Shift-click connection, stroke/tap filtering, and device-specific
-  button mappings have not been migrated.
+- Existing stabilization, pressure inference, Shift drawing constraints,
+  Shift-click connection, stroke/tap filtering, and device-specific button
+  mappings (`buttonConfig`, `deviceClasses`) have not been migrated.
 - The original uses its document, selection, layer, undo, and rich-text models.
   When opening a `.xopp` via the worker, the contiguous suffix of standard
   top-layer round-cap unfilled undashed non-audio `pen`, `highlighter`, and
@@ -70,8 +75,9 @@ to the real native model when saving.
   and preserves zoom across page navigation, but horizontal, paired-page, and
   multi-column grid layout modes (`LayoutSettings`), scroll-position history
   stacks, and undo/redo for page insertion/deletion are not yet migrated.
-- Saved user preferences (`settings.xml`), custom `.gpl` palettes, and toolbar
-  layout customization are not yet imported.
+- Relevant `settings.xml` preferences and `.gpl` palettes are imported strictly
+  read-only; interactive Preferences dialogs, writing settings back to disk, and
+  `toolbar.ini` layout customization are not yet migrated.
 - The normal application can configure touch behavior, hand recognition,
   scrolling, and gesture zoom. The experiment has only a small input subset.
 - The original stroke renderer handles pressure geometry, caps, line styles,
@@ -104,5 +110,5 @@ the document unnamed (`Save As`) and adopts a current-PID cache autosave before 
 the recovered artifact. Unlike GTK 3 `CrashHandler`, the prototype does not write
 `emergencysave.xopp` from an async-signal handler; uncatchable crashes (`SIGKILL`)
 recover up to the latest completed autosave, and orphaned cache detection uses POSIX
-`kill(pid, 0)` liveness checks. Settings import and platform-specific file semantics
-remain migration work.
+`kill(pid, 0)` liveness checks. Interactive settings persistence and platform-specific
+file semantics remain migration work.

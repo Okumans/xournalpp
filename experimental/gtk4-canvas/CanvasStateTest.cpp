@@ -296,6 +296,18 @@ int main() {
               "keyboard zoom must use the original default ten-percent step");
         check(std::abs(behavior::steppedZoom(behavior::steppedZoom(1, true, false), false, false) - 1) < 1e-12,
               "opposite zoom steps must return to the starting zoom");
+        {
+            CanvasState customZoomState;
+            customZoomState.zoom = 1.0;
+            customZoomState.zoomStep = 0.25;
+            customZoomState.scrollZoomStep = 0.05;
+            customZoomState.minimumPressure = 0.18;
+            check(std::abs(customZoomState.steppedZoom(true, false) - 1.25) < 1e-12 &&
+                          std::abs(customZoomState.steppedZoom(true, true) - 1.05) < 1e-12,
+                  "CanvasState::steppedZoom must honor imported zoomStep and scrollZoomStep");
+            check(std::abs(customZoomState.documentPoint(10, 10, 0.02).pressure - 0.18) < 1e-12,
+                  "CanvasState::documentPoint must clamp against imported minimumPressure");
+        }
         CanvasState state;
         state.fit(1200, 900);
         const auto x = state.offsetX + 100 * state.zoom;

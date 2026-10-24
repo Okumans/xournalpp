@@ -43,8 +43,9 @@ inline std::optional<ToolSize> matchToolSize(const std::array<double, 5>& widths
     return std::nullopt;
 }
 
-inline double steppedZoom(double zoom, bool zoomIn, bool scroll) {
-    const auto factor = 1 + (scroll ? scrollZoomStep : zoomStep);
+inline double steppedZoom(double zoom, bool zoomIn, bool scroll, double step = zoomStep,
+                          double scrollStep = scrollZoomStep) {
+    const auto factor = 1 + (scroll ? scrollStep : step);
     return zoomIn ? zoom * factor : zoom / factor;
 }
 
