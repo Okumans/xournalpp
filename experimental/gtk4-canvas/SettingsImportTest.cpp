@@ -86,6 +86,7 @@ int main() {
     require(s.autosaveEnabled && s.autosaveTimeoutMinutes == 7 && s.effectiveAutosaveSeconds() == 420,
             "autosaveTimeout minutes-to-seconds conversion mismatch");
     require(s.colorPalettePath == std::filesystem::path("palettes/xournalpp.gpl"), "colorPalettePath mismatch");
+    require(s.textFontName == "Sans" && near(s.textFontSize, 12), "Text font import mismatch");
 
     // 2. Legacy bugs fixed:
     //    - presureSensitivity typo honored; minimumPressure < 0.01 clamped to 0.01;

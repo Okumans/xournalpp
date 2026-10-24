@@ -257,7 +257,7 @@ def inside(args):
         output = evidence / name
         screenshots = ("initial", "ink", "tools", "eraser-split", "eraser-whiteout", "zoom", "narrow", "sidebar")
         if args.worker:
-            screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
+            screenshots += ("text-editor", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",
@@ -299,8 +299,8 @@ def inside(args):
             normal = ET.fromstring(gzip.decompress((output / "normal-save.xopp").read_bytes()))
             if len(normal.findall(".//stroke")) != 5 or (output / "normal-save.xopp~").exists():
                 raise RuntimeError("Normal Save lost or duplicated ink, or retained a successful-save backup")
-            if len(first.findall(".//text")) != len(root.findall(".//text")):
-                raise RuntimeError("Saving session ink lost original text")
+            if len(first.findall(".//text")) != len(root.findall(".//text")) + 1:
+                raise RuntimeError("Saving session ink lost native text or the new rich text item")
             width = list(map(float, second.findall(".//stroke")[-1].attrib["width"].split()))
             if len(width) < 2 or abs(width[1] - width[0] * 0.25) > 0.00001:
                 raise RuntimeError("Native save lost stylus pressure mode or width")
@@ -325,8 +325,10 @@ def inside(args):
                 raise RuntimeError(f"Expected 9 strokes after editing reopened native strokes, got {len(edited_strokes)}")
             if any(s.attrib.get("tool") == "eraser" for s in edited_strokes):
                 raise RuntimeError("Deleted preloaded native whiteout stroke remained in saved .xopp")
-            if len(native_edited.findall(".//text")) != len(root.findall(".//text")):
-                raise RuntimeError("Editing preloaded native strokes lost document text")
+            if len(native_edited.findall(".//text")) != len(root.findall(".//text")) + 1:
+                raise RuntimeError("Editing native strokes lost existing or newly created document text")
+            if not any(text.text == "GTK rich π!" and "styles" in text.attrib for text in first.findall(".//text")):
+                raise RuntimeError("Saving the GtkTextView editor lost its UTF-8 text or rich style")
             if (len(edited_strokes[-2].attrib.get("width", "").split()) < 2 or
                     len(edited_strokes[-1].attrib.get("width", "").split()) < 2):
                 raise RuntimeError("Splitting a preloaded native pressure stroke lost pressure widths on save")

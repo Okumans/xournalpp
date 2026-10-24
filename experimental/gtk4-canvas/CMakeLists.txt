@@ -42,6 +42,18 @@ target_compile_features(document-transfer-test PRIVATE cxx_std_20)
 target_compile_options(document-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME document-transfer COMMAND document-transfer-test)
 
+add_executable(document-text-transfer-test DocumentTextTransferTest.cpp)
+target_compile_features(document-text-transfer-test PRIVATE cxx_std_20)
+target_compile_options(document-text-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(document-text-transfer-test PRIVATE PkgConfig::UI)
+add_test(NAME document-text-transfer COMMAND document-text-transfer-test)
+
+add_executable(text-renderer-test TextRendererTest.cpp)
+target_compile_features(text-renderer-test PRIVATE cxx_std_20)
+target_compile_options(text-renderer-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(text-renderer-test PRIVATE PkgConfig::UI)
+add_test(NAME text-renderer COMMAND text-renderer-test)
+
 add_executable(document-job-test DocumentJobTest.cpp)
 target_compile_features(document-job-test PRIVATE cxx_std_20)
 target_compile_options(document-job-test PRIVATE -Wall -Wextra -Wpedantic)

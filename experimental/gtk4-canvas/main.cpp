@@ -25,10 +25,12 @@
 #include "DocumentJob.h"
 #include "DocumentInk.h"
 #include "InkRenderer.h"
+#include "TextRenderer.h"
 #include "PaletteImport.h"
 #include "SettingsImport.h"
 #include "StylusSamples.h"
 #include "StrokeClipboard.h"
+#include "TextEditorOverlay.h"
 
 using prototype::CanvasState;
 using prototype::Device;
@@ -230,6 +232,7 @@ private:
         if (!nativeSession || options.worker.empty() || closed || busy || autosaving || choosingFile || messageDialog) {
             return;
         }
+        finishTextEditing();
         if (!modified()) {
             if (!activeAutosavePath.empty()) {
                 cleanupActiveAutosave();
@@ -246,6 +249,7 @@ private:
         }
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.committedInk());
+        const auto texts = state.texts;
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto previous = activeAutosavePath;
@@ -254,7 +258,7 @@ private:
         auto* application = G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
         g_application_hold(application);
         prototype::bridge::documentJob(
-                [session, worker, target, packets] { session->autosave(worker, target, packets); },
+                [session, worker, target, packets, texts] { session->autosave(worker, target, packets, texts); },
                 [this, application, session, revision, target, previous](const std::string& error) {
                     autosaving = false;
                     if (error.empty() && nativeSession == session && !closed) {
@@ -401,6 +405,7 @@ private:
         state.setPages(std::move(pageSizes));
         state.selectActivePage(0);
         state.ink = std::move(hydratedInk);
+        state.texts = session->initialTexts;
         state.brush = brush;
         state.eraserMode = eraserMode;
         state.eraserWidth = eraserWidth;
@@ -522,7 +527,7 @@ private:
                 "Restoring recovery file…",
                 [loaded, worker, recoveryPath, adopted] {
                     *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath);
-                    (*loaded)->autosave(worker, adopted, (*loaded)->initialInk);
+                    (*loaded)->autosave(worker, adopted, (*loaded)->initialInk, (*loaded)->initialTexts);
                     if (adopted != recoveryPath) {
                         prototype::bridge::removeAutosaveFiles(recoveryPath);
                     }
@@ -603,6 +608,7 @@ private:
         if (!nativeSession || busy) {
             return;
         }
+        finishTextEditing();
         if (autosaving) {
             waitForAutosave([this, path, after = std::move(after)]() mutable {
                 saveCopyTo(path, std::move(after));
@@ -612,9 +618,12 @@ private:
         resetInput(true);
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto texts = state.texts;
         const auto session = nativeSession;
         const auto worker = options.worker;
-        runDocumentJob("Saving copy…", [session, worker, path, packets] { session->saveCopy(worker, path, packets); },
+        runDocumentJob("Saving copy…", [session, worker, path, packets, texts] {
+            session->saveCopy(worker, path, packets, texts);
+        },
                        [this, revision, path, after = std::move(after)] {
             savedRevision = revision;
             autosavedRevision = revision;
@@ -646,6 +655,7 @@ private:
         if (!nativeSession || busy) {
             return;
         }
+        finishTextEditing();
         if (autosaving) {
             waitForAutosave([this, path, expected, after = std::move(after)]() mutable {
                 saveTo(path, expected, std::move(after));
@@ -655,12 +665,13 @@ private:
         resetInput(true);
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto texts = state.texts;
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto version = std::make_shared<std::string>();
-        runDocumentJob("Saving…", [session, worker, path, expected, packets, version] {
+        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, version] {
             const auto before = expected.empty() ? prototype::bridge::documentVersion(path).token : expected;
-            *version = session->save(worker, path, packets, before);
+            *version = session->save(worker, path, packets, texts, before);
         }, [this, path, revision, version, after = std::move(after)] {
             saveTarget = path;
             saveVersion = *version;
@@ -767,6 +778,7 @@ private:
         if (busy || choosingFile || messageDialog) {
             return;
         }
+        finishTextEditing();
         if (autosaving) {
             waitForAutosave([this, after = std::move(after)]() mutable { protectDocument(std::move(after)); });
             return;
@@ -806,13 +818,13 @@ private:
             return;
         }
         resetInput();
-        if (canvas && fitted) {
+        if (canvas) {
             state.scrollToPage(number, gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
             fitMode = false;
         } else {
             state.selectActivePage(number);
-            fitted = false;
         }
+        fitted = false;
         if (canvas) {
             update();
         }
@@ -871,17 +883,21 @@ private:
         if (!nativeSession || busy) {
             return;
         }
+        finishTextEditing();
         if (autosaving) {
             waitForAutosave([this, path] { exportPdfTo(path); });
             return;
         }
         resetInput(true);
         const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto texts = state.texts;
         const auto session = nativeSession;
         const auto worker = options.worker;
         // Exporting to PDF never alters .xopp savedRevision, saveTarget, or active autosave artifacts.
         runDocumentJob("Exporting PDF…",
-                       [session, worker, path, packets] { session->exportPdf(worker, path, packets); },
+                       [session, worker, path, packets, texts] {
+                           session->exportPdf(worker, path, packets, texts);
+                       },
                        [this, path] { exportedPdfPath = path; });
     }
 
@@ -927,6 +943,7 @@ private:
         if (!nativeSession || busy || choosingFile || messageDialog) {
             return;
         }
+        finishTextEditing();
         if (autosaving) {
             waitForAutosave([this] { insertPageAfterCurrent(); });
             return;
@@ -973,6 +990,7 @@ private:
         if (!nativeSession || pageCount <= 1 || busy || choosingFile || messageDialog) {
             return;
         }
+        finishTextEditing();
         if (autosaving) {
             waitForAutosave([this] { deleteCurrentPage(); });
             return;
@@ -1142,7 +1160,121 @@ private:
         }, this);
     }
 
+    std::optional<size_t> textAt(int page, prototype::Point point) const {
+        std::optional<size_t> best;
+        size_t bestOrder = 0;
+        for (size_t index = 0; index < state.texts.size(); ++index) {
+            const auto& item = state.texts[index];
+            if (item.page == page && prototype::textContainsPoint(item, point.x, point.y) &&
+                (!best || item.layerOrder >= bestOrder)) {
+                best = index;
+                bestOrder = item.layerOrder;
+            }
+        }
+        return best;
+    }
+
+    void startTextEditing(double x, double y) {
+        if (!textEditor || !nativeSession || busy || choosingFile || messageDialog) {
+            return;
+        }
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            return;
+        }
+        finishTextEditing();
+        resetInput();
+        state.clearSelection();
+        state.selectActivePage(hit->page);
+        const auto index = textAt(hit->page, hit->local);
+        prototype::TextItem item;
+        if (index) {
+            item = state.texts[*index];
+        } else {
+            item.page = hit->page;
+            item.x = hit->local.x;
+            item.y = hit->local.y;
+            item.fontName = state.textFontName;
+            item.fontSize = state.textFontSize;
+            const auto red = static_cast<uint32_t>(std::lround(std::clamp(state.brush.color[0], 0.0, 1.0) * 255));
+            const auto green = static_cast<uint32_t>(std::lround(std::clamp(state.brush.color[1], 0.0, 1.0) * 255));
+            const auto blue = static_cast<uint32_t>(std::lround(std::clamp(state.brush.color[2], 0.0, 1.0) * 255));
+            item.color = 0xff000000U | (red << 16U) | (green << 8U) | blue;
+        }
+        textEditor->begin(item, index, state.zoom);
+        textEditor->setWrap(item.wrapWidth >= 0);
+        gtk_editable_set_text(GTK_EDITABLE(textFontEntry), item.fontName.c_str());
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), item.fontSize);
+        updateTextEditorPosition();
+        update();
+    }
+
+    void finishTextEditing() {
+        if (!textEditor || !textEditor->active()) {
+            return;
+        }
+        const auto completed = textEditor->finish();
+        if (completed) {
+            if (completed->existingIndex) {
+                if (completed->hasContent) {
+                    state.replaceText(*completed->existingIndex, completed->item);
+                } else {
+                    state.deleteText(*completed->existingIndex);
+                }
+            } else if (completed->hasContent) {
+                state.insertText(completed->item);
+            }
+        }
+        if (canvas) {
+            gtk_widget_grab_focus(canvas);
+        }
+        update();
+    }
+
+    void updateTextEditorPosition() {
+        if (!textEditor || !textEditor->active() || !canvas) {
+            return;
+        }
+        const auto* item = textEditor->item();
+        if (!item) {
+            return;
+        }
+        textEditor->setZoom(state.zoom);
+        const auto screen = state.pageScreenPoint(item->page, item->x, item->y);
+        const auto [measuredWidth, measuredHeight] = prototype::measureText(*item);
+        const double availableWidth = std::max(40.0, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - 8.0);
+        const double requestedWidth = item->wrapWidth >= 0 ? item->wrapWidth * state.zoom + 16.0 :
+                                                              std::max(180.0, (measuredWidth + 20.0) * state.zoom);
+        const int width = static_cast<int>(std::clamp(requestedWidth, 40.0, availableWidth));
+        const int height = static_cast<int>(std::max(36.0, (measuredHeight + 16.0) * state.zoom));
+        textEditor->position(screen.x, screen.y, width, height);
+    }
+
+    void applyTextFormat(prototype::TextEditorOverlay::Format format) {
+        if (textEditor && textEditor->active()) {
+            textEditor->applyFormat(format);
+            gtk_widget_grab_focus(textEditor->widget());
+        }
+    }
+
     void selectTool(Tool tool) {
+        if (textEditor && textEditor->active()) {
+            finishTextEditing();
+        }
+        syncingTools = true;
+        if (textButton) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(textButton), tool == Tool::Text);
+        }
+        if (prototype::isSelectionTool(tool)) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+        } else if (tool == Tool::Text) {
+            for (auto* button: toolButtons) {
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
+            }
+        } else if (static_cast<size_t>(tool) < 3) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[static_cast<size_t>(tool)]), true);
+        }
+        syncingTools = false;
         if (state.brush.tool == Tool::Pen) {
             penBrush = state.brush;
         } else if (state.brush.tool == Tool::Highlighter) {
@@ -1169,11 +1301,14 @@ private:
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
         gtk_widget_set_visible(colorBox, tool != Tool::Eraser && !prototype::isSelectionTool(tool));
-        gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool));
-        gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text);
+        gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionActions, prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(textFontEntry, tool == Tool::Text);
+        gtk_widget_set_visible(textFontSize, tool == Tool::Text);
+        gtk_widget_set_visible(textFormatBox, tool == Tool::Text);
         if (prototype::isSelectionTool(tool)) {
             selectionTool = tool;
             gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), static_cast<guint>(tool)-3);
@@ -1452,8 +1587,8 @@ private:
             }
             g_object_set_data(G_OBJECT(toolButtons[i]), "tool", GUINT_TO_POINTER(i));
             g_signal_connect(toolButtons[i], "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
-                                 if (gtk_toggle_button_get_active(button)) {
-                                     auto* self = static_cast<Prototype*>(data);
+                                 auto* self = static_cast<Prototype*>(data);
+                                 if (gtk_toggle_button_get_active(button) && !self->syncingTools) {
                                      const auto index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "tool"));
                                      self->selectTool(index == 3 ? self->selectionTool : static_cast<Tool>(index));
                                  }
@@ -1462,7 +1597,76 @@ private:
             gtk_box_append(GTK_BOX(toolGroup), toolButtons[i]);
         }
         gtk_widget_set_tooltip_text(toolButtons[3], "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S)");
+        textButton = gtk_toggle_button_new();
+        gtk_button_set_child(GTK_BUTTON(textButton), gtk_image_new_from_icon_name("format-text-symbolic"));
+        gtk_widget_set_tooltip_text(textButton, "Text tool (T)");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(textButton), GTK_ACCESSIBLE_PROPERTY_LABEL, "Text tool", -1);
+        g_signal_connect(textButton, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingTools &&
+                                 (gtk_toggle_button_get_active(button) || self->state.brush.tool == Tool::Text)) {
+                                 self->selectTool(Tool::Text);
+                             }
+                         }),
+                         this);
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), textButton);
         gtk_box_append(GTK_BOX(toolbar), toolGroup);
+
+        textFontEntry = gtk_entry_new();
+        gtk_entry_set_placeholder_text(GTK_ENTRY(textFontEntry), "Font");
+        gtk_editable_set_width_chars(GTK_EDITABLE(textFontEntry), 10);
+        gtk_editable_set_text(GTK_EDITABLE(textFontEntry), state.textFontName.c_str());
+        gtk_widget_set_tooltip_text(textFontEntry, "Text font family");
+        g_signal_connect(textFontEntry, "changed", G_CALLBACK(+[](GtkEditable* entry, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const char* font = gtk_editable_get_text(entry);
+                             if (font && *font) {
+                                 self->state.textFontName = font;
+                                 if (self->textEditor && self->textEditor->active()) {
+                                     const auto* item = self->textEditor->item();
+                                     self->textEditor->setBaseFont(self->state.textFontName, item->fontSize);
+                                     self->updateTextEditorPosition();
+                                 }
+                             }
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(toolbar), textFontEntry);
+        textFontSize = gtk_spin_button_new_with_range(1, 512, 1);
+        gtk_spin_button_set_digits(GTK_SPIN_BUTTON(textFontSize), 1);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), state.textFontSize);
+        gtk_widget_set_tooltip_text(textFontSize, "Text font size");
+        g_signal_connect(textFontSize, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             self->state.textFontSize = gtk_spin_button_get_value(spin);
+                             if (self->textEditor && self->textEditor->active()) {
+                                 const auto* item = self->textEditor->item();
+                                 self->textEditor->setBaseFont(item->fontName, self->state.textFontSize);
+                                 self->updateTextEditorPosition();
+                             }
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(toolbar), textFontSize);
+        textFormatBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        for (size_t i = 0; i < textFormatButtons.size(); ++i) {
+            static constexpr const char* labels[] = {"B", "I", "U", "S", "x²", "x₂"};
+            static constexpr const char* tips[] = {"Bold (Ctrl+B)", "Italic (Ctrl+I)", "Underline (Ctrl+U)",
+                                                    "Strikethrough (Ctrl+Shift+K)", "Superscript (Ctrl+.)",
+                                                    "Subscript (Ctrl+,)"};
+            textFormatButtons[i] = gtk_button_new_with_label(labels[i]);
+            gtk_widget_set_tooltip_text(textFormatButtons[i], tips[i]);
+            g_object_set_data(G_OBJECT(textFormatButtons[i]), "text-format", GUINT_TO_POINTER(i));
+            g_signal_connect(textFormatButtons[i], "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 const auto index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "text-format"));
+                                 self->applyTextFormat(static_cast<prototype::TextEditorOverlay::Format>(index));
+                             }),
+                             this);
+            gtk_box_append(GTK_BOX(textFormatBox), textFormatButtons[i]);
+        }
+        gtk_box_append(GTK_BOX(toolbar), textFormatBox);
+        gtk_widget_set_visible(textFontEntry, false);
+        gtk_widget_set_visible(textFontSize, false);
+        gtk_widget_set_visible(textFormatBox, false);
         colorBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         auto* colorDialog = gtk_color_dialog_new();
         gtk_color_dialog_set_with_alpha(colorDialog, false);
@@ -1626,6 +1830,10 @@ private:
         gtk_widget_set_vexpand(canvas, true);
         gtk_widget_set_tooltip_text(canvas, "Draw with pen or mouse. Touch or middle-drag to pan. Pinch or Ctrl+wheel "
                                             "to zoom. Escape cancels ink.");
+        canvasOverlay = gtk_overlay_new();
+        gtk_overlay_set_child(GTK_OVERLAY(canvasOverlay), canvas);
+        textEditor = std::make_unique<prototype::TextEditorOverlay>(GTK_OVERLAY(canvasOverlay));
+        textEditor->setWrap(false);
         gtk_drawing_area_set_draw_func(
                 GTK_DRAWING_AREA(canvas),
                 +[](GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
@@ -1653,7 +1861,7 @@ private:
                          }),
                          this);
         splitView = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
-        adw_overlay_split_view_set_content(splitView, canvas);
+        adw_overlay_split_view_set_content(splitView, canvasOverlay);
         adw_overlay_split_view_set_sidebar(splitView, createSidebar());
         adw_overlay_split_view_set_min_sidebar_width(splitView, 160);
         adw_overlay_split_view_set_max_sidebar_width(splitView, 180);
@@ -1675,6 +1883,7 @@ private:
         connectInput();
         g_signal_connect(window, "close-request", G_CALLBACK(+[](GtkWindow*, gpointer data) -> gboolean {
             auto* self = static_cast<Prototype*>(data);
+            self->finishTextEditing();
             if (self->busy || self->choosingFile || self->messageDialog) {
                 return true;
             }
@@ -1796,6 +2005,7 @@ private:
         if (closed) {
             return;
         }
+        updateTextEditorPosition();
         updateTitle();
         gtk_label_set_text(GTK_LABEL(selectionLabel), state.selected.empty() ? "Drag to select" :
                                (std::to_string(state.selected.size()) + " selected").c_str());
@@ -1803,6 +2013,7 @@ private:
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
         gtk_widget_set_sensitive(exportPdfButton, bool(nativeSession));
+        gtk_widget_set_sensitive(textButton, bool(nativeSession));
         gtk_widget_set_sensitive(prevPageButton, state.page > 0);
         gtk_widget_set_sensitive(nextPageButton, state.page + 1 < pageCount);
         gtk_widget_set_sensitive(insertPageButton, bool(nativeSession));
@@ -1975,6 +2186,27 @@ private:
                          this);
         addGesture(mouse, Device::Mouse);
 
+        textClick = GTK_GESTURE_CLICK(gtk_gesture_click_new());
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(textClick), GDK_BUTTON_PRIMARY);
+        g_signal_connect(textClick, "released",
+                         G_CALLBACK(+[](GtkGestureClick* gesture, int presses, double x, double y, gpointer data) {
+                             if (presses != 1 || !mouseEvent(GTK_EVENT_CONTROLLER(gesture))) {
+                                 return;
+                             }
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto tool = self->state.brush.tool;
+                             if (tool == Tool::Text) {
+                                 self->startTextEditing(x, y);
+                             } else if (tool == Tool::SmartSelect) {
+                                 const auto hit = self->state.hitPage(x, y);
+                                 if (hit && self->textAt(hit->page, hit->local)) {
+                                     self->startTextEditing(x, y);
+                                 }
+                             }
+                         }),
+                         this);
+        addGesture(GTK_GESTURE(textClick));
+
         stylus = gtk_gesture_stylus_new();
         gtk_gesture_stylus_set_stylus_only(GTK_GESTURE_STYLUS(stylus), true);
         g_signal_connect(stylus, "down", G_CALLBACK(+[](GtkGestureStylus* gesture, double x, double y, gpointer data) {
@@ -2117,8 +2349,60 @@ private:
                     if (self->busy || self->choosingFile || self->messageDialog) {
                         return false;
                     }
+                    bool editingText = self->textEditor && self->textEditor->active();
+                    if (editingText) {
+                        const bool control = (modifiers & GDK_CONTROL_MASK) != 0;
+                        const bool shift = (modifiers & GDK_SHIFT_MASK) != 0;
+                        if (control && (key == GDK_KEY_b || key == GDK_KEY_B)) {
+                            self->applyTextFormat(prototype::TextEditorOverlay::Format::Bold);
+                            return true;
+                        }
+                        if (control && (key == GDK_KEY_i || key == GDK_KEY_I)) {
+                            self->applyTextFormat(prototype::TextEditorOverlay::Format::Italic);
+                            return true;
+                        }
+                        if (control && (key == GDK_KEY_u || key == GDK_KEY_U)) {
+                            self->applyTextFormat(prototype::TextEditorOverlay::Format::Underline);
+                            return true;
+                        }
+                        if (control && shift && (key == GDK_KEY_k || key == GDK_KEY_K)) {
+                            self->applyTextFormat(prototype::TextEditorOverlay::Format::Strikethrough);
+                            return true;
+                        }
+                        if (control && key == GDK_KEY_period) {
+                            self->applyTextFormat(prototype::TextEditorOverlay::Format::Superscript);
+                            return true;
+                        }
+                        if (control && key == GDK_KEY_comma) {
+                            self->applyTextFormat(prototype::TextEditorOverlay::Format::Subscript);
+                            return true;
+                        }
+                        if (key == GDK_KEY_Escape || (control && key == GDK_KEY_Return)) {
+                            self->finishTextEditing();
+                            return true;
+                        }
+                        const bool documentAction =
+                                (control && (key == GDK_KEY_o || key == GDK_KEY_O || key == GDK_KEY_s ||
+                                             key == GDK_KEY_S || key == GDK_KEY_e || key == GDK_KEY_E ||
+                                             key == GDK_KEY_g || key == GDK_KEY_G || key == GDK_KEY_d ||
+                                             key == GDK_KEY_D || key == GDK_KEY_0 || key == GDK_KEY_plus ||
+                                             key == GDK_KEY_equal || key == GDK_KEY_minus || key == GDK_KEY_Home ||
+                                             key == GDK_KEY_End)) ||
+                                (control && shift && (key == GDK_KEY_Delete || key == GDK_KEY_KP_Delete ||
+                                                      key == GDK_KEY_g || key == GDK_KEY_G || key == GDK_KEY_r ||
+                                                      key == GDK_KEY_R)) ||
+                                key == GDK_KEY_Page_Down || key == GDK_KEY_Page_Up ||
+                                ((modifiers & GDK_SHIFT_MASK) && (key == GDK_KEY_j || key == GDK_KEY_J ||
+                                                                  key == GDK_KEY_k || key == GDK_KEY_K));
+                        if (documentAction) {
+                            self->finishTextEditing();
+                            editingText = false;
+                        } else {
+                            return false;
+                        }
+                    }
                     self->input.shiftHeld = (modifiers & GDK_SHIFT_MASK) || key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R;
-                    if (!GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
+                    if (!editingText && !GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_c || key == GDK_KEY_C)) {
                             self->copySelection(); return true;
                         }
@@ -2172,7 +2456,7 @@ private:
                     if (key == GDK_KEY_Escape) {
                         self->resetInput();
                         self->state.clearSelection();
-                    } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
+                    } else if (editingText || GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         return false;
                     } else if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
                                (key == GDK_KEY_r || key == GDK_KEY_R)) {
@@ -2220,7 +2504,12 @@ private:
                         self->openGotoPageDialog();
                         return true;
                     } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
-                               (key == GDK_KEY_p || key == GDK_KEY_h || key == GDK_KEY_e)) {
+                               (key == GDK_KEY_p || key == GDK_KEY_h || key == GDK_KEY_e ||
+                                (key == GDK_KEY_t && self->nativeSession))) {
+                        if (key == GDK_KEY_t) {
+                            self->selectTool(Tool::Text);
+                            return true;
+                        }
                         const auto tool = key == GDK_KEY_p ? 0 : key == GDK_KEY_h ? 1 : 2;
                         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[tool]), true);
                     } else {
@@ -2383,9 +2672,30 @@ private:
             cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
             cairo_paint(cr);
             cairo_restore(cr);
+            struct LayerItem {
+                size_t order;
+                bool text;
+                size_t index;
+            };
+            std::vector<LayerItem> layerItems;
+            layerItems.reserve(state.ink.size() + state.texts.size());
             for (size_t index = 0; index < state.ink.size(); ++index) {
                 if (state.displayPage(index) == i && state.ink[index].page == i) {
-                    prototype::drawInkPreview(cr, state, index);
+                    layerItems.push_back({state.ink[index].layerOrder, false, index});
+                }
+            }
+            for (size_t index = 0; index < state.texts.size(); ++index) {
+                if (state.texts[index].page == i) {
+                    layerItems.push_back({state.texts[index].layerOrder, true, index});
+                }
+            }
+            std::stable_sort(layerItems.begin(), layerItems.end(),
+                             [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
+            for (const auto& item: layerItems) {
+                if (item.text) {
+                    prototype::drawText(cr, state.texts[item.index]);
+                } else {
+                    prototype::drawInkPreview(cr, state, item.index);
                 }
             }
             for (size_t index = 0; index < state.ink.size(); ++index) {
@@ -2746,6 +3056,7 @@ private:
         }
         const auto x = state.offsetX + 80 * state.zoom;
         const auto y = state.offsetY + 80 * state.zoom;
+        bool finishSmoke = false;
         switch (smokeStep++) {
             case 0: {
                 auto* native = gtk_widget_get_native(canvas);
@@ -2891,39 +3202,117 @@ private:
             case 7:
                 break;  // Let the overlay animation finish before capturing it.
             default: {
-                const auto cacheBytes = totalCacheBytes();
+                smokeCacheBytes = totalCacheBytes();
                 capture("sidebar", contentView);
                 if (pageCount > 1) {
                     gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, 0));
-                    require(state.page == 0 && !adw_overlay_split_view_get_show_sidebar(splitView),
-                            "Selecting a page did not dismiss the overlay");
+                    const auto centerPage = state.hitPage(gtk_widget_get_width(canvas) / 2.0,
+                                                           gtk_widget_get_height(canvas) / 2.0);
+                    require(state.page == 0 && centerPage && centerPage->page == 0 &&
+                                    !adw_overlay_split_view_get_show_sidebar(splitView),
+                            "Selecting a page did not scroll to it or dismiss the overlay");
                 }
                 require(state.ink.size() == 2, "Session ink did not survive sidebar navigation");
-                const auto p0 = state.pageScreenPoint(0, 80, 80);
-                begin(Device::Mouse, p0.x, p0.y);
-                gtk_widget_set_visible(window, false);
-                require(!state.current && !state.pinching && !input.active() && !input.spaceHeld &&
-                                state.ink.size() == 3,
-                        "Unmap dropped delivered ink or left temporary input active");
-                std::cout << "PASS: GTK4 Cairo canvas, real PDF, colors, widths, highlight, undo/redo, eraser, "
-                             "sidebar navigation/overlay, stylus/backlog/Space adapters, cancel, pinch, narrow "
-                             "viewport, 2x raster cache"
-                          << "\nframes=" << frames << " rasterizations=" << rasterizations
-                          << " device_scale=" << gtk_widget_get_scale_factor(canvas)
-                          << " viewport_width=" << gtk_widget_get_width(canvas) << " cache_bytes=" << cacheBytes
-                          << '\n';
-                if (options.worker.empty()) {
-                    g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
-                    return G_SOURCE_REMOVE;
+                if (nativeSession) {
+                    const auto pageSize = state.pageSize(0);
+                    std::optional<prototype::Point> blank;
+                    for (double y = pageSize.height - 36; y > pageSize.height * 0.55 && !blank; y -= 24) {
+                        for (double x = pageSize.width - 150; x > pageSize.width * 0.45; x -= 32) {
+                            if (!textAt(0, {x, y})) {
+                                blank = prototype::Point{x, y};
+                                break;
+                            }
+                        }
+                    }
+                    require(blank.has_value(), "Text smoke could not find an unused spot on the page");
+                    state.offsetY = gtk_widget_get_height(canvas) / 2.0 - state.pageTop(0) * state.zoom -
+                                    blank->y * state.zoom;
+                    update();
+                    selectTool(Tool::Text);
+                    require(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(textButton)) &&
+                                    !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toolButtons[0])),
+                            "Text tool did not show its selected state in the header");
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), 24.0);
+                    const auto createAt = state.pageScreenPoint(0, blank->x, blank->y);
+                    g_signal_emit_by_name(textClick, "released", 1, createAt.x, createAt.y);
+                    require(textEditor->active(), "Text tool click did not open an inline editor");
+                    auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+                    gtk_text_buffer_set_text(buffer, "GTK rich π", -1);
+                    GtkTextIter selectionStart;
+                    GtkTextIter selectionEnd;
+                    gtk_text_buffer_get_bounds(buffer, &selectionStart, &selectionEnd);
+                    gtk_text_buffer_select_range(buffer, &selectionStart, &selectionEnd);
+                    gboolean handled = false;
+                    g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_b, 0u, GDK_CONTROL_MASK, &handled);
+                    require(handled, "Ctrl+B did not format selected text in the inline editor");
+                    updateTextEditorPosition();
+                    update();
+                } else {
+                    require(!gtk_widget_get_sensitive(textButton),
+                            "Text tool should be unavailable without a document worker");
+                    finishSmoke = true;
                 }
-                documentSmokeStep = 0;
-                gtk_widget_set_halign(contentView, GTK_ALIGN_FILL);
-                gtk_widget_set_size_request(contentView, -1, -1);
-                gtk_window_present(GTK_WINDOW(window));
-                fitted = false;
+                break;
+            }
+            case 9: {
+                require(textEditor->active(), "Inline text editor closed before its render capture");
+                capture("text-editor");
+                auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+                const auto newTextIndex = state.texts.size();
+                finishTextEditing();
+                require(state.texts.size() == newTextIndex + 1 && state.texts.back().text == "GTK rich π" &&
+                                state.texts.back().fontSize == 24.0 && !state.texts.back().styleRuns.empty() &&
+                                state.canUndo(),
+                        "Inline text creation did not preserve its UTF-8 content, size and formatting");
+                state.undo();
+                require(state.texts.size() == newTextIndex, "Undo did not remove a newly created text item");
+                state.redo();
+                require(state.texts.size() == newTextIndex + 1, "Redo did not restore a newly created text item");
+
+                activateSelection(Tool::SmartSelect);
+                const auto created = state.texts.back();
+                const auto editAt = state.pageScreenPoint(created.page, created.x + 2, created.y + 2);
+                g_signal_emit_by_name(textClick, "released", 1, editAt.x, editAt.y);
+                require(textEditor->active(), "Smart Select click did not edit native text");
+                buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+                GtkTextIter textEnd;
+                gtk_text_buffer_get_end_iter(buffer, &textEnd);
+                gtk_text_buffer_insert(buffer, &textEnd, "!", 1);
+                finishTextEditing();
+                require(state.texts.back().text == "GTK rich π!" && !state.texts.back().styleRuns.empty(),
+                        "Editing existing rich text lost content or its style runs");
                 update();
                 break;
             }
+            case 10:
+                capture("text-edited");
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                finishSmoke = true;
+                break;
+        }
+        if (finishSmoke) {
+            const auto p0 = state.pageScreenPoint(0, 80, 80);
+            begin(Device::Mouse, p0.x, p0.y);
+            gtk_widget_set_visible(window, false);
+            require(!state.current && !state.pinching && !input.active() && !input.spaceHeld && state.ink.size() == 3,
+                    "Unmap dropped delivered ink or left temporary input active");
+            std::cout << "PASS: GTK4 Cairo canvas, real PDF, colors, widths, highlight, undo/redo, eraser, "
+                         "sidebar navigation/overlay, stylus/backlog/Space adapters, cancel, pinch, narrow "
+                         "viewport, rich text, 2x raster cache"
+                      << "\nframes=" << frames << " rasterizations=" << rasterizations
+                      << " device_scale=" << gtk_widget_get_scale_factor(canvas)
+                      << " viewport_width=" << gtk_widget_get_width(canvas)
+                      << " cache_bytes=" << smokeCacheBytes << '\n';
+            if (options.worker.empty()) {
+                g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
+                return G_SOURCE_REMOVE;
+            }
+            documentSmokeStep = 0;
+            gtk_widget_set_halign(contentView, GTK_ALIGN_FILL);
+            gtk_widget_set_size_request(contentView, -1, -1);
+            gtk_window_present(GTK_WINDOW(window));
+            fitted = false;
+            update();
         }
         lastSmokePaint = paints;
         gtk_widget_queue_draw(window);
@@ -3109,13 +3498,14 @@ private:
                         "Normal Save did not complete or remove its temporary backup");
                 capture("normal-saved");
                 auto packets = prototype::bridge::transferInk(state.ink);
+                auto texts = state.texts;
                 packets.push_back({0, false, false, 2, {0, 1, 0}, {{200, 220, 1}, {230, 220, 1}}});
                 const auto session = nativeSession;
                 const auto worker = options.worker;
                 const auto target = saveTarget;
                 const auto before = saveVersion;
-                runDocumentJob("Testing external edit…", [session, worker, target, before, packets] {
-                    session->save(worker, target, packets, before);
+                runDocumentJob("Testing external edit…", [session, worker, target, before, packets, texts] {
+                    session->save(worker, target, packets, texts, before);
                 }, [] {});
                 break;
             }
@@ -3875,6 +4265,14 @@ private:
     int paintWaits = 0;
     GtkWidget* contentView = nullptr;
     GtkWidget* canvas = nullptr;
+    GtkWidget* canvasOverlay = nullptr;
+    std::unique_ptr<prototype::TextEditorOverlay> textEditor;
+    GtkWidget* textButton = nullptr;
+    GtkWidget* textFontEntry = nullptr;
+    GtkWidget* textFontSize = nullptr;
+    GtkWidget* textFormatBox = nullptr;
+    std::array<GtkWidget*, 6> textFormatButtons{};
+    GtkGestureClick* textClick = nullptr;
     GtkWidget* pageLabel = nullptr;
     GtkWidget* zoomLabel = nullptr;
     GtkWidget* undoButton = nullptr;
@@ -3909,6 +4307,7 @@ private:
             prototype::behavior::whiteoutColor,
             prototype::behavior::eraserWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
     bool syncingBrush = false;
+    bool syncingTools = false;
     GtkGesture* mouse = nullptr;
     GtkGesture* stylus = nullptr;
     std::vector<GtkGesture*> panGestures;
@@ -3930,6 +4329,7 @@ private:
     int rasterizations = 0;
     int baselineRasters = 0;
     int smokeStep = 0;
+    size_t smokeCacheBytes = 0;
     int snapshotWaits = 0;
     double smokeTransformWidth = 0;
     size_t smokeClipboardCount = 0;

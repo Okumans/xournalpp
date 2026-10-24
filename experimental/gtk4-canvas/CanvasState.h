@@ -6,10 +6,12 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "BehaviorDefaults.h"
+#include "CanvasText.h"
 
 namespace prototype {
 
@@ -29,7 +31,7 @@ struct PageHit {
     Point local{};
 };
 
-enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect };
+enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect, Text };
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect;
 }
@@ -58,6 +60,7 @@ struct Ink {
     std::vector<Point> points;
     Brush brush;
     bool pressureSensitive = false;
+    size_t layerOrder = 0;
 };
 
 struct SelectionBox {
@@ -94,7 +97,10 @@ public:
     double pressureMultiplier = behavior::pressureMultiplier;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
+    std::string textFontName = "Sans";
+    double textFontSize = 12;
     std::vector<Ink> ink;
+    std::vector<TextItem> texts;
     std::optional<Ink> current;
     std::vector<size_t> selected;
     bool pinching = false;
@@ -375,6 +381,7 @@ public:
                     if (g.targetPage == g.page) {
                         edit.changes.push_back({index, {ink[index]}, index, {std::move(moved)}});
                     } else {
+                        moved.layerOrder = nextLayerOrder(g.targetPage) + transferred.size();
                         const auto removed = transferred.size();
                         edit.changes.push_back({index, {ink[index]}, index-removed, {}});
                         transferred.push_back(std::move(moved));
@@ -477,15 +484,18 @@ public:
         }
         const auto dx = std::max(0.0,center.x-(b.x1-b.x0)/2)-b.x0;
         const auto dy = std::max(0.0,center.y-(b.y1-b.y0)/2)-b.y0;
+        auto layerOrder = nextLayerOrder(targetPage);
         for (auto& stroke: pasted) {
             stroke.page=targetPage;
+            stroke.layerOrder = layerOrder++;
             for (auto& p: stroke.points) {
                 p.x+=dx;p.y+=dy;
                 if (!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
             }
         }
         clearSelection();
-        Edit edit{{{ink.size(),{},ink.size(),std::move(pasted)}}};
+        Edit edit;
+        edit.changes.push_back({ink.size(), {}, ink.size(), std::move(pasted)});
         edit.selectionBefore = previousSelection;
         edit.selectionAfter = std::vector<size_t>{};
         for (size_t i=0;i<edit.changes[0].after.size();++i) edit.selectionAfter->push_back(ink.size()+i);
@@ -704,16 +714,25 @@ public:
             }
         };
         shiftStrokes(ink);
+        shiftTexts(texts, insertedIndex);
         for (auto& edit: undoStates) {
             for (auto& change: edit.changes) {
                 shiftStrokes(change.before);
                 shiftStrokes(change.after);
+            }
+            for (auto& change: edit.textChanges) {
+                shiftTexts(change.before, insertedIndex);
+                shiftTexts(change.after, insertedIndex);
             }
         }
         for (auto& edit: redoStates) {
             for (auto& change: edit.changes) {
                 shiftStrokes(change.before);
                 shiftStrokes(change.after);
+            }
+            for (auto& change: edit.textChanges) {
+                shiftTexts(change.before, insertedIndex);
+                shiftTexts(change.after, insertedIndex);
             }
         }
         selectActivePage(insertedIndex);
@@ -730,6 +749,12 @@ public:
         for (auto& stroke: ink) {
             if (stroke.page > removeIndex) {
                 --stroke.page;
+            }
+        }
+        std::erase_if(texts, [&](const TextItem& text) { return text.page == removeIndex; });
+        for (auto& text: texts) {
+            if (text.page > removeIndex) {
+                --text.page;
             }
         }
         undoStates.clear();
@@ -750,6 +775,9 @@ public:
     }
 
     bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false) {
+        if (brush.tool == Tool::Text) {
+            return false;
+        }
         if (isSelectionTool(brush.tool) && !eraserEnd) {
             return false;
         }
@@ -798,10 +826,49 @@ public:
                 }
                 current->points.push_back(point);
             }
-            record(Edit{{{ink.size(), {}, ink.size(), {*current}}}});
+            current->layerOrder = nextLayerOrder(current->page);
+            Edit edit;
+            edit.changes.push_back({ink.size(), {}, ink.size(), {*current}});
+            record(std::move(edit));
             ink.push_back(std::move(*current));
             current.reset();
         }
+    }
+
+    bool insertText(TextItem item) {
+        if (!validTextPage(item) || current || eraseGesture || selectionGesture) {
+            return false;
+        }
+        item.layerOrder = nextLayerOrder(item.page);
+        Edit edit;
+        edit.textChanges.push_back({texts.size(), {}, texts.size(), {std::move(item)}});
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    bool replaceText(size_t index, TextItem item) {
+        if (index >= texts.size() || !validTextPage(item) || current || eraseGesture || selectionGesture ||
+            item.page != texts[index].page) {
+            return false;
+        }
+        item.layerOrder = texts[index].layerOrder;
+        Edit edit;
+        edit.textChanges.push_back({index, {texts[index]}, index, {std::move(item)}});
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    bool deleteText(size_t index) {
+        if (index >= texts.size() || current || eraseGesture || selectionGesture) {
+            return false;
+        }
+        Edit edit;
+        edit.textChanges.push_back({index, {texts[index]}, index, {}});
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
     }
 
     void cancel() {
@@ -949,12 +1016,50 @@ private:
         std::vector<Ink> after;
     };
 
+    struct TextChange {
+        size_t beforeIndex = 0;
+        std::vector<TextItem> before;
+        size_t afterIndex = 0;
+        std::vector<TextItem> after;
+    };
+
     struct Edit {
         std::vector<Change> changes;
+        std::vector<TextChange> textChanges;
         size_t revision = 0;
         std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
     };
+
+    bool validTextPage(const TextItem& item) const {
+        return item.page >= 0 && item.page < pageCount() && std::isfinite(item.fontSize) && item.fontSize > 0 &&
+               std::isfinite(item.wrapWidth) && std::isfinite(item.xx) && std::isfinite(item.yx) &&
+               std::isfinite(item.xy) && std::isfinite(item.yy) && std::isfinite(item.x) &&
+               std::isfinite(item.y);
+    }
+
+    size_t nextLayerOrder(int pageIndex) const {
+        size_t next = 0;
+        for (const auto& stroke: ink) {
+            if (stroke.page == pageIndex) {
+                next = std::max(next, stroke.layerOrder + 1);
+            }
+        }
+        for (const auto& text: texts) {
+            if (text.page == pageIndex) {
+                next = std::max(next, text.layerOrder + 1);
+            }
+        }
+        return next;
+    }
+
+    static void shiftTexts(std::vector<TextItem>& items, int insertedIndex) {
+        for (auto& item: items) {
+            if (item.page >= insertedIndex) {
+                ++item.page;
+            }
+        }
+    }
 
     struct SelectionGesture {
         int page = 0;
@@ -1212,7 +1317,7 @@ private:
             if (pts.size() < 2) {
                 return std::nullopt;
             }
-            return Ink{stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive};
+            return Ink{stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive, stroke.layerOrder};
         };
 
         const bool closedStroke = stroke.points.size() >= 3 &&
@@ -1244,7 +1349,8 @@ private:
                 pts.push_back(endPt);
             }
             if (pts.size() >= 2) {
-                out.remaining.push_back({stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive});
+                out.remaining.push_back(
+                        {stroke.page, std::move(pts), stroke.brush, stroke.pressureSensitive, stroke.layerOrder});
             }
             ++firstSec;
             --endSec;
@@ -1321,11 +1427,24 @@ private:
     void record(Edit edit) {
         redoStates.clear();
         edit.revision = ++nextRevision;
-        // Keep stroke deltas, rather than a full document copy for each edit.
+        // Keep ink and text deltas, rather than a full document copy for each edit.
         undoStates.push_back(std::move(edit));
     }
 
     void apply(const Edit& edit, bool forward) {
+        for (auto it = edit.textChanges.rbegin(); it != edit.textChanges.rend(); ++it) {
+            if (forward) {
+                const auto pos = texts.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex);
+                texts.erase(pos, pos + static_cast<std::ptrdiff_t>(it->before.size()));
+                texts.insert(texts.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex), it->after.begin(),
+                             it->after.end());
+            } else {
+                const auto pos = texts.begin() + static_cast<std::ptrdiff_t>(it->afterIndex);
+                texts.erase(pos, pos + static_cast<std::ptrdiff_t>(it->after.size()));
+                texts.insert(texts.begin() + static_cast<std::ptrdiff_t>(it->afterIndex), it->before.begin(),
+                             it->before.end());
+            }
+        }
         for (auto it = edit.changes.rbegin(); it != edit.changes.rend(); ++it) {
             if (forward) {
                 const auto pos = ink.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex);

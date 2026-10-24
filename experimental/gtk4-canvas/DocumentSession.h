@@ -8,6 +8,7 @@
 #include <gio/gio.h>
 
 #include "DocumentAutosave.h"
+#include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
 
@@ -39,10 +40,13 @@ public:
                                     fs::is_regular_file(fs::symlink_status(input));
             const auto before = nativeFile ? documentVersion(input).token : std::string{};
             const auto extracted = path / "initial.ink";
+            const auto extractedTexts = path / "initial.text";
             const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string(),
-                                                 extracted.string()});
+                                                 extracted.string(), extractedTexts.string()});
             initialInk = readTransfer(extracted);
+            initialTexts = readTextTransfer(extractedTexts);
             std::filesystem::remove(extracted);
+            std::filesystem::remove(extractedTexts);
             if (nativeFile) {
                 requireUnchangedInput(input, before);
                 if (kind == "NATIVE_SAVE\n") {
@@ -61,17 +65,22 @@ public:
     DocumentSession& operator=(const DocumentSession&) = delete;
 
     void saveCopy(const std::string& worker, const std::string& output,
-                  const std::vector<StrokePacket>& packets) const {
+                  const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts) const {
         const auto transfer = path / "session.ink";
+        const auto textTransfer = path / "session.text";
         writeTransfer(transfer, packets);
-        runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string()});
+        writeTextTransfer(textTransfer, texts);
+        runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string(), textTransfer.string()});
     }
 
     std::string save(const std::string& worker, const std::string& output, const std::vector<StrokePacket>& packets,
-                     const std::string& expected) const {
+                     const std::vector<TextItem>& texts, const std::string& expected) const {
         const auto transfer = path / "session.ink";
+        const auto textTransfer = path / "session.text";
         writeTransfer(transfer, packets);
-        auto version = runWorker(worker, {"save", snapshotPath().string(), output, transfer.string(), expected});
+        writeTextTransfer(textTransfer, texts);
+        auto version = runWorker(worker, {"save", snapshotPath().string(), output, transfer.string(), expected,
+                                          textTransfer.string()});
         if (!version.empty() && version.back() == '\n') {
             version.pop_back();
         }
@@ -79,17 +88,21 @@ public:
     }
 
     void autosave(const std::string& worker, const std::string& output,
-                  const std::vector<StrokePacket>& packets) const {
+                  const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts) const {
         const auto transfer = path / "autosave.ink";
+        const auto textTransfer = path / "autosave.text";
         writeTransfer(transfer, packets);
-        runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string()});
+        writeTextTransfer(textTransfer, texts);
+        runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string(), textTransfer.string()});
     }
 
     void exportPdf(const std::string& worker, const std::string& output,
-                   const std::vector<StrokePacket>& packets) const {
+                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts) const {
         const auto transfer = path / "export.ink";
+        const auto textTransfer = path / "export.text";
         writeTransfer(transfer, packets);
-        runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string()});
+        writeTextTransfer(textTransfer, texts);
+        runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string(), textTransfer.string()});
     }
 
     StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
@@ -119,6 +132,7 @@ public:
     std::string originalSavePath;
     std::string originalVersion;
     std::vector<StrokePacket> initialInk;
+    std::vector<TextItem> initialTexts;
 
     std::filesystem::path snapshotPath() const { return activeDir / "snapshot.xopp"; }
     std::filesystem::path previewPath() const { return activeDir / "preview.pdf"; }
