@@ -2,6 +2,7 @@
 
 #include <cairo.h>
 
+#include "BehaviorDefaults.h"
 #include "CanvasState.h"
 
 namespace prototype {
@@ -36,7 +37,7 @@ inline void drawInk(cairo_t* cr, const Ink& ink) {
     if (highlight) {
         cairo_pop_group_to_source(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_MULTIPLY);
-        cairo_paint_with_alpha(cr, 0.32);
+        cairo_paint_with_alpha(cr, behavior::highlightOpacity);
     }
     cairo_restore(cr);
 }

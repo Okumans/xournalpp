@@ -21,6 +21,8 @@ int main() {
     prototype::drawInk(cr, highlight);
     bool pass = pixel(surface, 40, 40) == pixel(surface, 90, 40);
     pass &= pixel(surface, 40, 40) != 0xffff00 && pixel(surface, 40, 40) != 0xffffff;
+    // GTK 3 StrokeView uses 0.47 opacity: yellow over white leaves about 135 blue.
+    pass &= (pixel(surface, 40, 40) & 0xff) >= 134 && (pixel(surface, 40, 40) & 0xff) <= 136;
     // Highlighting preserves black document text under a stroke.
     cairo_set_source_rgb(cr, 0, 0, 0);
     cairo_rectangle(cr, 150, 30, 10, 20);

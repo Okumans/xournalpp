@@ -8,6 +8,7 @@
 #include <adwaita.h>
 #include <poppler.h>
 
+#include "BehaviorDefaults.h"
 #include "CanvasState.h"
 #include "InkRenderer.h"
 
@@ -511,6 +512,29 @@ private:
         return !gdk_event_get_device_tool(event) && device && gdk_device_get_source(device) != GDK_SOURCE_TOUCHSCREEN;
     }
 
+    std::optional<prototype::Point> surfacePoint(double x, double y) const {
+        auto* native = gtk_widget_get_native(canvas);
+        double tx, ty;
+        gtk_native_get_surface_transform(native, &tx, &ty);
+        const graphene_point_t from{static_cast<float>(x + tx), static_cast<float>(y + ty)};
+        graphene_point_t to;
+        if (!gtk_widget_compute_point(GTK_WIDGET(native), canvas, &from, &to)) {
+            return std::nullopt;
+        }
+        return prototype::Point{to.x, to.y};
+    }
+
+    prototype::Point scrollAnchor(GtkEventController* controller) const {
+        double x, y;
+        auto* event = gtk_event_controller_get_current_event(controller);
+        if (event && gdk_event_get_position(event, &x, &y)) {
+            if (const auto point = surfacePoint(x, y)) {
+                return *point;
+            }
+        }
+        return {gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
+    }
+
     void begin(Device device, double x, double y, double pressure = 1) {
         gtk_widget_grab_focus(canvas);
         if (state.brush.tool == Tool::Eraser) {
@@ -649,8 +673,11 @@ private:
                     }
                     if (gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller)) &
                         GDK_CONTROL_MASK) {
-                        self->zoom(self->state.zoom * std::exp(-dy * 0.1), gtk_widget_get_width(self->canvas) / 2.0,
-                                   gtk_widget_get_height(self->canvas) / 2.0);
+                        if (dy != 0) {
+                            const auto anchor = self->scrollAnchor(GTK_EVENT_CONTROLLER(controller));
+                            self->zoom(prototype::behavior::steppedZoom(self->state.zoom, dy < 0, true), anchor.x,
+                                       anchor.y);
+                        }
                     } else {
                         self->state.offsetX -= dx * 35;
                         self->state.offsetY -= dy * 35;
@@ -664,42 +691,42 @@ private:
         gtk_widget_add_controller(canvas, scroll);
 
         keys = gtk_event_controller_key_new();
-        g_signal_connect(keys, "key-pressed",
-                         G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType modifiers,
-                                        gpointer data) -> gboolean {
-                             auto* self = static_cast<Prototype*>(data);
-                             if (key == GDK_KEY_Escape) {
-                                 self->state.resetInput();
-                             } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
-                                 return false;
-                             } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_Z)) {
-                                 if (modifiers & GDK_SHIFT_MASK) {
-                                     self->state.redo();
-                                 } else {
-                                     self->state.undo();
-                                 }
-                             } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
-                                 self->state.redo();
-                             } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0) {
-                                 self->fitted = false;
-                             } else if ((modifiers & GDK_CONTROL_MASK) &&
-                                        (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_minus)) {
-                                 self->zoom(self->state.zoom * (key == GDK_KEY_minus ? 0.8 : 1.25),
-                                            gtk_widget_get_width(self->canvas) / 2.0,
-                                            gtk_widget_get_height(self->canvas) / 2.0);
-                             } else if (key == GDK_KEY_Page_Down || key == GDK_KEY_Page_Up) {
-                                 self->setPage(self->state.page + (key == GDK_KEY_Page_Down ? 1 : -1));
-                             } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
-                                        (key == GDK_KEY_p || key == GDK_KEY_h || key == GDK_KEY_e)) {
-                                 const auto tool = key == GDK_KEY_p ? 0 : key == GDK_KEY_h ? 1 : 2;
-                                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[tool]), true);
-                             } else {
-                                 return false;
-                             }
-                             self->update();
-                             return true;
-                         }),
-                         this);
+        g_signal_connect(
+                keys, "key-pressed",
+                G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType modifiers,
+                               gpointer data) -> gboolean {
+                    auto* self = static_cast<Prototype*>(data);
+                    if (key == GDK_KEY_Escape) {
+                        self->state.resetInput();
+                    } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
+                        return false;
+                    } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_Z)) {
+                        if (modifiers & GDK_SHIFT_MASK) {
+                            self->state.redo();
+                        } else {
+                            self->state.undo();
+                        }
+                    } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
+                        self->state.redo();
+                    } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0) {
+                        self->fitted = false;
+                    } else if ((modifiers & GDK_CONTROL_MASK) &&
+                               (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_minus)) {
+                        self->zoom(prototype::behavior::steppedZoom(self->state.zoom, key != GDK_KEY_minus, false),
+                                   gtk_widget_get_width(self->canvas) / 2.0, gtk_widget_get_height(self->canvas) / 2.0);
+                    } else if (key == GDK_KEY_Page_Down || key == GDK_KEY_Page_Up) {
+                        self->setPage(self->state.page + (key == GDK_KEY_Page_Down ? 1 : -1));
+                    } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_p || key == GDK_KEY_h || key == GDK_KEY_e)) {
+                        const auto tool = key == GDK_KEY_p ? 0 : key == GDK_KEY_h ? 1 : 2;
+                        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[tool]), true);
+                    } else {
+                        return false;
+                    }
+                    self->update();
+                    return true;
+                }),
+                this);
         gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
         gtk_widget_add_controller(window, keys);
     }
@@ -827,6 +854,16 @@ private:
         const auto y = state.offsetY + 80 * state.zoom;
         switch (smokeStep++) {
             case 0: {
+                auto* native = gtk_widget_get_native(canvas);
+                const graphene_point_t origin{0, 0};
+                graphene_point_t canvasOrigin;
+                require(gtk_widget_compute_point(canvas, GTK_WIDGET(native), &origin, &canvasOrigin),
+                        "Cannot locate canvas in native window");
+                double tx, ty;
+                gtk_native_get_surface_transform(native, &tx, &ty);
+                const auto converted = surfacePoint(canvasOrigin.x + 40 - tx, canvasOrigin.y + 60 - ty);
+                require(converted && std::abs(converted->x - 40) < 0.01 && std::abs(converted->y - 60) < 0.01,
+                        "Pointer anchor failed to account for sidebar and toolbar offsets");
                 capture("initial");
                 baselineRasters = rasterizations;
                 const GdkRGBA red{1, 0, 0, 1};
