@@ -1,10 +1,12 @@
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <adwaita.h>
 #include <poppler.h>
@@ -13,6 +15,8 @@
 #include "CanvasInput.h"
 #include "CanvasState.h"
 #include "DocumentSession.h"
+#include "DocumentJob.h"
+#include "DocumentInk.h"
 #include "InkRenderer.h"
 #include "StylusSamples.h"
 
@@ -42,12 +46,8 @@ struct SurfaceDeleter {
 class Prototype {
 public:
     explicit Prototype(Options options): options(std::move(options)) {
-        if (!this->options.nativeDocument.empty()) {
-            nativeSession = std::make_unique<prototype::bridge::DocumentSession>(this->options.worker,
-                                                                               this->options.nativeDocument);
-            this->options.pdf = nativeSession->previewPath().string();
-        }
-        if (!this->options.pdf.empty()) {
+        sourcePath = this->options.nativeDocument.empty() ? this->options.pdf : this->options.nativeDocument;
+        if (!this->options.pdf.empty() && this->options.worker.empty()) {
             GError* error = nullptr;
             auto* uri = g_filename_to_uri(this->options.pdf.c_str(), nullptr, &error);
             if (!uri) {
@@ -67,6 +67,9 @@ public:
     }
 
     ~Prototype() {
+        if (heartbeatSource) {
+            g_source_remove(heartbeatSource);
+        }
         if (paintClock) {
             g_signal_handlers_disconnect_by_data(paintClock, this);
             g_clear_object(&paintClock);
@@ -96,6 +99,263 @@ private:
         const std::string message = error ? error->message : "Unknown PDF error";
         g_clear_error(&error);
         throw std::runtime_error(message);
+    }
+
+    bool modified() const { return state.revision() != savedRevision; }
+
+    void closeWindow() {
+        closed = true;
+        gtk_window_destroy(GTK_WINDOW(window));
+    }
+
+    void updateTitle() {
+        if (!heading) {
+            return;
+        }
+        const auto name = sourcePath.empty() ? std::string("Blank notebook") :
+                                               std::filesystem::path(sourcePath).filename().string();
+        adw_window_title_set_title(ADW_WINDOW_TITLE(heading), (modified() ? "• " + name : name).c_str());
+        std::string status;
+        if (busy) {
+            status = busyText;
+        } else if (modified()) {
+            status = "Unsaved changes";
+        } else if (!savedCopyPath.empty()) {
+            status = "Copy saved: " + std::filesystem::path(savedCopyPath).filename().string();
+        } else if (nativeSession) {
+            status = "Document loaded";
+        } else {
+            status = "Temporary notebook";
+        }
+        adw_window_title_set_subtitle(ADW_WINDOW_TITLE(heading), status.c_str());
+    }
+
+    void showError(const std::string& message) {
+        ++ioErrors;
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Document operation failed",
+                                                                  message.c_str()));
+        adw_alert_dialog_add_response(messageDialog, "close", "Close");
+        adw_alert_dialog_set_close_response(messageDialog, "close");
+        g_signal_connect(messageDialog, "response", G_CALLBACK(+[](AdwAlertDialog*, const char*, gpointer data) {
+            static_cast<Prototype*>(data)->messageDialog = nullptr;
+        }), this);
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
+    }
+
+    void runDocumentJob(const char* status, std::function<void()> work, std::function<void()> success,
+                        bool initial = false) {
+        if (busy) {
+            return;
+        }
+        resetInput(true);
+        busy = true;
+        busyText = status;
+        gtk_widget_set_sensitive(contentView, false);
+        updateTitle();
+        auto* application = G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
+        g_application_hold(application);
+        prototype::bridge::documentJob(std::move(work), [this, application, success = std::move(success), initial](
+                                                               const std::string& error) {
+            busy = false;
+            gtk_widget_set_sensitive(contentView, true);
+            try {
+                if (!error.empty()) {
+                    throw std::runtime_error(error);
+                }
+                success();
+            } catch (const std::exception& exception) {
+                if (initial && !options.smokeDirectory.empty()) {
+                    failed = true;
+                    std::cerr << "Cannot load test document: " << exception.what() << '\n';
+                    g_application_quit(application);
+                } else {
+                    showError(exception.what());
+                }
+            }
+            if (!closed) {
+                update();
+            }
+            g_application_release(application);
+        });
+    }
+
+    void replaceDocument(const std::shared_ptr<prototype::bridge::DocumentSession>& session,
+                         const std::string& source) {
+        GError* error = nullptr;
+        const auto path = session->previewPath().string();
+        auto* uri = g_filename_to_uri(path.c_str(), nullptr, &error);
+        if (!uri) {
+            fail(error);
+        }
+        auto* candidate = poppler_document_new_from_file(uri, nullptr, &error);
+        g_free(uri);
+        if (!candidate) {
+            fail(error);
+        }
+        const auto count = poppler_document_get_n_pages(candidate);
+        if (!count) {
+            g_object_unref(candidate);
+            throw std::runtime_error("Document has no pages");
+        }
+        // Commit the replacement only after the new native snapshot and preview
+        // are valid. Failed opens leave the old document and undo history intact.
+        input.reset();
+        const auto brush = state.brush;
+        state = CanvasState{};
+        state.brush = brush;
+        savedRevision = 0;
+        savedCopyPath.clear();
+        g_clear_object(&page);
+        g_clear_object(&document);
+        document = candidate;
+        pageCount = count;
+        nativeSession = session;
+        sourcePath = source;
+        cache.reset();
+        thumbnails.clear();
+        thumbnailWidgets.clear();
+        pageList = nullptr;
+        adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+        fitMode = true;
+        setPage(0);
+    }
+
+    void openDocument(const std::string& path, bool initial = false) {
+        auto loaded = std::make_shared<std::shared_ptr<prototype::bridge::DocumentSession>>();
+        const auto worker = options.worker;
+        runDocumentJob("Opening document…", [loaded, worker, path] {
+            *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, path);
+        }, [this, loaded, path] { replaceDocument(*loaded, path); }, initial);
+    }
+
+    void saveCopyTo(const std::string& path, std::function<void()> after = {}) {
+        if (!nativeSession || busy) {
+            return;
+        }
+        resetInput(true);
+        const auto revision = state.revision();
+        const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        runDocumentJob("Saving copy…", [session, worker, path, packets] { session->saveCopy(worker, path, packets); },
+                       [this, revision, path, after = std::move(after)] {
+            savedRevision = revision;
+            savedCopyPath = path;
+            if (after) {
+                after();
+            }
+        });
+    }
+
+    void chooseOpen() {
+        if (busy || choosingFile || options.worker.empty()) {
+            return;
+        }
+        choosingFile = true;
+        auto* dialog = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(dialog, "Open document");
+        auto* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, "Xournal++ documents and PDFs");
+        gtk_file_filter_add_pattern(filter, "*.xopp");
+        gtk_file_filter_add_pattern(filter, "*.xoj");
+        gtk_file_filter_add_pattern(filter, "*.pdf");
+        gtk_file_dialog_set_default_filter(dialog, filter);
+        g_object_unref(filter);
+        gtk_file_dialog_open(dialog, GTK_WINDOW(window), nullptr, +[](GObject* source, GAsyncResult* result,
+                                                                      gpointer data) {
+            auto* self = static_cast<Prototype*>(data);
+            self->choosingFile = false;
+            GError* error = nullptr;
+            auto* file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+            self->finishFileChoice(file, error, [self](const std::string& path) { self->openDocument(path); });
+        }, this);
+        g_object_unref(dialog);
+    }
+
+    void chooseSave(std::function<void()> after = {}) {
+        if (busy || choosingFile || !nativeSession) {
+            return;
+        }
+        resetInput(true);
+        if (!options.smokeDirectory.empty() && !smokeSaveChoice.empty()) {
+            const auto path = std::exchange(smokeSaveChoice, {});
+            saveCopyTo(path, std::move(after));
+            return;
+        }
+        choosingFile = true;
+        struct Choice {
+            Prototype* self;
+            std::function<void()> after;
+        };
+        auto* dialog = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(dialog, "Save a copy");
+        const auto name = sourcePath.empty() ? std::string("Notebook.xopp") :
+                                              std::filesystem::path(sourcePath).stem().string() + "-copy.xopp";
+        gtk_file_dialog_set_initial_name(dialog, name.c_str());
+        gtk_file_dialog_save(dialog, GTK_WINDOW(window), nullptr, +[](GObject* source, GAsyncResult* result,
+                                                                      gpointer data) {
+            std::unique_ptr<Choice> choice(static_cast<Choice*>(data));
+            auto* self = choice->self;
+            self->choosingFile = false;
+            GError* error = nullptr;
+            auto* file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &error);
+            self->finishFileChoice(file, error, [self, after = std::move(choice->after)](const std::string& path) {
+                self->saveCopyTo(path, after);
+            });
+        }, new Choice{this, std::move(after)});
+        g_object_unref(dialog);
+    }
+
+    void finishFileChoice(GFile* file, GError* error, const std::function<void(const std::string&)>& chosen) {
+        if (file) {
+            auto* path = g_file_get_path(file);
+            g_object_unref(file);
+            if (path) {
+                const std::string localPath = path;
+                g_free(path);
+                chosen(localPath);
+            } else {
+                showError("Choose a local file for this document.");
+            }
+        } else if (error && !g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED) &&
+                   !g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_CANCELLED) &&
+                   !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            showError(error->message);
+        }
+        g_clear_error(&error);
+    }
+
+    void protectDocument(std::function<void()> after) {
+        if (busy || choosingFile || messageDialog) {
+            return;
+        }
+        resetInput(true);
+        if (!modified()) {
+            after();
+            return;
+        }
+        afterConfirmation = std::move(after);
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Save changes?",
+                                       "This document has unsaved changes. Save a copy before continuing?"));
+        adw_alert_dialog_add_responses(messageDialog, "cancel", "Cancel", "discard", "Discard", "save",
+                                         "Save a Copy…", nullptr);
+        adw_alert_dialog_set_response_enabled(messageDialog, "save", bool(nativeSession));
+        adw_alert_dialog_set_response_appearance(messageDialog, "discard", ADW_RESPONSE_DESTRUCTIVE);
+        adw_alert_dialog_set_response_appearance(messageDialog, "save", ADW_RESPONSE_SUGGESTED);
+        adw_alert_dialog_set_close_response(messageDialog, "cancel");
+        adw_alert_dialog_set_default_response(messageDialog, "save");
+        g_signal_connect(messageDialog, "response", G_CALLBACK(+[](AdwAlertDialog*, const char* response,
+                                                                    gpointer data) {
+            auto* self = static_cast<Prototype*>(data);
+            self->messageDialog = nullptr;
+            auto after = std::move(self->afterConfirmation);
+            if (std::string(response) == "discard") {
+                after();
+            } else if (std::string(response) == "save") {
+                self->chooseSave(std::move(after));
+            }
+        }), this);
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
     }
 
     void setPage(int number) {
@@ -284,15 +544,20 @@ private:
         auto* view = adw_toolbar_view_new();
         contentView = view;
         auto* header = adw_header_bar_new();
-        const auto source = options.nativeDocument.empty() ? options.pdf : options.nativeDocument;
-        const auto title = source.empty() ? std::string("Blank notebook") :
-                                           std::filesystem::path(source).filename().string();
-        auto* heading = adw_window_title_new(title.c_str(), "Session ink · not saved");
+        heading = adw_window_title_new("Blank notebook", "");
         adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), heading);
         sidebarButton = gtk_toggle_button_new();
         gtk_button_set_icon_name(GTK_BUTTON(sidebarButton), "view-sidebar-start-symbolic");
         gtk_widget_set_tooltip_text(sidebarButton, "Show pages");
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), sidebarButton);
+        openButton = button("document-open-symbolic", "Open (Ctrl+O)", G_CALLBACK(+[](GtkButton*, gpointer data) {
+            auto* self = static_cast<Prototype*>(data);
+            self->protectDocument([self] { self->chooseOpen(); });
+        }));
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), openButton);
+        saveButton = button("document-save-as-symbolic", "Save a copy (Ctrl+Shift+S)",
+                            G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->chooseSave(); }));
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), saveButton);
         undoButton = button("edit-undo-symbolic", "Undo ink (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
                                 self->input.cancel();
@@ -336,8 +601,8 @@ private:
         }
         auto* colorDialog = gtk_color_dialog_new();
         gtk_color_dialog_set_with_alpha(colorDialog, false);
+        // The button constructor takes ownership of the dialog.
         colorButton = gtk_color_dialog_button_new(colorDialog);
-        g_object_unref(colorDialog);
         gtk_widget_set_tooltip_text(colorButton, "Ink color");
         g_signal_connect(colorButton, "notify::rgba", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
@@ -445,6 +710,14 @@ private:
         adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(view), adaptive);
         adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), view);
         connectInput();
+        g_signal_connect(window, "close-request", G_CALLBACK(+[](GtkWindow*, gpointer data) -> gboolean {
+            auto* self = static_cast<Prototype*>(data);
+            if (self->busy || self->choosingFile || self->messageDialog) {
+                return true;
+            }
+            self->protectDocument([self] { self->closeWindow(); });
+            return true;
+        }), this);
         g_signal_connect(window, "notify::is-active", G_CALLBACK(+[](GObject* window, GParamSpec*, gpointer data) {
                              if (!gtk_window_is_active(GTK_WINDOW(window))) {
                                  auto* self = static_cast<Prototype*>(data);
@@ -464,7 +737,17 @@ private:
                          G_CALLBACK(+[](GdkFrameClock*, gpointer data) { ++static_cast<Prototype*>(data)->paints; }),
                          this);
         gtk_widget_grab_focus(canvas);
+        if (!options.worker.empty()) {
+            openDocument(sourcePath, true);
+        }
         if (!options.smokeDirectory.empty()) {
+            heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
+                auto* self = static_cast<Prototype*>(data);
+                if (self->busy) {
+                    ++self->busyHeartbeats;
+                }
+                return G_SOURCE_CONTINUE;
+            }, this);
             g_timeout_add(
                     150,
                     +[](gpointer data) -> gboolean {
@@ -473,7 +756,11 @@ private:
                             return self->smoke();
                         } catch (const SnapshotPending&) {
                             if (++self->snapshotWaits < 60) {
-                                --self->smokeStep;
+                                if (self->documentSmokeStep >= 0) {
+                                    --self->documentSmokeStep;
+                                } else {
+                                    --self->smokeStep;
+                                }
                                 self->lastSmokePaint = self->paints;
                                 gtk_widget_queue_draw(self->window);
                                 return G_SOURCE_CONTINUE;
@@ -494,6 +781,12 @@ private:
     }
 
     void update() {
+        if (closed) {
+            return;
+        }
+        updateTitle();
+        gtk_widget_set_sensitive(openButton, !options.worker.empty());
+        gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         const auto label = std::to_string(state.page + 1) + " / " + std::to_string(pageCount);
         gtk_label_set_text(GTK_LABEL(pageLabel), label.c_str());
         gtk_label_set_text(GTK_LABEL(zoomLabel), (std::to_string(static_cast<int>(state.zoom * 100)) + "%").c_str());
@@ -795,6 +1088,20 @@ private:
                 G_CALLBACK(+[](GtkEventControllerKey*, guint key, guint, GdkModifierType modifiers,
                                gpointer data) -> gboolean {
                     auto* self = static_cast<Prototype*>(data);
+                    if (self->busy || self->choosingFile || self->messageDialog) {
+                        return false;
+                    }
+                    if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_o || key == GDK_KEY_O)) {
+                        if (!self->options.worker.empty()) {
+                            self->protectDocument([self] { self->chooseOpen(); });
+                        }
+                        return true;
+                    }
+                    if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
+                        (key == GDK_KEY_s || key == GDK_KEY_S)) {
+                        self->chooseSave();
+                        return true;
+                    }
                     if (key == GDK_KEY_Escape) {
                         self->resetInput();
                     } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
@@ -1011,6 +1318,11 @@ private:
     }
 
     gboolean smoke() {
+        if (busy) {
+            require(++documentWaits < 120, "Document operation did not finish");
+            return G_SOURCE_CONTINUE;
+        }
+        documentWaits = 0;
         if (paints <= lastSmokePaint) {
             if (++paintWaits < 60) {
                 return G_SOURCE_CONTINUE;
@@ -1021,6 +1333,9 @@ private:
         if (!frames || !cache) {
             require(++smokeWaits < 60, "Canvas has not rendered");
             return G_SOURCE_CONTINUE;
+        }
+        if (documentSmokeStep >= 0) {
+            return smokeDocuments();
         }
         const auto x = state.offsetX + 80 * state.zoom;
         const auto y = state.offsetY + 80 * state.zoom;
@@ -1146,8 +1461,17 @@ private:
                           << " device_scale=" << gtk_widget_get_scale_factor(canvas)
                           << " viewport_width=" << gtk_widget_get_width(canvas) << " cache_bytes=" << cacheBytes
                           << '\n';
-                g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
-                return G_SOURCE_REMOVE;
+                if (options.worker.empty()) {
+                    g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
+                    return G_SOURCE_REMOVE;
+                }
+                documentSmokeStep = 0;
+                gtk_widget_set_halign(contentView, GTK_ALIGN_FILL);
+                gtk_widget_set_size_request(contentView, -1, -1);
+                gtk_window_present(GTK_WINDOW(window));
+                fitted = false;
+                update();
+                break;
             }
         }
         lastSmokePaint = paints;
@@ -1155,8 +1479,188 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    static GtkWidget* responseButton(GtkWidget* widget, const char* label) {
+        if (GTK_IS_BUTTON(widget) && g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), label) == 0) {
+            return widget;
+        }
+        for (auto* child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+            if (auto* found = responseButton(child, label)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    void answerDialog(const char* response) {
+        require(messageDialog, "Expected a document dialog");
+        auto* button = responseButton(GTK_WIDGET(messageDialog),
+                                      adw_alert_dialog_get_response_label(messageDialog, response));
+        require(button && gtk_widget_is_sensitive(button), "Dialog response is unavailable");
+        g_signal_emit_by_name(button, "clicked");
+    }
+
+    bool cancelPrivateChooser() {
+        auto* windows = gtk_window_get_toplevels();
+        for (guint i = 0; i < g_list_model_get_n_items(windows); ++i) {
+            auto* candidate = GTK_WINDOW(g_list_model_get_item(windows, i));
+            const bool chooser = candidate != GTK_WINDOW(window) &&
+                                 gtk_window_get_transient_for(candidate) == GTK_WINDOW(window) &&
+                                 gtk_window_get_modal(candidate);
+            if (chooser) {
+                gtk_window_close(candidate);
+            }
+            g_object_unref(candidate);
+            if (chooser) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    gboolean smokeDocuments() {
+        const auto first = (std::filesystem::path(options.smokeDirectory) / "saved-copy.xopp").string();
+        const auto second = (std::filesystem::path(options.smokeDirectory) / "saved-again.xopp").string();
+        switch (documentSmokeStep++) {
+            case 0:
+                require(modified() && nativeSession, "Native document or dirty state missing");
+                capture("document-dirty");
+                saveCopyTo(first);
+                require(busy && !gtk_widget_is_sensitive(canvas), "Saving did not block concurrent editing");
+                gtk_window_close(GTK_WINDOW(window));
+                require(!closed, "Window closed during an active save");
+                break;
+            case 1:
+                require(!modified() && std::filesystem::is_regular_file(first), "Save did not commit clean state");
+                require(state.ink.size() == 3 && state.canUndo(), "Saving discarded editable ink or undo history");
+                capture("document-saved");
+                state.undo();
+                require(modified(), "Undo away from saved state must be dirty");
+                protectDocument([this] { smokeContinued = true; });
+                require(messageDialog, "Unsaved changes did not require a response");
+                break;
+            case 2:
+                capture("unsaved");
+                answerDialog("cancel");
+                require(!smokeContinued && !messageDialog && state.ink.size() == 2,
+                        "Cancel discarded changes or continued the action");
+                openDocument(first + ".missing");
+                break;
+            case 3:
+                require(ioErrors == 1 && messageDialog && state.ink.size() == 2 && modified(),
+                        "Failed open lost the current document or changes");
+                capture("open-error");
+                answerDialog("close");
+                saveCopyTo(first, [this] { smokeContinued = true; });
+                break;
+            case 4:
+                require(ioErrors == 2 && messageDialog && modified() && !smokeContinued,
+                        "Failed save cleared changes or ran its continuation");
+                answerDialog("close");
+                state.redo();
+                require(!modified(), "Redo back to saved revision must be clean");
+                openDocument(first);
+                break;
+            case 5: {
+                require(nativeSession && sourcePath == first && state.ink.empty() && !modified() && pageCount == 2,
+                        "Reopen did not replace the native document and reset its session history");
+                capture("reopened");
+                const auto x = state.offsetX + 60 * state.zoom;
+                const auto y = state.offsetY + 60 * state.zoom;
+                input.begin(Device::Stylus, {x, y, 0.25});
+                input.motion(Device::Stylus, {x + 40 * state.zoom, y + 20 * state.zoom, 0.75});
+                input.finish(Device::Stylus);
+                protectDocument([this] { smokeContinued = true; });
+                require(messageDialog && state.ink[0].pressureSensitive, "Pressure ink not retained for saving");
+                break;
+            }
+            case 6:
+                capture("save-prompt");
+                smokeSaveChoice = second;
+                answerDialog("save");
+                require(busy && !smokeContinued, "Save continuation ran before completion");
+                break;
+            case 7:
+                require(smokeContinued && !modified() && std::filesystem::is_regular_file(second),
+                        "Save from the unsaved prompt failed to finish before continuing");
+                capture("saved-again");
+                state.undo();
+                smokeContinued = false;
+                protectDocument([this] { smokeContinued = true; });
+                break;
+            case 8:
+                capture("discard-prompt");
+                answerDialog("discard");
+                require(smokeContinued && !messageDialog, "Discard did not continue the requested action");
+                gtk_window_close(GTK_WINDOW(window));
+                require(messageDialog && !closed, "Close did not protect unsaved changes");
+                answerDialog("cancel");
+                require(!closed && gtk_widget_get_visible(window), "Cancel did not keep the window open");
+                break;
+            case 9:
+                chooseOpen();
+                require(choosingFile, "Open action did not request a native file chooser");
+                break;
+            case 10:
+                if (!cancelPrivateChooser()) {
+                    require(++chooserWaits < 60, "Native Open chooser did not appear");
+                    --documentSmokeStep;
+                }
+                break;
+            case 11:
+                require(!choosingFile && !messageDialog && sourcePath == first && modified(),
+                        "Cancelling Open changed the current document");
+                chooseSave();
+                require(choosingFile, "Save action did not request a native file chooser");
+                break;
+            case 12:
+                if (!cancelPrivateChooser()) {
+                    require(++chooserWaits < 60, "Native Save chooser did not appear");
+                    --documentSmokeStep;
+                }
+                break;
+            case 13:
+                require(!choosingFile && !messageDialog && modified() && !closed,
+                        "Cancelling Save discarded changes or closed the document");
+                break;
+            default:
+                require(busyHeartbeats > 0, "The UI main loop did not run during document I/O");
+                std::cout << "PASS: document actions, async open/save, saved revisions, native reopen, "
+                             "pressure transfer, failed-open/save retention, Save/Discard/Cancel, close protection, "
+                             "native Open/Save chooser cancellation\n"
+                          << "busy_main_loop_ticks=" << busyHeartbeats << '\n';
+                gtk_window_close(GTK_WINDOW(window));
+                require(messageDialog, "Close prompt disappeared");
+                answerDialog("discard");
+                return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     Options options;
-    std::unique_ptr<prototype::bridge::DocumentSession> nativeSession;
+    std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
+    std::string sourcePath;
+    std::string savedCopyPath;
+    std::string busyText;
+    size_t savedRevision = 0;
+    bool busy = false;
+    bool closed = false;
+    bool choosingFile = false;
+    int ioErrors = 0;
+    AdwAlertDialog* messageDialog = nullptr;
+    std::function<void()> afterConfirmation;
+    GtkWidget* heading = nullptr;
+    GtkWidget* openButton = nullptr;
+    GtkWidget* saveButton = nullptr;
+    int documentSmokeStep = -1;
+    int documentWaits = 0;
+    int chooserWaits = 0;
+    guint heartbeatSource = 0;
+    int busyHeartbeats = 0;
+    bool smokeContinued = false;
+    std::string smokeSaveChoice;
     CanvasState state;
     prototype::CanvasInput input{state};
     PopplerDocument* document = nullptr;
@@ -1239,9 +1743,11 @@ int main(int argc, char** argv) {
                                          "[--dark] [--smoke-dir DIRECTORY]");
             }
         }
-        if ((!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) ||
-            (options.nativeDocument.empty() && !options.worker.empty())) {
+        if (!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) {
             throw std::runtime_error("Use --document with --worker, separately from --pdf");
+        }
+        if (!options.worker.empty() && !g_file_test(options.worker.c_str(), G_FILE_TEST_IS_EXECUTABLE)) {
+            throw std::runtime_error("Document worker is missing or not executable");
         }
         Prototype app(std::move(options));
         return app.run();

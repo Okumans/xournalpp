@@ -1,7 +1,7 @@
 #include <chrono>
 #include <iostream>
 
-#include "DocumentTransfer.h"
+#include "DocumentInk.h"
 
 using namespace prototype::bridge;
 
@@ -9,6 +9,16 @@ int main() {
     const auto path = std::filesystem::temp_directory_path() /
                       ("gtk4-ink-transfer-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
+        prototype::Ink mouse{1, {{1, 2, 1}, {3, 4, 1}}, {prototype::Tool::Pen, {1, 0, 0}, 3}};
+        auto stylus = mouse;
+        stylus.pressureSensitive = true;
+        auto highlighter = stylus;
+        highlighter.brush.tool = prototype::Tool::Highlighter;
+        const auto packets = transferInk({mouse, stylus, highlighter});
+        if (packets[0].pressureSensitive || !packets[1].pressureSensitive || !packets[2].highlighter ||
+            packets[1].points[1].x != 3 || packets[0].page != 1) {
+            throw std::runtime_error("Session ink transfer changed tool, pressure mode or page coordinates");
+        }
         const StrokePacket original{2, false, true, 4.25, {0.1, 0.2, 0.9}, {{12.34, 56.78, 0.25}, {80, 90, 0.8}}};
         writeTransfer(path, {original});
         const auto decoded = readTransfer(path);

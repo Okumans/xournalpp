@@ -23,6 +23,7 @@ static void pressureAndRelease() {
     check(state.current && state.current->points.size() == 3, "another device must not steal stylus input");
     check(state.current->points.back().pressure == 0.7, "missing pressure must reuse the previous device value");
     input.finish(Device::Stylus, 0);
+    check(state.ink[0].pressureSensitive, "stylus pressure mode must survive finalization for native saving");
     check(state.ink[0].points.back().x == 60 && state.ink[0].points.back().pressure == 0.7,
           "release must not append a zero-pressure hover tail");
     input.begin(Device::Stylus, {20, 60, 0.1});
@@ -35,6 +36,7 @@ static void pressureAndRelease() {
     input.motion(Device::Stylus, {40, 90, 0.2});
     input.finish(Device::Stylus);
     check(state.ink[2].points.back().pressure == 1, "pressure-less input must keep default constant width");
+    check(!state.ink[2].pressureSensitive, "missing initial pressure must serialize as a constant-width stroke");
     input.begin(Device::Stylus, {20, 120, 0.4});
     input.motion(Device::Stylus, {40, 120, 0.6});
     input.interrupt();

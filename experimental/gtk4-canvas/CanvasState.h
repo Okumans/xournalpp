@@ -28,6 +28,7 @@ struct Ink {
     int page;
     std::vector<Point> points;
     Brush brush;
+    bool pressureSensitive = false;
 };
 
 enum class Device { Mouse, Stylus };
@@ -148,6 +149,7 @@ public:
 
     bool canUndo() const { return !undoStates.empty(); }
     bool canRedo() const { return !redoStates.empty(); }
+    size_t revision() const { return undoStates.empty() ? 0 : undoStates.back().revision; }
 
     void beginErase() {
         if (!eraseEdit) {
@@ -246,10 +248,12 @@ private:
     struct Edit {
         bool insertion;
         std::vector<IndexedInk> strokes;
+        size_t revision = 0;
     };
 
     void record(Edit edit) {
         redoStates.clear();
+        edit.revision = ++nextRevision;
         // Keep stroke deltas, rather than a full document copy for each edit.
         undoStates.push_back(std::move(edit));
     }
@@ -267,6 +271,7 @@ private:
     }
 
     Device owner = Device::Mouse;
+    size_t nextRevision = 0;
     std::vector<Edit> undoStates;
     std::vector<Edit> redoStates;
     std::optional<Edit> eraseEdit;

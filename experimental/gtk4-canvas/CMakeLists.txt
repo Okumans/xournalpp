@@ -3,7 +3,7 @@ project(xournalpp_gtk4_canvas LANGUAGES CXX)
 
 # A separate executable: never link GTK 3 and GTK 4 into the same process.
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(UI REQUIRED IMPORTED_TARGET gtk4>=4.10 libadwaita-1>=1.4 poppler-glib)
+pkg_check_modules(UI REQUIRED IMPORTED_TARGET gtk4>=4.10 libadwaita-1>=1.5 poppler-glib)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 
 add_executable(xournalpp-gtk4-canvas main.cpp)
@@ -34,11 +34,17 @@ target_compile_features(document-transfer-test PRIVATE cxx_std_20)
 target_compile_options(document-transfer-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME document-transfer COMMAND document-transfer-test)
 
+add_executable(document-job-test DocumentJobTest.cpp)
+target_compile_features(document-job-test PRIVATE cxx_std_20)
+target_compile_options(document-job-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(document-job-test PRIVATE PkgConfig::UI)
+add_test(NAME document-job COMMAND document-job-test)
+
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-missing-pdf COMMAND xournalpp-gtk4-canvas --pdf ${CMAKE_CURRENT_BINARY_DIR}/missing.pdf)
 set_tests_properties(reject-unknown-option reject-missing-pdf PROPERTIES WILL_FAIL TRUE)
-add_test(NAME reject-worker-without-document COMMAND xournalpp-gtk4-canvas --worker missing-worker)
+add_test(NAME reject-nonexecutable-worker COMMAND xournalpp-gtk4-canvas --worker missing-worker)
 add_test(NAME reject-document-without-worker COMMAND xournalpp-gtk4-canvas --document missing.xopp)
 add_test(NAME reject-missing-worker COMMAND xournalpp-gtk4-canvas --document missing.xopp --worker missing-worker)
-set_tests_properties(reject-worker-without-document reject-document-without-worker reject-missing-worker
+set_tests_properties(reject-nonexecutable-worker reject-document-without-worker reject-missing-worker
                      PROPERTIES WILL_FAIL TRUE)

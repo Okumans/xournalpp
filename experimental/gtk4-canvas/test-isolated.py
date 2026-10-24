@@ -51,6 +51,11 @@ def inside(args):
         name = 'dark' if dark else 'light'
         output = evidence / name
         screenshots = ("initial", "ink", "tools", "zoom", "narrow", "sidebar")
+        if args.worker:
+            screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
+                            "save-prompt", "saved-again", "discard-prompt")
+            for filename in ("saved-copy.xopp", "saved-again.xopp"):
+                (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
         env = dict(os.environ, G_DEBUG="fatal-criticals")
@@ -66,6 +71,18 @@ def inside(args):
         results[name] = run(command, env=env)
         if "PASS: GTK4" not in results[name]:
             raise RuntimeError("Prototype did not finish its feature checks")
+        if args.worker:
+            if "PASS: document actions" not in results[name]:
+                raise RuntimeError("Document action checks did not finish")
+            first = ET.fromstring(gzip.decompress((output / "saved-copy.xopp").read_bytes()))
+            second = ET.fromstring(gzip.decompress((output / "saved-again.xopp").read_bytes()))
+            if len(first.findall(".//stroke")) != 3 or len(second.findall(".//stroke")) != 4:
+                raise RuntimeError("Saved/reopened copies duplicated or lost session ink")
+            if len(first.findall(".//text")) != len(root.findall(".//text")):
+                raise RuntimeError("Saving session ink lost original text")
+            width = list(map(float, second.findall(".//stroke")[-1].attrib["width"].split()))
+            if len(width) < 2 or abs(width[1] - width[0] * 0.25) > 0.00001:
+                raise RuntimeError("Native save lost stylus pressure mode or width")
         for screenshot in screenshots:
             path = output / f"{screenshot}.png"
             if not path.is_file() or path.stat().st_size < 1000:

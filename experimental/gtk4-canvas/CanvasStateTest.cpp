@@ -64,8 +64,40 @@ static void brushAndHistory() {
     check(bounded.ink.size() == 140 && !bounded.canRedo(), "retained history remains fully redoable");
 }
 
+static void savedHistory() {
+    CanvasState state;
+    check(state.revision() == 0, "new state starts at the clean revision");
+    state.begin(Device::Mouse, 20, 20);
+    state.finish(Device::Mouse);
+    const auto saved = state.revision();
+    state.begin(Device::Mouse, 40, 40);
+    state.finish(Device::Mouse);
+    check(state.revision() != saved, "an additional edit changes the revision");
+    state.undo();
+    check(state.revision() == saved, "undo back to saved state must be clean");
+    state.undo();
+    check(state.revision() == 0, "undo to initial state restores revision zero");
+    state.redo();
+    check(state.revision() == saved, "redo to saved state must be clean");
+    state.undo();
+    state.begin(Device::Mouse, 80, 80);
+    state.finish(Device::Mouse);
+    check(state.revision() != saved && !state.canRedo(), "same-depth replacement is a new revision");
+    const auto current = state.revision();
+    state.beginErase();
+    state.finishErase();
+    check(state.revision() == current, "no-op erase must not dirty a saved state");
+    state.beginErase();
+    state.erase(80, 80);
+    state.finishErase();
+    check(state.revision() != current, "one grouped eraser drag changes the revision");
+    state.undo();
+    check(state.revision() == current, "undo eraser restores the saved revision");
+}
+
 int main() {
     try {
+        savedHistory();
         brushAndHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
