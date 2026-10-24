@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <clocale>
 #include <filesystem>
@@ -7,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <glib.h>
 
@@ -246,6 +248,61 @@ void render(Document& document, const fs::path& output) {
     }
 }
 
+void exportPdfDocument(Document& document, const fs::path& output) {
+    if (g_ascii_strcasecmp(output.extension().string().c_str(), ".pdf") != 0) {
+        throw std::runtime_error("Export target must use the .pdf extension");
+    }
+    const auto beforeStatus = fs::symlink_status(output);
+    const bool replacing = fs::exists(beforeStatus);
+    if (replacing && (fs::is_symlink(beforeStatus) || !fs::is_regular_file(beforeStatus))) {
+        throw std::runtime_error("Refusing to export PDF over a symlink or non-regular file");
+    }
+    fs::create_directories(output.parent_path());
+    prototype::bridge::SaveStaging staging(output.parent_path());
+    const auto staged = staging.path / output.filename();
+    XojCairoPdfExport exporter(&document, nullptr);
+    if (!exporter.createPdf(staged, false)) {
+        throw std::runtime_error(exporter.getLastError());
+    }
+    if (!fs::is_regular_file(staged) || fs::file_size(staged) == 0) {
+        throw std::runtime_error("Exported PDF is missing or empty");
+    }
+    const auto finalStatus = fs::symlink_status(output);
+    if (fs::exists(finalStatus)) {
+        if (fs::is_symlink(finalStatus) || !fs::is_regular_file(finalStatus)) {
+            throw std::runtime_error("Export target became a symlink or non-regular file during export");
+        }
+        fs::permissions(staged, fs::status(output).permissions());
+    }
+    fs::rename(staged, output);
+}
+
+size_t parsePageIndex(std::string_view text, size_t limit, const char* label) {
+    size_t parsed = 0;
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (ec != std::errc{} || end != text.data() + text.size() || parsed >= limit) {
+        throw std::runtime_error(std::string("Invalid ") + label);
+    }
+    return parsed;
+}
+
+void insertPageAfterInDocument(Document& document, size_t afterPage) {
+    const auto source = document.getPage(afterPage);
+    if (!source) {
+        throw std::runtime_error("Reference page is missing");
+    }
+    auto inserted = std::make_shared<XojPage>(source->getWidth(), source->getHeight());
+    const auto bg = source->getBackgroundType();
+    if (!bg.isPdfPage() && !bg.isImagePage()) {
+        inserted->setBackgroundType(bg);
+        inserted->setBackgroundColor(source->getBackgroundColor());
+    } else {
+        inserted->setBackgroundType(PageType(PageTypeFormat::Lined));
+        inserted->setBackgroundColor(Colors::white);
+    }
+    document.insertPage(inserted, afterPage + 1);
+}
+
 void saveDocument(Document& document, const fs::path& output, const std::string& expected, bool copy) {
     if (copy) {
         requireNewTarget(output);
@@ -326,8 +383,10 @@ int main(int argc, char** argv) {
         if (argc < 3) {
             throw std::runtime_error(
                     "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
-                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK] | save-copy INPUT XOPP INK | "
-                    "save INPUT XOPP INK VERSION | autosave INPUT AUTOSAVE_XOPP INK | version PATH");
+                    "export-pdf INPUT PDF INK | open INPUT SNAPSHOT PDF [EXTRACTED_INK] | "
+                    "insert-page INPUT SNAPSHOT PDF AFTER_PAGE | delete-page INPUT SNAPSHOT PDF PAGE_INDEX | "
+                    "save-copy INPUT XOPP INK | save INPUT XOPP INK VERSION | autosave INPUT AUTOSAVE_XOPP INK | "
+                    "version PATH");
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
@@ -341,6 +400,33 @@ int main(int argc, char** argv) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
+        } else if (command == "export-pdf" && argc == 5) {
+            const auto output = fs::absolute(argv[3]);
+            appendInk(*document, prototype::bridge::readTransfer(argv[4]));
+            exportPdfDocument(*document, output);
+        } else if (command == "insert-page" && argc == 6) {
+            const auto afterPage = parsePageIndex(argv[5], document->getPageCount(), "after-page index");
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            insertPageAfterInDocument(*document, afterPage);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            render(*document, pdf);
+        } else if (command == "delete-page" && argc == 6) {
+            if (document->getPageCount() <= 1) {
+                throw std::runtime_error("Cannot delete the only remaining page");
+            }
+            const auto pageIndex = parsePageIndex(argv[5], document->getPageCount(), "delete-page index");
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            document->deletePage(pageIndex);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            render(*document, pdf);
         } else if (command == "open" && (argc == 5 || argc == 6)) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&

@@ -19,6 +19,16 @@ struct Point {
     double pressure = 1;
 };
 
+struct PageSize {
+    double width = 595;
+    double height = 842;
+};
+
+struct PageHit {
+    int page = 0;
+    Point local{};
+};
+
 enum class Tool { Pen, Highlighter, Eraser };
 enum class EraserMode { Standard, Whiteout, DeleteStroke };
 
@@ -57,7 +67,9 @@ public:
     double offsetY = 0;
     double pageWidth = 595;
     double pageHeight = 842;
+    double pageGap = behavior::defaultPageGap;
     int page = 0;
+    std::vector<PageSize> pages;
     Brush brush;
     EraserMode eraserMode = EraserMode::Standard;
     double eraserWidth = behavior::eraserWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
@@ -66,6 +78,77 @@ public:
     bool pinching = false;
     long long scrollBlockedUntil = 0;
 
+    int pageCount() const { return pages.empty() ? 1 : static_cast<int>(pages.size()); }
+
+    PageSize pageSize(int index) const {
+        if (pages.empty() || index < 0 || static_cast<size_t>(index) >= pages.size()) {
+            return {pageWidth, pageHeight};
+        }
+        return pages[static_cast<size_t>(index)];
+    }
+
+    void selectActivePage(int target) {
+        if (!pages.empty()) {
+            page = std::clamp(target, 0, pageCount() - 1);
+            pageWidth = pages[static_cast<size_t>(page)].width;
+            pageHeight = pages[static_cast<size_t>(page)].height;
+        } else if (target >= 0) {
+            page = target;
+        }
+    }
+
+    void setPages(std::vector<PageSize> nextPages) {
+        cancel();
+        pages = std::move(nextPages);
+        if (!pages.empty()) {
+            selectActivePage(std::clamp(page, 0, pageCount() - 1));
+        }
+    }
+
+    double layoutWidth() const {
+        if (pages.empty()) {
+            return pageWidth;
+        }
+        double width = 1.0;
+        for (const auto& entry: pages) {
+            width = std::max(width, entry.width);
+        }
+        return width;
+    }
+
+    double layoutHeight() const {
+        if (pages.empty()) {
+            return pageHeight;
+        }
+        double height = 0.0;
+        for (size_t i = 0; i < pages.size(); ++i) {
+            if (i) {
+                height += pageGap;
+            }
+            height += pages[i].height;
+        }
+        return height;
+    }
+
+    double pageLeft(int index) const {
+        if (pages.empty()) {
+            return 0.0;
+        }
+        return 0.5 * (layoutWidth() - pageSize(index).width);
+    }
+
+    double pageTop(int index) const {
+        if (pages.empty() || index <= 0) {
+            return 0.0;
+        }
+        const size_t limit = std::min(static_cast<size_t>(index), pages.size());
+        double top = 0.0;
+        for (size_t i = 0; i < limit; ++i) {
+            top += pages[i].height + pageGap;
+        }
+        return top;
+    }
+
     double activeEraserWidth() const { return brush.tool == Tool::Eraser ? brush.width : eraserWidth; }
 
     Point documentPoint(double x, double y, double pressure = 1) const {
@@ -73,17 +156,168 @@ public:
                 std::isfinite(pressure) ? std::max(behavior::minimumPressure, pressure) : 1.0};
     }
 
+    Point pageLocalPoint(int pageIndex, double x, double y, double pressure = 1) const {
+        const auto doc = documentPoint(x, y, pressure);
+        return {doc.x - pageLeft(pageIndex), doc.y - pageTop(pageIndex), doc.pressure};
+    }
+
+    Point pageScreenPoint(int pageIndex, double localX, double localY, double pressure = 1) const {
+        return {offsetX + (pageLeft(pageIndex) + localX) * zoom, offsetY + (pageTop(pageIndex) + localY) * zoom,
+                pressure};
+    }
+
     bool contains(const Point& p) const {
         return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= 0 && p.y >= 0 && p.x <= pageWidth &&
                p.y <= pageHeight;
     }
 
+    bool containsOnPage(int pageIndex, const Point& local) const {
+        const auto sz = pageSize(pageIndex);
+        return std::isfinite(local.x) && std::isfinite(local.y) && local.x >= 0 && local.y >= 0 &&
+               local.x <= sz.width && local.y <= sz.height;
+    }
+
+    std::optional<PageHit> hitPage(double x, double y, double pressure = 1) const {
+        if (pages.empty()) {
+            const auto p = documentPoint(x, y, pressure);
+            if (contains(p)) {
+                return PageHit{page, p};
+            }
+            return std::nullopt;
+        }
+        const auto doc = documentPoint(x, y, pressure);
+        if (!std::isfinite(doc.x) || !std::isfinite(doc.y) || doc.y < 0) {
+            return std::nullopt;
+        }
+        double top = 0.0;
+        for (int i = 0; i < static_cast<int>(pages.size()); ++i) {
+            const auto& sz = pages[static_cast<size_t>(i)];
+            if (doc.y <= top + sz.height) {
+                const Point local{doc.x - pageLeft(i), doc.y - top, doc.pressure};
+                if (local.x >= 0 && local.x <= sz.width && local.y >= 0) {
+                    return PageHit{i, local};
+                }
+                return std::nullopt;
+            }
+            top += sz.height + pageGap;
+        }
+        return std::nullopt;
+    }
+
     void fit(double width, double height) {
         cancel();
-        zoom = std::clamp(std::min(std::max(1.0, width - 64) / pageWidth, std::max(1.0, height - 48) / pageHeight), 0.1,
+        if (!pages.empty()) {
+            selectActivePage(std::clamp(page, 0, pageCount() - 1));
+        }
+        const auto sz = pageSize(page);
+        zoom = std::clamp(std::min(std::max(1.0, width - 64) / sz.width, std::max(1.0, height - 48) / sz.height), 0.1,
                           8.0);
-        offsetX = (width - pageWidth * zoom) / 2;
-        offsetY = (height - pageHeight * zoom) / 2;
+        if (pages.empty()) {
+            offsetX = (width - pageWidth * zoom) / 2;
+            offsetY = (height - pageHeight * zoom) / 2;
+        } else {
+            offsetX = (width - layoutWidth() * zoom) / 2;
+            offsetY = (height - sz.height * zoom) / 2 - pageTop(page) * zoom;
+        }
+    }
+
+    void scrollToPage(int targetPage, double viewportWidth, double viewportHeight) {
+        if (targetPage < 0 || (!pages.empty() && targetPage >= pageCount())) {
+            return;
+        }
+        cancel();
+        selectActivePage(targetPage);
+        const auto sz = pageSize(page);
+        if (pages.empty()) {
+            offsetX = (viewportWidth - pageWidth * zoom) / 2;
+            offsetY = (viewportHeight - pageHeight * zoom) / 2;
+            return;
+        }
+        if (sz.width * zoom + 64 <= viewportWidth) {
+            offsetX = (viewportWidth - layoutWidth() * zoom) / 2;
+        }
+        if (sz.height * zoom + 48 <= viewportHeight) {
+            offsetY = (viewportHeight - sz.height * zoom) / 2 - pageTop(page) * zoom;
+        } else {
+            offsetY = 24.0 - pageTop(page) * zoom;
+        }
+    }
+
+    // Mirrors Layout::updateVisibility in src/core/gui/Layout.cpp: select the page with the
+    // largest visible viewport intersection area while keeping the current page if none intersect.
+    void syncActivePage(double viewportWidth, double viewportHeight) {
+        if (pages.empty() || viewportWidth <= 0 || viewportHeight <= 0) {
+            return;
+        }
+        int bestPage = -1;
+        double bestArea = 0.0;
+        for (int i = 0; i < static_cast<int>(pages.size()); ++i) {
+            const auto& sz = pages[static_cast<size_t>(i)];
+            const double x0 = std::max(0.0, offsetX + pageLeft(i) * zoom);
+            const double y0 = std::max(0.0, offsetY + pageTop(i) * zoom);
+            const double x1 = std::min(viewportWidth, offsetX + (pageLeft(i) + sz.width) * zoom);
+            const double y1 = std::min(viewportHeight, offsetY + (pageTop(i) + sz.height) * zoom);
+            if (x1 > x0 && y1 > y0) {
+                const double area = (x1 - x0) * (y1 - y0);
+                if (area > bestArea) {
+                    bestArea = area;
+                    bestPage = i;
+                }
+            }
+        }
+        if (bestPage >= 0) {
+            selectActivePage(bestPage);
+        }
+    }
+
+    void insertPageAfter(int afterIndex, PageSize size) {
+        if (pages.empty()) {
+            pages.push_back({pageWidth, pageHeight});
+        }
+        const int clamped = std::clamp(afterIndex, 0, pageCount() - 1);
+        const int insertedIndex = clamped + 1;
+        cancel();
+        pages.insert(pages.begin() + insertedIndex, size);
+        auto shiftStrokes = [&](std::vector<Ink>& strokes) {
+            for (auto& stroke: strokes) {
+                if (stroke.page >= insertedIndex) {
+                    ++stroke.page;
+                }
+            }
+        };
+        shiftStrokes(ink);
+        for (auto& edit: undoStates) {
+            for (auto& change: edit.changes) {
+                shiftStrokes(change.before);
+                shiftStrokes(change.after);
+            }
+        }
+        for (auto& edit: redoStates) {
+            for (auto& change: edit.changes) {
+                shiftStrokes(change.before);
+                shiftStrokes(change.after);
+            }
+        }
+        selectActivePage(insertedIndex);
+    }
+
+    bool deletePageAt(int removeIndex) {
+        if (pageCount() <= 1 || removeIndex < 0 || removeIndex >= pageCount()) {
+            return false;
+        }
+        cancel();
+        pages.erase(pages.begin() + removeIndex);
+        std::erase_if(ink, [&](const Ink& stroke) { return stroke.page == removeIndex; });
+        for (auto& stroke: ink) {
+            if (stroke.page > removeIndex) {
+                --stroke.page;
+            }
+        }
+        undoStates.clear();
+        redoStates.clear();
+        ++nextRevision;
+        selectActivePage(std::min(removeIndex, pageCount() - 1));
+        return true;
     }
 
     void zoomAt(double value, double x, double y) {
@@ -98,18 +332,19 @@ public:
 
     bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false) {
         const bool useEraser = eraserEnd || brush.tool == Tool::Eraser;
-        if ((useEraser && eraserMode != EraserMode::Whiteout) || pinching || current || eraseGesture ||
-            !contains(documentPoint(x, y, pressure))) {
+        const auto hit = hitPage(x, y, useEraser ? 1 : pressure);
+        if ((useEraser && eraserMode != EraserMode::Whiteout) || pinching || current || eraseGesture || !hit) {
             return false;
         }
+        selectActivePage(hit->page);
         owner = source;
         if (useEraser) {
-            current = Ink{page,
-                          {documentPoint(x, y, 1)},
+            current = Ink{hit->page,
+                          {hit->local},
                           Brush{Tool::Eraser, behavior::whiteoutColor, activeEraserWidth()},
                           false};
         } else {
-            current = Ink{page, {documentPoint(x, y, pressure)}, brush, false};
+            current = Ink{hit->page, {hit->local}, brush, false};
         }
         return true;
     }
@@ -118,8 +353,8 @@ public:
         if (!current || source != owner) {
             return;
         }
-        const auto p = documentPoint(x, y, current->brush.tool == Tool::Eraser ? 1 : pressure);
-        if (contains(p)) {
+        const auto p = pageLocalPoint(current->page, x, y, current->brush.tool == Tool::Eraser ? 1 : pressure);
+        if (containsOnPage(current->page, p)) {
             auto& last = current->points.back();
             if (std::hypot(p.x - last.x, p.y - last.y) < behavior::motionThreshold) {
                 if (current->points.size() == 1 && current->brush.tool == Tool::Pen) {
@@ -220,7 +455,10 @@ public:
         if (!grouped) {
             beginErase();
         }
-        eraseStep(documentPoint(x, y));
+        if (const auto hit = hitPage(x, y)) {
+            selectActivePage(hit->page);
+            eraseStep(hit->page, hit->local);
+        }
         if (!grouped) {
             finishErase();
         }
@@ -579,7 +817,7 @@ private:
         return out;
     }
 
-    void eraseStep(const Point& p) {
+    void eraseStep(int targetPage, const Point& p) {
         if (!eraseGesture) {
             return;
         }
@@ -600,7 +838,7 @@ private:
         };
         for (size_t i = 0; i < ink.size(); ++i) {
             const size_t origin = eraseGesture->slotOrigin[i];
-            if (ink[i].page != page) {
+            if (ink[i].page != targetPage) {
                 if (anyChanged) {
                     nextInk.push_back(std::move(ink[i]));
                     nextOrigins.push_back(origin);

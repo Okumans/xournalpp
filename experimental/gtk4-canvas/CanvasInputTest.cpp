@@ -140,12 +140,56 @@ static void whiteoutAndPartialInput() {
           "stylus eraser end in whiteout mode must commit constant-width whiteout ink");
 }
 
+static void interPageGapPanAndCrossPageInput() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}});
+    CanvasInput input(state);
+
+    // Dragging inside the 15pt vertical gap between Page 1 and Page 2 must temporarily pan.
+    const double gapY = 842.0 + 7.5;
+    check(input.begin(Device::Mouse, {120, gapY, std::nullopt}) && input.panning(),
+          "starting a drag inside the inter-page gap must enter temporary hand-pan mode");
+    input.motion(Device::Mouse, {120, gapY - 40.0, std::nullopt});
+    input.finish(Device::Mouse);
+    check(state.ink.empty() && std::abs(state.offsetY + 40.0) < 1e-9,
+          "inter-page gap pan must move offsetY without committing ink");
+
+    // Drawing directly on Page 2 records Page 2 local coordinates.
+    const auto p1a = state.pageScreenPoint(0, 40, 810);
+    const auto p1b = state.pageScreenPoint(0, 180, 810);
+    input.begin(Device::Mouse, {p1a.x, p1a.y, std::nullopt});
+    input.motion(Device::Mouse, {p1b.x, p1b.y, std::nullopt});
+    input.finish(Device::Mouse);
+
+    const auto p2a = state.pageScreenPoint(1, 40, 50);
+    const auto p2b = state.pageScreenPoint(1, 180, 50);
+    input.begin(Device::Stylus, {p2a.x, p2a.y, 0.4});
+    input.motion(Device::Stylus, {p2b.x, p2b.y, 0.8});
+    input.finish(Device::Stylus, 0.8);
+    check(state.ink.size() == 2 && state.ink[0].page == 0 && state.ink[1].page == 1 &&
+                  std::abs(state.ink[1].points.front().y - 50.0) < 1e-9,
+          "CanvasInput must route multi-page strokes to their hit page in local coordinates");
+
+    // Continuous stylus eraser drag across Page 1 -> gap -> Page 2 splits both in a single undo step.
+    const auto e1 = state.pageScreenPoint(0, 110, 810);
+    const auto gapMid = state.pageScreenPoint(0, 110, 849.5);
+    const auto e2 = state.pageScreenPoint(1, 110, 50);
+    input.begin(Device::Stylus, {e1.x, e1.y, 0.5}, true);
+    input.motion(Device::Stylus, {gapMid.x, gapMid.y, 0.5});
+    input.motion(Device::Stylus, {e2.x, e2.y, 0.5});
+    input.finish(Device::Stylus);
+    check(state.ink.size() == 4, "cross-page stylus eraser drag must split strokes on both pages");
+    state.undo();
+    check(state.ink.size() == 2, "one undo must restore cross-page stylus eraser drag");
+}
+
 int main() {
     try {
         pressureAndRelease();
         eraserAndPan();
         backlog();
         whiteoutAndPartialInput();
+        interPageGapPanAndCrossPageInput();
         std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary pan, backlog flags/order\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

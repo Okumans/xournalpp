@@ -18,6 +18,12 @@ namespace prototype::bridge {
 // External linked assets still refer to their original locations.
 class DocumentSession {
 public:
+    struct StagedRevision {
+        std::filesystem::path directory;
+        std::filesystem::path snapshotPath() const { return directory / "snapshot.xopp"; }
+        std::filesystem::path previewPath() const { return directory / "preview.pdf"; }
+    };
+
     DocumentSession(const std::string& worker, const std::string& input) {
         GError* error = nullptr;
         auto* directory = g_dir_make_tmp("xournalpp-gtk4-document-XXXXXX", &error);
@@ -26,7 +32,9 @@ public:
         }
         path = directory;
         g_free(directory);
+        activeDir = path / "rev-0";
         try {
+            std::filesystem::create_directories(activeDir);
             const bool nativeFile = g_ascii_strcasecmp(fs::path(input).extension().string().c_str(), ".xopp") == 0 &&
                                     fs::is_regular_file(fs::symlink_status(input));
             const auto before = nativeFile ? documentVersion(input).token : std::string{};
@@ -77,14 +85,57 @@ public:
         runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string()});
     }
 
+    void exportPdf(const std::string& worker, const std::string& output,
+                   const std::vector<StrokePacket>& packets) const {
+        const auto transfer = path / "export.ink";
+        writeTransfer(transfer, packets);
+        runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string()});
+    }
+
+    StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
+        return stagePageMutation(worker, "insert-page", afterPage);
+    }
+
+    StagedRevision stageDeletePageAt(const std::string& worker, int pageIndex) {
+        return stagePageMutation(worker, "delete-page", pageIndex);
+    }
+
+    void commitRevision(const StagedRevision& staged) {
+        const auto previous = activeDir;
+        activeDir = staged.directory;
+        if (!previous.empty() && previous != activeDir) {
+            std::error_code ec;
+            std::filesystem::remove_all(previous, ec);
+        }
+    }
+
+    static void discardRevision(const StagedRevision& staged) {
+        if (!staged.directory.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(staged.directory, ec);
+        }
+    }
+
     std::string originalSavePath;
     std::string originalVersion;
     std::vector<StrokePacket> initialInk;
 
-    std::filesystem::path snapshotPath() const { return path / "snapshot.xopp"; }
-    std::filesystem::path previewPath() const { return path / "preview.pdf"; }
+    std::filesystem::path snapshotPath() const { return activeDir / "snapshot.xopp"; }
+    std::filesystem::path previewPath() const { return activeDir / "preview.pdf"; }
 
 private:
+    StagedRevision stagePageMutation(const std::string& worker, const char* command, int index) {
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            runWorker(worker, {command, snapshotPath().string(), staged.snapshotPath().string(),
+                               staged.previewPath().string(), std::to_string(index)});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
     static void requireUnchangedInput(const std::string& input, const std::string& before) {
         if (documentVersion(input).token != before) {
             throw std::runtime_error("The document changed while opening. Open it again to load the current file.");
@@ -139,6 +190,8 @@ private:
     }
 
     std::filesystem::path path;
+    std::filesystem::path activeDir;
+    size_t nextRevisionId = 1;
 };
 
 }  // namespace prototype::bridge

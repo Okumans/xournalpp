@@ -23,6 +23,7 @@ inline constexpr double scrollZoomStep = 0.02;
 inline constexpr double highlightOpacity = 0.47;
 inline constexpr double motionThreshold = 0.3;              // InputHandler::PIXEL_MOTION_THRESHOLD
 inline constexpr double eraserPaddingCapRound = 0.4;        // EraseHandler::PADDING_COEFFICIENT_CAP[ROUND]
+inline constexpr double defaultPageGap = 15.0;              // Layout.cpp: XOURNAL_PADDING_BETWEEN = 15
 inline constexpr unsigned int autosaveTimeoutSeconds = 180;  // Settings::loadDefault: 3 minutes
 
 inline constexpr std::array<double, 5> penWidths = {0.42, 0.85, 1.41, 2.26, 5.67};

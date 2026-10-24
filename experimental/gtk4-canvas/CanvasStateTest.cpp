@@ -201,11 +201,95 @@ static void partialAndWhiteoutEraser() {
           "delete-stroke eraser must hit visible painted thickness of wide strokes");
 }
 
+static void continuousMultiPageLayout() {
+    CanvasState state;
+    state.setPages({{595, 842}, {792, 612}});  // Portrait A4 followed by Landscape Letter.
+    check(state.pageCount() == 2 && std::abs(state.pageGap - 15.0) < 1e-9,
+          "multi-page layout must expose page count and 15pt Layout.cpp inter-page gap");
+    check(std::abs(state.layoutWidth() - 792.0) < 1e-9 && std::abs(state.layoutHeight() - (842.0 + 15.0 + 612.0)) < 1e-9,
+          "layout dimensions must encompass widest page and vertical page gaps");
+    check(std::abs(state.pageLeft(0) - 0.5 * (792.0 - 595.0)) < 1e-9 && std::abs(state.pageLeft(1)) < 1e-9,
+          "narrower pages must center horizontally within mixed-width layouts");
+    check(std::abs(state.pageTop(0)) < 1e-9 && std::abs(state.pageTop(1) - 857.0) < 1e-9,
+          "page tops must stack vertically by page height plus pageGap");
+
+    state.fit(1200, 900);
+    // Pointer-centered zoom anchored on Page 2 must have zero drift (fixing legacy PixelCounter mixed-unit drift).
+    const auto p2Screen = state.pageScreenPoint(1, 220, 180);
+    const auto beforeLocal = state.pageLocalPoint(1, p2Screen.x, p2Screen.y);
+    state.zoomAt(2.2, p2Screen.x, p2Screen.y);
+    const auto afterLocal = state.pageLocalPoint(1, p2Screen.x, p2Screen.y);
+    check(std::hypot(beforeLocal.x - afterLocal.x, beforeLocal.y - afterLocal.y) < 1e-9,
+          "pointer-centered zoom must preserve exact anchor coordinates on subsequent pages");
+
+    // Inter-page gap and horizontal margins must reject direct ink begins.
+    const auto gapScreen = state.pageScreenPoint(0, 100, 842.0 + 7.5);
+    check(!state.hitPage(gapScreen.x, gapScreen.y).has_value() && !state.begin(Device::Mouse, gapScreen.x, gapScreen.y),
+          "the 15pt vertical inter-page gap must not accept ink");
+    const auto narrowMarginScreen = state.pageScreenPoint(0, -10.0, 100.0);
+    check(!state.hitPage(narrowMarginScreen.x, narrowMarginScreen.y).has_value(),
+          "horizontal margin beside a narrower page must not hit the page");
+
+    // Drawing directly on Page 1 and Page 2 stores local coordinates and promotes active page.
+    const auto s0a = state.pageScreenPoint(0, 40, 800);
+    const auto s0b = state.pageScreenPoint(0, 200, 800);
+    check(state.begin(Device::Mouse, s0a.x, s0a.y), "must begin on Page 1");
+    state.append(Device::Mouse, s0b.x, s0b.y);
+    state.finish(Device::Mouse);
+    check(state.page == 0 && state.ink.back().page == 0 && std::abs(state.ink.back().points.front().x - 40.0) < 1e-9,
+          "Page 1 stroke must store Page 1 local coordinates");
+
+    const auto s1a = state.pageScreenPoint(1, 40, 60);
+    const auto s1b = state.pageScreenPoint(1, 200, 60);
+    check(state.begin(Device::Mouse, s1a.x, s1a.y), "must begin directly on Page 2 without prior page switch");
+    state.append(Device::Mouse, s1b.x, s1b.y);
+    state.finish(Device::Mouse);
+    check(state.page == 1 && state.ink.back().page == 1 && std::abs(state.ink.back().points.front().y - 60.0) < 1e-9,
+          "Page 2 stroke must promote Page 2 and store Page 2 local coordinates");
+
+    // Single eraser drag crossing from Page 1 across the 15pt gap onto Page 2 splits both and undoes in one step.
+    const auto e0 = state.pageScreenPoint(0, 120, 800);
+    const auto e1 = state.pageScreenPoint(1, 120, 60);
+    state.beginErase();
+    state.erase(e0.x, e0.y);
+    state.erase(gapScreen.x, gapScreen.y);
+    state.erase(e1.x, e1.y);
+    state.finishErase();
+    check(state.ink.size() == 4 && state.ink[0].page == 0 && state.ink[1].page == 0 && state.ink[2].page == 1 &&
+                  state.ink[3].page == 1,
+          "cross-page eraser gesture must split strokes on both pages");
+    state.undo();
+    check(state.ink.size() == 2 && state.ink[0].page == 0 && state.ink[1].page == 1,
+          "one undo must restore strokes across both pages");
+
+    // scrollToPage preserves zoom; syncActivePage tracks largest visible intersection area.
+    const double keptZoom = state.zoom;
+    state.scrollToPage(1, 1200, 900);
+    check(state.page == 1 && std::abs(state.zoom - keptZoom) < 1e-9, "scrollToPage must preserve zoom");
+    state.offsetY = 0.0;
+    state.syncActivePage(1200, 900);
+    check(state.page == 0, "syncActivePage must select Page 1 when Page 1 dominates viewport");
+    state.offsetY = -state.pageTop(1) * state.zoom;
+    state.syncActivePage(1200, 900);
+    check(state.page == 1, "syncActivePage must select Page 2 when scrolled to Page 2");
+
+    // insertPageAfter shifts later strokes + undo history; deletePageAt removes target strokes and shifts later pages.
+    state.insertPageAfter(0, {595, 842});
+    check(state.pageCount() == 3 && state.page == 1 && state.ink[0].page == 0 && state.ink[1].page == 2,
+          "insertPageAfter must insert page and shift subsequent stroke page indices");
+    check(state.deletePageAt(0) && state.pageCount() == 2 && state.ink.size() == 1 && state.ink[0].page == 1 &&
+                  !state.canUndo(),
+          "deletePageAt must drop deleted-page strokes, shift remaining page indices, and clear stale undo indices");
+    check(state.deletePageAt(0) && state.pageCount() == 1 && !state.deletePageAt(0),
+          "deletePageAt must refuse deleting the last remaining page");
+}
+
 int main() {
     try {
         savedHistory();
         brushAndHistory();
         partialAndWhiteoutEraser();
+        continuousMultiPageLayout();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
         check(std::abs(behavior::steppedZoom(1, true, false) - 1.1) < 1e-12,

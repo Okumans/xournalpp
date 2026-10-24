@@ -4,15 +4,20 @@ This migration experiment is built as a separate executable with GTK 4,
 libadwaita, and Poppler. The normal Xournal++ build, executable, settings, and
 document format are unchanged. There is no installation target.
 
-The prototype opens a PDF or native `.xopp` document and adds pressure-aware pen
-strokes, translucent highlights, and whiteout ink. It supports custom colors, quick color
+The prototype opens a PDF or native `.xopp` document in a continuous vertical
+multi-page viewport (`15 pt` inter-page gap, horizontal centering of narrower
+pages, and automatic active-page tracking as you scroll) and adds pressure-aware pen
+strokes, translucent highlights, and whiteout ink on any visible page. It supports custom colors, quick color
 presets, Xournal++ discrete tool size presets (`Very Fine`..`Very Thick`) synced with
 custom widths, three eraser modes (`Standard` partial `PaddedBox` splitting, `Whiteout`,
-and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages and becomes an overlay in
-narrower windows. With a document worker, Open, Save and Save As run in the
+and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages without resetting zoom and becomes an overlay in
+narrower windows. With a document worker, Open, Save, Save As, Export as PDF,
+Insert Page After, and Delete Current Page run in the
 background. New ink is saved as native objects alongside the original content. Open and Close protect
 unsaved changes with Save, Discard and Cancel. Save updates the associated
-`.xopp` file; Save As changes its filename after a successful save. Imported PDFs,
+`.xopp` file; Save As changes its filename after a successful save; Export as PDF
+writes a flattened PDF including live session ink without clearing `.xopp` dirty
+state. Imported PDFs,
 legacy files requiring conversion, symlink inputs and blank notebooks use Save As
 for their first save. Without a worker, ink remains temporary.
 
@@ -27,10 +32,14 @@ deletions, and multi-sample partial splits while retaining session history. Thum
 include session ink, with up to 16 small PDF backgrounds cached at a time.
 
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
-`Ctrl+Y` redo, `Page Up`/`Page Down` navigation, and `Ctrl+0` fit. Tool shortcuts
+`Ctrl+Y` redo, `Page Up`/`Page Down` or `Shift+K`/`Shift+J` previous/next page,
+`Ctrl+Home`/`Ctrl+End` first/last page, `Ctrl+G` or `:` (or clicking `1 / N`) Go
+to Page, and `Ctrl+0` fit. Tool and navigation shortcuts
 leave editable controls alone. Use the header's Pages button to show/hide the
-sidebar. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves, and
-`Ctrl+Shift+S` opens Save As.
+sidebar. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves,
+`Ctrl+Shift+S` opens Save As, `Ctrl+E` exports a PDF, `Ctrl+D` inserts a page
+after the active page, and `Ctrl+Shift+Delete` deletes the current page when at
+least two pages exist.
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
@@ -50,9 +59,11 @@ end temporarily erases session strokes; an entire eraser drag is one undo step.
 
 - A real Xournal++ document can be exported by the existing renderer in its own
   process, then displayed in a GTK 4 Cairo drawing area through Poppler.
-- A bounded raster cache can separate PDF rasterization from interactive ink.
-  The cache has at most 4096 pixels on each side (64 MiB maximum); one page is
-  cached at a time. Pan and ink reuse that cache. Zoom and page changes refresh it.
+- A bounded 4-page LRU raster cache can separate PDF rasterization from
+  interactive ink and continuous multi-page scrolling. Each cached page surface
+  has at most 4096 pixels on each side (64 MiB maximum per surface, up to four
+  recently visible pages retained). Pan, cross-page scrolling, page navigation,
+  and ink reuse cached page rasters; zoom changes refresh visible pages.
 - Mouse, stylus, scroll, key, drag, and pinch controllers can be wired to a
   document-coordinate input state, with cancellation and smooth-scroll cooldown.
 - The experiment can be rendered and tested without connecting to the user's
@@ -111,7 +122,10 @@ current session ink back onto the stripped snapshot, so repeated saves and
 reopens neither duplicate ink nor lose pressure widths.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
-`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK]`, `version PATH`,
+`export-pdf INPUT OUT.pdf INK_TRANSFER`,
+`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK]`,
+`insert-page INPUT SNAPSHOT.xopp NEW.pdf AFTER_PAGE`,
+`delete-page INPUT SNAPSHOT.xopp NEW.pdf PAGE_INDEX`, `version PATH`,
 `save INPUT TARGET.xopp INK_TRANSFER VERSION`,
 `autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER`, and
 `save-copy INPUT NEW.xopp INK_TRANSFER`.
@@ -255,7 +269,8 @@ or toolbar configuration features.
 ## Remaining migration work
 
 The experiment still needs object selection and editing of lower-layer or
-non-stroke objects, continuous-page layout, signal-crash emergency handling,
-clipboard, dialogs, IME, settings/palette import, plugins and configurable
-toolbars. Platform packaging, accessibility, hardware input and GPU validation
-remain required before replacing the existing application.
+non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo,
+signal-crash emergency handling, clipboard, dialogs, IME, settings/palette
+import, plugins and configurable toolbars. Platform packaging, accessibility,
+hardware input and GPU validation remain required before replacing the existing
+application.

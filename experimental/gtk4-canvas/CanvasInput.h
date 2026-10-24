@@ -25,7 +25,7 @@ public:
         }
         pressureMode = validPressure(sample.pressure);
         lastPressure = pressureMode ? *sample.pressure : 1;
-        if (spaceHeld || !state.contains(state.documentPoint(sample.x, sample.y))) {
+        if (spaceHeld || !state.hitPage(sample.x, sample.y)) {
             mode = Mode::Pan;
         } else if ((eraserEnd || state.brush.tool == Tool::Eraser) && state.eraserMode != EraserMode::Whiteout) {
             mode = Mode::Erase;

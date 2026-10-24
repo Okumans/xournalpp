@@ -285,6 +285,58 @@ def main():
         run("save-copy", hw_snap, hw_roundtrip, hw_ink)
         assert json.loads(run("inspect", hw_roundtrip))["pages"][0]["strokes"] == 13064
 
+        # Page mutations (insert-page / delete-page) and atomic export-pdf with live ink.
+        page_ops_ink = temporary / "page-ops.ink"
+        page_ops_ink.write_text("XOURNALPP_GTK4_INK_V1 3\n"
+                                "0 0 1 3.5 0.1 0.2 0.8 2\n30 40 0.3\n120 40 0.9\n"
+                                "1 1 0 8.5 1 1 0 2\n40 80 1\n180 80 1\n"
+                                "2 2 1 12 0 0 0 2\n50 110 1\n140 110 1\n")
+        ins_dir = temporary / "inserted-rev"
+        ins_dir.mkdir()
+        ins_snap = ins_dir / "snapshot.xopp"
+        ins_pdf = ins_dir / "preview.pdf"
+        run("insert-page", snapshot, ins_snap, ins_pdf, "99", succeeds=False)
+        assert not ins_snap.exists()
+        run("insert-page", snapshot, ins_snap, ins_pdf, "1")
+        ins_pages = json.loads(run("inspect", ins_snap))["pages"]
+        assert len(ins_pages) == 3 and ins_pages[2]["layers"] == 1 and ins_pages[2]["strokes"] == 0
+        assert ins_pages[2]["width"] == ins_pages[1]["width"] and ins_pages[2]["height"] == ins_pages[1]["height"]
+
+        exported_pdf = temporary / "exported.pdf"
+        run("export-pdf", ins_snap, temporary / "not-a-pdf.xopp", page_ops_ink, succeeds=False)
+        run("export-pdf", ins_snap, exported_pdf, page_ops_ink)
+        assert exported_pdf.read_bytes().startswith(b"%PDF-") and exported_pdf.stat().st_size > 1000
+        exported_pdf.chmod(0o600)
+        run("export-pdf", ins_snap, exported_pdf, page_ops_ink)
+        assert exported_pdf.stat().st_mode & 0o777 == 0o600
+        pdf_link = temporary / "exported-link.pdf"
+        pdf_link.symlink_to(exported_pdf)
+        exported_before = digest(exported_pdf)
+        run("export-pdf", ins_snap, pdf_link, empty, succeeds=False)
+        assert pdf_link.is_symlink() and digest(exported_pdf) == exported_before
+
+        del_dir = temporary / "deleted-rev"
+        del_dir.mkdir()
+        run("delete-page", ins_snap, del_dir / "snapshot.xopp", del_dir / "preview.pdf", "1")
+        assert len(json.loads(run("inspect", del_dir / "snapshot.xopp"))["pages"]) == 2
+        single_del = temporary / "single-del"
+        single_del.mkdir()
+        run("delete-page", blank, single_del / "snapshot.xopp", single_del / "preview.pdf", "0", succeeds=False)
+        assert not (single_del / "snapshot.xopp").exists()
+
+        # Inserting a note page into an attached-PDF document must insert a Lined paper page and keep bg.pdf intact.
+        pdf_bg_open = temporary / "pdf-bg-open"
+        pdf_bg_open.mkdir()
+        run("open", fixtures / "packaged_xopp/pdfBackground/new.xopp",
+            pdf_bg_open / "snapshot.xopp", pdf_bg_open / "preview.pdf")
+        pdf_bg_ins = temporary / "pdf-bg-ins"
+        pdf_bg_ins.mkdir()
+        run("insert-page", pdf_bg_open / "snapshot.xopp", pdf_bg_ins / "snapshot.xopp",
+            pdf_bg_ins / "preview.pdf", "0")
+        assert (pdf_bg_ins / "snapshot.xopp.bg.pdf").is_file()
+        bg_nodes = [p.find("background").attrib for p in xml(pdf_bg_ins / "snapshot.xopp").findall("page")]
+        assert bg_nodes[0]["type"] == "pdf" and bg_nodes[1]["type"] == "solid" and bg_nodes[1]["style"] == "lined"
+
         # Exercise both legacy sidecars and packaged attachments across directories.
         for index, name in enumerate(("pdfBackground/old.xopp", "pdfBackground/new.xopp",
                                       "imgBackground/old.xopp", "imgBackground/new.xopp",
