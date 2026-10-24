@@ -332,6 +332,14 @@ private:
             g_object_unref(candidate);
             throw std::runtime_error("Document has no pages");
         }
+        auto hydratedInk = [&] {
+            try {
+                return prototype::bridge::sessionInk(session->initialInk);
+            } catch (...) {
+                g_object_unref(candidate);
+                throw;
+            }
+        }();
         // Commit the replacement only after the new native snapshot and preview
         // are valid. Failed opens leave the old document and undo history intact.
         if (!recovery || recovery->autosavePath != activeAutosavePath) {
@@ -342,6 +350,7 @@ private:
         const auto eraserMode = state.eraserMode;
         const auto eraserWidth = state.eraserWidth;
         state = CanvasState{};
+        state.ink = std::move(hydratedInk);
         state.brush = brush;
         state.eraserMode = eraserMode;
         state.eraserWidth = eraserWidth;
@@ -460,7 +469,7 @@ private:
                 "Restoring recovery file…",
                 [loaded, worker, recoveryPath, adopted] {
                     *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath);
-                    (*loaded)->autosave(worker, adopted, {});
+                    (*loaded)->autosave(worker, adopted, (*loaded)->initialInk);
                     if (adopted != recoveryPath) {
                         prototype::bridge::removeAutosaveFiles(recoveryPath);
                     }
@@ -2221,8 +2230,15 @@ private:
                 openDocument(first);
                 break;
             case 5: {
-                require(nativeSession && sourcePath == first && state.ink.empty() && !modified() && pageCount == 2,
-                        "Reopen did not replace the native document and reset its session history");
+                require(nativeSession && sourcePath == first && state.ink.size() == 3 && !modified() &&
+                                !state.canUndo() && !state.canRedo() && pageCount == 2,
+                        "Reopen did not hydrate native strokes at clean revision 0");
+                state.erase(state.offsetX + 80 * state.zoom, state.offsetY + 80 * state.zoom);
+                require(modified() && state.canUndo() && state.ink.size() != 3,
+                        "Erasing a preloaded native stroke did not mark the document dirty");
+                state.undo();
+                require(!modified() && !state.canUndo() && state.ink.size() == 3,
+                        "Undoing native stroke erase did not restore clean revision 0");
                 capture("reopened");
                 const auto x = state.offsetX + 60 * state.zoom;
                 const auto y = state.offsetY + 60 * state.zoom;
@@ -2230,7 +2246,8 @@ private:
                 input.motion(Device::Stylus, {x + 40 * state.zoom, y + 20 * state.zoom, 0.75});
                 input.finish(Device::Stylus);
                 protectDocument([this] { smokeContinued = true; });
-                require(messageDialog && state.ink[0].pressureSensitive, "Pressure ink not retained for saving");
+                require(messageDialog && state.ink.size() == 4 && state.ink.back().pressureSensitive,
+                        "Pressure ink not retained for saving");
                 break;
             }
             case 6:
@@ -2331,7 +2348,7 @@ private:
                 break;
             }
             case 19:
-                require(ioErrors == 3 && messageDialog && modified() && state.ink.size() == 2 &&
+                require(ioErrors == 3 && messageDialog && modified() && state.ink.size() == 5 &&
                                 prototype::bridge::documentVersion(saveTarget).token == smokeExternalVersion,
                         "A stale Save overwrote the external edit or lost pending session ink");
                 capture("save-conflict");
@@ -2397,7 +2414,7 @@ private:
                                 !std::filesystem::exists(autosaveSidecar + ".swap"),
                         "Autosave did not write sidecar cleanly or touched the primary saved document");
                 finish(Device::Stylus, 0.7);
-                require(!input.active() && state.ink.size() == 4, "Active stroke did not commit after autosave");
+                require(!input.active() && state.ink.size() == 7, "Active stroke did not commit after autosave");
                 autosaveWaits = 0;
                 break;
             }
@@ -2489,7 +2506,8 @@ private:
                         prototype::bridge::autosavePathForTarget(discardDoc, cacheRoot(),
                                                                  static_cast<long long>(::getpid()))
                                 .string();
-                require(!modified() && sourcePath == discardDoc && !std::filesystem::exists(discardSidecar),
+                require(!modified() && sourcePath == discardDoc && state.ink.size() == 5 &&
+                                !std::filesystem::exists(discardSidecar),
                         "Discard Autosave did not remove the sidecar or opened dirty state");
                 const auto recoverDoc =
                         (std::filesystem::path(options.smokeDirectory) / "recover-autosave.xopp").string();
@@ -2537,7 +2555,7 @@ private:
                         "Saving a recovered document did not update target or clean up its sidecar autosave");
                 capture("autosave-saved");
                 const auto x = state.offsetX + 80 * state.zoom;
-                const auto y = state.offsetY + 310 * state.zoom;
+                const auto y = state.offsetY + 360 * state.zoom;
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
                 begin(Device::Stylus, x, y, 0.3);
@@ -2551,12 +2569,12 @@ private:
                 finish(Device::Mouse);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 1u);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
-                begin(Device::Mouse, x + 30 * state.zoom, y - 20 * state.zoom);
-                motion(Device::Mouse, x + 30 * state.zoom, y + 20 * state.zoom);
+                begin(Device::Mouse, x + 30 * state.zoom, y - 25 * state.zoom);
+                motion(Device::Mouse, x + 30 * state.zoom, y + 25 * state.zoom);
                 finish(Device::Mouse);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
-                require(state.ink.size() == 3 && state.ink[2].brush.tool == Tool::Eraser,
+                require(state.ink.size() == 10 && state.ink.back().brush.tool == Tool::Eraser,
                         "Expected two split pen segments and one whiteout stroke before native save");
                 smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "eraser-modes.xopp").string();
                 chooseSave();
@@ -2566,6 +2584,65 @@ private:
                 require(!modified() && saveTarget.ends_with("eraser-modes.xopp") &&
                                 std::filesystem::is_regular_file(saveTarget),
                         "Saving split ink and whiteout stroke failed");
+                const auto nativeEdited =
+                        (std::filesystem::path(options.smokeDirectory) / "native-edited.xopp").string();
+                std::filesystem::copy_file(saveTarget, nativeEdited,
+                                           std::filesystem::copy_options::overwrite_existing);
+                openDocument(nativeEdited);
+                break;
+            }
+            case 34: {
+                const auto nativeEdited =
+                        (std::filesystem::path(options.smokeDirectory) / "native-edited.xopp").string();
+                require(!modified() && sourcePath == nativeEdited && saveTarget == nativeEdited &&
+                                state.ink.size() == 10 && state.ink.back().brush.tool == Tool::Eraser &&
+                                !state.canUndo() && !state.canRedo(),
+                        "Reopening native document did not load all 10 editable top-layer strokes");
+                capture("native-loaded");
+                const auto y = state.offsetY + 360 * state.zoom;
+                // 1. Partially split a pre-existing native pressure-sensitive pen stroke.
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[2]), true);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 2u);
+                begin(Device::Mouse, state.offsetX + 205 * state.zoom, y);
+                finish(Device::Mouse);
+                require(state.ink.size() == 11 && modified(),
+                        "Standard eraser did not split preloaded native pen stroke");
+                // 2. Delete the pre-existing native Whiteout stroke and the left native pen segment.
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 2u);
+                begin(Device::Mouse, state.offsetX + 110 * state.zoom, state.offsetY + 338 * state.zoom);
+                finish(Device::Mouse);
+                require(state.ink.size() == 10, "Delete Stroke did not remove preloaded native whiteout stroke");
+                begin(Device::Mouse, state.offsetX + 135 * state.zoom, y);
+                finish(Device::Mouse);
+                require(state.ink.size() == 9, "Delete Stroke did not remove preloaded native pen segment");
+                // 3. Verify full Undo back to clean revision 0 and Redo back to revision 3.
+                state.undo();
+                state.undo();
+                state.undo();
+                require(!modified() && state.ink.size() == 10 && !state.canUndo(),
+                        "Undoing native stroke edits did not restore clean revision 0");
+                state.redo();
+                state.redo();
+                state.redo();
+                require(modified() && state.ink.size() == 9 && !state.canRedo(),
+                        "Redoing native stroke edits did not restore edited state");
+                break;
+            }
+            case 35: {
+                capture("native-erased");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_s, 0, GDK_CONTROL_MASK, &handled);
+                require(handled && busy, "Ctrl+S did not start Save for edited native strokes");
+                break;
+            }
+            case 36: {
+                require(!modified() && saveTarget.ends_with("native-edited.xopp") &&
+                                !std::filesystem::exists(saveTarget + "~"),
+                        "Ctrl+S did not persist edited native strokes cleanly");
+                capture("native-saved");
                 const auto x = state.offsetX + 210 * state.zoom;
                 const auto y = state.offsetY + 230 * state.zoom;
                 input.begin(Device::Mouse, {x, y, std::nullopt});

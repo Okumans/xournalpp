@@ -34,7 +34,11 @@ sidebar. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves, and
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
-different zoom levels. The eraser acts only on session ink.
+different zoom levels. When opened through the worker, editable top-layer native
+`.xopp` strokes (above the last non-editable element on a visible top layer) are
+loaded as live ink that can be erased, split, undone/redone, and saved without
+duplication; lower layers and flattened PDF/text/image content are not affected by
+the eraser.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
 Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,
@@ -98,13 +102,16 @@ state and does not continue a pending Open or Close. Cancelling a file chooser
 also preserves the current document.
 
 Each loaded document has a private native snapshot and rendered PDF, removed when
-the session ends. The native object data is retained; external linked assets
-remain external. Saving appends all current session ink to that snapshot, so
-repeated saves do not duplicate previously saved ink. Reopening a saved copy
-loads its ink as original objects, which are not yet editable in the frontend.
+the session ends. When opening a native `.xopp`, the worker extracts the
+contiguous top-layer suffix of lossless `pen`, `highlighter`, and `#ffffffff`
+`eraser` strokes into live session ink before writing the snapshot and rendering
+`preview.pdf`, keeping lower layers, text, images, filled/dashed/non-round
+strokes, and audio-attached strokes intact in their exact z-order. Saving appends
+current session ink back onto the stripped snapshot, so repeated saves and
+reopens neither duplicate ink nor lose pressure widths.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
-`open INPUT SNAPSHOT.xopp NEW.pdf`, `version PATH`,
+`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK]`, `version PATH`,
 `save INPUT TARGET.xopp INK_TRANSFER VERSION`,
 `autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER`, and
 `save-copy INPUT NEW.xopp INK_TRANSFER`.
@@ -247,8 +254,8 @@ or toolbar configuration features.
 
 ## Remaining migration work
 
-The experiment still needs live editing of loaded native strokes and selections,
-continuous-page layout, signal-crash emergency handling, clipboard, dialogs, IME,
-settings/palette import, plugins and configurable toolbars. Platform packaging,
-accessibility, hardware input and GPU validation remain required before replacing
-the existing application.
+The experiment still needs object selection and editing of lower-layer or
+non-stroke objects, continuous-page layout, signal-crash emergency handling,
+clipboard, dialogs, IME, settings/palette import, plugins and configurable
+toolbars. Platform packaging, accessibility, hardware input and GPU validation
+remain required before replacing the existing application.

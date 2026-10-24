@@ -32,6 +32,31 @@ int main() {
             !decoded[1].whiteout || decoded[1].highlighter || decoded[1].width != 8.5) {
             throw std::runtime_error("Ink transfer did not preserve page, style or sample precision");
         }
+        const auto hydrated = sessionInk(decoded);
+        if (hydrated.size() != 2 || hydrated[0].page != 2 || hydrated[0].brush.tool != prototype::Tool::Pen ||
+            !hydrated[0].pressureSensitive || hydrated[0].brush.width != 4.25 ||
+            hydrated[0].points[0].pressure != 0.25 || hydrated[0].points[1].pressure != 0.8 ||
+            hydrated[1].brush.tool != prototype::Tool::Eraser || hydrated[1].pressureSensitive ||
+            hydrated[1].brush.color != prototype::behavior::whiteoutColor) {
+            throw std::runtime_error("Session hydration lost tool, pressure mode, or whiteout color");
+        }
+        prototype::CanvasState preloaded;
+        preloaded.page = 2;
+        preloaded.fit(800, 1000);
+        preloaded.ink = hydrated;
+        if (preloaded.revision() != 0 || preloaded.canUndo() || preloaded.canRedo()) {
+            throw std::runtime_error("Preloaded native ink must start at clean revision 0");
+        }
+        const double eraseX = preloaded.offsetX + ((12.34 + 80.0) * 0.5) * preloaded.zoom;
+        const double eraseY = preloaded.offsetY + ((56.78 + 90.0) * 0.5) * preloaded.zoom;
+        preloaded.erase(eraseX, eraseY);
+        if (preloaded.ink.size() != 3 || preloaded.revision() != 1 || !preloaded.canUndo()) {
+            throw std::runtime_error("Preloaded native ink could not be partially erased");
+        }
+        preloaded.undo();
+        if (preloaded.ink.size() != 2 || preloaded.revision() != 0) {
+            throw std::runtime_error("Undoing an edit to preloaded native ink did not restore revision 0");
+        }
         for (int invalid = 0; invalid < 5; ++invalid) {
             auto stroke = original;
             switch (invalid) {

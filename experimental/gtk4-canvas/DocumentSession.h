@@ -30,7 +30,11 @@ public:
             const bool nativeFile = g_ascii_strcasecmp(fs::path(input).extension().string().c_str(), ".xopp") == 0 &&
                                     fs::is_regular_file(fs::symlink_status(input));
             const auto before = nativeFile ? documentVersion(input).token : std::string{};
-            const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string()});
+            const auto extracted = path / "initial.ink";
+            const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string(),
+                                                 extracted.string()});
+            initialInk = readTransfer(extracted);
+            std::filesystem::remove(extracted);
             if (nativeFile) {
                 requireUnchangedInput(input, before);
                 if (kind == "NATIVE_SAVE\n") {
@@ -75,6 +79,7 @@ public:
 
     std::string originalSavePath;
     std::string originalVersion;
+    std::vector<StrokePacket> initialInk;
 
     std::filesystem::path snapshotPath() const { return path / "snapshot.xopp"; }
     std::filesystem::path previewPath() const { return path / "preview.pdf"; }

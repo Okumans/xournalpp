@@ -146,12 +146,12 @@ def inside(args):
             screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
-                            "autosave-saved")
+                            "autosave-saved", "native-loaded", "native-erased", "native-saved")
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
                              "autosave-note.xopp", ".autosave-note.autosave.xopp",
                              "discard-autosave.xopp", ".discard-autosave.autosave.xopp",
                              "recover-autosave.xopp", ".recover-autosave.autosave.xopp",
-                             "eraser-modes.xopp"):
+                             "eraser-modes.xopp", "native-edited.xopp"):
                 (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
@@ -198,6 +198,17 @@ def inside(args):
             if (len(eraser_strokes[-3].attrib.get("width", "").split()) < 2 or
                     len(eraser_strokes[-2].attrib.get("width", "").split()) < 2):
                 raise RuntimeError("Split pressure-sensitive pen segments lost pressure data on native save")
+            native_edited = ET.fromstring(gzip.decompress((output / "native-edited.xopp").read_bytes()))
+            edited_strokes = native_edited.findall(".//stroke")
+            if len(edited_strokes) != 9 or (output / "native-edited.xopp~").exists():
+                raise RuntimeError(f"Expected 9 strokes after editing reopened native strokes, got {len(edited_strokes)}")
+            if any(s.attrib.get("tool") == "eraser" for s in edited_strokes):
+                raise RuntimeError("Deleted preloaded native whiteout stroke remained in saved .xopp")
+            if len(native_edited.findall(".//text")) != len(root.findall(".//text")):
+                raise RuntimeError("Editing preloaded native strokes lost document text")
+            if (len(edited_strokes[-2].attrib.get("width", "").split()) < 2 or
+                    len(edited_strokes[-1].attrib.get("width", "").split()) < 2):
+                raise RuntimeError("Splitting a preloaded native pressure stroke lost pressure widths on save")
         for screenshot in screenshots:
             path = output / f"{screenshot}.png"
             if not path.is_file() or path.stat().st_size < 1000:
