@@ -239,8 +239,66 @@ def verify_settings_import(args, evidence, copy):
           flush=True)
 
 
+def verify_layer_management(args, evidence):
+    root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
+    ET.SubElement(root, "title").text = "GTK4 layer management"
+    page = ET.SubElement(root, "page", {"width": "595", "height": "842"})
+    ET.SubElement(page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+    lower = ET.SubElement(page, "layer", {"name": "Lower"})
+    ET.SubElement(lower, "stroke", {"tool": "pen", "capStyle": "round", "style": "dash",
+                                     "color": "#222222ff", "width": "2"}).text = "20 30 80 30"
+    ET.SubElement(lower, "stroke", {"tool": "pen", "capStyle": "round", "color": "#112233ff",
+                                     "width": "2"}).text = "20 45 80 45"
+    upper = ET.SubElement(page, "layer", {"name": "Upper"})
+    ET.SubElement(upper, "stroke", {"tool": "pen", "capStyle": "round", "fill": "128",
+                                     "color": "#008800ff", "width": "2"}).text = "20 60 80 60 50 75"
+    ET.SubElement(upper, "stroke", {"tool": "highlighter", "capStyle": "round",
+                                     "color": "#ffff007f", "width": "8"}).text = "20 90 80 90"
+    root.append(ET.fromstring(ET.tostring(page)))
+
+    directory = evidence / "layer-management"
+    directory.mkdir(parents=True, exist_ok=True)
+    fixture = directory / "two-layers.xopp"
+    fixture.write_bytes(gzip.compress(ET.tostring(root, encoding="utf-8", xml_declaration=True)))
+    output = directory / "run"
+    output.mkdir(parents=True, exist_ok=True)
+    result = run(
+        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
+         "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_LAYER_VERIFY_MODE="1"),
+    )
+    if "PASS: GTK layer selection, add, visibility, merge, undo and save" not in result:
+        raise RuntimeError("Layer management verification did not finish")
+    for screenshot in ("layer-stack", "layer-added", "layer-merged", "layer-hidden", "layer-saved"):
+        path = output / f"{screenshot}.png"
+        if not path.is_file() or path.stat().st_size < 1000:
+            raise RuntimeError(f"Missing or empty layer management screenshot: {path}")
+    saved = ET.fromstring(gzip.decompress((output / "layer-saved.xopp").read_bytes()))
+    pages = saved.findall("page")
+    layers = pages[0].findall("layer")
+    if len(pages) != 2 or [layer.attrib.get("name") for layer in layers] != ["Lower", "Upper"]:
+        raise RuntimeError("Layer UI actions did not save the expected per-page layer stack")
+    lower_strokes = layers[0].findall("stroke")
+    upper_strokes = layers[1].findall("stroke")
+    if (len(lower_strokes) != 2 or lower_strokes[0].attrib.get("style") != "dash" or
+            lower_strokes[1].attrib.get("tool") != "pen"):
+        raise RuntimeError("Layer UI save lost or reordered non-top layer content")
+    if (len(upper_strokes) != 3 or upper_strokes[0].attrib.get("fill") != "128" or
+            upper_strokes[1].attrib.get("tool") != "highlighter" or
+            upper_strokes[2].attrib.get("tool") != "pen"):
+        raise RuntimeError("Layer UI save lost merged native content or new active-layer ink")
+    print("PASS: private GTK4 layer UI interaction and native save/reopen semantics", flush=True)
+    return str(output)
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.layer_only:
+        layer_evidence = verify_layer_management(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"layer-management": layer_evidence}, "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     (evidence / "results.json").unlink(missing_ok=True)
     fixture = args.fixture.resolve()
     original_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
@@ -390,6 +448,7 @@ def inside(args):
     if args.worker:
         verify_crash_recovery(args, evidence, copy, root)
         verify_settings_import(args, evidence, copy)
+        results["layer-management"] = verify_layer_management(args, evidence)
     if hashlib.sha256(fixture.read_bytes()).hexdigest() != original_hash:
         raise RuntimeError("Input fixture changed")
     report = {
@@ -413,6 +472,7 @@ def main():
     parser.add_argument("--fixture", type=Path,
                         default=Path(__file__).resolve().parents[2] / "test/files/benchmark/typed-text.xopp")
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--layer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -457,6 +517,8 @@ def main():
                    "--fixture", str(args.fixture.resolve()), "--evidence", str(args.evidence.resolve())]
         if args.worker:
             command.extend(["--worker", str(args.worker.resolve())])
+        if args.layer_only:
+            command.append("--layer-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

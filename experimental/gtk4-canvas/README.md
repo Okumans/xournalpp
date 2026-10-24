@@ -11,10 +11,11 @@ strokes, translucent highlights, and whiteout ink on any visible page. It suppor
 presets, Xournal++ discrete tool size presets (`Very Fine`..`Very Thick`) synced with
 custom widths, three eraser modes (`Standard` partial `PaddedBox` splitting, `Whiteout`,
 and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages without resetting zoom and becomes an overlay in
-narrower windows. With a document worker, Open, Save, Save As, Export as PDF,
+narrower windows. Its per-page Layers panel selects, shows/hides, adds, deletes,
+and merges foreground layers. With a document worker, Open, Save, Save As, Export as PDF,
 Insert Page After, and Delete Current Page run in the
-background. New ink and text edits are saved as native objects alongside the
-original content. Open and Close protect
+background. New ink and text edits are saved as native objects in their active
+foreground layers alongside the original content. Open and Close protect
 unsaved changes with Save, Discard and Cancel. Save updates the associated
 `.xopp` file; Save As changes its filename after a successful save; Export as PDF
 writes a flattened PDF including live session ink and text edits without clearing
@@ -49,19 +50,20 @@ least two pages exist.
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
-different zoom levels. When opened through the worker, editable top-layer native
-`.xopp` strokes (above the last non-editable element on a visible top layer) are
-loaded as live ink that can be erased, split, undone/redone, and saved without
-duplication; lower layers and flattened PDF/text/image content are not affected by
-the eraser. Editable strokes can also be selected, resized, rotated, moved across
-pages, copied and pasted with native `.xopp` pressure/color/style retained. The
-clipboard reader limits input to 64 MiB and one million samples, validates the
-entire supported selection before inserting it, and leaves ink unchanged on
-malformed input.
+different zoom levels. For native documents, the worker extracts supported ink
+and text from the editable suffix of every foreground layer, including hidden
+layers. Drawing, erasing, and stroke selection target the active visible layer;
+background and other layers are not affected. The Layers sidebar selects layers,
+shows or hides them, and adds, deletes, or merges them down. Editable strokes can
+also be resized, rotated, moved across pages, copied and pasted with native
+`.xopp` pressure/color/style retained. Save and export preserve layer grouping,
+visibility, and native object order. The clipboard reader limits input to 64 MiB
+and one million samples, validates the entire supported selection before
+inserting it, and leaves ink unchanged on malformed input.
 
-With the worker, eligible native text in the top-layer editable suffix opens in
-the canvas and stays in native z-order with strokes. Select the Text tool and
-click to create text; Smart Select click edits an existing text item. The inline
+With the worker, eligible native text in a foreground layer's editable suffix
+opens in the canvas and stays in native z-order with strokes. Select the Text
+tool and click to create text; Smart Select click edits an existing text item. The inline
 GTK text editor preserves UTF-8 content and formatting runs, including bold,
 italic, underline, strikethrough, superscript, and subscript. Font family and size
 can be set from the toolbar. Text creation, edits, and deletion join undo/redo,
@@ -79,7 +81,7 @@ end temporarily erases session strokes; an entire eraser drag is one undo step.
 ## What this experiment establishes
 
 - A real Xournal++ document can be exported by the existing renderer in its own
-  process, then displayed in a GTK 4 Cairo drawing area through Poppler.
+process, then displayed in a GTK 4 Cairo drawing area through Poppler.
 - A bounded 4-page LRU raster cache can separate PDF rasterization from
   interactive ink and continuous multi-page scrolling. Each cached page surface
   has at most 4096 pixels on each side (64 MiB maximum per surface, up to four
@@ -94,8 +96,9 @@ This is **not a port of the complete application or its custom `GtkXournal`
 widget**. The session ink and text models are experimental and independent of the
 existing document models. A separate document worker reuses the existing native
 loader, saver, and renderer without linking GTK 3 into the GTK 4 process. The
-worker extracts supported top-layer strokes and text for interactive editing;
-other original objects remain in the background document preview. The current
+worker extracts supported stroke and text suffixes from every foreground layer
+for interactive editing; other original objects remain in their native snapshot
+and render in per-layer previews. The current
 PDF rasterization runs synchronously on the prototype's UI thread.
 
 ## Build
@@ -140,16 +143,17 @@ failed open leaves the current document intact; a failed save retains its dirty
 state and does not continue a pending Open or Close. Cancelling a file chooser
 also preserves the current document.
 
-Each loaded document has a private native snapshot and rendered PDF, removed when
-the session ends. When opening a native `.xopp`, the worker extracts the
+Each loaded document has a private native snapshot and rendered previews, removed
+when the session ends. When opening a native `.xopp`, the worker extracts the
 contiguous suffix of lossless `pen`, `highlighter`, and `#ffffffff` `eraser`
-strokes plus eligible non-audio native text from each visible top layer. It writes
-strokes and text to bounded transfer files before creating the background
-snapshot and rendering `preview.pdf`, leaving lower layers, images,
-filled/dashed/non-round strokes, and unsupported or audio-attached text in their
-exact z-order. Saving appends current session ink and text back onto the stripped
-snapshot, so repeated saves and reopens preserve ordering, formatting, and
-pressure widths without duplication.
+strokes plus eligible non-audio native text from every foreground layer,
+regardless of visibility. It writes strokes, text, and layer metadata to bounded
+transfer files before creating the native snapshot and per-layer previews.
+Images, filled/dashed/non-round strokes, unsupported objects, and text outside
+the editable suffix stay in their original layer and z-order as visible
+non-editable content. Save, autosave, and export reconstruct the layer groups and
+reinsert editable ink and text in order, preserving visibility and avoiding
+duplication.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
 `export-pdf INPUT OUT.pdf INK_TRANSFER [TEXT_TRANSFER]`,
@@ -159,9 +163,10 @@ The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
 `save INPUT TARGET.xopp INK_TRANSFER VERSION [TEXT_TRANSFER]`,
 `autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER [TEXT_TRANSFER]`, and
 `save-copy INPUT NEW.xopp INK_TRANSFER [TEXT_TRANSFER]`.
-Save operations accept versioned ink and bounded text packets, append native
-pen/highlighter/whiteout strokes and text to the top layer in their recorded
-order, and use the real saver. They stage the
+Save operations accept versioned ink, bounded text packets, and layer metadata;
+they rebuild the foreground stack and place native pen/highlighter/whiteout
+strokes and text in their recorded layers and order, then use the real saver.
+They stage the
 file and attached backgrounds in the destination directory and publish the
 native document last. Normal Save checks a content version for the file and
 attached PDF/pixmap sidecars, including a recheck before publication. External
@@ -278,8 +283,9 @@ rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. Rich-text editing does not include
 object selection or transforms; full object-selection behavior, signal-handler
 emergency dump, full document undo, plugins, and toolbar configuration import
-remain migration work. Its eraser removes only session ink, not flattened PDF
-content. Do not use its screenshots as evidence of full migration readiness or
+remain migration work. Its eraser edits session ink and supported native strokes
+on the active layer; it cannot erase flattened PDF content or unsupported native
+objects. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
 
 The backend now recognizes a stylus eraser end and processes its motion backlog.
@@ -335,14 +341,14 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of lower-layer/non-stroke objects, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
+The experiment still needs editing of unsupported native objects, layer rename/reorder/lock, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, interactive preferences editing/persistence, per-device button mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
 ## Stroke selection
 
-Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), and Smart Select (`S`) select editable strokes from the visible top-layer suffix. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select picks the topmost stroke by path distance. Hold Shift to add a rectangle to an existing selection.
+Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), and Smart Select (`S`) select editable strokes from the active visible foreground layer. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select picks the topmost stroke by path distance. Hold Shift to add a rectangle to an existing selection.
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Native shape and image objects and lower-layer objects remain preserved in the document background but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.

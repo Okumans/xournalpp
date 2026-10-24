@@ -67,6 +67,7 @@ struct SurfaceDeleter {
 
 struct PageCacheEntry {
     int pageIndex = -1;
+    size_t originLayer = prototype::newLayerOrigin;
     double scale = 0;
     uint64_t stamp = 0;
     std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface;
@@ -125,6 +126,7 @@ public:
         if (document) {
             g_object_unref(document);
         }
+        releaseLayerPreviewPdfs(layerDocuments);
     }
 
     int run() {
@@ -180,6 +182,35 @@ private:
             throw;
         }
         return {candidate, std::move(sizes)};
+    }
+
+    static std::vector<PopplerDocument*> openLayerPreviewPdfs(
+            const std::vector<std::filesystem::path>& paths, int expectedPageCount) {
+        std::vector<PopplerDocument*> documents;
+        documents.reserve(paths.size());
+        try {
+            for (const auto& path: paths) {
+                auto [document, sizes] = openPreviewPdf(path.string());
+                if (static_cast<int>(sizes.size()) != expectedPageCount) {
+                    g_object_unref(document);
+                    throw std::runtime_error("A native layer preview has the wrong page count");
+                }
+                documents.push_back(document);
+            }
+        } catch (...) {
+            for (auto* document: documents) {
+                g_object_unref(document);
+            }
+            throw;
+        }
+        return documents;
+    }
+
+    static void releaseLayerPreviewPdfs(std::vector<PopplerDocument*>& documents) {
+        for (auto* document: documents) {
+            g_object_unref(document);
+        }
+        documents.clear();
     }
 
     bool modified() const { return savedRevision != state.revision(); }
@@ -251,6 +282,7 @@ private:
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.committedInk());
         const auto texts = state.texts;
+        const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto previous = activeAutosavePath;
@@ -259,7 +291,9 @@ private:
         auto* application = G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
         g_application_hold(application);
         prototype::bridge::documentJob(
-                [session, worker, target, packets, texts] { session->autosave(worker, target, packets, texts); },
+                [session, worker, target, packets, texts, layers] {
+                    session->autosave(worker, target, packets, texts, layers);
+                },
                 [this, application, session, revision, target, previous](const std::string& error) {
                     autosaving = false;
                     if (error.empty() && nativeSession == session && !closed) {
@@ -384,11 +418,14 @@ private:
                          const std::optional<RecoveryInfo>& recovery = std::nullopt) {
         auto [candidate, pageSizes] = openPreviewPdf(session->previewPath().string());
         const int count = static_cast<int>(pageSizes.size());
+        std::vector<PopplerDocument*> candidateLayers;
         auto hydratedInk = [&] {
             try {
+                candidateLayers = openLayerPreviewPdfs(session->layerPreviewPaths, count);
                 return prototype::bridge::sessionInk(session->initialInk);
             } catch (...) {
                 g_object_unref(candidate);
+                releaseLayerPreviewPdfs(candidateLayers);
                 throw;
             }
         }();
@@ -405,6 +442,7 @@ private:
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.setPages(std::move(pageSizes));
         state.selectActivePage(0);
+        state.setLayerDocument(session->initialLayers);
         state.ink = std::move(hydratedInk);
         state.texts = session->initialTexts;
         state.brush = brush;
@@ -419,12 +457,15 @@ private:
         savedNormally = false;
         g_clear_object(&document);
         document = candidate;
+        releaseLayerPreviewPdfs(layerDocuments);
+        layerDocuments = std::move(candidateLayers);
         pageCount = count;
         nativeSession = session;
         sourcePath = source;
         saveTarget = recovery ? recovery->saveTarget : session->originalSavePath;
         saveVersion = recovery ? recovery->saveVersion : session->originalVersion;
         pageCache.clear();
+        layerPageCache.clear();
         thumbnails.clear();
         thumbnailWidgets.clear();
         pageList = nullptr;
@@ -528,7 +569,8 @@ private:
                 "Restoring recovery file…",
                 [loaded, worker, recoveryPath, adopted] {
                     *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath);
-                    (*loaded)->autosave(worker, adopted, (*loaded)->initialInk, (*loaded)->initialTexts);
+                    (*loaded)->autosave(worker, adopted, (*loaded)->initialInk, (*loaded)->initialTexts,
+                                        (*loaded)->initialLayers);
                     if (adopted != recoveryPath) {
                         prototype::bridge::removeAutosaveFiles(recoveryPath);
                     }
@@ -620,10 +662,11 @@ private:
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.ink);
         const auto texts = state.texts;
+        const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
-        runDocumentJob("Saving copy…", [session, worker, path, packets, texts] {
-            session->saveCopy(worker, path, packets, texts);
+        runDocumentJob("Saving copy…", [session, worker, path, packets, texts, layers] {
+            session->saveCopy(worker, path, packets, texts, layers);
         },
                        [this, revision, path, after = std::move(after)] {
             savedRevision = revision;
@@ -667,12 +710,13 @@ private:
         const auto revision = state.revision();
         const auto packets = prototype::bridge::transferInk(state.ink);
         const auto texts = state.texts;
+        const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto version = std::make_shared<std::string>();
-        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, version] {
+        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, layers, version] {
             const auto before = expected.empty() ? prototype::bridge::documentVersion(path).token : expected;
-            *version = session->save(worker, path, packets, texts, before);
+            *version = session->save(worker, path, packets, texts, layers, before);
         }, [this, path, revision, version, after = std::move(after)] {
             saveTarget = path;
             saveVersion = *version;
@@ -892,12 +936,13 @@ private:
         resetInput(true);
         const auto packets = prototype::bridge::transferInk(state.ink);
         const auto texts = state.texts;
+        const auto layers = state.pageLayers;
         const auto session = nativeSession;
         const auto worker = options.worker;
         // Exporting to PDF never alters .xopp savedRevision, saveTarget, or active autosave artifacts.
         runDocumentJob("Exporting PDF…",
-                       [session, worker, path, packets, texts] {
-                           session->exportPdf(worker, path, packets, texts);
+                       [session, worker, path, packets, texts, layers] {
+                           session->exportPdf(worker, path, packets, texts, layers);
                        },
                        [this, path] { exportedPdfPath = path; });
     }
@@ -961,16 +1006,24 @@ private:
                 },
                 [this, session, afterPage, staged] {
                     PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
                     std::vector<prototype::PageSize> sizes;
                     try {
                         std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers = openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
                     } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
                         prototype::bridge::DocumentSession::discardRevision(*staged);
                         throw;
                     }
                     session->commitRevision(*staged);
                     g_clear_object(&document);
                     document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
                     pageCount = static_cast<int>(sizes.size());
                     state.insertPageAfter(afterPage, sizes.at(static_cast<size_t>(afterPage + 1)));
                     state.setPages(std::move(sizes));
@@ -979,6 +1032,7 @@ private:
                     savedNormally = false;
                     savedCopyPath.clear();
                     pageCache.clear();
+                    layerPageCache.clear();
                     thumbnails.clear();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -1008,16 +1062,24 @@ private:
                 },
                 [this, session, removeIndex, staged] {
                     PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
                     std::vector<prototype::PageSize> sizes;
                     try {
                         std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers = openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
                     } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
                         prototype::bridge::DocumentSession::discardRevision(*staged);
                         throw;
                     }
                     session->commitRevision(*staged);
                     g_clear_object(&document);
                     document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
                     pageCount = static_cast<int>(sizes.size());
                     state.deletePageAt(removeIndex);
                     state.setPages(std::move(sizes));
@@ -1027,6 +1089,7 @@ private:
                     savedNormally = false;
                     savedCopyPath.clear();
                     pageCache.clear();
+                    layerPageCache.clear();
                     thumbnails.clear();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -1469,7 +1532,194 @@ private:
                          this);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
         gtk_box_append(GTK_BOX(box), scroll);
+        auto* layerPanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_widget_set_margin_start(layerPanel, 8);
+        gtk_widget_set_margin_end(layerPanel, 8);
+        auto* layerHeader = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        auto* layerTitle = gtk_label_new("Layers");
+        gtk_widget_add_css_class(layerTitle, "heading");
+        gtk_widget_set_hexpand(layerTitle, true);
+        gtk_widget_set_halign(layerTitle, GTK_ALIGN_START);
+        gtk_box_append(GTK_BOX(layerHeader), layerTitle);
+        auto* layerActions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        gtk_widget_add_css_class(layerActions, "linked");
+        layerAddButton = button("list-add-symbolic", "Add layer above current",
+                                G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                    auto* self = static_cast<Prototype*>(data);
+                                    self->resetInput(true);
+                                    if (self->state.addLayerAboveCurrent()) {
+                                        self->rebuildLayerStack();
+                                        self->update();
+                                    }
+                                }));
+        layerDeleteButton = button("list-remove-symbolic", "Delete current layer",
+                                   G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                       auto* self = static_cast<Prototype*>(data);
+                                       self->resetInput(true);
+                                       if (self->state.deleteCurrentLayer()) {
+                                           self->rebuildLayerStack();
+                                           self->update();
+                                       }
+                                   }));
+        layerMergeButton = gtk_button_new_with_label("Merge");
+        gtk_widget_set_tooltip_text(layerMergeButton, "Merge current layer down");
+        gtk_widget_add_css_class(layerMergeButton, "flat");
+        g_signal_connect(layerMergeButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             self->resetInput(true);
+                             if (self->state.mergeCurrentLayerDown()) {
+                                 self->rebuildLayerStack();
+                                 self->update();
+                             }
+                         }), this);
+        gtk_box_append(GTK_BOX(layerActions), layerAddButton);
+        gtk_box_append(GTK_BOX(layerActions), layerDeleteButton);
+        gtk_box_append(GTK_BOX(layerActions), layerMergeButton);
+        gtk_box_append(GTK_BOX(layerHeader), layerActions);
+        gtk_box_append(GTK_BOX(layerPanel), layerHeader);
+        layerRows = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_size_request(layerRows, -1, 112);
+        gtk_box_append(GTK_BOX(layerPanel), layerRows);
+        gtk_box_append(GTK_BOX(box), layerPanel);
+        rebuildLayerStack();
         return box;
+    }
+
+    void rebuildLayerStack() {
+        if (!layerRows) {
+            return;
+        }
+        const auto& pageLayers = state.layersForPage(state.page);
+        std::vector<GtkWidget*> existingRows;
+        for (auto* child = gtk_widget_get_first_child(layerRows); child;
+             child = gtk_widget_get_next_sibling(child)) {
+            existingRows.push_back(child);
+        }
+        const bool sameRows = existingRows.size() == pageLayers.layers.size() + 1 &&
+                              std::all_of(existingRows.begin(), existingRows.end(), [&](GtkWidget* row) {
+                                  auto* visibility = gtk_widget_get_first_child(row);
+                                  auto* select = visibility ? gtk_widget_get_next_sibling(visibility) : nullptr;
+                                  return visibility && select &&
+                                         gtk_widget_get_next_sibling(select) == nullptr;
+                              }) &&
+                              [&] {
+                                  for (size_t index = 0; index < existingRows.size(); ++index) {
+                                      const size_t expectedId = index == 0 ? 0 : pageLayers.layers.size() - index + 1;
+                                      auto* visibility = gtk_widget_get_first_child(existingRows[index]);
+                                      const size_t actualId = static_cast<size_t>(
+                                              GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(visibility), "layer-id")));
+                                      if (actualId != expectedId) {
+                                          return false;
+                                      }
+                                  }
+                                  return true;
+                              }();
+        if (sameRows) {
+            for (size_t index = 0; index < existingRows.size(); ++index) {
+                const size_t layerId = index == 0 ? 0 : pageLayers.layers.size() - index + 1;
+                const bool visible = layerId == 0 ? pageLayers.backgroundVisible :
+                                                    pageLayers.layers[layerId - 1].visible;
+                const bool active = layerId != 0 && layerId == pageLayers.selectedLayer;
+                const auto& layer = layerId == 0 ? prototype::CanvasLayer{} : pageLayers.layers[layerId - 1];
+                const auto title = layerId == 0 ? std::string("Background") :
+                                   (layer.name.empty() ? "Layer " + std::to_string(layerId) : layer.name);
+                auto* visibility = GTK_TOGGLE_BUTTON(gtk_widget_get_first_child(existingRows[index]));
+                auto* select = GTK_BUTTON(gtk_widget_get_next_sibling(GTK_WIDGET(visibility)));
+                gtk_toggle_button_set_active(visibility, visible);
+                gtk_button_set_icon_name(GTK_BUTTON(visibility), visible ? "view-reveal-symbolic" :
+                                                                          "view-conceal-symbolic");
+                gtk_widget_set_tooltip_text(GTK_WIDGET(visibility), visible ? "Hide layer" : "Show layer");
+                gtk_button_set_label(select, title.c_str());
+                gtk_widget_set_tooltip_text(GTK_WIDGET(select), title.c_str());
+                if (active) {
+                    gtk_widget_add_css_class(GTK_WIDGET(select), "suggested-action");
+                } else {
+                    gtk_widget_remove_css_class(GTK_WIDGET(select), "suggested-action");
+                }
+            }
+            gtk_widget_set_sensitive(layerAddButton, bool(nativeSession) && pageLayers.layers.size() < 1000);
+            gtk_widget_set_sensitive(layerDeleteButton, bool(nativeSession) && !pageLayers.layers.empty());
+            gtk_widget_set_sensitive(layerMergeButton, bool(nativeSession) && pageLayers.selectedLayer > 1);
+            layerPanelPage = state.page;
+            layerPanelSnapshot = pageLayers;
+            return;
+        }
+        for (auto* child = gtk_widget_get_first_child(layerRows); child;) {
+            auto* next = gtk_widget_get_next_sibling(child);
+            gtk_box_remove(GTK_BOX(layerRows), child);
+            child = next;
+        }
+        const auto appendVisibilityRow = [this](size_t layerId, const std::string& title, bool visible,
+                                                bool active) {
+            auto* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+            auto* visibility = GTK_TOGGLE_BUTTON(gtk_toggle_button_new());
+            gtk_button_set_icon_name(GTK_BUTTON(visibility), visible ? "view-reveal-symbolic" :
+                                                                       "view-conceal-symbolic");
+            gtk_toggle_button_set_active(visibility, visible);
+            gtk_widget_add_css_class(GTK_WIDGET(visibility), "flat");
+            gtk_widget_set_tooltip_text(GTK_WIDGET(visibility), visible ? "Hide layer" : "Show layer");
+            g_object_set_data(G_OBJECT(visibility), "layer-id", GUINT_TO_POINTER(static_cast<guint>(layerId)));
+            g_signal_connect(visibility, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 const auto id = static_cast<size_t>(GPOINTER_TO_UINT(
+                                         g_object_get_data(G_OBJECT(button), "layer-id")));
+                                 const bool shown = gtk_toggle_button_get_active(button);
+                                 gtk_button_set_icon_name(GTK_BUTTON(button), shown ? "view-reveal-symbolic" :
+                                                                                     "view-conceal-symbolic");
+                                 gtk_widget_set_tooltip_text(GTK_WIDGET(button), shown ? "Hide layer" : "Show layer");
+                                 if (self->state.setLayerVisible(self->state.page, id, shown)) {
+                                     self->thumbnails.clear();
+                                     self->update();
+                                 }
+                             }), this);
+            auto* select = gtk_button_new_with_label(title.c_str());
+            gtk_widget_set_hexpand(select, true);
+            gtk_widget_set_halign(select, GTK_ALIGN_FILL);
+            gtk_widget_add_css_class(select, "flat");
+            if (active) {
+                gtk_widget_add_css_class(select, "suggested-action");
+            }
+            gtk_widget_set_tooltip_text(select, title.c_str());
+            g_object_set_data(G_OBJECT(select), "layer-id", GUINT_TO_POINTER(static_cast<guint>(layerId)));
+            g_signal_connect(select, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 const auto id = static_cast<size_t>(GPOINTER_TO_UINT(
+                                         g_object_get_data(G_OBJECT(button), "layer-id")));
+                                 self->resetInput(true);
+                                 if (self->state.selectLayer(self->state.page, id)) {
+                                     self->rebuildLayerStack();
+                                     self->update();
+                                 }
+                             }), this);
+            gtk_box_append(GTK_BOX(row), GTK_WIDGET(visibility));
+            gtk_box_append(GTK_BOX(row), select);
+            gtk_box_append(GTK_BOX(layerRows), row);
+        };
+
+        appendVisibilityRow(0, "Background", pageLayers.backgroundVisible, false);
+        for (size_t layerId = pageLayers.layers.size(); layerId > 0; --layerId) {
+            const auto& layer = pageLayers.layers[layerId - 1];
+            const auto title = layer.name.empty() ? "Layer " + std::to_string(layerId) : layer.name;
+            appendVisibilityRow(layerId, title, layer.visible, layerId == pageLayers.selectedLayer);
+        }
+        gtk_widget_set_sensitive(layerAddButton, bool(nativeSession) && pageLayers.layers.size() < 1000);
+        gtk_widget_set_sensitive(layerDeleteButton, bool(nativeSession) && !pageLayers.layers.empty());
+        gtk_widget_set_sensitive(layerMergeButton, bool(nativeSession) && pageLayers.selectedLayer > 1);
+        layerPanelPage = state.page;
+        layerPanelSnapshot = pageLayers;
+    }
+
+    GtkWidget* findLayerControl(size_t layerId, bool visibility) const {
+        for (auto* row = gtk_widget_get_first_child(layerRows); row; row = gtk_widget_get_next_sibling(row)) {
+            for (auto* child = gtk_widget_get_first_child(row); child; child = gtk_widget_get_next_sibling(child)) {
+                const auto id = static_cast<size_t>(
+                        GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(child), "layer-id")));
+                if (id == layerId && GTK_IS_TOGGLE_BUTTON(child) == visibility) {
+                    return child;
+                }
+            }
+        }
+        return nullptr;
     }
 
     void drawThumbnail(cairo_t* cr, int number, int width, int height) {
@@ -1484,7 +1734,7 @@ private:
             double scale = std::min(112.0 / sz.width, 150.0 / sz.height);
             cairo_set_source_rgb(context, 1, 1, 1);
             cairo_paint(context);
-            if (document) {
+            if (document && state.layersForPage(number).backgroundVisible) {
                 auto* source = poppler_document_get_page(document, number);
                 double w, h;
                 poppler_page_get_size(source, &w, &h);
@@ -1503,17 +1753,53 @@ private:
         cairo_set_source_surface(cr, thumbnails.at(number).first.get(), 0, 0);
         cairo_paint(cr);
         cairo_scale(cr, thumbnails.at(number).second, thumbnails.at(number).second);
-        for (size_t index = 0; index < state.ink.size(); ++index) {
-            if (state.displayPage(index) == number && state.ink[index].page == number) {
-                prototype::drawInkPreview(cr, state, index);
+        struct LayerItem {
+            size_t order;
+            bool text;
+            size_t index;
+        };
+        const auto& pageLayers = state.layersForPage(number);
+        for (size_t layerIndex = 0; layerIndex < pageLayers.layers.size(); ++layerIndex) {
+            const size_t layerId = layerIndex + 1;
+            const auto& layer = pageLayers.layers[layerIndex];
+            if (!layer.visible) {
+                continue;
             }
-        }
-        for (size_t index = 0; index < state.ink.size(); ++index) {
-            if (state.displayPage(index) == number && state.ink[index].page != number)
-                prototype::drawInkPreview(cr, state, index);
-        }
-        if (state.current && state.current->page == number) {
-            prototype::drawInk(cr, *state.current);
+            for (size_t origin: layer.origins) {
+                if (origin < layerDocuments.size()) {
+                    if (auto* nativePage = poppler_document_get_page(layerDocuments[origin], number)) {
+                        poppler_page_render(nativePage, cr);
+                        g_object_unref(nativePage);
+                    }
+                }
+                std::vector<LayerItem> items;
+                items.reserve(state.ink.size() + state.texts.size());
+                for (size_t index = 0; index < state.ink.size(); ++index) {
+                    if (state.displayPage(index) == number && state.displayLayerId(index) == layerId &&
+                        state.displayLayerOrigin(index) == origin) {
+                        items.push_back({state.ink[index].layerOrder, false, index});
+                    }
+                }
+                for (size_t index = 0; index < state.texts.size(); ++index) {
+                    if (state.texts[index].page == number && state.texts[index].layerId == layerId &&
+                        state.texts[index].originLayer == origin) {
+                        items.push_back({state.texts[index].layerOrder, true, index});
+                    }
+                }
+                std::stable_sort(items.begin(), items.end(),
+                                 [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
+                for (const auto& item: items) {
+                    if (item.text) {
+                        prototype::drawText(cr, state.texts[item.index]);
+                    } else {
+                        prototype::drawInkPreview(cr, state, item.index);
+                    }
+                }
+                if (state.current && state.current->page == number && state.current->layerId == layerId &&
+                    state.current->originLayer == origin) {
+                    prototype::drawInk(cr, *state.current);
+                }
+            }
         }
         cairo_restore(cr);
     }
@@ -2050,6 +2336,10 @@ private:
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_LAYER_VERIFY_MODE"); verifyMode && *verifyMode) {
+                layerVerifyMode = verifyMode;
+                layerVerifyStep = 0;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -2070,6 +2360,8 @@ private:
                             if (++self->snapshotWaits < 60) {
                                 if (!self->settingsVerifyMode.empty()) {
                                     --self->settingsVerifyStep;
+                                } else if (!self->layerVerifyMode.empty()) {
+                                    --self->layerVerifyStep;
                                 } else if (self->documentSmokeStep >= 0) {
                                     --self->documentSmokeStep;
                                 } else {
@@ -2097,6 +2389,12 @@ private:
     void update() {
         if (closed) {
             return;
+        }
+        const auto& pageLayers = state.layersForPage(state.page);
+        if (layerRows && (layerPanelPage != state.page || !layerPanelSnapshot ||
+                          *layerPanelSnapshot != pageLayers)) {
+            thumbnails.clear();
+            rebuildLayerStack();
         }
         updateTextEditorPosition();
         updateTitle();
@@ -2748,7 +3046,8 @@ private:
         // Bound both dimensions and memory per page, even when zoomed into a huge PDF page.
         const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
         for (auto& entry: pageCache) {
-            if (entry.pageIndex == pageIndex && std::abs(entry.scale - scale) < 0.0001) {
+            if (entry.pageIndex == pageIndex && entry.originLayer == prototype::newLayerOrigin &&
+                std::abs(entry.scale - scale) < 0.0001) {
                 entry.stamp = ++cacheClock;
                 return entry;
             }
@@ -2774,7 +3073,7 @@ private:
         ++rasterizations;
         PageCacheEntry* slot = nullptr;
         for (auto& entry: pageCache) {
-            if (entry.pageIndex == pageIndex) {
+            if (entry.pageIndex == pageIndex && entry.originLayer == prototype::newLayerOrigin) {
                 slot = &entry;
                 break;
             }
@@ -2791,6 +3090,64 @@ private:
             }
         }
         slot->pageIndex = pageIndex;
+        slot->originLayer = prototype::newLayerOrigin;
+        slot->scale = scale;
+        slot->stamp = ++cacheClock;
+        slot->surface = std::move(surface);
+        return *slot;
+    }
+
+    const PageCacheEntry& ensureLayerPageCache(int pageIndex, size_t originLayer, int deviceScale) {
+        const auto sz = state.pageSize(pageIndex);
+        const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
+        for (auto& entry: layerPageCache) {
+            if (entry.pageIndex == pageIndex && entry.originLayer == originLayer &&
+                std::abs(entry.scale - scale) < 0.0001) {
+                entry.stamp = ++cacheClock;
+                return entry;
+            }
+        }
+        const int width = std::max(1, static_cast<int>(std::ceil(sz.width * scale)));
+        const int height = std::max(1, static_cast<int>(std::ceil(sz.height * scale)));
+        std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface(
+                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
+        if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
+            throw std::runtime_error("Cannot allocate native layer surface");
+        }
+        auto* cr = cairo_create(surface.get());
+        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+        cairo_paint(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        cairo_scale(cr, scale, scale);
+        if (originLayer < layerDocuments.size() && pageIndex >= 0 && pageIndex < pageCount) {
+            if (auto* pdfPage = poppler_document_get_page(layerDocuments[originLayer], pageIndex)) {
+                poppler_page_render(pdfPage, cr);
+                g_object_unref(pdfPage);
+            }
+        }
+        cairo_destroy(cr);
+        ++rasterizations;
+        PageCacheEntry* slot = nullptr;
+        for (auto& entry: layerPageCache) {
+            if (entry.pageIndex == pageIndex && entry.originLayer == originLayer) {
+                slot = &entry;
+                break;
+            }
+        }
+        if (!slot) {
+            constexpr size_t maxCachedLayerPages = 16;
+            if (layerPageCache.size() < maxCachedLayerPages) {
+                layerPageCache.push_back({});
+                slot = &layerPageCache.back();
+            } else {
+                slot = &*std::min_element(layerPageCache.begin(), layerPageCache.end(),
+                                          [](const PageCacheEntry& a, const PageCacheEntry& b) {
+                                              return a.stamp < b.stamp;
+                                          });
+            }
+        }
+        slot->pageIndex = pageIndex;
+        slot->originLayer = originLayer;
         slot->scale = scale;
         slot->stamp = ++cacheClock;
         slot->surface = std::move(surface);
@@ -2802,6 +3159,12 @@ private:
     size_t totalCacheBytes() const {
         size_t total = 0;
         for (const auto& entry: pageCache) {
+            if (entry.surface) {
+                total += static_cast<size_t>(cairo_image_surface_get_stride(entry.surface.get())) *
+                         static_cast<size_t>(cairo_image_surface_get_height(entry.surface.get()));
+            }
+        }
+        for (const auto& entry: layerPageCache) {
             if (entry.surface) {
                 total += static_cast<size_t>(cairo_image_surface_get_stride(entry.surface.get())) *
                          static_cast<size_t>(cairo_image_surface_get_height(entry.surface.get()));
@@ -2847,44 +3210,65 @@ private:
             cairo_scale(cr, state.zoom, state.zoom);
             cairo_rectangle(cr, 0, 0, sz.width, sz.height);
             cairo_clip(cr);
-            cairo_save(cr);
-            cairo_scale(cr, 1.0 / cached.scale, 1.0 / cached.scale);
-            cairo_set_source_surface(cr, cached.surface.get(), 0, 0);
-            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+            cairo_set_source_rgb(cr, 1, 1, 1);
             cairo_paint(cr);
-            cairo_restore(cr);
+            if (state.layerVisible(i, 0)) {
+                cairo_save(cr);
+                cairo_scale(cr, 1.0 / cached.scale, 1.0 / cached.scale);
+                cairo_set_source_surface(cr, cached.surface.get(), 0, 0);
+                cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+                cairo_paint(cr);
+                cairo_restore(cr);
+            }
             struct LayerItem {
                 size_t order;
                 bool text;
                 size_t index;
             };
-            std::vector<LayerItem> layerItems;
-            layerItems.reserve(state.ink.size() + state.texts.size());
-            for (size_t index = 0; index < state.ink.size(); ++index) {
-                if (state.displayPage(index) == i && state.ink[index].page == i) {
-                    layerItems.push_back({state.ink[index].layerOrder, false, index});
+            for (size_t layerIndex = 0; layerIndex < state.layersForPage(i).layers.size(); ++layerIndex) {
+                const size_t layerId = layerIndex + 1;
+                const auto& layer = state.layersForPage(i).layers[layerIndex];
+                if (!layer.visible) {
+                    continue;
                 }
-            }
-            for (size_t index = 0; index < state.texts.size(); ++index) {
-                if (state.texts[index].page == i) {
-                    layerItems.push_back({state.texts[index].layerOrder, true, index});
+                for (size_t origin: layer.origins) {
+                    if (origin < layerDocuments.size()) {
+                        const auto& nativeLayer = ensureLayerPageCache(i, origin, deviceScale);
+                        cairo_save(cr);
+                        cairo_scale(cr, 1.0 / nativeLayer.scale, 1.0 / nativeLayer.scale);
+                        cairo_set_source_surface(cr, nativeLayer.surface.get(), 0, 0);
+                        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+                        cairo_paint(cr);
+                        cairo_restore(cr);
+                    }
+                    std::vector<LayerItem> layerItems;
+                    layerItems.reserve(state.ink.size() + state.texts.size());
+                    for (size_t index = 0; index < state.ink.size(); ++index) {
+                        if (state.displayPage(index) == i && state.displayLayerId(index) == layerId &&
+                            state.displayLayerOrigin(index) == origin) {
+                            layerItems.push_back({state.ink[index].layerOrder, false, index});
+                        }
+                    }
+                    for (size_t index = 0; index < state.texts.size(); ++index) {
+                        if (state.texts[index].page == i && state.texts[index].layerId == layerId &&
+                            state.texts[index].originLayer == origin) {
+                            layerItems.push_back({state.texts[index].layerOrder, true, index});
+                        }
+                    }
+                    std::stable_sort(layerItems.begin(), layerItems.end(),
+                                     [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
+                    for (const auto& item: layerItems) {
+                        if (item.text) {
+                            prototype::drawText(cr, state.texts[item.index]);
+                        } else {
+                            prototype::drawInkPreview(cr, state, item.index);
+                        }
+                    }
+                    if (state.current && state.current->page == i && state.current->layerId == layerId &&
+                        state.current->originLayer == origin) {
+                        prototype::drawInk(cr, *state.current);
+                    }
                 }
-            }
-            std::stable_sort(layerItems.begin(), layerItems.end(),
-                             [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
-            for (const auto& item: layerItems) {
-                if (item.text) {
-                    prototype::drawText(cr, state.texts[item.index]);
-                } else {
-                    prototype::drawInkPreview(cr, state, item.index);
-                }
-            }
-            for (size_t index = 0; index < state.ink.size(); ++index) {
-                if (state.displayPage(index) == i && state.ink[index].page != i)
-                    prototype::drawInkPreview(cr, state, index);
-            }
-            if (state.current && state.current->page == i) {
-                prototype::drawInk(cr, *state.current);
             }
             prototype::drawSelection(cr, state, i);
             cairo_restore(cr);
@@ -3199,6 +3583,76 @@ private:
         return G_SOURCE_REMOVE;
     }
 
+    gboolean smokeLayers() {
+        switch (layerVerifyStep++) {
+            case 0: {
+                require(nativeSession && pageCount == 2 && state.layersForPage(0).layers.size() == 2,
+                        "Layer verification requires a native two-layer document");
+                layerVerifyInitialInk = state.ink.size();
+                require(state.layersForPage(0).layers[0].name == "Lower" &&
+                                state.layersForPage(0).layers[1].name == "Upper",
+                        "Native layer names were not loaded into the sidebar model");
+                capture("layer-stack");
+                auto* upper = findLayerControl(2, false);
+                require(upper, "Upper layer is missing from the layer sidebar");
+                g_signal_emit_by_name(upper, "clicked");
+                require(state.activeLayerId(0) == 2, "Clicking a layer row did not select it");
+                g_signal_emit_by_name(layerAddButton, "clicked");
+                require(state.layersForPage(0).layers.size() == 3 && state.activeLayerId(0) == 3 &&
+                                state.activeLayerOrigin(0) == 2,
+                        "Add layer did not insert above the selected native layer");
+                break;
+            }
+            case 1: {
+                capture("layer-added");
+                require(gtk_widget_get_sensitive(layerMergeButton), "Merge down was unavailable for the top layer");
+                g_signal_emit_by_name(layerMergeButton, "clicked");
+                require(state.layersForPage(0).layers.size() == 2 && state.activeLayerId(0) == 2 &&
+                                state.layersForPage(0).layers[1].origins == std::vector<size_t>({1, 2}),
+                        "Merge down did not preserve source origins in bottom-to-top order");
+                break;
+            }
+            case 2: {
+                capture("layer-merged");
+                auto* upperVisibility = findLayerControl(2, true);
+                require(upperVisibility, "Upper layer visibility control is missing");
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(upperVisibility), false);
+                require(!state.layerVisible(0, 2), "Visibility control did not hide the selected layer");
+                break;
+            }
+            case 3: {
+                capture("layer-hidden");
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(state.layerVisible(0, 2), "Undo did not restore layer visibility");
+                const auto start = state.pageScreenPoint(0, 120, 120);
+                const auto end = state.pageScreenPoint(0, 170, 120);
+                g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+                g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+                g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+                require(state.ink.size() == layerVerifyInitialInk + 1 && state.ink.back().layerId == 2 &&
+                                state.ink.back().originLayer == 2,
+                        "New ink did not follow the active merged layer origin");
+                const auto saved = (std::filesystem::path(options.smokeDirectory) / "layer-saved.xopp").string();
+                saveCopyTo(saved);
+                require(busy, "Saving the layer verification document did not start");
+                break;
+            }
+            default: {
+                const auto saved = std::filesystem::path(options.smokeDirectory) / "layer-saved.xopp";
+                require(!modified() && savedCopyPath == saved.string() && std::filesystem::is_regular_file(saved),
+                        "Layer-aware save did not complete cleanly");
+                capture("layer-saved");
+                std::cout << "PASS: GTK layer selection, add, visibility, merge, undo and save\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+            }
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokeSettingsVerify() {
         if (settingsVerifyMode == "fallback") {
             require(importedConfig.usedSettingsFallback, "Expected corrupt settings.xml to trigger fallback");
@@ -3334,6 +3788,9 @@ private:
         }
         if (!settingsVerifyMode.empty()) {
             return smokeSettingsVerify();
+        }
+        if (!layerVerifyMode.empty()) {
+            return smokeLayers();
         }
         if (documentSmokeStep >= 0) {
             return smokeDocuments();
@@ -3784,13 +4241,14 @@ private:
                 capture("normal-saved");
                 auto packets = prototype::bridge::transferInk(state.ink);
                 auto texts = state.texts;
+                auto layers = state.pageLayers;
                 packets.push_back({0, false, false, 2, {0, 1, 0}, {{200, 220, 1}, {230, 220, 1}}});
                 const auto session = nativeSession;
                 const auto worker = options.worker;
                 const auto target = saveTarget;
                 const auto before = saveVersion;
-                runDocumentJob("Testing external edit…", [session, worker, target, before, packets, texts] {
-                    session->save(worker, target, packets, texts, before);
+                runDocumentJob("Testing external edit…", [session, worker, target, before, packets, texts, layers] {
+                    session->save(worker, target, packets, texts, layers, before);
                 }, [] {});
                 break;
             }
@@ -4482,6 +4940,9 @@ private:
     int effectiveAutosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
     std::string settingsVerifyMode;
     int settingsVerifyStep = 0;
+    std::string layerVerifyMode;
+    int layerVerifyStep = -1;
+    size_t layerVerifyInitialInk = 0;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;
     std::string savedCopyPath;
@@ -4540,6 +5001,7 @@ private:
     CanvasState state;
     prototype::CanvasInput input{state};
     PopplerDocument* document = nullptr;
+    std::vector<PopplerDocument*> layerDocuments;
     int pageCount = 1;
     bool syncingPage = false;
     GtkWidget* window = nullptr;
@@ -4587,6 +5049,12 @@ private:
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;
+    GtkWidget* layerRows = nullptr;
+    GtkWidget* layerAddButton = nullptr;
+    GtkWidget* layerDeleteButton = nullptr;
+    GtkWidget* layerMergeButton = nullptr;
+    int layerPanelPage = -1;
+    std::optional<prototype::PageLayers> layerPanelSnapshot;
     prototype::Brush penBrush;
     prototype::Brush highlightBrush{
             Tool::Highlighter,
@@ -4605,6 +5073,7 @@ private:
     GtkGesture* pinch = nullptr;
     GtkEventController* keys = nullptr;
     std::vector<PageCacheEntry> pageCache;
+    std::vector<PageCacheEntry> layerPageCache;
     uint64_t cacheClock = 0;
     double dragX = 0;
     double dragY = 0;
