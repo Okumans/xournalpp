@@ -28,12 +28,14 @@ struct StrokePacket {
     double width = 1;
     std::array<double, 3> color{};
     std::vector<Sample> points;
+    bool whiteout = false;
 };
 
 inline constexpr size_t maxTransferPoints = 1000000;
 
 inline void validate(const StrokePacket& stroke) {
-    if (stroke.page < 0 || !std::isfinite(stroke.width) || stroke.width <= 0 || stroke.points.empty()) {
+    if (stroke.page < 0 || (stroke.highlighter && stroke.whiteout) || !std::isfinite(stroke.width) ||
+        stroke.width <= 0 || stroke.points.empty()) {
         throw std::runtime_error("Invalid transferred stroke");
     }
     for (double channel: stroke.color) {
@@ -61,15 +63,16 @@ inline std::vector<StrokePacket> readTransfer(const std::filesystem::path& path)
     size_t points = 0;
     for (size_t i = 0; i < count; ++i) {
         StrokePacket stroke;
-        int highlighter, pressureSensitive;
+        int tool, pressureSensitive;
         size_t length;
-        if (!(stream >> stroke.page >> highlighter >> pressureSensitive >> stroke.width >> stroke.color[0] >>
+        if (!(stream >> stroke.page >> tool >> pressureSensitive >> stroke.width >> stroke.color[0] >>
               stroke.color[1] >> stroke.color[2] >> length) ||
-            highlighter < 0 || highlighter > 1 || pressureSensitive < 0 || pressureSensitive > 1 ||
+            tool < 0 || tool > 2 || pressureSensitive < 0 || pressureSensitive > 1 ||
             length > maxTransferPoints - points) {
             throw std::runtime_error("Invalid ink-transfer stroke header");
         }
-        stroke.highlighter = highlighter;
+        stroke.highlighter = tool == 1;
+        stroke.whiteout = tool == 2;
         stroke.pressureSensitive = pressureSensitive;
         stroke.points.reserve(length);
         for (size_t p = 0; p < length; ++p) {
@@ -104,7 +107,8 @@ inline void writeTransfer(const std::filesystem::path& path, const std::vector<S
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
     stream << "XOURNALPP_GTK4_INK_V1 " << strokes.size() << '\n';
     for (const auto& stroke: strokes) {
-        stream << stroke.page << ' ' << stroke.highlighter << ' ' << stroke.pressureSensitive << ' ' << stroke.width;
+        const int tool = stroke.whiteout ? 2 : (stroke.highlighter ? 1 : 0);
+        stream << stroke.page << ' ' << tool << ' ' << stroke.pressureSensitive << ' ' << stroke.width;
         for (double channel: stroke.color) {
             stream << ' ' << channel;
         }

@@ -5,9 +5,10 @@ libadwaita, and Poppler. The normal Xournal++ build, executable, settings, and
 document format are unchanged. There is no installation target.
 
 The prototype opens a PDF or native `.xopp` document and adds pressure-aware pen
-strokes and translucent highlights. It supports custom colors, quick color
-presets, stroke width, whole-stroke erasing, undo/redo, and zoom/pan with
-cancellation. A thumbnail sidebar navigates pages and becomes an overlay in
+strokes, translucent highlights, and whiteout ink. It supports custom colors, quick color
+presets, Xournal++ discrete tool size presets (`Very Fine`..`Very Thick`) synced with
+custom widths, three eraser modes (`Standard` partial `PaddedBox` splitting, `Whiteout`,
+and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages and becomes an overlay in
 narrower windows. With a document worker, Open, Save and Save As run in the
 background. New ink is saved as native objects alongside the original content. Open and Close protect
 unsaved changes with Save, Discard and Cancel. Save updates the associated
@@ -15,10 +16,14 @@ unsaved changes with Save, Discard and Cancel. Save updates the associated
 legacy files requiring conversion, symlink inputs and blank notebooks use Save As
 for their first save. Without a worker, ink remains temporary.
 
-Each stroke retains its own tool, color, and width. Pen and highlighter settings
-are remembered separately during a session. Highlight segments are composited
-once per stroke to avoid dark joints; multiplying the result preserves document
-text underneath. Undo/redo stores stroke deltas and retains session history. Thumbnails
+Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
+settings are remembered separately during a session, initialized to `ToolHandler`
+`MEDIUM` presets (`1.41 pt` royal-blue pen, `8.50 pt` yellow highlighter, `8.50 pt`
+standard eraser). Highlight segments are composited once per stroke to avoid dark
+joints; multiplying the result preserves document text underneath. Whiteout draws
+opaque white constant-width strokes serialized natively as `tool="eraser"`.
+Undo/redo stores value-semantic stroke slice deltas across insertions, whole-stroke
+deletions, and multi-sample partial splits while retaining session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
 
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
@@ -242,7 +247,8 @@ or toolbar configuration features.
 
 ## Remaining migration work
 
-The experiment still needs the real editing and selection models, full stroke
-geometry and partial erasing, continuous-page layout, signal-crash emergency handling, clipboard, dialogs, IME, settings, plugins and
-configurable toolbars. Platform packaging, accessibility, hardware input and GPU
-validation remain required before replacing the existing application.
+The experiment still needs live editing of loaded native strokes and selections,
+continuous-page layout, signal-crash emergency handling, clipboard, dialogs, IME,
+settings/palette import, plugins and configurable toolbars. Platform packaging,
+accessibility, hardware input and GPU validation remain required before replacing
+the existing application.

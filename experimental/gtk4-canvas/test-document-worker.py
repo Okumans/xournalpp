@@ -93,10 +93,11 @@ def main():
         assert len(original["pages"]) == 2 and original["pages"][0]["layers"] == 2
 
         ink = temporary / "strokes.ink"
-        ink.write_text("XOURNALPP_GTK4_INK_V1 3\n"
+        ink.write_text("XOURNALPP_GTK4_INK_V1 4\n"
                        "0 0 1 4 1 0 0 3\n20 20 .25\n40 40 .5\n60 20 .75\n"
                        "1 1 0 14 1 1 0 2\n20 70 1\n100 70 1\n"
-                       "0 0 0 3 0 0 1 1\n70 90 1\n")
+                       "0 0 0 3 0 0 1 1\n70 90 1\n"
+                       "0 2 1 8.5 0 0 0 2\n30 50 .2\n90 50 .8\n")
         output = temporary / "copy.xopp"
         run("save-copy", snapshot, output, ink)
         saved = xml(output)
@@ -104,7 +105,7 @@ def main():
         for index, saved_page in enumerate(saved.findall("page")):
             layers = saved_page.findall("layer")
             appended = list(layers[-1])
-            assert len(appended) == (2 if index == 0 else 1)
+            assert len(appended) == (3 if index == 0 else 1)
             for stroke in appended:
                 layers[-1].remove(stroke)
             assert content(saved_page) == content(before.findall("page")[index])
@@ -112,12 +113,15 @@ def main():
                 assert appended[0].attrib["tool"] == "pen"
                 assert list(map(float, appended[0].attrib["width"].split())) == [4, 1, 2]
                 assert len(appended[1].text.split()) == 4  # A duplicated dot.
+                assert appended[2].attrib["tool"] == "eraser"
+                assert appended[2].attrib["color"] == "#ffffffff"
+                assert float(appended[2].attrib["width"]) == 8.5
             else:
                 assert appended[0].attrib["tool"] == "highlighter"
                 assert float(appended[0].attrib["width"]) == 14
         inspected = json.loads(run("inspect", output))
         assert inspected["pages"][0]["texts"] == original["pages"][0]["texts"]
-        assert inspected["pages"][0]["strokes"] == 2
+        assert inspected["pages"][0]["strokes"] == 3
         run("render", output, temporary / "saved.pdf")
 
         normal = temporary / "normal.xopp"
@@ -199,6 +203,7 @@ def main():
         for index, data in enumerate(("invalid", "XOURNALPP_GTK4_INK_V1 0 trailing",
                                       "XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 1 0 0 1000001\n",
                                       "XOURNALPP_GTK4_INK_V1 1\n99 0 0 3 1 0 0 1\n1 1 1\n",
+                                      "XOURNALPP_GTK4_INK_V1 1\n0 3 0 3 1 0 0 1\n1 1 1\n",
                                       "XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 1 0 0 1\n-1 1 1\n")):
             ink.write_text(data)
             rejected = temporary / f"rejected-{index}.xopp"

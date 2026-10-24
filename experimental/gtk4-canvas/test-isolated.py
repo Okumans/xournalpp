@@ -141,7 +141,7 @@ def inside(args):
     for dark in (False, True):
         name = 'dark' if dark else 'light'
         output = evidence / name
-        screenshots = ("initial", "ink", "tools", "zoom", "narrow", "sidebar")
+        screenshots = ("initial", "ink", "tools", "eraser-split", "eraser-whiteout", "zoom", "narrow", "sidebar")
         if args.worker:
             screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
@@ -150,7 +150,8 @@ def inside(args):
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
                              "autosave-note.xopp", ".autosave-note.autosave.xopp",
                              "discard-autosave.xopp", ".discard-autosave.autosave.xopp",
-                             "recover-autosave.xopp", ".recover-autosave.autosave.xopp"):
+                             "recover-autosave.xopp", ".recover-autosave.autosave.xopp",
+                             "eraser-modes.xopp"):
                 (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
@@ -185,6 +186,18 @@ def inside(args):
             recovered = ET.fromstring(gzip.decompress((output / "recover-autosave.xopp").read_bytes()))
             if len(recovered.findall(".//stroke")) != 7 or (output / ".recover-autosave.autosave.xopp").exists():
                 raise RuntimeError("Recovered autosave lost strokes or retained its sidecar after Save")
+            eraser_saved = ET.fromstring(gzip.decompress((output / "eraser-modes.xopp").read_bytes()))
+            eraser_strokes = eraser_saved.findall(".//stroke")
+            if len(eraser_strokes) != 10:
+                raise RuntimeError(f"Expected 10 strokes after saving split pen + whiteout, got {len(eraser_strokes)}")
+            whiteout_stroke = eraser_strokes[-1]
+            if (whiteout_stroke.attrib.get("tool") != "eraser" or
+                    whiteout_stroke.attrib.get("color") != "#ffffffff" or
+                    abs(float(whiteout_stroke.attrib.get("width", "0")) - 12.0) > 1e-6):
+                raise RuntimeError("Native save did not serialize whiteout stroke as opaque white tool='eraser'")
+            if (len(eraser_strokes[-3].attrib.get("width", "").split()) < 2 or
+                    len(eraser_strokes[-2].attrib.get("width", "").split()) < 2):
+                raise RuntimeError("Split pressure-sensitive pen segments lost pressure data on native save")
         for screenshot in screenshots:
             path = output / f"{screenshot}.png"
             if not path.is_file() or path.stat().st_size < 1000:

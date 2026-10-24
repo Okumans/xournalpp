@@ -27,16 +27,16 @@ public:
         lastPressure = pressureMode ? *sample.pressure : 1;
         if (spaceHeld || !state.contains(state.documentPoint(sample.x, sample.y))) {
             mode = Mode::Pan;
-        } else if (eraserEnd || state.brush.tool == Tool::Eraser) {
+        } else if ((eraserEnd || state.brush.tool == Tool::Eraser) && state.eraserMode != EraserMode::Whiteout) {
             mode = Mode::Erase;
             state.beginErase();
             state.erase(sample.x, sample.y);
         } else {
             mode = Mode::Draw;
-            if (!state.begin(device, sample.x, sample.y, pressure(sample.pressure))) {
+            if (!state.begin(device, sample.x, sample.y, pressure(sample.pressure), eraserEnd)) {
                 return false;
             }
-            state.current->pressureSensitive = pressureMode && state.brush.tool == Tool::Pen;
+            state.current->pressureSensitive = pressureMode && state.current->brush.tool == Tool::Pen;
         }
         owner = device;
         lastX = sample.x;

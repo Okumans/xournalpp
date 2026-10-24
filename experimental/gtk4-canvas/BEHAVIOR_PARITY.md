@@ -9,6 +9,10 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Behavior | Existing implementation | Prototype status |
 | --- | --- | --- |
 | Highlighter opacity | `src/core/view/StrokeView.h`: `OPACITY_HIGHLIGHTER = 0.47` | Matched, with a pixel test |
+| Tool size presets | `ToolHandler::initTools`: Pen `0.42..5.67`, Highlighter `1.0..30.0`, Eraser `1.0..18.0` pt (`MEDIUM` default) | Matched, with bidirectional `Custom` spin sync and per-tool memory |
+| Standard eraser | `EraseHandler` + `Stroke::intersectWithPaddedBox`: `PaddedBox` (`halfSize`, `+0.4 * width` cap padding) | Matched for session ink, with linear split-pressure interpolation and closed-loop seam merging |
+| Whiteout eraser | `InputHandler` + `SaveHandler::visitStroke`: opaque `#ffffffff` constant-width `tool="eraser"` stroke | Matched in Cairo rendering, stylus eraser-end routing, and native `.xopp` serialization |
+| Delete-stroke eraser | `EraseHandler` (`ERASER_TYPE_DELETE_STROKE`) | Matched, and improved to use exact segment clipping + half stroke width at all segment lengths |
 | Keyboard zoom step | `Settings::loadDefault`: 10%; `Control` divides by 100 | Matched, including inverse zoom-out |
 | Wheel zoom step | `Settings::loadDefault`: 2%; `ZoomControl::zoomScroll` | Matched |
 | Wheel zoom focus | `onScrolledwindowMainScrollEvent` uses pointer coordinates | Matched; surface-to-canvas mapping checked with real toolbar/sidebar offsets |
@@ -20,7 +24,7 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Temporary hand tool | `XournalView` space press/release and `PenInputHandler::temporaryPan` | Space-drag remains a hand gesture until pointer release |
 | Outside-page drag | `PenInputHandler::actionStart` temporarily selects Hand | Matched for prototype page margins |
 | Broken grab | `StylusInputHandler`/`MouseInputHandler` call `actionEnd` | Delivered points finalize; explicit gesture cancellation discards unfinished ink |
-| Eraser undo | `EraseHandler` adds all deletions to one `DeleteUndoAction` | One whole-stroke eraser drag is one undo/redo action |
+| Eraser undo | `EraseHandler` (`EraseUndoAction` / `DeleteUndoAction`) | One partial or whole-stroke eraser drag is one delta undo/redo action without raw `UndoAction*` pointers |
 | Saved status | `UndoRedoHandler::savedUndo` tracks edit identity | Revision identities track saved state through undo, redo and history branching |
 | Unsaved changes | `Control::close` offers Save, Discard and Cancel | Save/Save As, Discard and Cancel; failed saves do not continue pending actions |
 | Save / Save As | `Control::saveImpl` associates the filename and `SaveJob` writes it | Matched for the prototype native model bridge; new/legacy/PDF inputs use Save As |
@@ -45,19 +49,18 @@ to the real native model when saving.
 
 ## Known differences that block application replacement
 
-- The original eraser supports standard partial erasing, whole-stroke deletion,
-  and whiteout. This experiment only deletes whole session strokes.
 - Existing stabilization, pressure inference and configuration, Shift drawing
   constraints, Shift-click connection, stroke/tap filtering, and device-specific
   button mappings have not been migrated.
 - The original uses its document, selection, layer, undo, and rich-text models.
   The native worker retains those objects, while rendering flattens them into
-  the prototype background. New session ink saves as native objects through
-  the worker. Existing objects cannot yet be edited in the prototype.
+  the prototype background. New session ink (pen, highlighter, whiteout, and
+  partially split segments) saves as native objects through the worker. Existing
+  objects loaded from `.xopp` cannot yet be edited or erased in the prototype.
 - The prototype shows a single page at a time and refits on page changes. It
   does not reproduce continuous-page layout, scroll positioning, or page history.
-- The prototype's initial brush presets and continuous width control still differ
-  from the production toolbar's discrete size presets and saved tool settings.
+- Saved user preferences (`settings.xml`), custom `.gpl` palettes, and toolbar
+  layout customization are not yet imported.
 - The normal application can configure touch behavior, hand recognition,
   scrolling, and gesture zoom. The experiment has only a small input subset.
 - The original stroke renderer handles pressure geometry, caps, line styles,

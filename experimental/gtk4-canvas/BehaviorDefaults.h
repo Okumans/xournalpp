@@ -1,15 +1,46 @@
 #pragma once
 
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <optional>
+
 namespace prototype::behavior {
 
-// Baseline: Settings::loadDefault, Control's percent conversion, and StrokeView.
+// Baseline: Settings::loadDefault, ToolHandler::initTools, Control's percent conversion, and StrokeView.
+enum class ToolSize : size_t {
+    VeryFine = 0,
+    Fine = 1,
+    Medium = 2,
+    Thick = 3,
+    VeryThick = 4,
+};
+
 inline constexpr double minimumPressure = 0.05;
 inline constexpr double pressureMultiplier = 1.0;
 inline constexpr double zoomStep = 0.10;
 inline constexpr double scrollZoomStep = 0.02;
 inline constexpr double highlightOpacity = 0.47;
 inline constexpr double motionThreshold = 0.3;              // InputHandler::PIXEL_MOTION_THRESHOLD
+inline constexpr double eraserPaddingCapRound = 0.4;        // EraseHandler::PADDING_COEFFICIENT_CAP[ROUND]
 inline constexpr unsigned int autosaveTimeoutSeconds = 180;  // Settings::loadDefault: 3 minutes
+
+inline constexpr std::array<double, 5> penWidths = {0.42, 0.85, 1.41, 2.26, 5.67};
+inline constexpr std::array<double, 5> highlighterWidths = {1.0, 2.83, 8.50, 19.84, 30.0};
+inline constexpr std::array<double, 5> eraserWidths = {1.0, 2.83, 8.50, 12.0, 18.0};
+
+inline constexpr std::array<double, 3> defaultPenColor = {0x33 / 255.0, 0x33 / 255.0, 0xcc / 255.0};  // #3333cc
+inline constexpr std::array<double, 3> defaultHighlighterColor = {1.0, 1.0, 0.0};                      // #ffff00
+inline constexpr std::array<double, 3> whiteoutColor = {1.0, 1.0, 1.0};                                // #ffffff
+
+inline std::optional<ToolSize> matchToolSize(const std::array<double, 5>& widths, double width) {
+    for (size_t i = 0; i < widths.size(); ++i) {
+        if (std::abs(widths[i] - width) < 0.005) {
+            return static_cast<ToolSize>(i);
+        }
+    }
+    return std::nullopt;
+}
 
 inline double steppedZoom(double zoom, bool zoomIn, bool scroll) {
     const auto factor = 1 + (scroll ? scrollZoomStep : zoomStep);

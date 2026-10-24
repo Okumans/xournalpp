@@ -13,17 +13,18 @@ inline void drawInk(cairo_t* cr, const Ink& ink) {
     }
     cairo_save(cr);
     const bool highlight = ink.brush.tool == Tool::Highlighter;
+    const bool whiteout = ink.brush.tool == Tool::Eraser;
     if (highlight) {
         // Composite a stroke once so overlapping segments have uniform opacity.
         cairo_push_group(cr);
     }
-    const auto& color = ink.brush.color;
+    const auto& color = whiteout ? behavior::whiteoutColor : ink.brush.color;
     cairo_set_source_rgb(cr, color[0], color[1], color[2]);
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     for (size_t i = 0; i < ink.points.size(); ++i) {
         const auto& a = ink.points[i ? i - 1 : 0];
         const auto& b = ink.points[i];
-        const auto width = ink.brush.width * (highlight ? 1.0 : (a.pressure + b.pressure) / 2);
+        const auto width = ink.brush.width * ((highlight || whiteout) ? 1.0 : (a.pressure + b.pressure) / 2);
         if (a.x == b.x && a.y == b.y) {
             cairo_arc(cr, b.x, b.y, width / 2, 0, 6.283185307179586);
             cairo_fill(cr);

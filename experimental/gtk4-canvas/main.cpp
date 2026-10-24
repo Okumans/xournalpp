@@ -339,8 +339,12 @@ private:
         }
         input.reset();
         const auto brush = state.brush;
+        const auto eraserMode = state.eraserMode;
+        const auto eraserWidth = state.eraserWidth;
         state = CanvasState{};
         state.brush = brush;
+        state.eraserMode = eraserMode;
+        state.eraserWidth = eraserWidth;
         savedRevision = recovery ? std::optional<size_t>{} : std::optional<size_t>{0};
         autosavedRevision = 0;
         recoveredChanges = bool(recovery);
@@ -762,24 +766,46 @@ private:
         return result;
     }
 
+    void syncSizeDropdown() {
+        if (!sizeDropdown) {
+            return;
+        }
+        const auto matched = prototype::behavior::matchToolSize(prototype::widthsForTool(state.brush.tool),
+                                                                state.brush.width);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), matched ? static_cast<guint>(*matched) : 5u);
+    }
+
     void selectTool(Tool tool) {
         if (state.brush.tool == Tool::Pen) {
             penBrush = state.brush;
         } else if (state.brush.tool == Tool::Highlighter) {
             highlightBrush = state.brush;
+        } else if (state.brush.tool == Tool::Eraser) {
+            eraserBrush = state.brush;
+            state.eraserWidth = eraserBrush.width;
         }
         input.cancel();
-        state.brush = tool == Tool::Highlighter ? highlightBrush : penBrush;
+        state.brush = tool == Tool::Highlighter ? highlightBrush : (tool == Tool::Eraser ? eraserBrush : penBrush);
         state.brush.tool = tool;
-        syncingBrush = true;
-        const auto& color = state.brush.color;
-        const GdkRGBA rgba{static_cast<float>(color[0]), static_cast<float>(color[1]), static_cast<float>(color[2]), 1};
-        gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
-        gtk_spin_button_set_value(GTK_SPIN_BUTTON(widthButton), state.brush.width);
-        syncingBrush = false;
-        for (auto* control: {colorButton, paletteButton, widthButton}) {
-            gtk_widget_set_sensitive(control, tool != Tool::Eraser);
+        if (tool == Tool::Eraser) {
+            state.brush.color = prototype::behavior::whiteoutColor;
+            state.eraserWidth = state.brush.width;
         }
+        syncingBrush = true;
+        if (tool != Tool::Eraser) {
+            const auto& color = state.brush.color;
+            const GdkRGBA rgba{static_cast<float>(color[0]), static_cast<float>(color[1]),
+                               static_cast<float>(color[2]), 1};
+            gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
+        }
+        gtk_widget_set_visible(colorBox, tool != Tool::Eraser);
+        gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
+        gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
+        gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), static_cast<guint>(state.eraserMode));
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(widthButton), state.brush.width);
+        syncSizeDropdown();
+        syncingBrush = false;
         if (canvas) {
             update();
         }
@@ -960,9 +986,11 @@ private:
                                                                })));
         adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), header);
 
-        auto* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        auto* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         gtk_widget_add_css_class(toolbar, "toolbar");
         gtk_widget_set_halign(toolbar, GTK_ALIGN_CENTER);
+        auto* toolGroup = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(toolGroup, "linked");
         const std::array names = {"Pen", "Highlight", "Eraser"};
         for (size_t i = 0; i < toolButtons.size(); ++i) {
             toolButtons[i] = gtk_toggle_button_new_with_label(names[i]);
@@ -977,8 +1005,10 @@ private:
                                  }
                              }),
                              this);
-            gtk_box_append(GTK_BOX(toolbar), toolButtons[i]);
+            gtk_box_append(GTK_BOX(toolGroup), toolButtons[i]);
         }
+        gtk_box_append(GTK_BOX(toolbar), toolGroup);
+        colorBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         auto* colorDialog = gtk_color_dialog_new();
         gtk_color_dialog_set_with_alpha(colorDialog, false);
         // The button constructor takes ownership of the dialog.
@@ -986,7 +1016,7 @@ private:
         gtk_widget_set_tooltip_text(colorButton, "Ink color");
         g_signal_connect(colorButton, "notify::rgba", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
-                             if (!self->syncingBrush) {
+                             if (!self->syncingBrush && self->state.brush.tool != Tool::Eraser) {
                                  const auto* color =
                                          gtk_color_dialog_button_get_rgba(GTK_COLOR_DIALOG_BUTTON(self->colorButton));
                                  self->state.brush.color[0] = color->red;
@@ -997,19 +1027,70 @@ private:
                              }
                          }),
                          this);
-        gtk_box_append(GTK_BOX(toolbar), colorButton);
-        gtk_box_append(GTK_BOX(toolbar), createPalette());
+        gtk_box_append(GTK_BOX(colorBox), colorButton);
+        gtk_box_append(GTK_BOX(colorBox), createPalette());
+        gtk_box_append(GTK_BOX(toolbar), colorBox);
+
+        const char* const eraserModes[] = {"Standard", "Whiteout", "Delete Stroke", nullptr};
+        eraserModeDropdown = gtk_drop_down_new_from_strings(eraserModes);
+        gtk_widget_set_tooltip_text(eraserModeDropdown, "Eraser mode");
+        g_signal_connect(eraserModeDropdown, "notify::selected", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingBrush) {
+                                 const auto selected =
+                                         gtk_drop_down_get_selected(GTK_DROP_DOWN(self->eraserModeDropdown));
+                                 if (selected <= 2) {
+                                     self->input.cancel();
+                                     self->state.eraserMode = static_cast<prototype::EraserMode>(selected);
+                                     self->update();
+                                 }
+                             }
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(toolbar), eraserModeDropdown);
+
         gtk_box_append(GTK_BOX(toolbar), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
-        gtk_box_append(GTK_BOX(toolbar), gtk_label_new("Width"));
-        widthButton = gtk_spin_button_new_with_range(0.5, 36, 0.5);
-        gtk_spin_button_set_digits(GTK_SPIN_BUTTON(widthButton), 1);
+        const char* const sizeLabels[] = {"Very Fine", "Fine", "Medium", "Thick", "Very Thick", "Custom", nullptr};
+        sizeDropdown = gtk_drop_down_new_from_strings(sizeLabels);
+        gtk_widget_set_tooltip_text(sizeDropdown, "Tool size preset");
+        g_signal_connect(sizeDropdown, "notify::selected", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingBrush) {
+                                 const auto selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(self->sizeDropdown));
+                                 if (selected < 5) {
+                                     const auto width = prototype::widthsForTool(self->state.brush.tool)[selected];
+                                     self->input.cancel();
+                                     self->state.brush.width = width;
+                                     if (self->state.brush.tool == Tool::Eraser) {
+                                         self->eraserBrush.width = width;
+                                         self->state.eraserWidth = width;
+                                     }
+                                     self->syncingBrush = true;
+                                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(self->widthButton), width);
+                                     self->syncingBrush = false;
+                                     self->update();
+                                 }
+                             }
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(toolbar), sizeDropdown);
+        widthButton = gtk_spin_button_new_with_range(0.2, 36.0, 0.1);
+        gtk_spin_button_set_digits(GTK_SPIN_BUTTON(widthButton), 2);
         gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(widthButton), true);
-        gtk_widget_set_tooltip_text(widthButton, "Stroke width in document points");
+        gtk_editable_set_width_chars(GTK_EDITABLE(widthButton), 5);
+        gtk_widget_set_tooltip_text(widthButton, "Stroke or eraser width in document points");
         g_signal_connect(widthButton, "value-changed", G_CALLBACK(+[](GtkSpinButton* button, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              if (!self->syncingBrush) {
                                  self->input.cancel();
                                  self->state.brush.width = gtk_spin_button_get_value(button);
+                                 if (self->state.brush.tool == Tool::Eraser) {
+                                     self->eraserBrush.width = self->state.brush.width;
+                                     self->state.eraserWidth = self->state.brush.width;
+                                 }
+                                 self->syncingBrush = true;
+                                 self->syncSizeDropdown();
+                                 self->syncingBrush = false;
                                  self->update();
                              }
                          }),
@@ -1713,11 +1794,28 @@ private:
                 "Stylus backlog/release lost samples or added a hover tail");
         state.undo();
 
+        begin(Device::Stylus, x + 50, y + 15, 0.5, true);
+        g_signal_emit_by_name(stylus, "up", x + 50, y + 15);
+        require(state.ink.size() == count + 1 && state.brush.tool == Tool::Pen,
+                "Stylus eraser end failed to split stroke or changed toolbar selection");
+        state.undo();
+
+        state.eraserMode = prototype::EraserMode::Whiteout;
+        begin(Device::Stylus, x + 20, y + 15, 0.5, true);
+        g_signal_emit_by_name(stylus, "motion", x + 60, y + 15);
+        g_signal_emit_by_name(stylus, "up", x + 60, y + 15);
+        require(state.ink.size() == count + 1 && state.ink.back().brush.tool == Tool::Eraser &&
+                        state.brush.tool == Tool::Pen,
+                "Stylus eraser end in whiteout mode failed or changed toolbar selection");
+        state.undo();
+
+        state.eraserMode = prototype::EraserMode::DeleteStroke;
         begin(Device::Stylus, x, y, 0.5, true);
         g_signal_emit_by_name(stylus, "up", x, y);
         require(state.ink.size() == count - 1 && state.brush.tool == Tool::Pen,
-                "Eraser end changed toolbar selection or failed to erase");
+                "Stylus eraser end in delete-stroke mode failed or changed toolbar selection");
         state.undo();
+        state.eraserMode = prototype::EraserMode::Standard;
 
         const auto oldX = state.offsetX;
         const auto oldY = state.offsetY;
@@ -1872,9 +1970,16 @@ private:
                         "Pointer anchor failed to account for sidebar and toolbar offsets");
                 capture("initial");
                 baselineRasters = rasterizations;
+                require(std::abs(state.brush.width - 1.41) < 1e-6 &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 2u,
+                        "Initial Pen preset did not match Medium 1.41pt");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 4u);
+                require(std::abs(state.brush.width - 5.67) < 1e-6, "Very Thick Pen preset did not apply 5.67pt");
                 const GdkRGBA red{1, 0, 0, 1};
                 gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &red);
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(widthButton), 6);
+                require(gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 5u,
+                        "Custom width did not switch preset selector to Custom");
                 g_signal_emit_by_name(mouse, "drag-begin", x, y);
                 g_signal_emit_by_name(mouse, "drag-update", 100.0, 30.0);
                 g_signal_emit_by_name(mouse, "drag-end", 160.0, 0.0);
@@ -1892,8 +1997,12 @@ private:
                                       GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
                 require(handled && state.ink.size() == 1, "Keyboard redo failed");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[1]), true);
-                require(state.brush.tool == Tool::Highlighter && state.brush.width == 14,
-                        "Highlighter did not restore its preset");
+                require(state.brush.tool == Tool::Highlighter && std::abs(state.brush.width - 8.50) < 1e-6 &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 2u,
+                        "Highlighter did not restore its Medium 8.50pt preset");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
+                require(std::abs(state.brush.width - 19.84) < 1e-6,
+                        "Highlighter Thick preset did not apply 19.84pt");
                 g_signal_emit_by_name(mouse, "drag-begin", x, y + 50);
                 g_signal_emit_by_name(mouse, "drag-update", 100.0, 0.0);
                 g_signal_emit_by_name(mouse, "drag-end", 160.0, 0.0);
@@ -1905,18 +2014,50 @@ private:
                 require(rasterizations == baselineRasters, "Brush changes unnecessarily rerasterized PDF");
                 capture("tools");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
-                require(state.brush.width == 6 && state.brush.color[0] == 1, "Pen settings were lost on tool switch");
+                require(state.brush.width == 6 && state.brush.color[0] == 1 &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 5u,
+                        "Pen custom settings were lost on tool switch");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[2]), true);
-                require(!gtk_widget_get_sensitive(colorButton) && !gtk_widget_get_sensitive(widthButton),
-                        "Eraser exposes irrelevant brush settings");
-                g_signal_emit_by_name(mouse, "drag-begin", x, y);
+                require(!gtk_widget_get_visible(colorBox) && gtk_widget_get_visible(eraserModeDropdown) &&
+                                gtk_widget_get_sensitive(widthButton) && std::abs(state.brush.width - 8.50) < 1e-6 &&
+                                state.eraserMode == prototype::EraserMode::Standard,
+                        "Eraser did not expose mode and size controls with Medium 8.50pt preset");
+                g_signal_emit_by_name(mouse, "drag-begin", x + 50, y + 15);
                 g_signal_emit_by_name(mouse, "drag-end", 0.0, 0.0);
-                require(state.ink.size() == 1, "Eraser control did not remove pen ink");
+                require(state.ink.size() == 3, "Standard eraser control did not split pen ink");
+                break;
+            case 3:
+                capture("eraser-split");
                 g_signal_emit_by_name(undoButton, "clicked");
-                require(state.ink.size() == 2, "Undo button did not restore erased ink");
+                require(state.ink.size() == 2, "Undo button did not restore split pen ink");
                 g_signal_emit_by_name(redoButton, "clicked");
-                require(state.ink.size() == 1, "Redo button did not erase ink again");
+                require(state.ink.size() == 3, "Redo button did not split pen ink again");
                 g_signal_emit_by_name(undoButton, "clicked");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 1u);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
+                require(state.eraserMode == prototype::EraserMode::Whiteout &&
+                                std::abs(state.brush.width - 12.0) < 1e-6,
+                        "Eraser mode or Thick preset did not update state");
+                g_signal_emit_by_name(mouse, "drag-begin", x + 35, y - 5);
+                g_signal_emit_by_name(mouse, "drag-update", 30.0, 90.0);
+                g_signal_emit_by_name(mouse, "drag-end", 30.0, 90.0);
+                require(state.ink.size() == 3 && state.ink.back().brush.tool == Tool::Eraser,
+                        "Whiteout eraser did not commit whiteout ink");
+                break;
+            case 4:
+                capture("eraser-whiteout");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 2u);
+                require(state.eraserMode == prototype::EraserMode::DeleteStroke,
+                        "Delete Stroke mode was not selected");
+                g_signal_emit_by_name(mouse, "drag-begin", x + 65, y + 85);
+                g_signal_emit_by_name(mouse, "drag-end", 0.0, 0.0);
+                require(state.ink.size() == 2, "Delete Stroke eraser did not remove whiteout stroke");
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(state.ink.size() == 3, "Undo did not restore deleted whiteout stroke");
+                g_signal_emit_by_name(redoButton, "clicked");
+                require(state.ink.size() == 2, "Redo did not remove whiteout stroke again");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 2u);
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
                 g_signal_emit_by_name(mouse, "drag-begin", x, y);
                 g_signal_emit_by_name(mouse, "cancel", nullptr);
@@ -1927,7 +2068,7 @@ private:
                 g_signal_emit_by_name(pinch, "end", nullptr);
                 require(!state.pinching && state.scrollBlockedUntil > g_get_monotonic_time(), "Pinch cleanup failed");
                 break;
-            case 3:
+            case 5:
                 require(rasterizations > baselineRasters, "Zoom did not refresh PDF resolution");
                 capture("zoom");
                 ensureCache(1);
@@ -1949,14 +2090,14 @@ private:
                 fitted = false;
                 update();
                 break;
-            case 4:
+            case 6:
                 require(adw_overlay_split_view_get_collapsed(splitView), "Narrow sidebar did not collapse");
                 require(gtk_widget_get_width(canvas) < 720, "Narrow viewport did not resize");
                 capture("narrow", contentView);
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sidebarButton), true);
                 require(adw_overlay_split_view_get_show_sidebar(splitView), "Sidebar toggle did not open overlay");
                 break;
-            case 5:
+            case 7:
                 break;  // Let the overlay animation finish before capturing it.
             default: {
                 const auto cacheBytes =
@@ -2395,6 +2536,36 @@ private:
                                 prototype::bridge::documentVersion(recoverDoc).token != smokeAutosaveBaseVersion,
                         "Saving a recovered document did not update target or clean up its sidecar autosave");
                 capture("autosave-saved");
+                const auto x = state.offsetX + 80 * state.zoom;
+                const auto y = state.offsetY + 310 * state.zoom;
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
+                begin(Device::Stylus, x, y, 0.3);
+                motion(Device::Stylus, x + 160 * state.zoom, y, 0.9);
+                finish(Device::Stylus, 0.9);
+                // Split the stylus stroke with Standard eraser and add a Whiteout stroke, then save natively.
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[2]), true);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 2u);
+                begin(Device::Mouse, x + 80 * state.zoom, y);
+                finish(Device::Mouse);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 1u);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
+                begin(Device::Mouse, x + 30 * state.zoom, y - 20 * state.zoom);
+                motion(Device::Mouse, x + 30 * state.zoom, y + 20 * state.zoom);
+                finish(Device::Mouse);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                require(state.ink.size() == 3 && state.ink[2].brush.tool == Tool::Eraser,
+                        "Expected two split pen segments and one whiteout stroke before native save");
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "eraser-modes.xopp").string();
+                chooseSave();
+                break;
+            }
+            case 33: {
+                require(!modified() && saveTarget.ends_with("eraser-modes.xopp") &&
+                                std::filesystem::is_regular_file(saveTarget),
+                        "Saving split ink and whiteout stroke failed");
                 const auto x = state.offsetX + 210 * state.zoom;
                 const auto y = state.offsetY + 230 * state.zoom;
                 input.begin(Device::Mouse, {x, y, std::nullopt});
@@ -2485,9 +2656,12 @@ private:
     GtkWidget* undoButton = nullptr;
     GtkWidget* redoButton = nullptr;
     GtkWidget* sidebarButton = nullptr;
+    GtkWidget* colorBox = nullptr;
     GtkWidget* colorButton = nullptr;
     GtkWidget* paletteButton = nullptr;
     GtkWidget* palettePopover = nullptr;
+    GtkWidget* eraserModeDropdown = nullptr;
+    GtkWidget* sizeDropdown = nullptr;
     GtkWidget* widthButton = nullptr;
     std::array<GtkWidget*, 3> toolButtons{};
     AdwOverlaySplitView* splitView = nullptr;
@@ -2495,7 +2669,14 @@ private:
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;
     prototype::Brush penBrush;
-    prototype::Brush highlightBrush{Tool::Highlighter, {1, 0.88, 0.4}, 14};
+    prototype::Brush highlightBrush{
+            Tool::Highlighter,
+            prototype::behavior::defaultHighlighterColor,
+            prototype::behavior::highlighterWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
+    prototype::Brush eraserBrush{
+            Tool::Eraser,
+            prototype::behavior::whiteoutColor,
+            prototype::behavior::eraserWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
     bool syncingBrush = false;
     GtkGesture* mouse = nullptr;
     GtkGesture* stylus = nullptr;
