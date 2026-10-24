@@ -37,7 +37,8 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Autosave paths & swap | `AutosaveJob::run` + `Util::getAutosaveFilepath`: `.name.autosave.xopp` or `<cache>/xournalpp/autosaves/<pid>.autosave.xopp` via `.swap` | Matched, with `UndoRedoHandler::isChangedAutosave` revision tracking and cleanup on Save, Discard and clean exit |
 | Cache autosave guard | `Control.cpp` `shouldFileOpen`: refuses direct Open under `<cache>/xournalpp` | Matched, including symlink resolution into the cache tree |
 | Crash recovery | `XournalMain::checkForEmergencySave`: `emergencysave.xopp` (`Delete file` / `Restore file`, unnamed & dirty) | Matched for `emergencysave.xopp`; extended to also prompt on dead-PID cache autosaves and `.name.autosave.xopp` sidecars |
-| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; top-layer editable stroke suffix extracted losslessly into live ink (`Point::NO_PRESSURE` normalized) while preserving lower layers, z-order, text/images/audio/fills/dashes |
+| Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; supported top-layer stroke and text suffixes are extracted for editing and reinserted in original order, while lower layers and unsupported native objects stay in the background document |
+| Native rich text | `Text`, `TextView`, `TextEditor`, `UndoRedoHandler` | Eligible non-audio native text loads into a Pango renderer and inline `GtkTextView`; UTF-8, font, color, wrap, alignment, transform, and supported style runs round-trip. Text tool creates items; Smart Select click edits them. Bold, italic, underline, strikethrough, superscript, and subscript work on selected text and join shared undo/redo. Text is not yet movable or resizable with object selection, and the editor overlay does not follow rotated/scaled transforms. |
 | Preferences import (`settings.xml`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure sensitivity/min/multiplier, zoom steps, `showSidebar`, `themeVariant` (`useSystem`/`forceLight`/`forceDark`), autosave enable/timeout, and `colorPalette`; eliminates legacy `Settings::load` disk writes/`setenv("LANGUAGE")`, `parseData` `nullptr` crashes, `tempg_ascii_strtod` locale sensitivity, and `ToolHandler::loadSettings` missing-`current` skips |
 | Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
 | Stroke selection | `Selector.cpp`, `LassoSelector.cpp`, `SmartSelect.cpp`, and `Stroke::isInSelection`: all-point rectangle/lasso winding containment with 1 pt page-edge extension; object picking follows stroke path distance | Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), Smart Select (`S`), Shift-add rectangle, active-page `Ctrl+A`, Delete and Escape. Currently selects only editable strokes from the visible top-layer suffix. |
@@ -56,8 +57,8 @@ autosave cadence, and `.gpl` color palettes are imported strictly read-only from
 `settings.xml` and `.gpl` files without ever modifying GTK 3 configuration files.
 Per-device button mappings (`buttonConfig`, `deviceClasses`), `toolbar.ini`
 layouts, and interactive preference editing/persistence still require migration.
-The prototype uses an independent model for session edits and transfers them
-to the real native model when saving.
+The prototype uses independent ink and text models for session edits and
+transfers them to the real native model when saving.
 
 ## Known differences that block application replacement
 
@@ -65,15 +66,17 @@ to the real native model when saving.
   Shift-click connection, stroke/tap filtering, and device-specific button
   mappings (`buttonConfig`, `deviceClasses`) have not been migrated.
 - The original uses its document, selection, layer, undo, and rich-text models.
-  When opening a `.xopp` via the worker, the contiguous suffix of standard
-  top-layer round-cap unfilled undashed non-audio `pen`, `highlighter`, and
-  `#ffffffff` `eraser` strokes on visible top layers is extracted into live
-  editable/erasable session ink (normalizing legacy `Point::NO_PRESSURE`
-  sentinels into positive per-point pressure multipliers) and omitted from the
-  background snapshot/PDF so saving neither duplicates ink nor alters z-order.
-  Lower layers, strokes underneath text/images/shapes, dashed/filled/non-round
-  strokes, audio-linked strokes, text, LaTeX, and images remain flattened in the
-  background preview and cannot yet be selected or edited interactively.
+  When opening a `.xopp` via the worker, supported top-layer round-cap,
+  unfilled, undashed, non-audio `pen`, `highlighter`, and `#ffffffff` `eraser`
+  strokes plus valid non-empty native text are extracted from each visible
+  top-layer suffix. Stroke pressure sentinels are normalized into positive
+  per-point multipliers. Text retains UTF-8 content, supported style runs, and
+  its transform. Both are removed from the background snapshot/PDF and written
+  back in their original order, avoiding duplicate objects. Lower layers,
+  objects underneath a non-editable suffix element, unsupported stroke types,
+  audio-linked text, LaTeX, and images remain flattened and cannot yet be edited.
+  Text can be created and edited, but is not part of rectangle/lasso selection
+  and cannot yet be moved or transformed in the canvas.
 - The prototype renders a continuous single-column vertical multi-page layout
   and preserves zoom across page navigation, but horizontal, paired-page, and
   multi-column grid layout modes (`LayoutSettings`), scroll-position history
@@ -117,6 +120,6 @@ file semantics remain migration work.
 
 ## Selection scope
 
-Selection and transforms apply to editable standard strokes in the visible top-layer suffix. Rectangle and lasso use all-point containment; both extend a boundary within one point of the page edge. Smart Select picks the topmost editable stroke by path distance. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
+Selection and transforms apply to editable standard strokes in the visible top-layer suffix. Rectangle and lasso use all-point containment; both extend a boundary within one point of the page edge. Smart Select picks the topmost editable stroke by path distance, while a Smart Select click opens eligible native text for editing. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
 
-Move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text/images/shapes, lower-layer objects, other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.
+Move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text can be edited but cannot yet be selected, moved, resized, or rotated; images/shapes, lower-layer objects, other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.

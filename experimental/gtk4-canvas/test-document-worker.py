@@ -125,6 +125,40 @@ def main():
         assert inspected["pages"][0]["strokes"] == 3
         run("render", output, temporary / "saved.pdf")
 
+        # Editable rich text joins strokes in the native top-layer order and
+        # survives extraction, session save, and XML serialization unchanged.
+        rich_native = temporary / "rich-native.xopp"
+        rich_root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
+        ET.SubElement(rich_root, "title").text = "Rich text extraction"
+        rich_page = ET.SubElement(rich_root, "page", {"width": "595", "height": "842"})
+        ET.SubElement(rich_page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+        rich_layer = ET.SubElement(rich_page, "layer", {"name": "Top"})
+        ET.SubElement(rich_layer, "stroke", {"tool": "pen", "capStyle": "round", "color": "#112233ff",
+                                               "width": "2"}).text = "10 20 50 20"
+        rich_text = ET.SubElement(rich_layer, "text", {
+            "font": "Sans", "size": "12", "x": "30", "y": "45", "color": "#000000ff",
+            "styles": "0-4:U2FucyBCb2xk:16:4278190335:1;4-11:U2Fucw==:12:-:8"})
+        rich_text.text = "Rich π text"
+        ET.SubElement(rich_layer, "stroke", {"tool": "highlighter", "capStyle": "round", "color": "#ffff007f",
+                                               "width": "8"}).text = "10 70 50 70"
+        rich_native.write_bytes(gzip.compress(ET.tostring(rich_root, encoding="utf-8", xml_declaration=True)))
+        rich_snap = temporary / "rich-snap.xopp"
+        rich_pdf = temporary / "rich-snap.pdf"
+        rich_ink = temporary / "rich.ink"
+        rich_transfer = temporary / "rich.text"
+        run("open", rich_native, rich_snap, rich_pdf, rich_ink, rich_transfer)
+        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V1 1\n")
+        assert "Rich π text".encode() in rich_transfer.read_bytes()
+        assert rich_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V2 2"
+        rich_saved = temporary / "rich-saved.xopp"
+        run("save-copy", rich_snap, rich_saved, rich_ink, rich_transfer)
+        assert content(xml(rich_saved).find("page")) == content(xml(rich_native).find("page"))
+        rich_layer_items = xml(rich_saved).findall("page/layer")[-1]
+        assert [item.tag for item in rich_layer_items] == ["stroke", "text", "stroke"]
+        rich_text_roundtrip = rich_layer_items[1]
+        assert rich_text_roundtrip.text == "Rich π text"
+        assert rich_text_roundtrip.attrib["styles"] == rich_text.attrib["styles"]
+
         normal = temporary / "normal.xopp"
         normal_ink = temporary / "normal.ink"
         normal_ink.write_text("XOURNALPP_GTK4_INK_V1 1\n0 0 0 3 0 0 1 2\n30 40 1\n80 90 1\n")
@@ -272,7 +306,7 @@ def main():
         assert existing_ink.read_text() == "do not overwrite" and not (temporary / "bad-snap.xopp").exists()
         assert run("open", mixed, mixed_snap, mixed_pdf, mixed_ink) == "NATIVE_SAVE\n"
         mixed_lines = mixed_ink.read_text().splitlines()
-        assert mixed_lines[0] == "XOURNALPP_GTK4_INK_V1 3"
+        assert mixed_lines[0] == "XOURNALPP_GTK4_INK_V2 3"
         snap_info = json.loads(run("inspect", mixed_snap))["pages"][0]
         assert snap_info["layers"] == 2 and snap_info["strokes"] == 5 and snap_info["texts"] == 1
         mixed_roundtrip = temporary / "mixed-roundtrip.xopp"
@@ -290,7 +324,7 @@ def main():
         audio_pdf = temporary / "audio-snap.pdf"
         audio_ink = temporary / "audio.ink"
         run("open", fixtures / "packaged_xopp/audioAttachment/new.xopp", audio_snap, audio_pdf, audio_ink)
-        assert audio_ink.read_text().strip() == "XOURNALPP_GTK4_INK_V1 0"
+        assert audio_ink.read_text().strip() == "XOURNALPP_GTK4_INK_V2 0"
         assert json.loads(run("inspect", audio_snap))["pages"][0]["strokes"] == 1
 
         # Real 13,064-stroke handwritten notebook extracts completely and round-trips without duplication.
@@ -298,7 +332,7 @@ def main():
         hw_pdf = temporary / "hw-snap.pdf"
         hw_ink = temporary / "hw.ink"
         run("open", fixtures / "benchmark/handwritten-text.xopp", hw_snap, hw_pdf, hw_ink)
-        assert hw_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V1 13064"
+        assert hw_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V2 13064"
         assert json.loads(run("inspect", hw_snap))["pages"][0]["strokes"] == 0
         hw_roundtrip = temporary / "hw-roundtrip.xopp"
         run("save-copy", hw_snap, hw_roundtrip, hw_ink)

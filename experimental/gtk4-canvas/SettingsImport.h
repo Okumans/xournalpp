@@ -42,6 +42,8 @@ struct ImportedSettings {
     double pressureMultiplier = behavior::pressureMultiplier;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
+    std::string textFontName = "Sans";
+    double textFontSize = 12;
 
     bool showSidebar = true;
     ThemeVariant themeVariant = ThemeVariant::UseSystem;
@@ -319,9 +321,22 @@ inline SettingsParseResult parseSettingsXml(std::string_view xmlContent) {
 
         if (st->elementStack.size() == 1 && tag == "property") {
             const char* propName = settings_detail::findAttr(attrNames, attrValues, "name");
-            const char* propValue = settings_detail::findAttr(attrNames, attrValues, "value");
-            if (propName && propValue) {
-                settings_detail::applyProperty(st->candidate, propName, propValue);
+            if (propName && std::string_view(propName) == "font") {
+                const char* font = settings_detail::findAttr(attrNames, attrValues, "font");
+                const char* size = settings_detail::findAttr(attrNames, attrValues, "size");
+                if (font && *font && std::string_view(font).size() <= 4096) {
+                    st->candidate.textFontName = font;
+                }
+                if (size) {
+                    if (const auto parsed = settings_detail::parseAsciiDouble(size); parsed && *parsed > 0) {
+                        st->candidate.textFontSize = std::clamp(*parsed, 1.0, 512.0);
+                    }
+                }
+            } else if (propName) {
+                const char* propValue = settings_detail::findAttr(attrNames, attrValues, "value");
+                if (propValue) {
+                    settings_detail::applyProperty(st->candidate, propName, propValue);
+                }
             }
         } else if (tag == "data") {
             const char* dataName = settings_detail::findAttr(attrNames, attrValues, "name");
@@ -431,6 +446,8 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.scrollZoomStep = settings.scrollZoomStep;
     state.eraserMode = settings.eraserMode;
     state.eraserWidth = settings.eraserWidth;
+    state.textFontName = settings.textFontName;
+    state.textFontSize = settings.textFontSize;
 }
 
 }  // namespace prototype

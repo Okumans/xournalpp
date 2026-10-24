@@ -96,6 +96,57 @@ static void savedHistory() {
     check(state.revision() == current, "undo eraser restores the saved revision");
 }
 
+static void editableTextHistory() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}});
+
+    TextItem first;
+    first.page = 0;
+    first.text = "héllo";
+    first.x = 40;
+    first.y = 80;
+    check(state.insertText(first), "text insertion should create an editable item");
+    const auto insertedRevision = state.revision();
+    check(state.texts.size() == 1 && state.texts[0].layerOrder == 0 && state.texts[0].text == "héllo",
+          "new text should append to the page layer order");
+
+    auto changed = state.texts[0];
+    changed.text = "edited";
+    changed.styleRuns.push_back({0, 6, "Sans Bold", 14, std::nullopt, 0});
+    check(state.replaceText(0, changed) && state.texts[0].layerOrder == 0 && state.texts[0].text == "edited",
+          "editing text should preserve its native layer position");
+    const auto editedRevision = state.revision();
+    check(editedRevision != insertedRevision, "a text edit should create a new document revision");
+    state.undo();
+    check(state.texts[0].text == "héllo" && state.texts[0].styleRuns.empty() &&
+                  state.revision() == insertedRevision,
+          "undo should restore text content and inline styles");
+    state.redo();
+    check(state.texts[0].text == "edited" && state.texts[0].styleRuns.size() == 1 &&
+                  state.revision() == editedRevision,
+          "redo should restore edited text and inline styles");
+
+    TextItem second;
+    second.page = 1;
+    second.text = "later page";
+    check(state.insertText(second) && state.texts[1].layerOrder == 0,
+          "layer order is tracked independently for each page");
+    state.insertPageAfter(0, {595, 842});
+    check(state.texts[0].page == 0 && state.texts[1].page == 2,
+          "inserting a page shifts text on later pages");
+    state.undo();
+    check(state.texts.size() == 1 && state.texts[0].page == 0,
+          "text history remains undoable after an earlier page is inserted");
+    state.redo();
+    check(state.texts.size() == 2 && state.texts[1].page == 2,
+          "text history remains redoable after an earlier page is inserted");
+    check(state.deleteText(0) && state.texts.size() == 1 && state.texts[0].text == "later page",
+          "text deletion removes only the requested item");
+    state.undo();
+    check(state.texts.size() == 2 && state.texts[0].text == "edited",
+          "undo restores a deleted text item at its original position");
+}
+
 static void partialAndWhiteoutEraser() {
     check(behavior::penWidths == std::array<double, 5>{0.42, 0.85, 1.41, 2.26, 5.67},
           "pen width presets must match ToolHandler::initTools");
@@ -287,6 +338,7 @@ static void continuousMultiPageLayout() {
 int main() {
     try {
         savedHistory();
+        editableTextHistory();
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();

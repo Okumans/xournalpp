@@ -13,11 +13,12 @@ custom widths, three eraser modes (`Standard` partial `PaddedBox` splitting, `Wh
 and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages without resetting zoom and becomes an overlay in
 narrower windows. With a document worker, Open, Save, Save As, Export as PDF,
 Insert Page After, and Delete Current Page run in the
-background. New ink is saved as native objects alongside the original content. Open and Close protect
+background. New ink and text edits are saved as native objects alongside the
+original content. Open and Close protect
 unsaved changes with Save, Discard and Cancel. Save updates the associated
 `.xopp` file; Save As changes its filename after a successful save; Export as PDF
-writes a flattened PDF including live session ink without clearing `.xopp` dirty
-state. Imported PDFs,
+writes a flattened PDF including live session ink and text edits without clearing
+`.xopp` dirty state. Imported PDFs,
 legacy files requiring conversion, symlink inputs and blank notebooks use Save As
 for their first save. Without a worker, ink remains temporary.
 
@@ -35,7 +36,8 @@ Undo/redo stores value-semantic stroke slice deltas across insertions, whole-str
 deletions, and multi-sample partial splits while retaining session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
 
-Shortcuts: `P` pen, `H` highlight, `E` eraser, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
+Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text (when a document worker
+is enabled), `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 `Ctrl+Y` redo, `Page Up`/`Page Down` or `Shift+K`/`Shift+J` previous/next page,
 `Ctrl+Home`/`Ctrl+End` first/last page, `Ctrl+G` or `:` (or clicking `1 / N`) Go
 to Page, and `Ctrl+0` fit. Tool and navigation shortcuts
@@ -51,7 +53,22 @@ different zoom levels. When opened through the worker, editable top-layer native
 `.xopp` strokes (above the last non-editable element on a visible top layer) are
 loaded as live ink that can be erased, split, undone/redone, and saved without
 duplication; lower layers and flattened PDF/text/image content are not affected by
-the eraser. Editable strokes can also be selected, resized, rotated, moved across pages, copied and pasted with native `.xopp` pressure/color/style retained. The clipboard reader limits input to 64 MiB and one million samples, validates the entire supported selection before inserting it, and leaves ink unchanged on malformed input.
+the eraser. Editable strokes can also be selected, resized, rotated, moved across
+pages, copied and pasted with native `.xopp` pressure/color/style retained. The
+clipboard reader limits input to 64 MiB and one million samples, validates the
+entire supported selection before inserting it, and leaves ink unchanged on
+malformed input.
+
+With the worker, eligible native text in the top-layer editable suffix opens in
+the canvas and stays in native z-order with strokes. Select the Text tool and
+click to create text; Smart Select click edits an existing text item. The inline
+GTK text editor preserves UTF-8 content and formatting runs, including bold,
+italic, underline, strikethrough, superscript, and subscript. Font family and size
+can be set from the toolbar. Text creation, edits, and deletion join undo/redo,
+and Save, autosave, and PDF export retain the text content and style ranges.
+Text objects are not yet movable or resizable through object selection, and
+rotated/scaled text can be rendered but the inline editor does not follow its
+transform. IME and accessibility behavior remain unverified.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
 Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,
@@ -74,11 +91,12 @@ end temporarily erases session strokes; an entire eraser drag is one undo step.
   display, D-Bus session, settings, or installed application.
 
 This is **not a port of the complete application or its custom `GtkXournal`
-widget**. The session ink model is experimental and independent of the existing
-stroke model. A separate document worker reuses the existing native loader, saver,
-and renderer without linking GTK 3 into the GTK 4 process. Original layers and
-editable text are flattened only for display; the worker retains their native data.
-The current PDF rasterization runs synchronously on the prototype's UI thread.
+widget**. The session ink and text models are experimental and independent of the
+existing document models. A separate document worker reuses the existing native
+loader, saver, and renderer without linking GTK 3 into the GTK 4 process. The
+worker extracts supported top-layer strokes and text for interactive editing;
+other original objects remain in the background document preview. The current
+PDF rasterization runs synchronously on the prototype's UI thread.
 
 ## Build
 
@@ -124,23 +142,26 @@ also preserves the current document.
 
 Each loaded document has a private native snapshot and rendered PDF, removed when
 the session ends. When opening a native `.xopp`, the worker extracts the
-contiguous top-layer suffix of lossless `pen`, `highlighter`, and `#ffffffff`
-`eraser` strokes into live session ink before writing the snapshot and rendering
-`preview.pdf`, keeping lower layers, text, images, filled/dashed/non-round
-strokes, and audio-attached strokes intact in their exact z-order. Saving appends
-current session ink back onto the stripped snapshot, so repeated saves and
-reopens neither duplicate ink nor lose pressure widths.
+contiguous suffix of lossless `pen`, `highlighter`, and `#ffffffff` `eraser`
+strokes plus eligible non-audio native text from each visible top layer. It writes
+strokes and text to bounded transfer files before creating the background
+snapshot and rendering `preview.pdf`, leaving lower layers, images,
+filled/dashed/non-round strokes, and unsupported or audio-attached text in their
+exact z-order. Saving appends current session ink and text back onto the stripped
+snapshot, so repeated saves and reopens preserve ordering, formatting, and
+pressure widths without duplication.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
-`export-pdf INPUT OUT.pdf INK_TRANSFER`,
-`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK]`,
+`export-pdf INPUT OUT.pdf INK_TRANSFER [TEXT_TRANSFER]`,
+`open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK [EXTRACTED_TEXT]]`,
 `insert-page INPUT SNAPSHOT.xopp NEW.pdf AFTER_PAGE`,
 `delete-page INPUT SNAPSHOT.xopp NEW.pdf PAGE_INDEX`, `version PATH`,
-`save INPUT TARGET.xopp INK_TRANSFER VERSION`,
-`autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER`, and
-`save-copy INPUT NEW.xopp INK_TRANSFER`.
-Save operations accept the versioned ink packets in `DocumentTransfer.h`, append native
-pen/highlighter objects to the top layer, and use the real saver. They stage the
+`save INPUT TARGET.xopp INK_TRANSFER VERSION [TEXT_TRANSFER]`,
+`autosave INPUT AUTOSAVE_TARGET.xopp INK_TRANSFER [TEXT_TRANSFER]`, and
+`save-copy INPUT NEW.xopp INK_TRANSFER [TEXT_TRANSFER]`.
+Save operations accept versioned ink and bounded text packets, append native
+pen/highlighter/whiteout strokes and text to the top layer in their recorded
+order, and use the real saver. They stage the
 file and attached backgrounds in the destination directory and publish the
 native document last. Normal Save checks a content version for the file and
 attached PDF/pixmap sidecars, including a recheck before publication. External
@@ -233,26 +254,28 @@ history retention. A separate normalized-input test covers pressure fallback,
 pen-release handling, dot thickening, stylus eraser routing, grouped erase undo,
 temporary pan, cancellation, and backlog axis flags/order. A separate Cairo pixel test checks colors, widths, uniform
 highlight opacity, text visibility beneath highlighting, and renderer state.
-Transfer serialization, background task/main-context checks, read-only
-`settings.xml` and `.gpl` palette import/fallback checks, and CLI rejection checks
-plus filesystem backup/publication and autosave/recovery checks bring the
-standalone suite to seventeen tests.
+Transfer serialization, rich-text transfer/rendering, background task/main-context
+checks, read-only `settings.xml` and `.gpl` palette import/fallback checks, and CLI
+rejection checks plus filesystem backup/publication and autosave/recovery checks
+bring the standalone suite to twenty tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
 events. It checks visible styled ink, tool-specific presets, highlighter
 selection, keyboard and button undo/redo, erasing, gesture cancellation, pinch
 state, PDF cache reuse, zoom rerasterization, thumbnail page navigation, unmap
-cleanup, and an actual narrower canvas. It also verifies sidebar collapse and
-overlay dismissal when choosing a page. It explicitly renders a 2x raster cache and checks
-its dimensions. This is **not** a compositor-at-2x or physical HiDPI display test;
+cleanup, and an actual narrower canvas. It also verifies sidebar collapse,
+overlay dismissal, page navigation at the current zoom, and the inline rich-text
+editor's create, edit, and style path. It explicitly renders a 2x raster cache
+and checks its dimensions. This is **not** a compositor-at-2x or physical HiDPI display test;
 the headless compositor reports device scale 1.
 
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
-scaling, Windows, and macOS remain unverified. The prototype has no rich-text
-editor, full object-selection tools, signal-handler emergency dump, full undo system, plugins, or toolbar
-configuration import. Its eraser removes only session ink, not flattened PDF
+scaling, Windows, and macOS remain unverified. Rich-text editing does not include
+object selection or transforms; full object-selection behavior, signal-handler
+emergency dump, full document undo, plugins, and toolbar configuration import
+remain migration work. Its eraser removes only session ink, not flattened PDF
 content. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
 
@@ -262,8 +285,8 @@ test also checks Space press/release, margin dragging, stylus signals with a
 synthetic backlog, temporary erasing, release-tail prevention, and cleanup. These
 checks do not verify actual tablet firmware or physical hardware event delivery.
 
-With a worker, the graphical test also saves/reopens actual native copies,
-checks retained text and pressure data, exercises the real unsaved-dialog buttons,
+With a worker, the graphical test also creates, edits, formats, saves, and reopens
+native text and strokes, checks retained text and pressure data, exercises the real unsaved-dialog buttons,
 verifies failed-open/save retention and Close protection, and cancels native
 Open/Save choosers. It also checks Ctrl+S replacement, Save As filename association,
 backup cleanup, and rejected saves after a separate worker changes the file.
