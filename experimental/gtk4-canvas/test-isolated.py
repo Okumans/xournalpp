@@ -146,12 +146,14 @@ def inside(args):
             screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
-                            "autosave-saved", "native-loaded", "native-erased", "native-saved")
+                            "autosave-saved", "native-loaded", "native-erased", "native-saved",
+                            "continuous-pages", "goto-page-dialog", "page-inserted")
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
                              "autosave-note.xopp", ".autosave-note.autosave.xopp",
                              "discard-autosave.xopp", ".discard-autosave.autosave.xopp",
                              "recover-autosave.xopp", ".recover-autosave.autosave.xopp",
-                             "eraser-modes.xopp", "native-edited.xopp"):
+                             "eraser-modes.xopp", "native-edited.xopp",
+                             "exported-notes.pdf", "multipage-edited.xopp", "after-delete-page.xopp"):
                 (output / filename).unlink(missing_ok=True)
         for screenshot in screenshots:
             (output / f"{screenshot}.png").unlink(missing_ok=True)
@@ -209,6 +211,18 @@ def inside(args):
             if (len(edited_strokes[-2].attrib.get("width", "").split()) < 2 or
                     len(edited_strokes[-1].attrib.get("width", "").split()) < 2):
                 raise RuntimeError("Splitting a preloaded native pressure stroke lost pressure widths on save")
+            exported_pdf = output / "exported-notes.pdf"
+            exported_bytes = exported_pdf.read_bytes()
+            if not exported_bytes.startswith(b"%PDF-") or exported_pdf.stat().st_size < 1500:
+                raise RuntimeError("Exported PDF is missing or invalid")
+            multipage = ET.fromstring(gzip.decompress((output / "multipage-edited.xopp").read_bytes()))
+            mp_pages = multipage.findall("page")
+            if len(mp_pages) != 3 or len(mp_pages[1].findall(".//stroke")) != 2 or len(mp_pages[2].findall(".//stroke")) != 1:
+                raise RuntimeError("3-page edited document did not preserve strokes on Pages 2 and 3")
+            after_delete = ET.fromstring(gzip.decompress((output / "after-delete-page.xopp").read_bytes()))
+            ad_pages = after_delete.findall("page")
+            if len(ad_pages) != 2 or len(ad_pages[1].findall(".//stroke")) != 1:
+                raise RuntimeError("Deleting Page 2 did not shift Page 3 and its stroke cleanly to Page 2")
         for screenshot in screenshots:
             path = output / f"{screenshot}.png"
             if not path.is_file() or path.stat().st_size < 1000:

@@ -1,4 +1,5 @@
 #include <charconv>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -9,7 +10,9 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include <adwaita.h>
 #include <poppler.h>
@@ -54,26 +57,26 @@ struct SurfaceDeleter {
     void operator()(cairo_surface_t* surface) const { cairo_surface_destroy(surface); }
 };
 
+struct PageCacheEntry {
+    int pageIndex = -1;
+    double scale = 0;
+    uint64_t stamp = 0;
+    std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface;
+};
+
 class Prototype {
 public:
     explicit Prototype(Options options): options(std::move(options)) {
         sourcePath = this->options.nativeDocument.empty() ? this->options.pdf : this->options.nativeDocument;
         if (!this->options.pdf.empty() && this->options.worker.empty()) {
-            GError* error = nullptr;
-            auto* uri = g_filename_to_uri(this->options.pdf.c_str(), nullptr, &error);
-            if (!uri) {
-                fail(error);
-            }
-            document = poppler_document_new_from_file(uri, nullptr, &error);
-            g_free(uri);
-            if (!document) {
-                fail(error);
-            }
-            pageCount = poppler_document_get_n_pages(document);
-            if (!pageCount) {
-                throw std::runtime_error("PDF has no pages");
-            }
-            setPage(0);
+            auto [loadedDoc, sizes] = openPreviewPdf(this->options.pdf);
+            document = loadedDoc;
+            pageCount = static_cast<int>(sizes.size());
+            state.setPages(std::move(sizes));
+            state.selectActivePage(0);
+        } else {
+            state.setPages({{595, 842}});
+            state.selectActivePage(0);
         }
     }
 
@@ -92,9 +95,6 @@ public:
             g_clear_object(&paintClock);
         }
         g_clear_object(&windowPaintable);
-        if (page) {
-            g_object_unref(page);
-        }
         if (document) {
             g_object_unref(document);
         }
@@ -116,6 +116,43 @@ private:
         const std::string message = error ? error->message : "Unknown PDF error";
         g_clear_error(&error);
         throw std::runtime_error(message);
+    }
+
+    static std::pair<PopplerDocument*, std::vector<prototype::PageSize>> openPreviewPdf(const std::string& path) {
+        GError* error = nullptr;
+        auto* uri = g_filename_to_uri(path.c_str(), nullptr, &error);
+        if (!uri) {
+            fail(error);
+        }
+        auto* candidate = poppler_document_new_from_file(uri, nullptr, &error);
+        g_free(uri);
+        if (!candidate) {
+            fail(error);
+        }
+        const int count = poppler_document_get_n_pages(candidate);
+        if (count <= 0) {
+            g_object_unref(candidate);
+            throw std::runtime_error("Document has no pages");
+        }
+        std::vector<prototype::PageSize> sizes;
+        sizes.reserve(static_cast<size_t>(count));
+        try {
+            for (int i = 0; i < count; ++i) {
+                auto* pdfPage = poppler_document_get_page(candidate, i);
+                if (!pdfPage) {
+                    throw std::runtime_error("Cannot open rendered PDF page");
+                }
+                double w = 595;
+                double h = 842;
+                poppler_page_get_size(pdfPage, &w, &h);
+                g_object_unref(pdfPage);
+                sizes.push_back({w, h});
+            }
+        } catch (...) {
+            g_object_unref(candidate);
+            throw;
+        }
+        return {candidate, std::move(sizes)};
     }
 
     bool modified() const { return savedRevision != state.revision(); }
@@ -316,22 +353,8 @@ private:
 
     void replaceDocument(const std::shared_ptr<prototype::bridge::DocumentSession>& session, const std::string& source,
                          const std::optional<RecoveryInfo>& recovery = std::nullopt) {
-        GError* error = nullptr;
-        const auto path = session->previewPath().string();
-        auto* uri = g_filename_to_uri(path.c_str(), nullptr, &error);
-        if (!uri) {
-            fail(error);
-        }
-        auto* candidate = poppler_document_new_from_file(uri, nullptr, &error);
-        g_free(uri);
-        if (!candidate) {
-            fail(error);
-        }
-        const auto count = poppler_document_get_n_pages(candidate);
-        if (!count) {
-            g_object_unref(candidate);
-            throw std::runtime_error("Document has no pages");
-        }
+        auto [candidate, pageSizes] = openPreviewPdf(session->previewPath().string());
+        const int count = static_cast<int>(pageSizes.size());
         auto hydratedInk = [&] {
             try {
                 return prototype::bridge::sessionInk(session->initialInk);
@@ -350,6 +373,8 @@ private:
         const auto eraserMode = state.eraserMode;
         const auto eraserWidth = state.eraserWidth;
         state = CanvasState{};
+        state.setPages(std::move(pageSizes));
+        state.selectActivePage(0);
         state.ink = std::move(hydratedInk);
         state.brush = brush;
         state.eraserMode = eraserMode;
@@ -359,8 +384,8 @@ private:
         recoveredChanges = bool(recovery);
         activeAutosavePath = recovery ? recovery->autosavePath : std::string{};
         savedCopyPath.clear();
+        exportedPdfPath.clear();
         savedNormally = false;
-        g_clear_object(&page);
         g_clear_object(&document);
         document = candidate;
         pageCount = count;
@@ -368,13 +393,16 @@ private:
         sourcePath = source;
         saveTarget = recovery ? recovery->saveTarget : session->originalSavePath;
         saveVersion = recovery ? recovery->saveVersion : session->originalVersion;
-        cache.reset();
+        pageCache.clear();
         thumbnails.clear();
         thumbnailWidgets.clear();
         pageList = nullptr;
         adw_overlay_split_view_set_sidebar(splitView, createSidebar());
         fitMode = true;
-        setPage(0);
+        fitted = false;
+        if (canvas) {
+            update();
+        }
     }
 
     void openDocument(const std::string& path, bool initial = false) {
@@ -748,24 +776,219 @@ private:
         adw_dialog_present(ADW_DIALOG(messageDialog), window);
     }
 
-    void setPage(int number) {
+    void navigateToPage(int number) {
         if (number < 0 || number >= pageCount) {
             return;
         }
         resetInput();
-        state.page = number;
-        if (document) {
-            if (page) {
-                g_object_unref(page);
-            }
-            page = poppler_document_get_page(document, number);
-            poppler_page_get_size(page, &state.pageWidth, &state.pageHeight);
+        if (canvas && fitted) {
+            state.scrollToPage(number, gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
+            fitMode = false;
+        } else {
+            state.selectActivePage(number);
+            fitted = false;
         }
-        cache.reset();
-        fitted = false;
         if (canvas) {
             update();
         }
+    }
+
+    void openGotoPageDialog() {
+        if (busy || choosingFile || messageDialog || pageCount < 1) {
+            return;
+        }
+        resetInput(true);
+        const auto body = "Enter a page number between 1 and " + std::to_string(pageCount) + ".";
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Go to page", body.c_str()));
+        auto* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_halign(row, GTK_ALIGN_CENTER);
+        gtk_box_append(GTK_BOX(row), gtk_label_new("Page:"));
+        gotoPageSpin = gtk_spin_button_new_with_range(1, std::max(1, pageCount), 1);
+        gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(gotoPageSpin), true);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(gotoPageSpin), state.page + 1);
+        gtk_editable_set_width_chars(GTK_EDITABLE(gotoPageSpin), 5);
+        gtk_box_append(GTK_BOX(row), gotoPageSpin);
+        adw_alert_dialog_set_extra_child(messageDialog, row);
+        adw_alert_dialog_add_responses(messageDialog, "cancel", "Cancel", "go", "Go to Page", nullptr);
+        adw_alert_dialog_set_response_appearance(messageDialog, "go", ADW_RESPONSE_SUGGESTED);
+        adw_alert_dialog_set_close_response(messageDialog, "cancel");
+        adw_alert_dialog_set_default_response(messageDialog, "go");
+        g_signal_connect(gotoPageSpin, "activate", G_CALLBACK(+[](GtkSpinButton*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->messageDialog) {
+                                 self->answerDialog("go");
+                             }
+                         }),
+                         this);
+        g_signal_connect(messageDialog, "response",
+                         G_CALLBACK(+[](AdwAlertDialog*, const char* response, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const int target = self->gotoPageSpin ?
+                                                        gtk_spin_button_get_value_as_int(
+                                                                GTK_SPIN_BUTTON(self->gotoPageSpin)) -
+                                                                1 :
+                                                        -1;
+                             self->messageDialog = nullptr;
+                             self->gotoPageSpin = nullptr;
+                             if (response && std::string_view(response) == "go" && target >= 0 &&
+                                 target < self->pageCount) {
+                                 self->navigateToPage(target);
+                             }
+                             if (self->canvas) {
+                                 gtk_widget_grab_focus(self->canvas);
+                             }
+                         }),
+                         this);
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
+    }
+
+    void exportPdfTo(const std::string& path) {
+        if (!nativeSession || busy) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, path] { exportPdfTo(path); });
+            return;
+        }
+        resetInput(true);
+        const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        // Exporting to PDF never alters .xopp savedRevision, saveTarget, or active autosave artifacts.
+        runDocumentJob("Exporting PDF…",
+                       [session, worker, path, packets] { session->exportPdf(worker, path, packets); },
+                       [this, path] { exportedPdfPath = path; });
+    }
+
+    void chooseExportPdf() {
+        if (busy || choosingFile || messageDialog || !nativeSession) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this] { chooseExportPdf(); });
+            return;
+        }
+        resetInput(true);
+        if (!smokeExportChoice.empty()) {
+            const auto path = std::exchange(smokeExportChoice, {});
+            exportPdfTo(path);
+            return;
+        }
+        choosingFile = true;
+        auto* dialog = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(dialog, "Export as PDF");
+        auto* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, "PDF documents");
+        gtk_file_filter_add_pattern(filter, "*.pdf");
+        gtk_file_dialog_set_default_filter(dialog, filter);
+        g_object_unref(filter);
+        const auto name = sourcePath.empty() ? std::string("Notebook.pdf") :
+                                               std::filesystem::path(sourcePath).stem().string() + ".pdf";
+        gtk_file_dialog_set_initial_name(dialog, name.c_str());
+        gtk_file_dialog_save(
+                dialog, GTK_WINDOW(window), nullptr,
+                +[](GObject* source, GAsyncResult* result, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    self->choosingFile = false;
+                    GError* error = nullptr;
+                    auto* file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &error);
+                    self->finishFileChoice(file, error, [self](const std::string& path) { self->exportPdfTo(path); });
+                },
+                this);
+        g_object_unref(dialog);
+    }
+
+    void insertPageAfterCurrent() {
+        if (!nativeSession || busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this] { insertPageAfterCurrent(); });
+            return;
+        }
+        resetInput(true);
+        const int afterPage = state.page;
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Inserting page…",
+                [session, worker, afterPage, staged] {
+                    *staged = session->stageInsertPageAfter(worker, afterPage);
+                },
+                [this, session, afterPage, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<prototype::PageSize> sizes;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                    } catch (...) {
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    pageCount = static_cast<int>(sizes.size());
+                    state.insertPageAfter(afterPage, sizes.at(static_cast<size_t>(afterPage + 1)));
+                    state.setPages(std::move(sizes));
+                    state.selectActivePage(afterPage + 1);
+                    savedRevision.reset();
+                    savedNormally = false;
+                    savedCopyPath.clear();
+                    pageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    navigateToPage(afterPage + 1);
+                });
+    }
+
+    void deleteCurrentPage() {
+        if (!nativeSession || pageCount <= 1 || busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this] { deleteCurrentPage(); });
+            return;
+        }
+        resetInput(true);
+        const int removeIndex = state.page;
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Deleting page…",
+                [session, worker, removeIndex, staged] {
+                    *staged = session->stageDeletePageAt(worker, removeIndex);
+                },
+                [this, session, removeIndex, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<prototype::PageSize> sizes;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                    } catch (...) {
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    pageCount = static_cast<int>(sizes.size());
+                    state.deletePageAt(removeIndex);
+                    state.setPages(std::move(sizes));
+                    const int nextActive = std::min(removeIndex, pageCount - 1);
+                    state.selectActivePage(nextActive);
+                    savedRevision.reset();
+                    savedNormally = false;
+                    savedCopyPath.clear();
+                    pageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    navigateToPage(nextActive);
+                });
     }
 
     GtkWidget* button(const char* icon, const char* tooltip, GCallback callback) {
@@ -891,8 +1114,8 @@ private:
         }
         g_signal_connect(pageList, "row-selected", G_CALLBACK(+[](GtkListBox*, GtkListBoxRow* row, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
-                             if (row && gtk_list_box_row_get_index(row) != self->state.page) {
-                                 self->setPage(gtk_list_box_row_get_index(row));
+                             if (!self->syncingPage && row && gtk_list_box_row_get_index(row) != self->state.page) {
+                                 self->navigateToPage(gtk_list_box_row_get_index(row));
                                  if (adw_overlay_split_view_get_collapsed(self->splitView)) {
                                      adw_overlay_split_view_set_show_sidebar(self->splitView, false);
                                  }
@@ -913,7 +1136,8 @@ private:
             auto surface = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(
                     cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 112, 150));
             auto* context = cairo_create(surface.get());
-            double scale = std::min(112.0 / state.pageWidth, 150.0 / state.pageHeight);
+            const auto sz = state.pageSize(number);
+            double scale = std::min(112.0 / sz.width, 150.0 / sz.height);
             cairo_set_source_rgb(context, 1, 1, 1);
             cairo_paint(context);
             if (document) {
@@ -973,6 +1197,11 @@ private:
         saveAsButton = button("document-save-as-symbolic", "Save As (Ctrl+Shift+S)",
                               G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->chooseSave(); }));
         adw_header_bar_pack_end(ADW_HEADER_BAR(header), saveAsButton);
+        exportPdfButton = button("document-send-symbolic", "Export as PDF (Ctrl+E)",
+                                 G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                     static_cast<Prototype*>(data)->chooseExportPdf();
+                                 }));
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), exportPdfButton);
         undoButton = button("edit-undo-symbolic", "Undo ink (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
                                 self->input.cancel();
@@ -1108,21 +1337,43 @@ private:
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
         adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), toolbar);
 
-        auto* navigation = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        auto* navigation = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         gtk_widget_add_css_class(navigation, "toolbar");
         gtk_widget_set_halign(navigation, GTK_ALIGN_CENTER);
-        gtk_box_append(GTK_BOX(navigation), button("go-previous-symbolic", "Previous page (Page Up)",
-                                                   G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                                       auto* self = static_cast<Prototype*>(data);
-                                                       self->setPage(self->state.page - 1);
-                                                   })));
+        prevPageButton = button("go-previous-symbolic", "Previous page (Page Up / Shift+K)",
+                                G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                    auto* self = static_cast<Prototype*>(data);
+                                    self->navigateToPage(self->state.page - 1);
+                                }));
+        gtk_box_append(GTK_BOX(navigation), prevPageButton);
+        pageButton = gtk_button_new();
+        gtk_widget_add_css_class(pageButton, "flat");
+        gtk_widget_set_tooltip_text(pageButton, "Go to page (Ctrl+G or :)");
         pageLabel = gtk_label_new("");
-        gtk_box_append(GTK_BOX(navigation), pageLabel);
-        gtk_box_append(GTK_BOX(navigation),
-                       button("go-next-symbolic", "Next page (Page Down)", G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                  auto* self = static_cast<Prototype*>(data);
-                                  self->setPage(self->state.page + 1);
-                              })));
+        gtk_button_set_child(GTK_BUTTON(pageButton), pageLabel);
+        g_signal_connect(pageButton, "clicked",
+                         G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->openGotoPageDialog();
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(navigation), pageButton);
+        nextPageButton = button("go-next-symbolic", "Next page (Page Down / Shift+J)",
+                                G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                    auto* self = static_cast<Prototype*>(data);
+                                    self->navigateToPage(self->state.page + 1);
+                                }));
+        gtk_box_append(GTK_BOX(navigation), nextPageButton);
+        gtk_box_append(GTK_BOX(navigation), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
+        insertPageButton = button("list-add-symbolic", "Insert page after (Ctrl+D)",
+                                  G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                      static_cast<Prototype*>(data)->insertPageAfterCurrent();
+                                  }));
+        gtk_box_append(GTK_BOX(navigation), insertPageButton);
+        deletePageButton = button("list-remove-symbolic", "Delete current page (Ctrl+Shift+Delete)",
+                                  G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                      static_cast<Prototype*>(data)->deleteCurrentPage();
+                                  }));
+        gtk_box_append(GTK_BOX(navigation), deletePageButton);
         zoomLabel = gtk_label_new("");
         gtk_widget_set_size_request(zoomLabel, 60, -1);
         gtk_box_append(GTK_BOX(navigation), zoomLabel);
@@ -1302,13 +1553,20 @@ private:
         gtk_widget_set_sensitive(openButton, !options.worker.empty());
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
+        gtk_widget_set_sensitive(exportPdfButton, bool(nativeSession));
+        gtk_widget_set_sensitive(prevPageButton, state.page > 0);
+        gtk_widget_set_sensitive(nextPageButton, state.page + 1 < pageCount);
+        gtk_widget_set_sensitive(insertPageButton, bool(nativeSession));
+        gtk_widget_set_sensitive(deletePageButton, bool(nativeSession) && pageCount > 1);
         const auto label = std::to_string(state.page + 1) + " / " + std::to_string(pageCount);
         gtk_label_set_text(GTK_LABEL(pageLabel), label.c_str());
         gtk_label_set_text(GTK_LABEL(zoomLabel), (std::to_string(static_cast<int>(state.zoom * 100)) + "%").c_str());
         gtk_widget_set_sensitive(undoButton, state.canUndo());
         gtk_widget_set_sensitive(redoButton, state.canRedo());
         if (pageList) {
+            syncingPage = true;
             gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, state.page));
+            syncingPage = false;
         }
         for (auto* thumbnail: thumbnailWidgets) {
             if (gtk_widget_get_mapped(thumbnail)) {
@@ -1389,6 +1647,7 @@ private:
         if (input.panning()) {
             fitted = true;
             fitMode = false;
+            state.syncActivePage(gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
         }
         update();
     }
@@ -1523,6 +1782,8 @@ private:
                                      self->state.offsetY += dy - pan->y;
                                      self->fitted = true;
                                      self->fitMode = false;
+                                     self->state.syncActivePage(gtk_widget_get_width(self->canvas),
+                                                                gtk_widget_get_height(self->canvas));
                                      self->update();
                                  }
                                  pan->x = dx;
@@ -1590,6 +1851,8 @@ private:
                         self->state.offsetY -= dy * 35;
                         self->fitted = true;
                         self->fitMode = false;
+                        self->state.syncActivePage(gtk_widget_get_width(self->canvas),
+                                                   gtk_widget_get_height(self->canvas));
                         self->update();
                     }
                     return true;
@@ -1620,6 +1883,26 @@ private:
                         }
                         return true;
                     }
+                    if ((modifiers & GDK_CONTROL_MASK) && !(modifiers & GDK_SHIFT_MASK) &&
+                        (key == GDK_KEY_e || key == GDK_KEY_E)) {
+                        self->chooseExportPdf();
+                        return true;
+                    }
+                    if ((modifiers & GDK_CONTROL_MASK) && !(modifiers & GDK_SHIFT_MASK) &&
+                        (key == GDK_KEY_g || key == GDK_KEY_G)) {
+                        self->openGotoPageDialog();
+                        return true;
+                    }
+                    if ((modifiers & GDK_CONTROL_MASK) && !(modifiers & GDK_SHIFT_MASK) &&
+                        (key == GDK_KEY_d || key == GDK_KEY_D)) {
+                        self->insertPageAfterCurrent();
+                        return true;
+                    }
+                    if ((modifiers & GDK_CONTROL_MASK) && (modifiers & GDK_SHIFT_MASK) &&
+                        (key == GDK_KEY_Delete || key == GDK_KEY_KP_Delete)) {
+                        self->deleteCurrentPage();
+                        return true;
+                    }
                     if (key == GDK_KEY_Escape) {
                         self->resetInput();
                     } else if (GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
@@ -1644,8 +1927,20 @@ private:
                                (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_minus)) {
                         self->zoom(prototype::behavior::steppedZoom(self->state.zoom, key != GDK_KEY_minus, false),
                                    gtk_widget_get_width(self->canvas) / 2.0, gtk_widget_get_height(self->canvas) / 2.0);
+                    } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_Home) {
+                        self->navigateToPage(0);
+                    } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_End) {
+                        self->navigateToPage(self->pageCount - 1);
                     } else if (key == GDK_KEY_Page_Down || key == GDK_KEY_Page_Up) {
-                        self->setPage(self->state.page + (key == GDK_KEY_Page_Down ? 1 : -1));
+                        self->navigateToPage(self->state.page + (key == GDK_KEY_Page_Down ? 1 : -1));
+                    } else if ((modifiers & GDK_SHIFT_MASK) &&
+                               !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_J || key == GDK_KEY_j || key == GDK_KEY_K || key == GDK_KEY_k)) {
+                        self->navigateToPage(self->state.page + ((key == GDK_KEY_J || key == GDK_KEY_j) ? 1 : -1));
+                    } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
+                               key == GDK_KEY_colon) {
+                        self->openGotoPageDialog();
+                        return true;
                     } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
                                (key == GDK_KEY_p || key == GDK_KEY_h || key == GDK_KEY_e)) {
                         const auto tool = key == GDK_KEY_p ? 0 : key == GDK_KEY_h ? 1 : 2;
@@ -1695,28 +1990,73 @@ private:
         gtk_widget_add_controller(canvas, GTK_EVENT_CONTROLLER(gesture));
     }
 
-    void ensureCache(int deviceScale) {
-        // Bound both dimensions and memory, even when zoomed into a huge PDF page.
-        const auto scale = std::min({state.zoom * deviceScale, 4096.0 / state.pageWidth, 4096.0 / state.pageHeight});
-        if (cache && std::abs(cacheScale - scale) < 0.0001) {
-            return;
+    static constexpr size_t maxCachedPages = 4;
+
+    const PageCacheEntry& ensurePageCache(int pageIndex, int deviceScale) {
+        const auto sz = state.pageSize(pageIndex);
+        // Bound both dimensions and memory per page, even when zoomed into a huge PDF page.
+        const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
+        for (auto& entry: pageCache) {
+            if (entry.pageIndex == pageIndex && std::abs(entry.scale - scale) < 0.0001) {
+                entry.stamp = ++cacheClock;
+                return entry;
+            }
         }
-        cacheScale = scale;
-        const int width = std::max(1, static_cast<int>(std::ceil(state.pageWidth * scale)));
-        const int height = std::max(1, static_cast<int>(std::ceil(state.pageHeight * scale)));
-        cache.reset(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
-        if (cairo_surface_status(cache.get()) != CAIRO_STATUS_SUCCESS) {
+        const int width = std::max(1, static_cast<int>(std::ceil(sz.width * scale)));
+        const int height = std::max(1, static_cast<int>(std::ceil(sz.height * scale)));
+        std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface(
+                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
+        if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
             throw std::runtime_error("Cannot allocate page surface");
         }
-        auto* cr = cairo_create(cache.get());
+        auto* cr = cairo_create(surface.get());
         cairo_set_source_rgb(cr, 1, 1, 1);
         cairo_paint(cr);
         cairo_scale(cr, scale, scale);
-        if (page) {
-            poppler_page_render(page, cr);
+        if (document && pageIndex >= 0 && pageIndex < pageCount) {
+            if (auto* pdfPage = poppler_document_get_page(document, pageIndex)) {
+                poppler_page_render(pdfPage, cr);
+                g_object_unref(pdfPage);
+            }
         }
         cairo_destroy(cr);
         ++rasterizations;
+        PageCacheEntry* slot = nullptr;
+        for (auto& entry: pageCache) {
+            if (entry.pageIndex == pageIndex) {
+                slot = &entry;
+                break;
+            }
+        }
+        if (!slot) {
+            if (pageCache.size() < maxCachedPages) {
+                pageCache.push_back({});
+                slot = &pageCache.back();
+            } else {
+                slot = &*std::min_element(pageCache.begin(), pageCache.end(),
+                                          [](const PageCacheEntry& a, const PageCacheEntry& b) {
+                                              return a.stamp < b.stamp;
+                                          });
+            }
+        }
+        slot->pageIndex = pageIndex;
+        slot->scale = scale;
+        slot->stamp = ++cacheClock;
+        slot->surface = std::move(surface);
+        return *slot;
+    }
+
+    const PageCacheEntry& ensureCache(int deviceScale) { return ensurePageCache(state.page, deviceScale); }
+
+    size_t totalCacheBytes() const {
+        size_t total = 0;
+        for (const auto& entry: pageCache) {
+            if (entry.surface) {
+                total += static_cast<size_t>(cairo_image_surface_get_stride(entry.surface.get())) *
+                         static_cast<size_t>(cairo_image_surface_get_height(entry.surface.get()));
+            }
+        }
+        return total;
     }
 
     void draw(cairo_t* cr, int width, int height) {
@@ -1728,27 +2068,52 @@ private:
         }
         lastWidth = width;
         lastHeight = height;
-        ensureCache(gtk_widget_get_scale_factor(canvas));
+        const int deviceScale = gtk_widget_get_scale_factor(canvas);
         const double background = options.dark ? 0.10 : 0.88;
         cairo_set_source_rgb(cr, background, background, background);
         cairo_paint(cr);
-        cairo_translate(cr, state.offsetX, state.offsetY);
-        cairo_scale(cr, state.zoom, state.zoom);
-        cairo_rectangle(cr, 0, 0, state.pageWidth, state.pageHeight);
-        cairo_clip(cr);
-        cairo_save(cr);
-        cairo_scale(cr, 1 / cacheScale, 1 / cacheScale);
-        cairo_set_source_surface(cr, cache.get(), 0, 0);
-        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
-        cairo_paint(cr);
-        cairo_restore(cr);
-        for (const auto& ink: state.ink) {
-            if (ink.page == state.page) {
-                prototype::drawInk(cr, ink);
+        bool drewAny = false;
+        for (int i = 0; i < state.pageCount(); ++i) {
+            const auto sz = state.pageSize(i);
+            const double sx0 = state.offsetX + state.pageLeft(i) * state.zoom;
+            const double sy0 = state.offsetY + state.pageTop(i) * state.zoom;
+            const double sx1 = sx0 + sz.width * state.zoom;
+            const double sy1 = sy0 + sz.height * state.zoom;
+            if (sx1 <= 0 || sy1 <= 0 || sx0 >= width || sy0 >= height) {
+                continue;
             }
+            drewAny = true;
+            const auto& cached = ensurePageCache(i, deviceScale);
+            cairo_save(cr);
+            cairo_set_source_rgba(cr, 0, 0, 0, options.dark ? 0.45 : 0.18);
+            cairo_rectangle(cr, sx0 - 0.5, sy0 - 0.5, (sx1 - sx0) + 1.0, (sy1 - sy0) + 1.0);
+            cairo_set_line_width(cr, 1.0);
+            cairo_stroke(cr);
+            cairo_restore(cr);
+
+            cairo_save(cr);
+            cairo_translate(cr, sx0, sy0);
+            cairo_scale(cr, state.zoom, state.zoom);
+            cairo_rectangle(cr, 0, 0, sz.width, sz.height);
+            cairo_clip(cr);
+            cairo_save(cr);
+            cairo_scale(cr, 1.0 / cached.scale, 1.0 / cached.scale);
+            cairo_set_source_surface(cr, cached.surface.get(), 0, 0);
+            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+            cairo_paint(cr);
+            cairo_restore(cr);
+            for (const auto& ink: state.ink) {
+                if (ink.page == i) {
+                    prototype::drawInk(cr, ink);
+                }
+            }
+            if (state.current && state.current->page == i) {
+                prototype::drawInk(cr, *state.current);
+            }
+            cairo_restore(cr);
         }
-        if (state.current) {
-            prototype::drawInk(cr, *state.current);
+        if (!drewAny) {
+            ensurePageCache(state.page, deviceScale);
         }
         ++frames;
     }
@@ -1854,7 +2219,7 @@ private:
 
     gboolean stepCrashHelper() {
         require(++crashHelperTicks < 240, "Crash helper timed out waiting for autosave");
-        if (busy || !frames || !cache || !nativeSession) {
+        if (busy || !frames || pageCache.empty() || !nativeSession) {
             return G_SOURCE_CONTINUE;
         }
         if (crashHelperStep == 0) {
@@ -1908,7 +2273,7 @@ private:
             return G_SOURCE_CONTINUE;
         }
         if (recoveryVerifyStep == 1) {
-            if (!frames || !cache || g_get_monotonic_time() - lastDocumentCompletion < 150000) {
+            if (!frames || pageCache.empty() || g_get_monotonic_time() - lastDocumentCompletion < 150000) {
                 return G_SOURCE_CONTINUE;
             }
             if (recoveryActionSpec == "delete" || recoveryActionSpec == "discard") {
@@ -1956,7 +2321,7 @@ private:
             throw std::runtime_error("Window did not finish painting the requested state");
         }
         paintWaits = 0;
-        if (!frames || !cache) {
+        if (!frames || pageCache.empty()) {
             require(++smokeWaits < 60, "Canvas has not rendered");
             return G_SOURCE_CONTINUE;
         }
@@ -2077,28 +2442,29 @@ private:
                 g_signal_emit_by_name(pinch, "end", nullptr);
                 require(!state.pinching && state.scrollBlockedUntil > g_get_monotonic_time(), "Pinch cleanup failed");
                 break;
-            case 5:
+            case 5: {
                 require(rasterizations > baselineRasters, "Zoom did not refresh PDF resolution");
                 capture("zoom");
-                ensureCache(1);
-                {
-                    const auto width = cairo_image_surface_get_width(cache.get());
-                    ensureCache(2);
-                    require(cairo_image_surface_get_width(cache.get()) >= width * 2 - 1,
-                            "2x cache must preserve logical page size and increase resolution");
-                }
-                require(cairo_image_surface_get_width(cache.get()) <= 4096 &&
-                                cairo_image_surface_get_height(cache.get()) <= 4096,
+                const auto& cached1x = ensureCache(1);
+                const auto width1x = cairo_image_surface_get_width(cached1x.surface.get());
+                const auto& cached2x = ensureCache(2);
+                require(cairo_image_surface_get_width(cached2x.surface.get()) >= width1x * 2 - 1,
+                        "2x cache must preserve logical page size and increase resolution");
+                require(cairo_image_surface_get_width(cached2x.surface.get()) <= 4096 &&
+                                cairo_image_surface_get_height(cached2x.surface.get()) <= 4096,
                         "Cache exceeds dimension limit");
                 if (pageCount > 1) {
+                    const double zoomBeforeNav = state.zoom;
                     gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, 1));
-                    require(state.page == 1 && state.ink.size() == 2, "Sidebar navigation lost session ink");
+                    require(state.page == 1 && std::abs(state.zoom - zoomBeforeNav) < 1e-9 && state.ink.size() == 2,
+                            "Sidebar navigation lost session ink or reset zoom");
                 }
                 gtk_widget_set_halign(contentView, GTK_ALIGN_CENTER);
                 gtk_widget_set_size_request(contentView, 520, -1);
                 fitted = false;
                 update();
                 break;
+            }
             case 6:
                 require(adw_overlay_split_view_get_collapsed(splitView), "Narrow sidebar did not collapse");
                 require(gtk_widget_get_width(canvas) < 720, "Narrow viewport did not resize");
@@ -2109,8 +2475,7 @@ private:
             case 7:
                 break;  // Let the overlay animation finish before capturing it.
             default: {
-                const auto cacheBytes =
-                        cairo_image_surface_get_stride(cache.get()) * cairo_image_surface_get_height(cache.get());
+                const auto cacheBytes = totalCacheBytes();
                 capture("sidebar", contentView);
                 if (pageCount > 1) {
                     gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, 0));
@@ -2118,7 +2483,8 @@ private:
                             "Selecting a page did not dismiss the overlay");
                 }
                 require(state.ink.size() == 2, "Session ink did not survive sidebar navigation");
-                begin(Device::Mouse, x, y);
+                const auto p0 = state.pageScreenPoint(0, 80, 80);
+                begin(Device::Mouse, p0.x, p0.y);
                 gtk_widget_set_visible(window, false);
                 require(!state.current && !state.pinching && !input.active() && !input.spaceHeld &&
                                 state.ink.size() == 3,
@@ -2640,21 +3006,155 @@ private:
             }
             case 36: {
                 require(!modified() && saveTarget.ends_with("native-edited.xopp") &&
-                                !std::filesystem::exists(saveTarget + "~"),
+                                !std::filesystem::exists(saveTarget + "~") && pageCount == 2,
                         "Ctrl+S did not persist edited native strokes cleanly");
                 capture("native-saved");
-                const auto x = state.offsetX + 210 * state.zoom;
-                const auto y = state.offsetY + 230 * state.zoom;
-                input.begin(Device::Mouse, {x, y, std::nullopt});
+                // Position the continuous viewport across the Page 1 / Page 2 boundary so Page 2 holds >50% area.
+                const double viewW = gtk_widget_get_width(canvas);
+                const double viewH = gtk_widget_get_height(canvas);
+                fitMode = false;
+                fitted = true;
+                state.offsetY = viewH * 0.42 - state.pageTop(1) * state.zoom;
+                state.syncActivePage(viewW, viewH);
+                require(state.page == 1, "Continuous scroll did not promote Page 2 as active page");
+                // Dragging inside the 15pt vertical inter-page gap must temporarily pan without drawing ink.
+                const auto gapPt = state.pageScreenPoint(0, 120, state.pageSize(0).height + 7.5);
+                const double oldOffsetY = state.offsetY;
+                g_signal_emit_by_name(mouse, "drag-begin", gapPt.x, gapPt.y);
+                require(input.panning(), "Dragging in the 15pt inter-page gap must activate the hand tool");
+                g_signal_emit_by_name(mouse, "drag-update", 0.0, -12.0);
+                g_signal_emit_by_name(mouse, "drag-end", 0.0, -12.0);
+                require(state.ink.size() == 9 && std::abs(state.offsetY - (oldOffsetY - 12.0)) < 0.001,
+                        "Inter-page gap pan unexpectedly drew ink or miscalculated offset");
+                // Draw highlighter + pressure pen ink directly onto Page 2 without clicking the sidebar.
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[1]), true);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
+                const auto hStart = state.pageScreenPoint(1, 70, 95);
+                const auto hEnd = state.pageScreenPoint(1, 310, 95);
+                begin(Device::Mouse, hStart.x, hStart.y);
+                motion(Device::Mouse, hEnd.x, hEnd.y);
+                finish(Device::Mouse);
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), 3u);
+                const auto pStart = state.pageScreenPoint(1, 70, 135);
+                const auto pEnd = state.pageScreenPoint(1, 290, 135);
+                begin(Device::Stylus, pStart.x, pStart.y, 0.35);
+                motion(Device::Stylus, pEnd.x, pEnd.y, 0.90);
+                finish(Device::Stylus, 0.90);
+                require(modified() && state.ink.size() == 11 && state.ink[9].page == 1 && state.ink[10].page == 1,
+                        "Direct drawing on Page 2 in continuous view did not target Page 2");
+                break;
+            }
+            case 37: {
+                capture("continuous-pages");
+                // Cross-page scrolling must reuse the bounded 4-page LRU raster cache without rerasterizing Poppler.
+                const int rastersBeforeScroll = rasterizations;
+                const double zoomBeforeShortcuts = state.zoom;
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Home, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && state.page == 0 && std::abs(state.zoom - zoomBeforeShortcuts) < 1e-9,
+                        "Ctrl+Home failed or reset zoom");
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_J, 0u, GDK_SHIFT_MASK, &handled);
+                require(handled && state.page == 1 && std::abs(state.zoom - zoomBeforeShortcuts) < 1e-9,
+                        "Shift+J next-page shortcut failed or reset zoom");
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_K, 0u, GDK_SHIFT_MASK, &handled);
+                require(handled && state.page == 0, "Shift+K previous-page shortcut failed");
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_End, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && state.page == 1, "Ctrl+End last-page shortcut failed");
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_K, 0u, GDK_SHIFT_MASK, &handled);
+                require(handled && state.page == 0 && rasterizations == rastersBeforeScroll,
+                        "Page navigation across cached pages unnecessarily rerasterized PDF");
+                // Exercise ':' and Ctrl+G Go-to-Page dialogs.
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_colon, 0u, GdkModifierType(0), &handled);
+                require(handled && messageDialog && gotoPageSpin, "Colon shortcut did not open Go-to-Page dialog");
+                answerDialog("cancel");
+                require(!messageDialog && state.page == 0, "Cancelling Go-to-Page dialog changed active page");
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_g, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && messageDialog && gotoPageSpin, "Ctrl+G did not open Go-to-Page dialog");
+                gtk_spin_button_set_value(GTK_SPIN_BUTTON(gotoPageSpin), 2);
+                break;
+            }
+            case 38:
+                break;  // Let AdwAlertDialog open animation finish before capturing goto-page-dialog.
+            case 39: {
+                capture("goto-page-dialog");
+                answerDialog("go");
+                require(!messageDialog && state.page == 1, "Go-to-Page dialog did not jump to Page 2");
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_d, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && busy, "Ctrl+D did not start Insert Page After");
+                break;
+            }
+            case 40: {
+                require(pageCount == 3 && state.page == 2 && modified() && gtk_widget_get_sensitive(deletePageButton),
+                        "Insert Page After did not create Page 3 or mark document modified");
+                const auto p3Start = state.pageScreenPoint(2, 80, 90);
+                const auto p3End = state.pageScreenPoint(2, 260, 90);
+                begin(Device::Mouse, p3Start.x, p3Start.y);
+                motion(Device::Mouse, p3End.x, p3End.y);
+                finish(Device::Mouse);
+                require(state.ink.size() == 12 && state.ink.back().page == 2,
+                        "Drawing on newly inserted Page 3 did not record page index 2");
+                // Frame the boundary between Page 2 and newly inserted lined Page 3.
+                const double viewW = gtk_widget_get_width(canvas);
+                const double viewH = gtk_widget_get_height(canvas);
+                fitMode = false;
+                fitted = true;
+                state.offsetY = viewH * 0.36 - state.pageTop(2) * state.zoom;
+                state.syncActivePage(viewW, viewH);
+                break;
+            }
+            case 41: {
+                capture("page-inserted");
+                // Export as PDF (Ctrl+E) must include unsaved strokes and newly inserted Page 3 without clearing dirty state.
+                smokeExportChoice = (std::filesystem::path(options.smokeDirectory) / "exported-notes.pdf").string();
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_e, 0u, GDK_CONTROL_MASK, &handled);
+                require(handled && busy, "Ctrl+E did not start PDF export");
+                break;
+            }
+            case 42: {
+                const auto exportedPdf =
+                        (std::filesystem::path(options.smokeDirectory) / "exported-notes.pdf").string();
+                require(std::filesystem::is_regular_file(exportedPdf) && modified(),
+                        "PDF export failed or falsely cleared .xopp unsaved changes");
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "multipage-edited.xopp").string();
+                chooseSave();
+                break;
+            }
+            case 43: {
+                require(!modified() && saveTarget.ends_with("multipage-edited.xopp") && pageCount == 3,
+                        "Saving 3-page document failed");
+                navigateToPage(1);
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Delete, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
+                require(handled && busy, "Ctrl+Shift+Delete did not start Delete Current Page");
+                break;
+            }
+            case 44: {
+                // Deleting old Page 2 (index 1, 2 strokes) shifts old Page 3 (1 stroke) down to index 1 -> 10 strokes total.
+                require(pageCount == 2 && modified() && state.ink.size() == 10 && state.ink.back().page == 1,
+                        "Deleting Page 2 did not remove its strokes or shift Page 3 strokes to index 1");
+                smokeSaveChoice = (std::filesystem::path(options.smokeDirectory) / "after-delete-page.xopp").string();
+                chooseSave();
+                break;
+            }
+            case 45: {
+                require(!modified() && saveTarget.ends_with("after-delete-page.xopp") && pageCount == 2,
+                        "Saving document after deleting Page 2 failed");
+                const auto p0 = state.pageScreenPoint(state.page, 210, 230);
+                input.begin(Device::Mouse, {p0.x, p0.y, std::nullopt});
                 input.finish(Device::Mouse);
                 break;
             }
             default:
                 require(busyHeartbeats > 0, "The UI main loop did not run during document I/O");
-                std::cout << "PASS: document actions, async open/save, saved revisions, native reopen, "
-                             "pressure transfer, failed-open/save retention, Save/Discard/Cancel, close protection, "
-                             "native Open/Save chooser cancellation, normal Save/Save As, external-edit conflict, "
-                             "background autosave, cache-open guard, sidecar recovery\n"
+                std::cout << "PASS: document actions, async open/save/export-pdf, continuous multi-page viewport, "
+                             "Go-to-Page, Insert/Delete Page, saved revisions, native reopen, pressure transfer, "
+                             "failed-open/save retention, Save/Discard/Cancel, close protection, native Open/Save "
+                             "chooser cancellation, normal Save/Save As, external-edit conflict, background autosave, "
+                             "cache-open guard, sidecar recovery\n"
                           << "busy_main_loop_ticks=" << busyHeartbeats
                           << " autosave_main_loop_ticks=" << autosaveHeartbeats << '\n';
                 gtk_window_close(GTK_WINDOW(window));
@@ -2672,6 +3172,7 @@ private:
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;
     std::string savedCopyPath;
+    std::string exportedPdfPath;
     std::string saveTarget;
     std::string saveVersion;
     bool savedNormally = false;
@@ -2701,11 +3202,18 @@ private:
     bool choosingFile = false;
     int ioErrors = 0;
     AdwAlertDialog* messageDialog = nullptr;
+    GtkWidget* gotoPageSpin = nullptr;
     std::function<void()> afterConfirmation;
     GtkWidget* heading = nullptr;
     GtkWidget* openButton = nullptr;
     GtkWidget* saveButton = nullptr;
     GtkWidget* saveAsButton = nullptr;
+    GtkWidget* exportPdfButton = nullptr;
+    GtkWidget* prevPageButton = nullptr;
+    GtkWidget* nextPageButton = nullptr;
+    GtkWidget* pageButton = nullptr;
+    GtkWidget* insertPageButton = nullptr;
+    GtkWidget* deletePageButton = nullptr;
     int documentSmokeStep = -1;
     int documentWaits = 0;
     gint64 lastDocumentCompletion = 0;
@@ -2714,12 +3222,13 @@ private:
     int busyHeartbeats = 0;
     bool smokeContinued = false;
     std::string smokeSaveChoice;
+    std::string smokeExportChoice;
     std::string smokeExternalVersion;
     CanvasState state;
     prototype::CanvasInput input{state};
     PopplerDocument* document = nullptr;
-    PopplerPage* page = nullptr;
     int pageCount = 1;
+    bool syncingPage = false;
     GtkWidget* window = nullptr;
     GdkPaintable* windowPaintable = nullptr;
     GdkFrameClock* paintClock = nullptr;
@@ -2760,8 +3269,8 @@ private:
     std::vector<GtkGesture*> panGestures;
     GtkGesture* pinch = nullptr;
     GtkEventController* keys = nullptr;
-    std::unique_ptr<cairo_surface_t, SurfaceDeleter> cache;
-    double cacheScale = 0;
+    std::vector<PageCacheEntry> pageCache;
+    uint64_t cacheClock = 0;
     double dragX = 0;
     double dragY = 0;
     double pinchX = 0;

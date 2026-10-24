@@ -22,7 +22,11 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Small-motion filtering | `InputHandler::PIXEL_MOTION_THRESHOLD` is 0.3 page points; initial dot may thicken | Matched for this part of the pipeline |
 | Stylus eraser | `StylusInputHandler::changeTool` applies the eraser mapping temporarily | Eraser-end routing preserves toolbar brush; custom mappings still absent |
 | Temporary hand tool | `XournalView` space press/release and `PenInputHandler::temporaryPan` | Space-drag remains a hand gesture until pointer release |
-| Outside-page drag | `PenInputHandler::actionStart` temporarily selects Hand | Matched for prototype page margins |
+| Outside-page drag | `PenInputHandler::actionStart` temporarily selects Hand | Matched across horizontal margins and the 15 pt vertical inter-page gap |
+| Continuous vertical layout | `Layout.cpp`: `XOURNAL_PADDING_BETWEEN = 15`, horizontal centering, `Layout::updateVisibility` largest-intersection-area active page | Matched for single-column vertical layout; unified in document points (eliminating legacy `PixelCounter` mixed-unit zoom-anchor drift) with a 4-page LRU raster cache and zoom-preserving navigation |
+| Page navigation & Go to Page | `ui/mainmenubar.xml` + `83c0deb9b`: `Page Up`/`Page Down`, `Shift+K`/`Shift+J`, `Ctrl+Home`/`Ctrl+End`, `Ctrl+G` & `:` | Matched, plus clicking the `1 / N` indicator button |
+| Insert / Delete Page | `ui/mainmenubar.xml` + `PageBackgroundChangeController::insertNewPage` (`Ctrl+D`, `Ctrl+Shift+Delete`) | Matched via staged worker revisions; copies paper style/color and intentionally inserts clean `Lined` white paper after PDF/image pages instead of duplicating the PDF slide |
+| Export as PDF | `ui/mainmenubar.xml` + `XojCairoPdfExport` (`Ctrl+E`) | Matched via staged atomic worker export including unsaved session ink without clearing `.xopp` modified state |
 | Broken grab | `StylusInputHandler`/`MouseInputHandler` call `actionEnd` | Delivered points finalize; explicit gesture cancellation discards unfinished ink |
 | Eraser undo | `EraseHandler` (`EraseUndoAction` / `DeleteUndoAction`) | One partial or whole-stroke eraser drag is one delta undo/redo action without raw `UndoAction*` pointers |
 | Saved status | `UndoRedoHandler::savedUndo` tracks edit identity | Revision identities track saved state through undo, redo and history branching |
@@ -62,8 +66,10 @@ to the real native model when saving.
   Lower layers, strokes underneath text/images/shapes, dashed/filled/non-round
   strokes, audio-linked strokes, text, LaTeX, and images remain flattened in the
   background preview and cannot yet be selected or edited interactively.
-- The prototype shows a single page at a time and refits on page changes. It
-  does not reproduce continuous-page layout, scroll positioning, or page history.
+- The prototype renders a continuous single-column vertical multi-page layout
+  and preserves zoom across page navigation, but horizontal, paired-page, and
+  multi-column grid layout modes (`LayoutSettings`), scroll-position history
+  stacks, and undo/redo for page insertion/deletion are not yet migrated.
 - Saved user preferences (`settings.xml`), custom `.gpl` palettes, and toolbar
   layout customization are not yet imported.
 - The normal application can configure touch behavior, hand recognition,
