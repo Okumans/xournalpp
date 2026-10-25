@@ -656,11 +656,12 @@ def verify_text_clipboard(args, evidence):
     command = [str(args.binary.resolve()), "--document", str(fixture), "--worker",
                str(args.worker.resolve()), "--smoke-dir", str(output_dir), "--verify-text-clipboard"]
     output = run(command, env=dict(os.environ, G_DEBUG="fatal-criticals"))
-    if "PASS: rich text/link clipboard copy/cut/paste/duplicate" not in output:
+    if "PASS: rich text/link and mixed clipboard copy/cut/paste/duplicate" not in output:
         raise RuntimeError("Text clipboard checks did not finish")
     if hashlib.sha256(fixture.read_bytes()).hexdigest() != before:
         raise RuntimeError("Text clipboard verification modified the native fixture")
-    return {"fixture": str(fixture), "clipboard_targets": ["application/xournal", "text/plain;charset=utf-8"],
+    return {"fixture": str(fixture), "clipboard_targets": ["application/xournal", "image/png", "image/svg",
+            "image/svg+xml", "text/plain;charset=utf-8"],
             "rendering": "Private headless Wayland via Cage"}
 
 

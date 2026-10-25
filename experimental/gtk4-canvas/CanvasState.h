@@ -15,7 +15,9 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "BehaviorDefaults.h"
@@ -120,6 +122,8 @@ struct SelectionBox {
     int page;
     double x0, y0, x1, y1;
 };
+
+using EditableObject = std::variant<Ink, TextItem, CanvasImage>;
 
 struct VerticalSpacePreview {
     int page = 0;
@@ -1677,6 +1681,42 @@ public:
         return copied;
     }
 
+    std::vector<EditableObject> copySelectedObjects() const {
+        std::vector<EditableObject> copied;
+        copied.reserve(selected.size() + selectedTexts.size() + selectedImages.size());
+        for (const auto index: selected) {
+            copied.emplace_back(ink.at(index));
+        }
+        for (const auto index: selectedTexts) {
+            copied.emplace_back(texts.at(index));
+        }
+        for (const auto index: selectedImages) {
+            copied.emplace_back(images.at(index));
+        }
+
+        const auto stackingOrder = [this](const EditableObject& object) {
+            return std::visit(
+                    [this](const auto& item) {
+                        size_t originOrder = 0;
+                        if (item.layerId > 0 && item.page >= 0 && item.page < pageCount()) {
+                            const auto& pageLayers = layersForPage(item.page).layers;
+                            if (item.layerId <= pageLayers.size()) {
+                                const auto& origins = pageLayers[item.layerId - 1].origins;
+                                const auto origin = std::find(origins.begin(), origins.end(), item.originLayer);
+                                originOrder = origin == origins.end() ? origins.size() :
+                                                                      static_cast<size_t>(origin - origins.begin());
+                            }
+                        }
+                        return std::tuple{item.page, item.layerId, originOrder, item.layerOrder};
+                    },
+                    object);
+        };
+        std::stable_sort(copied.begin(), copied.end(), [&](const auto& lhs, const auto& rhs) {
+            return stackingOrder(lhs) < stackingOrder(rhs);
+        });
+        return copied;
+    }
+
     bool pasteStrokes(std::vector<Ink> pasted, int targetPage, Point center) {
         if (pasted.empty() || targetPage < 0 || targetPage >= pageCount()) return false;
         if (!std::isfinite(center.x) || !std::isfinite(center.y)) return false;
@@ -1776,6 +1816,155 @@ public:
         }
         edit.imageSelectionBefore = selectedImages;
         edit.imageSelectionAfter = std::vector<size_t>{};
+        edit.hasSelectionFrameState = true;
+        edit.selectionFrameBefore = selectionFrame;
+        apply(edit, true);
+        record(std::move(edit));
+        selectActivePage(targetPage);
+        return true;
+    }
+
+    bool pasteObjects(std::vector<EditableObject> pasted, int targetPage, Point center) {
+        constexpr size_t maxClipboardObjects = 100000;
+        if (pasted.empty() || pasted.size() > maxClipboardObjects || targetPage < 0 || targetPage >= pageCount() ||
+            current || eraseGesture || selectionGesture || !std::isfinite(center.x) || !std::isfinite(center.y)) {
+            return false;
+        }
+
+        SelectionBox bounds{targetPage, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                            -std::numeric_limits<double>::infinity()};
+        const auto includePoint = [&](Point point) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+                return false;
+            }
+            bounds.x0 = std::min(bounds.x0, point.x);
+            bounds.y0 = std::min(bounds.y0, point.y);
+            bounds.x1 = std::max(bounds.x1, point.x);
+            bounds.y1 = std::max(bounds.y1, point.y);
+            return true;
+        };
+
+        for (const auto& object: pasted) {
+            const bool valid = std::visit(
+                    [&](const auto& item) {
+                        using T = std::decay_t<decltype(item)>;
+                        if constexpr (std::is_same_v<T, Ink>) {
+                            if (item.points.empty() || !std::isfinite(item.brush.width) || item.brush.width <= 0 ||
+                                isSelectionTool(item.brush.tool)) {
+                                return false;
+                            }
+                            return std::all_of(item.points.begin(), item.points.end(), [&](const Point& point) {
+                                return std::isfinite(point.pressure) && point.pressure > 0 && includePoint(point);
+                            });
+                        } else if constexpr (std::is_same_v<T, TextItem>) {
+                            auto candidate = item;
+                            candidate.page = targetPage;
+                            if (candidate.text.empty() || candidate.fontName.empty() || !validTextPage(candidate)) {
+                                return false;
+                            }
+                            const auto corners = textCorners(candidate);
+                            return std::all_of(corners.begin(), corners.end(), includePoint);
+                        } else {
+                            auto candidate = item;
+                            candidate.page = targetPage;
+                            if (!validCanvasImage(candidate)) {
+                                return false;
+                            }
+                            const auto corners = canvasImageCorners(candidate);
+                            return std::all_of(corners.begin(), corners.end(), includePoint);
+                        }
+                    },
+                    object);
+            if (!valid) {
+                return false;
+            }
+        }
+        if (!std::isfinite(bounds.x1 - bounds.x0) || !std::isfinite(bounds.y1 - bounds.y0)) {
+            return false;
+        }
+
+        const double dx = center.x - (bounds.x0 / 2.0 + bounds.x1 / 2.0);
+        const double dy = center.y - (bounds.y0 / 2.0 + bounds.y1 / 2.0);
+        if (!std::isfinite(dx) || !std::isfinite(dy)) {
+            return false;
+        }
+
+        const auto layerId = activeLayerId(targetPage);
+        const auto originLayer = activeLayerOrigin(targetPage);
+        auto layerOrder = nextOriginOrder(targetPage, originLayer);
+        if (pasted.size() > std::numeric_limits<size_t>::max() - layerOrder) {
+            return false;
+        }
+
+        std::vector<Ink> strokes;
+        std::vector<TextItem> textItems;
+        std::vector<CanvasImage> imageItems;
+        for (auto& object: pasted) {
+            const bool valid = std::visit(
+                    [&](auto& item) {
+                        using T = std::decay_t<decltype(item)>;
+                        item.page = targetPage;
+                        item.layerId = layerId;
+                        item.originLayer = originLayer;
+                        item.layerOrder = layerOrder++;
+                        if constexpr (std::is_same_v<T, Ink>) {
+                            for (auto& point: item.points) {
+                                point.x += dx;
+                                point.y += dy;
+                                if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+                                    return false;
+                                }
+                            }
+                            strokes.push_back(std::move(item));
+                        } else if constexpr (std::is_same_v<T, TextItem>) {
+                            item.x += dx;
+                            item.y += dy;
+                            if (!std::isfinite(item.x) || !std::isfinite(item.y) || !validTextPage(item)) {
+                                return false;
+                            }
+                            textItems.push_back(std::move(item));
+                        } else {
+                            item.transform.x += dx;
+                            item.transform.y += dy;
+                            if (!validCanvasImage(item)) {
+                                return false;
+                            }
+                            imageItems.push_back(std::move(item));
+                        }
+                        return true;
+                    },
+                    object);
+            if (!valid) {
+                return false;
+            }
+        }
+
+        Edit edit;
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
+        if (!strokes.empty()) {
+            edit.changes.push_back({ink.size(), {}, ink.size(), std::move(strokes)});
+            for (size_t index = 0; index < edit.changes.back().after.size(); ++index) {
+                edit.selectionAfter->push_back(ink.size() + index);
+            }
+        }
+        if (!textItems.empty()) {
+            edit.textChanges.push_back({texts.size(), {}, texts.size(), std::move(textItems)});
+            for (size_t index = 0; index < edit.textChanges.back().after.size(); ++index) {
+                edit.textSelectionAfter->push_back(texts.size() + index);
+            }
+        }
+        if (!imageItems.empty()) {
+            edit.imageChanges.push_back({images.size(), {}, images.size(), std::move(imageItems)});
+            for (size_t index = 0; index < edit.imageChanges.back().after.size(); ++index) {
+                edit.imageSelectionAfter->push_back(images.size() + index);
+            }
+        }
         edit.hasSelectionFrameState = true;
         edit.selectionFrameBefore = selectionFrame;
         apply(edit, true);

@@ -98,7 +98,8 @@ Embedded image orientation is honored, and images larger than 32 megapixels are
 scaled down for display. The original encoded bytes and transforms survive
 `.xopp` save, autosave, reopen, and PDF export. Copy and cut preserve editable
 image data and transforms through the native clipboard format while also
-offering PNG; paste accepts either the native image or a standard PNG image.
+offering rendered PNG and SVG targets. LaTeX images retain their source and PDF
+data in the native target.
 
 Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
 settings are remembered separately during a session, initialized from read-only
@@ -203,7 +204,10 @@ cross-page transfer, and mixed stroke/text edits join undo/redo. Selected text
 and links can be copied, cut, pasted, and duplicated as native editable objects;
 formatting runs and link URLs survive clipboard round trips, and copied text
 also offers a plain-text target. Plain-text clipboard content pastes as an
-editable text item. Mixed text/stroke/image clipboard groups remain unsupported.
+editable text item. Mixed stroke, text, link, raster-image, and LaTeX-image
+groups preserve stacking order through copy, cut, duplicate, paste, and grouped
+undo/redo. Copy publishes native data, rendered PNG/SVG, and plain text when the
+selection contains text.
 The inline editor does not follow transformed text. IME and accessibility
 behavior remain unverified.
 
@@ -539,7 +543,8 @@ The experiment is a separate prototype, not a replacement build of Xournal++.
 The remaining work is tracked exhaustively in
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md). The largest open groups
 are unsupported native object editing and full renderer fidelity; text and
-mixed-object clipboard support; paired, horizontal, and grid page layouts;
+cross-process clipboard verification and remaining native types; paired,
+horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
 parity; audio recording/device preferences and media lifecycle, vertical-space
 insertion, LaTeX dependency-check semantics and invalid-source recovery, and the
@@ -554,7 +559,7 @@ Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes, t
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter, opaque whiteout strokes, rich text, and links through bounded `application/xournal` streams. Selected text also offers plain text. Plain-text clipboard content pastes as an editable text object. Selected images copy and cut as editable native data plus PNG, and paste from native image data or a standard PNG clipboard. Multi-image copy/cut/paste and duplicate preserve relative transforms and are grouped into one undo step. Mixed-object clipboard actions remain pending; unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. Resize edge snapping and edge auto-pan use the imported legacy settings. A committed rotation keeps the visible handle frame axis-aligned while subsequent resize follows the accumulated selection rotation; undo and redo restore this state. Other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter, whiteout strokes, rich text, links, raster images, and LaTeX images through bounded `application/xournal` streams. Mixed selections retain their cross-type stacking order; text styles, link URLs, image data, LaTeX source, and transforms survive copy, cut, paste, and duplicate. Copy publishes rendered PNG and SVG targets, plus plain text for text selections. Plain-text clipboard content pastes as an editable text object. Mixed-object cut, paste, and duplicate are grouped into one undo step. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. Resize edge snapping and edge auto-pan use the imported legacy settings. A committed rotation keeps the visible handle frame axis-aligned while subsequent resize follows the accumulated selection rotation; undo and redo restore this state. Other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
 
 ## PDF text selection
 

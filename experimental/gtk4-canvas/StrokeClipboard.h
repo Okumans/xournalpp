@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 
 #include "CanvasImage.h"
 #include "DocumentInk.h"
@@ -100,6 +101,63 @@ public:
     }
     void end() { tag("_}"); }
 
+    size_t offset() const { return position; }
+
+    void skipValue(size_t depth = 0) {
+        const auto start = position;
+        const auto type = bytes.substr(position, 2);
+        try {
+            if (depth > 32) {
+                fail();
+            }
+            if (type == "_{") {
+                tag("_{");
+                string(4096);
+                while (bytes.substr(position, 2) != "_}") {
+                    if (position >= bytes.size()) {
+                        fail();
+                    }
+                    skipValue(depth + 1);
+                }
+                end();
+            } else if (type == "_s") {
+                string();
+            } else if (type == "_d") {
+                tag("_d");
+                raw<double>();
+            } else if (type == "_i") {
+                tag("_i");
+                raw<int>();
+            } else if (type == "_u") {
+                tag("_u");
+                raw<uint32_t>();
+            } else if (type == "_l") {
+                tag("_l");
+                raw<size_t>();
+            } else if (type == "_m") {
+                tag("_m");
+                const auto length = raw<size_t>();
+                if (length > bytes.size() - position) {
+                    fail();
+                }
+                position += length;
+            } else if (type == "_b") {
+                tag("_b");
+                const auto count = raw<size_t>();
+                const auto width = raw<size_t>();
+                if (width == 0 ? count != 0 : count > (bytes.size() - position) / width) {
+                    fail();
+                }
+                position += count * width;
+            } else {
+                throw std::runtime_error("Unsupported native value tag");
+            }
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string("Invalid native value at byte ") + std::to_string(start) +
+                                     " (" + std::string(type) + "): " + error.what());
+        }
+    }
+
     size_t data(size_t width, size_t limit) {
         tag("_b");
         const auto count = raw<size_t>();
@@ -149,6 +207,57 @@ public:
         raw(width);
     }
 };
+
+inline size_t readSelectionHeader(Reader& in) {
+    if (in.string(4096) != "XojStrm1:") {
+        Reader::fail();
+    }
+    in.string(4096);
+    in.object("EditSelection");
+    for (int n = 0; n < 9; ++n) in.number();
+    in.object("EditSelectionContents");
+    for (int n = 0; n < 11; ++n) in.number();
+    in.end();
+    in.end();
+    const auto count = in.value<int>("_i");
+    if (count <= 0 || static_cast<size_t>(count) > 100000) {
+        Reader::fail();
+    }
+    return static_cast<size_t>(count);
+}
+
+inline std::string wrapSelectionObject(std::string_view object) {
+    Writer out;
+    out.string("XojStrm1:");
+    out.string("Xournal++ GTK 4 migration");
+    out.object("EditSelection");
+    for (int n = 0; n < 9; ++n) out.number(0);
+    out.object("EditSelectionContents");
+    for (int n = 0; n < 11; ++n) out.number(0);
+    out.end();
+    out.end();
+    out.value<int>("_i", 1);
+    out.bytes.append(object);
+    return std::move(out.bytes);
+}
+
+inline std::string_view singleSelectionObject(std::string_view bytes) {
+    Reader in(bytes);
+    if (readSelectionHeader(in) != 1) {
+        Reader::fail();
+    }
+    const auto start = in.offset();
+    try {
+        in.skipValue();
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string("Cannot frame encoded native clipboard object: ") + error.what());
+    }
+    const auto end = in.offset();
+    if (!in.done()) {
+        Reader::fail();
+    }
+    return bytes.substr(start, end - start);
+}
 
 inline std::vector<Ink> decode(std::string_view bytes) {
     Reader in(bytes);
@@ -327,7 +436,11 @@ inline std::vector<CanvasImage> decodeImages(std::string_view bytes) {
     images.reserve(static_cast<size_t>(count));
     size_t totalImageBytes = 0;
     for (int n = 0; n < count; ++n) {
-        in.object("Image");
+        const bool latex = in.nextObjectIs("TexImage");
+        if (!latex && !in.nextObjectIs("Image")) {
+            Reader::fail();
+        }
+        in.object(latex ? "TexImage" : "Image");
         in.object("RectangularElement");
         in.object("Element");
         in.value<uint32_t>("_u");
@@ -342,19 +455,34 @@ inline std::vector<CanvasImage> decodeImages(std::string_view bytes) {
         const double naturalWidth = in.number();
         const double naturalHeight = in.number();
         in.end();
-        const auto imageBytes = in.image();
+        std::string_view imageBytes;
+        if (latex) {
+            image.kind = CanvasImageKind::Latex;
+            image.nativeWidth = naturalWidth;
+            image.nativeHeight = naturalHeight;
+            image.latexSource.assign(in.string(bridge::maxEditableTextBytes));
+            imageBytes = in.string(maxCanvasImageBytes);
+        } else {
+            imageBytes = in.image();
+        }
         if (imageBytes.size() > maxBytes - totalImageBytes) {
             Reader::fail();
         }
         totalImageBytes += imageBytes.size();
         in.end();
-        if (naturalWidth <= 0 || naturalHeight <= 0 || naturalWidth > maxCanvasImagePixels ||
-            naturalHeight > maxCanvasImagePixels || std::floor(naturalWidth) != naturalWidth ||
-            std::floor(naturalHeight) != naturalHeight) {
-            Reader::fail();
+        if (latex) {
+            if (!std::isfinite(naturalWidth) || !std::isfinite(naturalHeight)) {
+                Reader::fail();
+            }
+        } else {
+            if (naturalWidth <= 0 || naturalHeight <= 0 || naturalWidth > maxCanvasImagePixels ||
+                naturalHeight > maxCanvasImagePixels || std::floor(naturalWidth) != naturalWidth ||
+                std::floor(naturalHeight) != naturalHeight) {
+                Reader::fail();
+            }
+            image.pixelWidth = static_cast<int>(naturalWidth);
+            image.pixelHeight = static_cast<int>(naturalHeight);
         }
-        image.pixelWidth = static_cast<int>(naturalWidth);
-        image.pixelHeight = static_cast<int>(naturalHeight);
         image.encodedData.assign(imageBytes);
         if (!validCanvasImage(image)) {
             Reader::fail();
@@ -374,9 +502,7 @@ inline CanvasImage decodeImage(std::string_view bytes) {
 }
 
 struct DecodedPayload {
-    std::vector<Ink> strokes;
-    std::vector<CanvasImage> images;
-    std::vector<TextItem> texts;
+    std::vector<EditableObject> objects;
 };
 
 namespace text_clipboard_detail {
@@ -687,18 +813,6 @@ inline std::string encodeTexts(const std::vector<TextItem>& texts, const Selecti
     return std::move(out.bytes);
 }
 
-inline DecodedPayload decodePayload(std::string_view bytes) {
-    try {
-        return {{}, decodeImages(bytes), {}};
-    } catch (const std::exception&) {
-        try {
-            return {decode(bytes), {}, {}};
-        } catch (const std::exception&) {
-            return {{}, {}, decodeTexts(bytes)};
-        }
-    }
-}
-
 inline std::string encodeImages(const std::vector<CanvasImage>& images) {
     if (images.empty() || images.size() > maxClipboardImages)
         Reader::fail();
@@ -742,7 +856,8 @@ inline std::string encodeImages(const std::vector<CanvasImage>& images) {
     out.end();
     out.value<int>("_i", static_cast<int>(images.size()));
     for (const auto& image: images) {
-        out.object("Image");
+        const bool latex = image.kind == CanvasImageKind::Latex;
+        out.object(latex ? "TexImage" : "Image");
         out.object("RectangularElement");
         out.object("Element");
         out.value<uint32_t>("_u", 0xff000000U);
@@ -753,10 +868,15 @@ inline std::string encodeImages(const std::vector<CanvasImage>& images) {
         out.number(image.transform.yy);
         out.number(image.transform.x);
         out.number(image.transform.y);
-        out.number(image.pixelWidth);
-        out.number(image.pixelHeight);
+        out.number(latex ? image.nativeWidth : image.pixelWidth);
+        out.number(latex ? image.nativeHeight : image.pixelHeight);
         out.end();
-        out.image(image.encodedData);
+        if (latex) {
+            out.string(image.latexSource);
+            out.string(image.encodedData);
+        } else {
+            out.image(image.encodedData);
+        }
         out.end();
     }
     if (out.bytes.size() > maxBytes)
@@ -766,6 +886,130 @@ inline std::string encodeImages(const std::vector<CanvasImage>& images) {
 
 inline std::string encodeImage(const CanvasImage& image) {
     return encodeImages({image});
+}
+
+inline std::vector<EditableObject> decodeObjects(std::string_view bytes) {
+    Reader in(bytes);
+    const auto count = readSelectionHeader(in);
+    std::vector<EditableObject> objects;
+    objects.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        enum class Kind { Stroke, Image, Text };
+        Kind kind;
+        if (in.nextObjectIs("Stroke")) {
+            kind = Kind::Stroke;
+        } else if (in.nextObjectIs("Image") || in.nextObjectIs("TexImage")) {
+            kind = Kind::Image;
+        } else if (in.nextObjectIs("Text") || in.nextObjectIs("Link")) {
+            kind = Kind::Text;
+        } else {
+            Reader::fail();
+        }
+
+        const auto start = in.offset();
+        try {
+            in.skipValue();
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string("Cannot frame native clipboard object ") + std::to_string(index) +
+                                     ": " + error.what());
+        }
+        const auto record = bytes.substr(start, in.offset() - start);
+        const auto singleObject = wrapSelectionObject(record);
+        try {
+            switch (kind) {
+                case Kind::Stroke: {
+                    auto decoded = decode(singleObject);
+                    if (decoded.size() != 1) Reader::fail();
+                    objects.emplace_back(std::move(decoded.front()));
+                    break;
+                }
+                case Kind::Image: {
+                    auto decoded = decodeImages(singleObject);
+                    if (decoded.size() != 1) Reader::fail();
+                    objects.emplace_back(std::move(decoded.front()));
+                    break;
+                }
+                case Kind::Text: {
+                    auto decoded = decodeTexts(singleObject);
+                    if (decoded.size() != 1) Reader::fail();
+                    objects.emplace_back(std::move(decoded.front()));
+                    break;
+                }
+            }
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string("Cannot decode native clipboard object ") +
+                                     std::to_string(index) + ": " + error.what());
+        }
+    }
+    if (!in.done()) {
+        Reader::fail();
+    }
+    return objects;
+}
+
+inline DecodedPayload decodePayload(std::string_view bytes) {
+    try {
+        return {decodeObjects(bytes)};
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string("Cannot decode native clipboard group: ") + error.what());
+    }
+}
+
+inline std::string encodeObjects(const std::vector<EditableObject>& objects, const SelectionBox& bounds) {
+    constexpr size_t maxClipboardObjects = 100000;
+    if (objects.empty() || objects.size() > maxClipboardObjects || !std::isfinite(bounds.x0) ||
+        !std::isfinite(bounds.y0) || !std::isfinite(bounds.x1) || !std::isfinite(bounds.y1) ||
+        bounds.x1 < bounds.x0 || bounds.y1 < bounds.y0) {
+        Reader::fail();
+    }
+
+    Writer out;
+    out.string("XojStrm1:");
+    out.string("Xournal++ GTK 4 migration");
+    out.object("EditSelection");
+    const double rectangle[] = {bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0};
+    for (int n = 0; n < 2; ++n) {
+        for (const auto value: rectangle) out.number(value);
+    }
+    out.number(0);
+    out.object("EditSelectionContents");
+    for (int n = 0; n < 2; ++n) {
+        for (const auto value: rectangle) out.number(value);
+    }
+    for (int n = 0; n < 3; ++n) out.number(0);
+    out.end();
+    out.end();
+    out.value<int>("_i", static_cast<int>(objects.size()));
+
+    for (const auto& object: objects) {
+        if (std::visit([](const auto& item) { return item.page; }, object) != bounds.page) {
+            Reader::fail();
+        }
+        std::string single;
+        std::visit(
+                [&](const auto& item) {
+                    using T = std::decay_t<decltype(item)>;
+                    if constexpr (std::is_same_v<T, Ink>) {
+                        single = encode({item});
+                    } else if constexpr (std::is_same_v<T, TextItem>) {
+                        single = encodeTexts({item}, bounds);
+                    } else {
+                        single = encodeImages({item});
+                    }
+                },
+                object);
+        std::string_view record;
+        try {
+            record = singleSelectionObject(single);
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string("Cannot encode selected native object: ") + error.what());
+        }
+        if (record.size() > maxBytes - out.bytes.size()) {
+            Reader::fail();
+        }
+        out.bytes.append(record);
+    }
+    return std::move(out.bytes);
 }
 
 }  // namespace prototype::clipboard
