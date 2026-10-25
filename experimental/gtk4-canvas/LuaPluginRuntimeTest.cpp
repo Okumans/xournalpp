@@ -89,13 +89,18 @@ int main() {
                 "[about]\ndescription=Beamer presentation controls\n[default]\nenabled=true\n"
                 "[plugin]\nmainfile=main.lua\n",
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/BeamerPresentation/main.lua"));
+    const auto layerActionsPlugin = root / "LayerActions";
+    writePlugin(layerActionsPlugin,
+                "[about]\ndescription=Layer operations\n[default]\nenabled=false\n"
+                "[plugin]\nmainfile=main.lua\n",
+                readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/LayerActions/main.lua"));
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
-    runtime.discover({root}, colorCycle.string(), {});
+    runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 8, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 9, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -139,7 +144,9 @@ int main() {
         return true;
     };
     host.activateAction = [&](std::string_view action, std::string& error) {
-        if (action != "beamer-next" && action != "beamer-previous" && action != "beamer-clean") {
+        if (action != "beamer-next" && action != "beamer-previous" && action != "beamer-clean" &&
+            action != "layer-actions-clone-next" && action != "layer-actions-hide" &&
+            action != "layer-actions-add-top") {
             error = "Actions are unavailable in this GTK 4 host";
             return false;
         }
@@ -191,6 +198,13 @@ int main() {
     require(runtime.invokeMenu("BeamerPresentation", 2) &&
                     activatedActions == std::vector<std::string>({"beamer-next", "beamer-previous", "beamer-clean"}),
             "Beamer clean did not dispatch the cleanup host action");
+    require(runtime.invokeMenu("LayerActions", 0) &&
+                    activatedActions.back() == "layer-actions-clone-next",
+            "LayerActions clone did not dispatch its GTK host action");
+    require(runtime.invokeMenu("LayerActions", 1) && activatedActions.back() == "layer-actions-hide",
+            "LayerActions hide did not dispatch its GTK host action");
+    require(runtime.invokeMenu("LayerActions", 2) && activatedActions.back() == "layer-actions-add-top",
+            "LayerActions add did not dispatch its GTK host action");
     require(runtime.invokeMenu("DialogPlugin", 0) && dialogPluginName == "DialogPlugin" &&
                     dialogMessage == "Choose one" && !dialogError && dialogButtons.size() == 2 &&
                     dialogButtons[0].response == 1 && dialogButtons[0].label == "First" &&
@@ -213,8 +227,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 8 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 5,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 11 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 6,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

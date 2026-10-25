@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **53 task areas — 41 Partial, 6 Pending, 6 Covered, and 0
+Current ledger count: **53 task areas — 42 Partial, 5 Pending, 6 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -109,7 +109,7 @@ it is part of the master plugin distribution.
 | `FitToContent` | Resize page content to fit a selection or layer. | Pending |
 | `HighlightPosition` | Toggle a position highlight using a shortcut. | Covered — Alt+X toggles the pointer halo; the fill/border color, radius, and enabled state are editable in Preferences and persist. |
 | `ImageActions` | Invert, resize, flip, rotate, make white pixels transparent, trim/crop, and split selected images into rows or columns. | Covered — all ten upstream menu actions run through the GTK 4 host's optional libvips pipeline; grouped replacement, selection, undo/redo, and save/reopen are regression-tested. |
-| `LayerActions` | Clone layers to following pages, hide layers, and add top layers. | Pending |
+| `LayerActions` | Clone layers to following pages, hide layers, and add top layers. | Partial — clone checks for a following PDF page, asks before replacing annotations, then copies the source page's foreground layers and editable objects onto that PDF page; it matches the master page-copy visibility reset. Hide selects the first foreground layer, hides higher foreground layers, and preserves each page's background visibility; add creates a top layer on every page with one undo step per page. Whole-page clone/replace is not undoable yet. |
 | `QuickScreenshot` | Capture a screen region to an image using supported platform utilities. | Pending |
 | `SpaceForNotes` | Add empty pages for notes. | Partial — both upstream modes run: add a lined page after each PDF page that is not already followed by a note page, or force a page after every page. Changes survive save/reopen; page insertions are not undoable yet. |
 | `ToggleGrid` | Toggle the page grid. | Covered — toggles grid snapping and switches the active page between plain and graph backgrounds; native document save, reopen, undo, and redo preserve the background. |
@@ -123,7 +123,7 @@ it is part of the master plugin distribution.
 | Lua plugin runtime and manager | Partial | Discovers bundled, explicit `--plugin-dir`, and per-user plugin paths; reads `plugin.ini`, loads enabled Lua 5.4 scripts, exposes a Plugins menu and manager, persists enabled-path overrides, and dispatches registered menu actions, accelerators, and canvas shortcuts. `app.C` tool IDs, `app.registerUi`, asynchronous `app.openDialog`, color changes, selected-stroke/text recoloring, common tool selection, grid snapping and position highlighting state, current-page plain/graph background changes, batched empty-page insertion, ImageActions transforms, page navigation, Go to Page, undo/redo, and default-tool actions work. Port the remaining master Lua API, toolbar integration, plugin-specific actions and state, and remaining bundled plugins. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
-| Input devices | Partial | Synthetic mouse/stylus paths work. Match touchpad pan/scroll sensitivity and motion stability to the original app; port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |
+| Input devices | Partial | Synthetic mouse/stylus paths work. Match touchpad pan/scroll sensitivity and motion stability to the original app in a later migration phase, as requested; port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |
 | Native documents | Partial | Supported strokes, text, links, and image suffixes round-trip. PDF-backed text selection uses the original PDF source and page mapping. Make unsupported native object types editable without losing preservation. |
 | Accessibility and platform behavior | Pending | Port accessibility semantics and verify each supported platform and packaging path. |
 
