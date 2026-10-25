@@ -25,6 +25,7 @@ bool same(const prototype::TextStyleRun& a, const prototype::TextStyleRun& b) {
 bool same(const prototype::TextItem& a, const prototype::TextItem& b) {
     if (a.page != b.page || a.layerId != b.layerId || a.originLayer != b.originLayer ||
         a.layerOrder != b.layerOrder || a.text != b.text || a.fontName != b.fontName ||
+        a.linkUrl != b.linkUrl || a.isLink != b.isLink ||
         a.fontSize != b.fontSize || a.color != b.color || a.wrapWidth != b.wrapWidth || a.alignment != b.alignment ||
         a.justify != b.justify || a.xx != b.xx || a.yx != b.yx || a.xy != b.xy || a.yy != b.yy || a.x != b.x ||
         a.y != b.y || a.layoutWidth != b.layoutWidth || a.layoutHeight != b.layoutHeight ||
@@ -89,17 +90,32 @@ int main() {
         second.text = "editable text";
         second.styleRuns = {{0, 8, "Sans", 12, std::nullopt, 0U}};
 
+        prototype::TextItem link;
+        link.page = 2;
+        link.layerId = 2;
+        link.originLayer = 5;
+        link.layerOrder = 9;
+        link.text = "GTK4 migration";
+        link.fontName = "Sans";
+        link.color = 0xffff00ffU;
+        link.isLink = true;
+        link.linkUrl = "https://xournalpp.github.io/";
+        link.x = 123.5;
+        link.y = 90.25;
+        link.layoutWidth = 86;
+        link.layoutHeight = 18;
+
         const auto path = root / "roundtrip.text";
-        prototype::bridge::writeTextTransfer(path, {first, second});
+        prototype::bridge::writeTextTransfer(path, {first, second, link});
         {
             std::ifstream header(path);
             std::string magic;
             header >> magic;
-            check(magic == "XOURNALPP_GTK4_TEXT_V3", "Text transfers should carry selection layout geometry");
+            check(magic == "XOURNALPP_GTK4_TEXT_V4", "Text transfers should carry link metadata and layout geometry");
         }
         const auto decoded = prototype::bridge::readTextTransfer(path);
-        check(decoded.size() == 2 && same(decoded[0], first) && same(decoded[1], second),
-              "Native text transfer changed content, style, transform or object order");
+        check(decoded.size() == 3 && same(decoded[0], first) && same(decoded[1], second) && same(decoded[2], link),
+              "Native text transfer changed content, link URL, style, transform or object order");
 
         prototype::bridge::writeTextTransfer(path, {});
         check(prototype::bridge::readTextTransfer(path).empty(), "Empty native text transfer did not round-trip");
@@ -128,6 +144,18 @@ int main() {
                       legacyV2Decoded[0].layoutWidth == 0 && legacyV2Decoded[0].layoutHeight == 0,
               "Legacy V2 text transfers should retain layer identity with empty layout geometry");
 
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_TEXT_V3 1\n"
+                      "0 1 0 2 1 0 0 1 10 20 12 4278190080 -1 12 14 0 0 3 4 0\n"
+                      "Sans\nabc\n";
+        }
+        const auto legacyV3Decoded = prototype::bridge::readTextTransfer(path);
+        check(legacyV3Decoded.size() == 1 && legacyV3Decoded[0].text == "abc" &&
+                      legacyV3Decoded[0].layoutWidth == 12 && legacyV3Decoded[0].layoutHeight == 14 &&
+                      !legacyV3Decoded[0].isLink,
+              "Legacy V3 text transfers should retain geometry and default to ordinary text");
+
         auto invalidBoundary = first;
         invalidBoundary.styleRuns = {{5, 6, "Sans", 12, std::nullopt, 1U}};
         check(throws([&] { prototype::bridge::writeTextTransfer(path, {invalidBoundary}); }),
@@ -137,6 +165,13 @@ int main() {
         invalidAttributes.styleRuns = {{0, 4, "Sans", 12, std::nullopt, 0x100U}};
         check(throws([&] { prototype::bridge::writeTextTransfer(path, {invalidAttributes}); }),
               "Unknown inline text attributes were accepted");
+
+        auto invalidLink = link;
+        invalidLink.linkUrl = "https://example.org/";
+        invalidLink.linkUrl.push_back('\0');
+        invalidLink.linkUrl += "invalid";
+        check(throws([&] { prototype::bridge::writeTextTransfer(path, {invalidLink}); }),
+              "A link URL containing NUL was accepted");
 
         {
             std::ofstream truncated(path, std::ios::binary);

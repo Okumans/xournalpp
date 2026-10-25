@@ -31,6 +31,12 @@ inline PangoLayout* createTextLayout(cairo_t* cr, const TextItem& item) {
 #endif
 
     auto* attributes = pango_attr_list_new();
+    if (item.isLink && !item.text.empty()) {
+        auto* underline = pango_attr_underline_new(PANGO_UNDERLINE_SINGLE);
+        underline->start_index = 0;
+        underline->end_index = static_cast<guint>(item.text.size());
+        pango_attr_list_insert(attributes, underline);
+    }
     for (const auto& run: item.styleRuns) {
         if (run.start >= run.end || run.end > item.text.size() || run.start > G_MAXUINT || run.end > G_MAXUINT) {
             continue;

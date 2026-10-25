@@ -395,8 +395,8 @@ The remaining work is tracked exhaustively in
 are unsupported native object editing and full renderer fidelity; text and
 mixed/multi-image clipboard support; paired, horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
-parity; audio playback, vertical-space insertion, laser tools, links, LaTeX,
-and the general floating toolbox; complete per-device settings and toolbar
+parity; audio playback, vertical-space insertion, laser tools, LaTeX, and the
+general floating toolbox; complete per-device settings and toolbar
 customization; and all 12 bundled plugins. Accessibility, physical input,
 platform packaging, GPU rendering, and platform-specific validation are also
 still required before replacing the existing application.
