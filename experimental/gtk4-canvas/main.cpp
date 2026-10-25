@@ -111,6 +111,13 @@ struct PdfTextSelectionState {
     prototype::CairoRegion region;
 };
 
+struct SmartSelectPdfGesture {
+    prototype::Device owner = prototype::Device::Mouse;
+    prototype::Point start;
+    prototype::Point latest;
+    bool altPressed = false;
+};
+
 enum class PdfTextAnnotation { Highlight, Underline, Strikethrough };
 
 struct PdfHighlightPreset {
@@ -1815,6 +1822,55 @@ private:
         return poppler_document_get_page(source, sourcePage);
     }
 
+    bool smartSelectHasSelectedObjectAt(int page, prototype::Point point) const {
+        if (!state.hasSelection()) {
+            return false;
+        }
+        const auto bounds = state.selectionBox();
+        if (!bounds || bounds->page != page) {
+            return false;
+        }
+        const double padding = 5 / std::max(0.1, state.zoom);
+        return point.x >= bounds->x0 - padding && point.x <= bounds->x1 + padding &&
+               point.y >= bounds->y0 - padding && point.y <= bounds->y1 + padding;
+    }
+
+    bool smartSelectHasEditableObjectAt(int page, prototype::Point point) const {
+        return state.pickStroke(page, point) || state.pickText(page, point) || state.pickImage(page, point);
+    }
+
+    bool pdfTextAtCanvasPoint(int pageIndex, prototype::Point point) {
+        auto* page = pdfPageForPage(pageIndex);
+        if (!page) {
+            return false;
+        }
+        const bool found = prototype::pdfTextAt(page, point.x, point.y);
+        g_object_unref(page);
+        return found;
+    }
+
+    bool beginSmartSelectPdfGesture(Device device, double x, double y) {
+        if (state.brush.tool != Tool::SmartSelect || input.shiftHeld || input.spaceHeld ||
+            (device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
+            return false;
+        }
+        const auto hit = state.hitPage(x, y);
+        if (!hit || smartSelectHasSelectedObjectAt(hit->page, hit->local)) {
+            return false;
+        }
+
+        const bool altPressed = input.altHeld;
+        if (!altPressed && smartSelectHasEditableObjectAt(hit->page, hit->local)) {
+            return false;
+        }
+        if (!altPressed && !pdfTextAtCanvasPoint(hit->page, hit->local)) {
+            return false;
+        }
+
+        smartSelectPdfGesture = SmartSelectPdfGesture{device, {x, y}, {x, y}, altPressed};
+        return true;
+    }
+
     void updatePdfActionsPosition(bool popup) {
         if (!pdfActionsPopover || !pdfTextSelection || !pdfTextSelection->finalized ||
             !pdfTextSelection->region || cairo_region_num_rectangles(pdfTextSelection->region.get()) == 0) {
@@ -1831,7 +1887,8 @@ private:
                               std::max(1, static_cast<int>(std::ceil(std::abs(second.y - first.y))))};
         gtk_popover_set_pointing_to(pdfActionsPopover, &pointing);
         if (pdfSelectionStyleButton) {
-            const char* label = pdfTextSelection->tool == Tool::SelectPdfTextLinear ? "Rectangle" : "Linear";
+            const char* label = pdfTextSelection->style == prototype::PdfTextSelectionStyle::Linear ?
+                                        "Rectangle" : "Linear";
             gtk_button_set_label(GTK_BUTTON(pdfSelectionStyleButton), label);
         }
         if (popup) {
@@ -1926,19 +1983,40 @@ private:
     }
 
     void switchPdfTextSelectionStyle() {
-        if (!prototype::isPdfTextSelectionTool(state.brush.tool)) {
+        const bool smartSelectPdfResult = state.brush.tool == Tool::SmartSelect && pdfTextSelection &&
+                                          pdfTextSelection->finalized;
+        if (!prototype::isPdfTextSelectionTool(state.brush.tool) && !smartSelectPdfResult) {
             return;
         }
-        const Tool next = state.brush.tool == Tool::SelectPdfTextLinear ? Tool::SelectPdfTextRect :
-                                                                          Tool::SelectPdfTextLinear;
-        state.brush.tool = next;
-        selectionTool = next;
-        if (selectionModeDropdown) {
-            gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), selectionModeIndex(next));
+        const auto currentStyle = pdfTextSelection ? pdfTextSelection->style :
+                                                    pdfSelectionStyleForTool(state.brush.tool);
+        const Tool next = currentStyle == prototype::PdfTextSelectionStyle::Linear ? Tool::SelectPdfTextRect :
+                                                                                     Tool::SelectPdfTextLinear;
+        if (!smartSelectPdfResult) {
+            state.brush.tool = next;
+            selectionTool = next;
+            if (selectionModeDropdown) {
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), selectionModeIndex(next));
+            }
         }
         if (pdfTextSelection && pdfTextSelection->finalized) {
-            pdfTextSelection->tool = next;
-            pdfTextSelection->style = pdfSelectionStyleForTool(next);
+            if (!smartSelectPdfResult) {
+                pdfTextSelection->tool = next;
+            }
+            const auto nextStyle = pdfSelectionStyleForTool(next);
+            if (nextStyle == prototype::PdfTextSelectionStyle::Rectangle &&
+                currentStyle != prototype::PdfTextSelectionStyle::Rectangle &&
+                !pdfTextSelection->textRects.empty()) {
+                auto bounds = pdfTextSelection->textRects.front();
+                for (const auto& rect: pdfTextSelection->textRects) {
+                    bounds.x1 = std::min(bounds.x1, std::min(rect.x1, rect.x2));
+                    bounds.y1 = std::min(bounds.y1, std::min(rect.y1, rect.y2));
+                    bounds.x2 = std::max(bounds.x2, std::max(rect.x1, rect.x2));
+                    bounds.y2 = std::max(bounds.y2, std::max(rect.y1, rect.y2));
+                }
+                pdfTextSelection->bounds = bounds;
+            }
+            pdfTextSelection->style = nextStyle;
             auto* page = pdfPageForPage(pdfTextSelection->page);
             if (page) {
                 auto result = prototype::selectPdfText(page, pdfTextSelection->bounds,
@@ -3602,6 +3680,7 @@ private:
         }
         textSelectionOwner.reset();
         pendingStylusTextTap.reset();
+        smartSelectPdfGesture.reset();
         textDragHandled = false;
         input.cancel();
         state.cancelVerticalSpace();
@@ -5222,7 +5301,8 @@ private:
     }
 
     bool beginImageGesture(Device device, double x, double y) {
-        if (state.hasSelection() || state.brush.tool != Tool::SmartSelect || input.spaceHeld || input.panning() ||
+        if (state.hasSelection() || state.brush.tool != Tool::SmartSelect || input.spaceHeld || input.shiftHeld ||
+            input.panning() ||
             (device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
             return false;
         }
@@ -5415,6 +5495,7 @@ private:
 
     void resetInput(bool interrupted = false) {
         imageGesture.reset();
+        smartSelectPdfGesture.reset();
         state.cancelVerticalSpace();
         if (textSelectionOwner) {
             state.cancelSelection();
@@ -5533,6 +5614,10 @@ private:
             beginPdfTextSelection(device, x, y);
             return;
         }
+        if (beginSmartSelectPdfGesture(device, x, y)) {
+            gtk_widget_grab_focus(canvas);
+            return;
+        }
         if (pdfTextSelection) {
             clearPdfTextSelection(false);
         }
@@ -5588,6 +5673,18 @@ private:
             updateLinkHover(x, y);
             return;
         }
+        if (smartSelectPdfGesture && smartSelectPdfGesture->owner == device) {
+            smartSelectPdfGesture->latest = {x, y};
+            const auto& start = smartSelectPdfGesture->start;
+            if (std::max(std::abs(x - start.x), std::abs(y - start.y)) < 10.0) {
+                return;
+            }
+            const auto gesture = *smartSelectPdfGesture;
+            smartSelectPdfGesture.reset();
+            beginPdfTextSelection(device, gesture.start.x, gesture.start.y);
+            updatePdfTextSelection(device, x, y);
+            return;
+        }
         if (state.verticalSpacePreview()) {
             state.moveVerticalSpace(x, y, input.controlHeld);
             update();
@@ -5630,6 +5727,27 @@ private:
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt,
                 std::optional<prototype::Point> releasePoint = std::nullopt) {
+        if (smartSelectPdfGesture && smartSelectPdfGesture->owner == device) {
+            if (releasePoint) {
+                smartSelectPdfGesture->latest = *releasePoint;
+            }
+            const auto gesture = *smartSelectPdfGesture;
+            smartSelectPdfGesture.reset();
+            const auto& end = gesture.latest;
+            const bool exceededThreshold = std::max(std::abs(end.x - gesture.start.x),
+                                                    std::abs(end.y - gesture.start.y)) >= 10.0;
+            if (exceededThreshold) {
+                beginPdfTextSelection(device, gesture.start.x, gesture.start.y);
+                updatePdfTextSelection(device, end.x, end.y);
+                finishPdfTextSelection(device);
+            } else {
+                state.clearSelection();
+                selectedImageIndex.reset();
+                clearPdfTextSelection(false);
+                update();
+            }
+            return;
+        }
         if (device == Device::Stylus && state.brush.tool == Tool::Link && releasePoint) {
             handleLinkClick(releasePoint->x, releasePoint->y, 1, input.controlHeld);
             update();
@@ -5687,7 +5805,9 @@ private:
     void consumeBacklog(std::span<const GdkTimeCoord> samples) {
         for (const auto& sample: samples) {
             if (const auto point = prototype::historySample(sample)) {
-                if (pendingStylusTextTap || (textSelectionOwner && *textSelectionOwner == Device::Stylus)) {
+                if (pendingStylusTextTap ||
+                    (smartSelectPdfGesture && smartSelectPdfGesture->owner == Device::Stylus) ||
+                    (textSelectionOwner && *textSelectionOwner == Device::Stylus)) {
                     motion(Device::Stylus, point->x, point->y, point->pressure, point->timeMs);
                 } else {
                     input.motion(Device::Stylus, *point);
@@ -5742,11 +5862,12 @@ private:
                              }
                          }),
                          this);
-        g_signal_connect(mouse, "drag-end", G_CALLBACK(+[](GtkGestureDrag* gesture, double, double, gpointer data) {
+        g_signal_connect(mouse, "drag-end", G_CALLBACK(+[](GtkGestureDrag* gesture, double dx, double dy, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              if (mouseEvent(GTK_EVENT_CONTROLLER(gesture)) &&
                                  self->state.drawingMode != prototype::DrawingMode::Spline) {
-                                 self->finish(Device::Mouse);
+                                 self->finish(Device::Mouse, std::nullopt,
+                                              prototype::Point{self->dragX + dx, self->dragY + dy});
                                  self->update();
                              }
                          }),
@@ -6003,6 +6124,7 @@ private:
         pinch = gtk_gesture_zoom_new();
         g_signal_connect(pinch, "begin", G_CALLBACK(+[](GtkGesture*, GdkEventSequence*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
+                             self->smartSelectPdfGesture.reset();
                              self->input.cancel();
                              self->state.beginPinch();
                              self->pinchZoom = self->state.zoom;
@@ -7543,6 +7665,89 @@ private:
                                 !pdfTextSelection->textRects.empty(),
                         "Linear selection did not select text from the PDF background only");
                 capture("pdf-text-linear-selection");
+
+                auto* page = pdfPageForPage(0);
+                require(page != nullptr, "PDF-backed XOPP fixture lost its first PDF page");
+                PopplerRectangle* glyphs = nullptr;
+                guint glyphCount = 0;
+                require(poppler_page_get_text_layout(page, &glyphs, &glyphCount) && glyphCount > 0,
+                        "PDF-backed fixture has no text layout for Smart Select");
+                PopplerRectangle smartGlyph{};
+                bool foundPdfOnlyGlyph = false;
+                for (guint index = 0; index < glyphCount; ++index) {
+                    const auto& glyph = glyphs[index];
+                    const prototype::Point point{(glyph.x1 + glyph.x2) / 2, (glyph.y1 + glyph.y2) / 2};
+                    if (!smartSelectHasEditableObjectAt(0, point)) {
+                        smartGlyph = glyph;
+                        foundPdfOnlyGlyph = true;
+                        break;
+                    }
+                }
+                g_free(glyphs);
+                g_object_unref(page);
+                require(foundPdfOnlyGlyph, "PDF-backed fixture has no glyph outside editable native objects");
+                const auto smartStart = state.pageScreenPoint(
+                        0, (smartGlyph.x1 + smartGlyph.x2) / 2, (smartGlyph.y1 + smartGlyph.y2) / 2);
+                const auto smartEnd = state.pageScreenPoint(0, std::max(smartGlyph.x1, smartGlyph.x2) + 80,
+                                                            (smartGlyph.y1 + smartGlyph.y2) / 2);
+                input.setModifiers(false, false, false);
+                activateSelection(Tool::SmartSelect);
+                begin(Device::Mouse, smartStart.x, smartStart.y);
+                require(smartSelectPdfGesture && !input.active(),
+                        "Smart Select did not defer a PDF-text press until the drag threshold");
+                motion(Device::Mouse, smartEnd.x, smartEnd.y);
+                require(!smartSelectPdfGesture && pdfTextSelection && pdfTextSelection->dragging &&
+                                pdfTextSelection->tool == Tool::SmartSelect &&
+                                pdfTextSelection->style == prototype::PdfTextSelectionStyle::Linear,
+                        "Smart Select did not delegate a PDF-text drag to linear text selection");
+                finish(Device::Mouse, std::nullopt, smartEnd);
+                require(pdfTextSelection && pdfTextSelection->finalized && !pdfTextSelection->text.empty(),
+                        "Smart Select PDF-text drag did not finalize a native PDF selection");
+                capture("smart-select-pdf-text");
+                g_signal_emit_by_name(pdfSelectionStyleButton, "clicked");
+                require(state.brush.tool == Tool::SmartSelect && pdfTextSelection &&
+                                pdfTextSelection->style == prototype::PdfTextSelectionStyle::Rectangle,
+                        "PDF selection actions changed the active Smart Select tool or failed to switch style");
+                g_signal_emit_by_name(pdfSelectionStyleButton, "clicked");
+                require(state.brush.tool == Tool::SmartSelect && pdfTextSelection &&
+                                pdfTextSelection->style == prototype::PdfTextSelectionStyle::Linear,
+                        "Smart Select PDF selection did not return to linear style");
+
+                activateSelection(Tool::SmartSelect);
+                begin(Device::Mouse, smartStart.x, smartStart.y);
+                require(smartSelectPdfGesture.has_value(), "Smart Select PDF click was not deferred");
+                finish(Device::Mouse, std::nullopt, smartStart);
+                require(!smartSelectPdfGesture && !pdfTextSelection,
+                        "A PDF-text click below the drag threshold unexpectedly selected PDF text");
+
+                const auto blankStart = state.pageScreenPoint(0, 1, 1);
+                const auto blankEnd = state.pageScreenPoint(0, 60, 60);
+                require(!pdfTextAtCanvasPoint(0, {1, 1}), "Smart Select Alt test point is not in a blank PDF margin");
+                input.setModifiers(false, false, true);
+                begin(Device::Mouse, blankStart.x, blankStart.y);
+                require(smartSelectPdfGesture && smartSelectPdfGesture->altPressed,
+                        "Alt did not force Smart Select into deferred PDF-text routing");
+                motion(Device::Mouse, blankEnd.x, blankEnd.y);
+                require(pdfTextSelection && pdfTextSelection->dragging &&
+                                pdfTextSelection->tool == Tool::SmartSelect,
+                        "Alt-drag with Smart Select did not start PDF text selection on a blank page area");
+                finish(Device::Mouse, std::nullopt, blankEnd);
+                input.setModifiers(false, false, false);
+                clearPdfTextSelection(false);
+                require(!pdfTextSelection, "Alt-drag cleanup left a PDF selection active");
+
+                activateSelection(Tool::SmartSelect);
+                input.setModifiers(true, false, false);
+                begin(Device::Mouse, smartStart.x, smartStart.y);
+                require(!smartSelectPdfGesture && input.active(),
+                        "Shift did not route Smart Select directly to rectangle selection");
+                motion(Device::Mouse, smartEnd.x, smartEnd.y);
+                finish(Device::Mouse, std::nullopt, smartEnd);
+                input.setModifiers(false, false, false);
+                require(!pdfTextSelection, "Shift-rectangle gesture unexpectedly entered PDF text selection");
+                capture("smart-select-shift-rectangle");
+
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
                 break;
             }
             case 1: {
@@ -7706,8 +7911,10 @@ private:
                 require(pdfTextSelectionSaveComplete && !modified() &&
                                 std::filesystem::is_regular_file(pdfTextSelectionOutput),
                         "Native save did not preserve PDF text annotations");
-                std::cout << "PASS: GTK PDF linear/rectangle/word/line selection, clipboard, marker presets and opacity, "
-                             "annotations, undo/redo and native save\n";
+                std::cout
+                        << "PASS: GTK Smart Select PDF delegation, threshold and modifier routing, "
+                           "linear/rectangle/word/line "
+                           "selection, clipboard, marker presets and opacity, annotations, undo/redo and native save\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -9949,6 +10156,7 @@ private:
     std::optional<ImageGesture> imageGesture;
     std::optional<Device> textSelectionOwner;
     std::optional<prototype::Point> pendingStylusTextTap;
+    std::optional<SmartSelectPdfGesture> smartSelectPdfGesture;
     bool textDragHandled = false;
     std::optional<PdfTextSelectionState> pdfTextSelection;
     PopplerDocument* document = nullptr;
