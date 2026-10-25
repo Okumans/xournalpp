@@ -25,6 +25,19 @@ static CanvasState fixture() {
     state.selected = {0};
     return state;
 }
+static CanvasImage imageAt(int page, double x, double y, size_t layerOrder = 0) {
+    CanvasImage image;
+    image.page = page;
+    image.layerId = 1;
+    image.originLayer = 0;
+    image.layerOrder = layerOrder;
+    image.pixelWidth = 20;
+    image.pixelHeight = 20;
+    image.transform.x = x;
+    image.transform.y = y;
+    image.encodedData = "selection image fixture";
+    return image;
+}
 static void drag(CanvasState& state, Point from, Point to) {
     auto a = state.pageScreenPoint(state.page, from.x, from.y);
     auto b = state.pageScreenPoint(state.page, to.x, to.y);
@@ -150,15 +163,16 @@ int main(int argc, char** argv) {
         state = fixture();
         state.texts.push_back({0, 0, 1, 0, "selected text", "Sans", 12, 0xff000000U, -1, 0, false,
                                1, 0, 0, 1, 120, 130, 70, 20, {}});
+        state.images.push_back(imageAt(0, 195, 130, 2));
         state.brush.tool = Tool::SelectRectangle;
         const auto textSelectStart = state.pageScreenPoint(0, 95, 90);
-        const auto textSelectEnd = state.pageScreenPoint(0, 195, 180);
+        const auto textSelectEnd = state.pageScreenPoint(0, 225, 180);
         check(state.beginSelection(textSelectStart.x, textSelectStart.y), "Mixed-object selection did not begin");
         state.moveSelectionPointer(textSelectEnd.x, textSelectEnd.y);
         state.finishSelection();
         check(state.selected == std::vector<size_t>{0} && state.selectedTexts == std::vector<size_t>{0} &&
-                      state.selectionCount() == 2,
-              "Rectangle selection did not include the stroke and native text object");
+                      state.selectedImages == std::vector<size_t>{0} && state.selectionCount() == 3,
+              "Rectangle selection did not include the stroke, native text, and image objects");
         const auto mixedStart = state.pageScreenPoint(0, 140, 140);
         const auto mixedEnd = state.pageScreenPoint(0, 155, 160);
         check(state.beginSelection(mixedStart.x, mixedStart.y), "Mixed-object move did not begin");
@@ -168,22 +182,158 @@ int main(int argc, char** argv) {
               "Mixed-object move preview changed committed document objects");
         state.finishSelection();
         check(state.texts[0].x == 135 && state.texts[0].y == 150 &&
-                      state.ink[0].points[0].x == 115 && state.selectedTexts == std::vector<size_t>{0},
-              "Moving a mixed selection did not transform text and ink together");
+                      state.ink[0].points[0].x == 115 && state.images[0].transform.x == 210 &&
+                      state.images[0].transform.y == 150 && state.selectedTexts == std::vector<size_t>{0} &&
+                      state.selectedImages == std::vector<size_t>{0},
+              "Moving a mixed selection did not transform text, ink, and image together");
         state.undo();
         check(state.texts[0].x == 120 && state.texts[0].y == 130 &&
-                      state.ink[0].points[0].x == 100 && state.selectedTexts == std::vector<size_t>{0},
+                      state.ink[0].points[0].x == 100 && state.images[0].transform.x == 195 &&
+                      state.images[0].transform.y == 130 && state.selectedTexts == std::vector<size_t>{0} &&
+                      state.selectedImages == std::vector<size_t>{0},
               "Mixed-object move undo did not restore geometry and selection");
         state.redo();
-        check(state.texts[0].x == 135 && state.ink[0].points[0].x == 115,
+        check(state.texts[0].x == 135 && state.ink[0].points[0].x == 115 && state.images[0].transform.x == 210,
               "Mixed-object move redo failed");
         state.deleteSelection();
-        check(state.texts.empty() && state.ink.size() == 2 && !state.hasSelection(),
+        check(state.texts.empty() && state.ink.size() == 2 && state.images.empty() && !state.hasSelection(),
               "Delete did not remove every object in the mixed selection");
         state.undo();
         check(state.texts.size() == 1 && state.ink.size() == 3 && state.selectedTexts == std::vector<size_t>{0} &&
-                      state.selected == std::vector<size_t>{0},
+                      state.selected == std::vector<size_t>{0} && state.images.size() == 1 &&
+                      state.selectedImages == std::vector<size_t>{0},
               "Mixed-object delete undo did not restore objects and selection");
+
+        state = fixture();
+        state.selected.clear();
+        state.images.push_back(imageAt(0, 180, 110, 3));
+        state.brush.tool = Tool::SelectRectangle;
+        const auto imageSelectStart = state.pageScreenPoint(0, 175, 105);
+        const auto imageSelectEnd = state.pageScreenPoint(0, 205, 135);
+        check(state.beginSelection(imageSelectStart.x, imageSelectStart.y), "Image rectangle selection did not begin");
+        state.moveSelectionPointer(imageSelectEnd.x, imageSelectEnd.y);
+        state.finishSelection();
+        check(state.selectedImages == std::vector<size_t>{0} && state.selectionCount() == 1,
+              "Rectangle selection did not select the fully contained image");
+        const auto imageMoveStart = state.pageScreenPoint(0, 190, 120);
+        const auto imageMoveEnd = state.pageScreenPoint(0, 200, 135);
+        check(state.beginSelection(imageMoveStart.x, imageMoveStart.y), "Selected image move did not begin");
+        state.moveSelectionPointer(imageMoveEnd.x, imageMoveEnd.y);
+        check(near(state.displayImage(0).transform.x, 190) && near(state.displayImage(0).transform.y, 125) &&
+                      near(state.images[0].transform.x, 180),
+              "Image move preview changed committed data or showed the wrong transform");
+        state.finishSelection();
+        check(near(state.images[0].transform.x, 190) && near(state.images[0].transform.y, 125),
+              "Finishing an image move did not commit its affine transform");
+        state.undo();
+        check(near(state.images[0].transform.x, 180) && state.selectedImages == std::vector<size_t>{0},
+              "Image move undo did not restore its transform and selection");
+        state.redo();
+        check(near(state.images[0].transform.x, 190), "Image move redo failed");
+
+        const auto imageResizeHandle = state.selectionHandles()[4];
+        drag(state, imageResizeHandle, {250, 185});
+        state.finishSelection();
+        check(near(state.images[0].transform.xx, 3) && near(state.images[0].transform.yy, 3) &&
+                      near(state.images[0].transform.x, 190) && near(state.images[0].transform.y, 125),
+              "Shared selection resize did not scale an image around its opposite corner");
+        state.undo();
+        check(near(state.images[0].transform.xx, 1), "Image resize undo failed");
+        state.redo();
+
+        const auto imageCenter = canvasImageCenter(state.images[0]);
+        const auto imageRotationHandle = state.selectionHandles()[8];
+        const double rotationRadius = std::hypot(imageRotationHandle.x - imageCenter.x,
+                                                 imageRotationHandle.y - imageCenter.y);
+        const auto rotationStart = state.pageScreenPoint(0, imageRotationHandle.x, imageRotationHandle.y);
+        const auto rotationEnd = state.pageScreenPoint(0, imageCenter.x, imageCenter.y + rotationRadius);
+        check(state.beginSelection(rotationStart.x, rotationStart.y), "Image rotation handle did not begin a gesture");
+        state.moveSelectionPointer(rotationEnd.x, rotationEnd.y);
+        state.finishSelection();
+        check(near(state.images[0].transform.xx, 0) && near(state.images[0].transform.yx, 3) &&
+                      near(state.images[0].transform.xy, -3) && near(state.images[0].transform.yy, 0),
+              "Shared rotation handle did not rotate an image around its selection center");
+        state.undo();
+        check(near(state.images[0].transform.xx, 3) && near(state.images[0].transform.yy, 3),
+              "Image rotation undo failed");
+        state.redo();
+
+        const auto altCenter = canvasImageCenter(state.images[0]);
+        const auto altHandle = state.selectionHandles()[8];
+        const double altRadius = std::hypot(altHandle.x - altCenter.x, altHandle.y - altCenter.y);
+        const double altStartAngle = std::atan2(altHandle.y - altCenter.y, altHandle.x - altCenter.x);
+        const double altDelta = 2 * std::acos(-1.0) / 180.0;
+        const auto altStart = state.pageScreenPoint(0, altHandle.x, altHandle.y);
+        const auto altEnd = state.pageScreenPoint(0, altCenter.x + altRadius * std::cos(altStartAngle + altDelta),
+                                                  altCenter.y + altRadius * std::sin(altStartAngle + altDelta));
+        check(state.beginSelection(altStart.x, altStart.y), "Alt image rotation did not begin");
+        state.moveSelectionPointer(altEnd.x, altEnd.y, true);
+        state.finishSelection();
+        check(near(std::atan2(state.images[0].transform.yx, state.images[0].transform.xx),
+                   std::acos(-1.0) / 2 + altDelta),
+              "Alt did not disable shared image-selection rotation snapping");
+        state.undo();
+
+        const auto crossPageStart = state.pageScreenPoint(0, imageCenter.x, imageCenter.y);
+        const auto crossPageEnd = state.pageScreenPoint(1, 150, 100);
+        check(state.beginSelection(crossPageStart.x, crossPageStart.y), "Image cross-page move did not begin");
+        state.moveSelectionPointer(crossPageEnd.x, crossPageEnd.y);
+        check(state.displayImage(0).page == 1 && state.images[0].page == 0,
+              "Image cross-page preview mutated the source page");
+        state.finishSelection();
+        check(state.images.size() == 1 && state.images[0].page == 1 &&
+                      state.selectedImages == std::vector<size_t>{0},
+              "Cross-page selection did not transfer and reselect an image");
+        state.undo();
+        check(state.images[0].page == 0 && state.selectedImages == std::vector<size_t>{0},
+              "Cross-page image undo did not restore its page and selection");
+        state.redo();
+        state.deleteSelection();
+        check(state.images.empty() && !state.hasSelection(), "Delete did not remove a selected image");
+        state.undo();
+        check(state.images.size() == 1 && state.selectedImages == std::vector<size_t>{0},
+              "Image delete undo did not restore the image and selection");
+
+        state = fixture();
+        state.pageLayers[0].initialLayerCount = 2;
+        state.pageLayers[0].selectedLayer = 2;
+        state.pageLayers[0].layers = {{"Bottom", true, {0}}, {"Top", true, {1}}};
+        state.images.push_back(imageAt(0, 190, 120, 1));
+        state.images[0].layerId = 2;
+        state.images[0].originLayer = 1;
+        state.selectionAcrossLayers = true;
+        state.brush.tool = Tool::SelectRectangle;
+        const auto layeredStart = state.pageScreenPoint(0, 95, 90);
+        const auto layeredEnd = state.pageScreenPoint(0, 225, 180);
+        check(state.beginSelection(layeredStart.x, layeredStart.y), "Visible-layer image selection did not begin");
+        state.moveSelectionPointer(layeredEnd.x, layeredEnd.y);
+        state.finishSelection();
+        check(state.selectedImages == std::vector<size_t>{0} && state.selected.empty(),
+              "Visible-layer selection did not stop at a matching upper-layer image");
+        state.pageLayers[0].layers[1].visible = false;
+        check(state.beginSelection(layeredStart.x, layeredStart.y), "Hidden-layer fallback selection did not begin");
+        state.moveSelectionPointer(layeredEnd.x, layeredEnd.y);
+        state.finishSelection();
+        check(state.selected == std::vector<size_t>{0} && state.selectedImages.empty(),
+              "A hidden upper-layer image leaked into visible-layer fallback selection");
+
+        state = fixture();
+        state.clearSelection();
+        state.images.push_back(imageAt(0, 100, 100, 3));
+        state.texts.push_back({0, 0, 1, 0, "topmost", "Sans", 12, 0xff000000U, -1, 0, false,
+                               1, 0, 0, 1, 100, 100, 20, 20, {}});
+        state.texts[0].layerOrder = 4;
+        const auto overlap = state.pageScreenPoint(0, 110, 110);
+        check(state.beginSelection(overlap.x, overlap.y), "Overlapping Smart Select did not begin");
+        state.finishSelection();
+        check(state.selectedTexts == std::vector<size_t>{0} && state.selectedImages.empty(),
+              "Smart Select did not choose the highest ordered overlapping text object");
+        state.clearSelection();
+        state.texts[0].layerOrder = 2;
+        check(state.beginSelection(overlap.x, overlap.y), "Image Smart Select did not begin");
+        state.finishSelection();
+        check(state.selectedImages == std::vector<size_t>{0} && state.selectedTexts.empty(),
+              "Smart Select did not choose the higher ordered overlapping image");
 
         state = fixture();
         state.texts.push_back({0, 0, 1, 0, "cross page", "Sans", 12, 0xff000000U, -1, 0, false,
