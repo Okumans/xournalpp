@@ -1561,6 +1561,7 @@ private:
         host.getPageLabel = [this](std::size_t pageNumber, std::string& label, std::string& error) {
             return getPluginPageLabel(pageNumber, label, error);
         };
+        host.getColorPalette = [this] { return getPluginColorPalette(); };
         host.getZoom = [this] { return state.zoom; };
         host.setZoom = [this](double value, std::string& error) { return setPluginZoom(value, error); };
         host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
@@ -2902,6 +2903,21 @@ private:
         return true;
     }
 
+    std::vector<prototype::PluginPaletteColor> getPluginColorPalette() const {
+        std::vector<prototype::PluginPaletteColor> palette;
+        palette.reserve(importedConfig.palette.swatches.size());
+        const auto channelValue = [](double channel) {
+            return static_cast<std::uint32_t>(std::lround(std::clamp(channel, 0.0, 1.0) * 255.0));
+        };
+        for (const auto& swatch: importedConfig.palette.swatches) {
+            const auto red = channelValue(swatch.color[0]);
+            const auto green = channelValue(swatch.color[1]);
+            const auto blue = channelValue(swatch.color[2]);
+            palette.push_back({swatch.name, (red << 16) | (green << 8) | blue});
+        }
+        return palette;
+    }
+
     bool setPluginZoom(double value, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
             error = "Wait for the current document operation or input gesture to finish before changing zoom";
@@ -4178,6 +4194,15 @@ private:
                         pageLabelError == "page nr " + std::to_string(nativeSession->pdfPageLabels.size()) +
                                                   " is out of range",
                 "app.getPageLabel did not return the master-compatible out-of-range result");
+        const auto pluginPalette = getPluginColorPalette();
+        require(pluginPalette.size() == importedConfig.palette.swatches.size(),
+                "app.getColorPalette did not return every imported color");
+        for (std::size_t index = 0; index < pluginPalette.size(); ++index) {
+            const auto& swatch = importedConfig.palette.swatches[index];
+            const auto expectedColor = static_cast<std::uint32_t>(std::stoul(swatch.cssHex.substr(1), nullptr, 16));
+            require(pluginPalette[index].name == swatch.name && pluginPalette[index].color == expectedColor,
+                    "app.getColorPalette lost a swatch name or 24-bit color value");
+        }
         const auto savedZoom = state.zoom;
         const auto savedOffsetX = state.offsetX;
         const auto savedOffsetY = state.offsetY;

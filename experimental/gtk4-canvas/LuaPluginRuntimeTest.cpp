@@ -384,6 +384,23 @@ int main() {
                 "  app.changeActionState('page-label', message)\n"
                 "end\n"
                 "function fractionalPage() app.getPageLabel(1.5) end\n");
+    const auto colorPaletteApiPlugin = root / "ColorPaletteApiPlugin";
+    writePlugin(colorPaletteApiPlugin,
+                "[about]\ndescription=Read quick colors\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read color palette', callback='readPalette'})\n"
+                "end\n"
+                "function readPalette()\n"
+                "  local palette = app.getColorPalette('ignored extra argument')\n"
+                "  assert(#palette == 3)\n"
+                "  assert(palette[1].name == 'White' and palette[1].color == 0xffffff)\n"
+                "  assert(math.type(palette[1].color) == 'integer')\n"
+                "  assert(palette[2].name == 'Dark Blue' and palette[2].color == 0x123456)\n"
+                "  assert(palette[3].name == 'Rosewater' and palette[3].color == 0xdc8a78)\n"
+                "  app.changeActionState('palette-summary', #palette .. ':' .. palette[2].name .. ':' .. "
+                "palette[2].color)\n"
+                "end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -396,9 +413,10 @@ int main() {
                                      quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
                                      imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
                                      zoomApiPlugin.string() + "," + folderApiPlugin.string() + "," +
-                                     currentPageApiPlugin.string() + "," + pageLabelApiPlugin.string(), {});
+                                     currentPageApiPlugin.string() + "," + pageLabelApiPlugin.string() + "," +
+                                     colorPaletteApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 21, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 22, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -447,6 +465,7 @@ int main() {
     std::string changedBackgroundConfig;
     std::string pluginFolderPaths;
     std::string pageLabelResult;
+    std::string paletteSummary;
     std::vector<std::string> activatedActions;
     double zoomValue = 1.25;
     std::size_t currentPageNumber = 2;
@@ -460,6 +479,13 @@ int main() {
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
+        if (action == "palette-summary") {
+            if (!std::holds_alternative<std::string>(value)) {
+                return false;
+            }
+            paletteSummary = std::get<std::string>(value);
+            return true;
+        }
         if (action == "page-label") {
             if (!std::holds_alternative<std::string>(value)) {
                 return false;
@@ -505,6 +531,12 @@ int main() {
         label = testPageLabels[pageNumber];
         return true;
     };
+    const std::vector<prototype::PluginPaletteColor> testPalette{
+            {"White", 0x12ffffffU},
+            {"Dark Blue", 0x123456U},
+            {"Rosewater", 0xdc8a78U},
+    };
+    host.getColorPalette = [&] { return testPalette; };
     host.setCurrentPage = [&](std::size_t pageNumber, std::string&) {
         currentPageNumber = std::clamp(pageNumber, std::size_t{1}, testPageCount);
         return true;
@@ -702,6 +734,10 @@ int main() {
     require(loadedPageLabelApiPlugin && loadedPageLabelApiPlugin->loaded &&
                     loadedPageLabelApiPlugin->menuItems == 4,
             "Plugin using PDF page labels did not load its callbacks");
+    const auto loadedColorPaletteApiPlugin = runtime.findPlugin("ColorPaletteApiPlugin");
+    require(loadedColorPaletteApiPlugin && loadedColorPaletteApiPlugin->loaded &&
+                    loadedColorPaletteApiPlugin->menuItems == 1,
+            "Plugin using the color palette API did not load its callback");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -774,6 +810,8 @@ int main() {
                     runtime.findPlugin("PageLabelApiPlugin")->error.find("number has no integer representation") !=
                             std::string::npos,
             "app.getPageLabel accepted a fractional page number");
+    require(runtime.invokeMenu("ColorPaletteApiPlugin", 0) && paletteSummary == "3:Dark Blue:1193046",
+            "app.getColorPalette did not preserve swatch order, names, or 24-bit integer colors");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -982,8 +1020,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 58 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 18,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 59 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 19,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

@@ -385,6 +385,7 @@ int luaOpenApp(lua_State* state) {
             {"getFolder", LuaPluginRuntime::luaGetFolder},
             {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
             {"getPageLabel", LuaPluginRuntime::luaGetPageLabel},
+            {"getColorPalette", LuaPluginRuntime::luaGetColorPalette},
             {"getZoom", LuaPluginRuntime::luaGetZoom},
             {"setZoom", LuaPluginRuntime::luaSetZoom},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
@@ -963,6 +964,15 @@ bool LuaPluginRuntime::getPageLabel(std::size_t pageNumber, std::string& label, 
     return host.getPageLabel(pageNumber, label, error);
 }
 
+bool LuaPluginRuntime::getColorPalette(std::vector<PluginPaletteColor>& palette, std::string& error) const {
+    if (!host.getColorPalette) {
+        error = "Color palette queries are unavailable in this GTK 4 host";
+        return false;
+    }
+    palette = host.getColorPalette();
+    return true;
+}
+
 bool LuaPluginRuntime::getZoom(double& zoom, std::string& error) const {
     if (!host.getZoom) {
         error = "Zoom queries are unavailable in this GTK 4 host";
@@ -1465,6 +1475,31 @@ int LuaPluginRuntime::luaGetPageLabel(lua_State* state) {
         return 2;
     }
     lua_pushlstring(state, label.data(), label.size());
+    return 1;
+}
+
+int LuaPluginRuntime::luaGetColorPalette(lua_State* state) {
+    lua_settop(state, 0);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    std::vector<PluginPaletteColor> palette;
+    std::string error;
+    if (!plugin->runtime->getColorPalette(palette, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading the color palette failed" : error.c_str());
+    }
+
+    lua_createtable(state, static_cast<int>(palette.size()), 0);
+    for (std::size_t index = 0; index < palette.size(); ++index) {
+        lua_createtable(state, 0, 2);
+        lua_pushlstring(state, palette[index].name.data(), palette[index].name.size());
+        lua_setfield(state, -2, "name");
+        lua_pushinteger(state, static_cast<lua_Integer>(palette[index].color & 0xffffffU));
+        lua_setfield(state, -2, "color");
+        lua_rawseti(state, -2, static_cast<lua_Integer>(index + 1));
+    }
     return 1;
 }
 
