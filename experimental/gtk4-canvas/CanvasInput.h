@@ -59,6 +59,11 @@ public:
             if (!state.beginSelection(sample.x, sample.y, shiftHeld)) {
                 return false;
             }
+        } else if (isLaserPointerTool(state.brush.tool) && !eraserEnd) {
+            mode = Mode::Laser;
+            if (!state.beginLaser(device, sample.x, sample.y, pressure(sample.pressure), state.brush, pressureMode)) {
+                return false;
+            }
         } else {
             mode = Mode::Draw;
             if (!state.begin(device, sample.x, sample.y, pressure(sample.pressure), eraserEnd,
@@ -106,6 +111,9 @@ public:
             case Mode::Spline:
                 state.moveSplineTangent(sample.x, sample.y, pressure(sample.pressure));
                 break;
+            case Mode::Laser:
+                state.appendLaser(device, sample.x, sample.y, pressure(sample.pressure));
+                break;
         }
         lastX = sample.x;
         lastY = sample.y;
@@ -139,6 +147,8 @@ public:
             state.finishErase();
         } else if (mode == Mode::Select) {
             state.finishSelection();
+        } else if (mode == Mode::Laser) {
+            state.finishLaser(device, pressure(releasePressure));
         }
         owner.reset();
     }
@@ -223,6 +233,9 @@ public:
         if (owner && mode == Mode::Select) {
             state.cancelSelection();
         }
+        if (owner && mode == Mode::Laser) {
+            state.cancelLaser(*owner);
+        }
         state.cancel(device);
         if (mode == Mode::Spline) splineInProgress = false;
         stabilizer.reset();
@@ -263,7 +276,7 @@ public:
     bool panning() const { return owner && mode == Mode::Pan; }
 
 private:
-    enum class Mode { Draw, Erase, Pan, Select, Spline };
+    enum class Mode { Draw, Erase, Pan, Select, Spline, Laser };
 
     static bool finitePosition(InputSample sample) { return std::isfinite(sample.x) && std::isfinite(sample.y); }
 

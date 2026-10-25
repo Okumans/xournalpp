@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -46,7 +48,12 @@ enum class Tool {
     SelectPdfTextRect,
     VerticalSpace,
     Link,
+    LaserPointerPen,
+    LaserPointerHighlighter,
 };
+inline bool isLaserPointerTool(Tool tool) {
+    return tool == Tool::LaserPointerPen || tool == Tool::LaserPointerHighlighter;
+}
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
            tool == Tool::SelectObject || tool == Tool::SelectPdfTextLinear || tool == Tool::SelectPdfTextRect;
@@ -69,6 +76,10 @@ inline constexpr const std::array<double, 5>& widthsForTool(Tool tool) {
             return behavior::highlighterWidths;
         case Tool::Eraser:
             return behavior::eraserWidths;
+        case Tool::LaserPointerPen:
+            return behavior::laserPenWidths;
+        case Tool::LaserPointerHighlighter:
+            return behavior::laserHighlighterWidths;
         case Tool::Pen:
         default:
             return behavior::penWidths;
@@ -91,6 +102,13 @@ struct Ink {
     size_t originLayer = newLayerOrigin;
     int fill = -1;
     int capStyle = 0;
+};
+
+struct LaserTrail {
+    int page = 0;
+    std::vector<Ink> strokes;
+    uint8_t alpha = 255;
+    std::optional<std::chrono::steady_clock::time_point> fadeStart;
 };
 
 struct SelectionBox {
@@ -146,6 +164,7 @@ public:
     double snapGridTolerance = behavior::snapGridTolerance;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
+    unsigned int laserFadeOutTimeMs = behavior::laserPointerFadeOutTimeMs;
     std::string textFontName = "Sans";
     double textFontSize = 12;
     std::array<double, 3> textColor{0, 0, 0};
@@ -153,6 +172,8 @@ public:
     std::vector<TextItem> texts;
     std::vector<CanvasImage> images;
     std::optional<Ink> current;
+    std::optional<Ink> currentLaser;
+    std::vector<LaserTrail> laserTrails;
     std::vector<Point> rawCurrent;
     std::vector<Point> splineKnots;
     std::vector<Point> splineTangents;
@@ -1611,6 +1632,7 @@ public:
         const int clamped = std::clamp(afterIndex, 0, pageCount() - 1);
         const int insertedIndex = clamped + 1;
         cancel();
+        clearLaserPointers();
         pages.insert(pages.begin() + insertedIndex, size);
         pageLayers.insert(pageLayers.begin() + insertedIndex, PageLayers{});
         auto shiftStrokes = [&](std::vector<Ink>& strokes) {
@@ -1661,6 +1683,7 @@ public:
             return false;
         }
         cancel();
+        clearLaserPointers();
         clearSelection();
         pages.erase(pages.begin() + removeIndex);
         if (static_cast<size_t>(removeIndex) < pageLayers.size()) {
@@ -1699,6 +1722,123 @@ public:
         zoom = std::clamp(value, 0.1, 8.0);
         offsetX = x - anchor.x * zoom;
         offsetY = y - anchor.y * zoom;
+    }
+
+    bool beginLaser(Device source, double x, double y, double pressure, const Brush& laserBrush,
+                    bool pressureSensitive) {
+        if (!isLaserPointerTool(laserBrush.tool) || laserOwner || current || currentLaser || eraseGesture ||
+            selectionGesture || pinching) {
+            return false;
+        }
+        const auto hit = hitPage(x, y, pressure);
+        if (!hit) {
+            return false;
+        }
+        auto trail = std::find_if(laserTrails.begin(), laserTrails.end(),
+                                  [&](const LaserTrail& item) { return item.page == hit->page; });
+        if (trail == laserTrails.end()) {
+            laserTrails.push_back({hit->page, {}, 255, std::nullopt});
+            trail = std::prev(laserTrails.end());
+        }
+        trail->alpha = 255;
+        trail->fadeStart.reset();
+        selectActivePage(hit->page);
+        currentLaser = Ink{hit->page, {hit->local}, laserBrush, false};
+        currentLaser->pressureSensitive = laserBrush.tool == Tool::LaserPointerPen && pressureSensitive;
+        currentLaser->layerId = activeLayerId(hit->page);
+        currentLaser->originLayer = activeLayerOrigin(hit->page);
+        laserOwner = source;
+        return true;
+    }
+
+    void appendLaser(Device source, double x, double y, double pressure) {
+        if (!currentLaser || !laserOwner || source != *laserOwner || !std::isfinite(x) || !std::isfinite(y)) {
+            return;
+        }
+        const auto point = pageLocalPoint(currentLaser->page, x, y, pressure);
+        if (!containsOnPage(currentLaser->page, point)) {
+            return;
+        }
+        if (std::hypot(point.x - currentLaser->points.back().x, point.y - currentLaser->points.back().y) <
+            behavior::motionThreshold) {
+            return;
+        }
+        currentLaser->points.push_back(point);
+    }
+
+    void finishLaser(Device source, std::optional<double> releasePressure = std::nullopt,
+                     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+        if (!currentLaser || !laserOwner || source != *laserOwner) {
+            return;
+        }
+        auto trail = std::find_if(laserTrails.begin(), laserTrails.end(),
+                                  [&](const LaserTrail& item) { return item.page == currentLaser->page; });
+        if (trail == laserTrails.end()) {
+            laserTrails.push_back({currentLaser->page, {}, 255, std::nullopt});
+            trail = std::prev(laserTrails.end());
+        }
+        if (currentLaser->points.size() == 1) {
+            if (releasePressure && currentLaser->pressureSensitive && std::isfinite(*releasePressure)) {
+                currentLaser->points.front().pressure =
+                        std::max(currentLaser->points.front().pressure, *releasePressure);
+            }
+            currentLaser->points.push_back(currentLaser->points.front());
+        }
+        trail->strokes.push_back(std::move(*currentLaser));
+        trail->alpha = 255;
+        trail->fadeStart = now + std::chrono::milliseconds(laserFadeOutTimeMs);
+        currentLaser.reset();
+        laserOwner.reset();
+    }
+
+    void cancelLaser(Device source, std::chrono::steady_clock::time_point now =
+                                             std::chrono::steady_clock::now()) {
+        if (!laserOwner || source != *laserOwner) {
+            return;
+        }
+        const int pageIndex = currentLaser ? currentLaser->page : -1;
+        currentLaser.reset();
+        laserOwner.reset();
+        auto trail = std::find_if(laserTrails.begin(), laserTrails.end(),
+                                  [&](const LaserTrail& item) { return item.page == pageIndex; });
+        if (trail == laserTrails.end()) {
+            return;
+        }
+        if (trail->strokes.empty()) {
+            laserTrails.erase(trail);
+        } else {
+            trail->alpha = 255;
+            trail->fadeStart = now + std::chrono::milliseconds(laserFadeOutTimeMs);
+        }
+    }
+
+    bool hasLaserFades() const {
+        return std::any_of(laserTrails.begin(), laserTrails.end(),
+                           [](const LaserTrail& trail) { return trail.fadeStart.has_value(); });
+    }
+
+    bool advanceLaserFades(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+        bool changed = false;
+        for (auto& trail: laserTrails) {
+            if (!trail.fadeStart || now < *trail.fadeStart) {
+                continue;
+            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - *trail.fadeStart);
+            const auto steps = static_cast<unsigned long long>(elapsed.count()) / behavior::laserPointerFadeStepMs;
+            const auto faded = std::min<unsigned long long>(255, steps * behavior::laserPointerFadeAlphaStep);
+            const auto nextAlpha = static_cast<uint8_t>(255 - faded);
+            changed = changed || nextAlpha != trail.alpha;
+            trail.alpha = nextAlpha;
+        }
+        const auto oldSize = laserTrails.size();
+        std::erase_if(laserTrails, [](const LaserTrail& trail) { return trail.alpha == 0; });
+        return changed || oldSize != laserTrails.size();
+    }
+
+    void clearLaserPointers() {
+        currentLaser.reset();
+        laserTrails.clear();
+        laserOwner.reset();
     }
 
     bool begin(Device source, double x, double y, double pressure = 1, bool eraserEnd = false,
@@ -2288,6 +2428,9 @@ public:
         cancelSelection();
         cancelVerticalSpace();
         finishErase();
+        if (laserOwner) {
+            cancelLaser(*laserOwner);
+        }
         current.reset();
         rawCurrent.clear();
         splineKnots.clear();
@@ -3259,6 +3402,7 @@ private:
     std::optional<EraseGesture> eraseGesture;
     std::optional<SelectionGesture> selectionGesture;
     std::optional<VerticalSpacePreview> verticalSpace;
+    std::optional<Device> laserOwner;
 };
 
 }  // namespace prototype

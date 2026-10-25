@@ -23,6 +23,9 @@ inline constexpr double scrollZoomStep = 0.02;
 inline constexpr double snapGridSize = 14.17;
 inline constexpr double snapGridTolerance = 0.50;
 inline constexpr double highlightOpacity = 0.47;
+inline constexpr unsigned int laserPointerFadeOutTimeMs = 500;
+inline constexpr unsigned int laserPointerFadeStepMs = 50;
+inline constexpr unsigned int laserPointerFadeAlphaStep = 25;
 inline constexpr double motionThreshold = 0.3;              // InputHandler::PIXEL_MOTION_THRESHOLD
 inline constexpr double eraserPaddingCapRound = 0.4;        // EraseHandler::PADDING_COEFFICIENT_CAP[ROUND]
 inline constexpr double defaultPageGap = 15.0;              // Layout.cpp: XOURNAL_PADDING_BETWEEN = 15
@@ -31,10 +34,13 @@ inline constexpr unsigned int autosaveTimeoutSeconds = 180;  // Settings::loadDe
 inline constexpr std::array<double, 5> penWidths = {0.42, 0.85, 1.41, 2.26, 5.67};
 inline constexpr std::array<double, 5> highlighterWidths = {1.0, 2.83, 8.50, 19.84, 30.0};
 inline constexpr std::array<double, 5> eraserWidths = {1.0, 2.83, 8.50, 12.0, 18.0};
+inline constexpr std::array<double, 5> laserPenWidths = {0.7, 1.41, 2.4, 4.0, 7.0};
+inline constexpr std::array<double, 5> laserHighlighterWidths = {1.0, 2.83, 8.50, 19.84, 30.0};
 
 inline constexpr std::array<double, 3> defaultPenColor = {0x33 / 255.0, 0x33 / 255.0, 0xcc / 255.0};  // #3333cc
 inline constexpr std::array<double, 3> defaultHighlighterColor = {1.0, 1.0, 0.0};                      // #ffff00
 inline constexpr std::array<double, 3> whiteoutColor = {1.0, 1.0, 1.0};                                // #ffffff
+inline constexpr std::array<double, 3> laserPointerColor = {1.0, 0.0, 0.0};                            // #ff0000
 
 inline std::optional<ToolSize> matchToolSize(const std::array<double, 5>& widths, double width) {
     for (size_t i = 0; i < widths.size(); ++i) {

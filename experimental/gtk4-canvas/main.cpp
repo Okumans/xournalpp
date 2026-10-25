@@ -211,10 +211,17 @@ public:
         penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth};
         highlightBrush = {Tool::Highlighter, importedConfig.settings.highlighterColor,
                           importedConfig.settings.highlighterWidth};
+        laserPenBrush = {Tool::LaserPointerPen, importedConfig.settings.laserPenColor,
+                         importedConfig.settings.laserPenWidth};
+        laserHighlighterBrush = {Tool::LaserPointerHighlighter, importedConfig.settings.laserHighlighterColor,
+                                 importedConfig.settings.laserHighlighterWidth};
         eraserBrush = {Tool::Eraser, prototype::behavior::whiteoutColor, importedConfig.settings.eraserWidth};
         state.brush = importedConfig.settings.activeTool == Tool::Highlighter ?
                               highlightBrush :
-                              (importedConfig.settings.activeTool == Tool::Eraser ? eraserBrush : penBrush);
+                      importedConfig.settings.activeTool == Tool::Eraser ? eraserBrush :
+                      importedConfig.settings.activeTool == Tool::LaserPointerPen ? laserPenBrush :
+                      importedConfig.settings.activeTool == Tool::LaserPointerHighlighter ? laserHighlighterBrush :
+                                                                                           penBrush;
         effectiveAutosaveSeconds =
                 this->options.autosaveSecondsOverride.value_or(importedConfig.settings.effectiveAutosaveSeconds());
 
@@ -237,6 +244,10 @@ public:
                 g_source_remove(*source);
                 *source = 0;
             }
+        }
+        if (laserFadeSource) {
+            g_source_remove(laserFadeSource);
+            laserFadeSource = 0;
         }
         if (closed) {
             cleanupActiveAutosave();
@@ -2983,11 +2994,22 @@ private:
         if (linkButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(linkButton), tool == Tool::Link);
         }
+        if (laserButtons[0]) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(laserButtons[0]), tool == Tool::LaserPointerPen);
+        }
+        if (laserButtons[1]) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(laserButtons[1]),
+                                         tool == Tool::LaserPointerHighlighter);
+        }
         if (prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
         } else if (tool == Tool::Hand) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[4]), true);
         } else if (tool == Tool::Text || tool == Tool::Link) {
+            for (auto* button: toolButtons) {
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
+            }
+        } else if (prototype::isLaserPointerTool(tool)) {
             for (auto* button: toolButtons) {
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
             }
@@ -3002,6 +3024,10 @@ private:
         } else if (state.brush.tool == Tool::Eraser) {
             eraserBrush = state.brush;
             state.eraserWidth = eraserBrush.width;
+        } else if (state.brush.tool == Tool::LaserPointerPen) {
+            laserPenBrush = state.brush;
+        } else if (state.brush.tool == Tool::LaserPointerHighlighter) {
+            laserHighlighterBrush = state.brush;
         }
         if (textSelectionOwner) {
             state.cancelSelection();
@@ -3014,9 +3040,10 @@ private:
         if (!prototype::isSelectionTool(tool) && tool != Tool::Hand) {
             state.clearSelection();
         }
-        state.brush = (tool == Tool::Highlighter || prototype::isPdfTextSelectionTool(tool)) ?
-                              highlightBrush :
-                      tool == Tool::Eraser ? eraserBrush : penBrush;
+        state.brush = tool == Tool::Highlighter || prototype::isPdfTextSelectionTool(tool) ? highlightBrush :
+                      tool == Tool::Eraser ? eraserBrush :
+                      tool == Tool::LaserPointerPen ? laserPenBrush :
+                      tool == Tool::LaserPointerHighlighter ? laserHighlighterBrush : penBrush;
         state.brush.tool = tool;
         if (tool == Tool::Text) {
             state.brush.color = state.textColor;
@@ -3783,6 +3810,28 @@ private:
                              }
                          }), this);
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), linkButton);
+        for (size_t i = 0; i < laserButtons.size(); ++i) {
+            laserButtons[i] = gtk_toggle_button_new();
+            gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(laserButtons[i]), GTK_TOGGLE_BUTTON(toolButtons[0]));
+            const char* icon = i == 0 ? "media-record-symbolic" : "applications-graphics-symbolic";
+            const char* label = i == 0 ? "Laser Pointer Pen" : "Laser Pointer Highlighter";
+            gtk_button_set_child(GTK_BUTTON(laserButtons[i]), gtk_image_new_from_icon_name(icon));
+            gtk_widget_set_tooltip_text(laserButtons[i], label);
+            gtk_accessible_update_property(GTK_ACCESSIBLE(laserButtons[i]), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+            g_object_set_data(G_OBJECT(laserButtons[i]), "laser-tool-index", GUINT_TO_POINTER(i));
+            g_signal_connect(laserButtons[i], "toggled",
+                             G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 if (!gtk_toggle_button_get_active(button) || self->syncingTools) {
+                                     return;
+                                 }
+                                 const auto index = GPOINTER_TO_UINT(
+                                         g_object_get_data(G_OBJECT(button), "laser-tool-index"));
+                                 self->selectTool(index == 0 ? Tool::LaserPointerPen :
+                                                                  Tool::LaserPointerHighlighter);
+                             }), this);
+            gtk_box_append(GTK_BOX(toolGroup), laserButtons[i]);
+        }
         imageButton = button("insert-image-symbolic", "Insert Image",
                              G_CALLBACK(+[](GtkButton*, gpointer data) {
                                  static_cast<Prototype*>(data)->chooseImage();
@@ -4303,6 +4352,10 @@ private:
                 linkVerifyMode = verifyMode;
                 linkVerifyStep = 0;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_LASER_VERIFY_MODE"); verifyMode && *verifyMode) {
+                laserVerifyMode = verifyMode;
+                laserVerifyStep = 0;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -4331,6 +4384,8 @@ private:
                                     --self->selectionVerifyStep;
                                 } else if (!self->pdfTextSelectionVerifyMode.empty()) {
                                     --self->pdfTextSelectionVerifyStep;
+                                } else if (!self->laserVerifyMode.empty()) {
+                                    --self->laserVerifyStep;
                                 } else if (self->documentSmokeStep >= 0) {
                                     --self->documentSmokeStep;
                                 } else {
@@ -4408,6 +4463,31 @@ private:
             }
         }
         gtk_widget_queue_draw(canvas);
+        ensureLaserFadeTimer();
+    }
+
+    void ensureLaserFadeTimer() {
+        if (laserFadeSource || !state.hasLaserFades()) {
+            return;
+        }
+        laserFadeSource = g_timeout_add(
+                prototype::behavior::laserPointerFadeStepMs,
+                +[](gpointer data) -> gboolean {
+                    auto* self = static_cast<Prototype*>(data);
+                    if (!self->state.hasLaserFades()) {
+                        self->laserFadeSource = 0;
+                        return G_SOURCE_REMOVE;
+                    }
+                    if (self->state.advanceLaserFades()) {
+                        self->update();
+                    }
+                    if (!self->state.hasLaserFades()) {
+                        self->laserFadeSource = 0;
+                        return G_SOURCE_REMOVE;
+                    }
+                    return G_SOURCE_CONTINUE;
+                },
+                this);
     }
 
     void zoom(double value, double x, double y) {
@@ -5784,6 +5864,7 @@ private:
                     }
                 }
             }
+            prototype::drawLaserPointer(cr, state, i);
             prototype::drawVerticalSpacePreview(cr, state, i);
             prototype::drawSelection(cr, state, i);
             if (state.brush.tool != Tool::Hand && selectedImageIndex && *selectedImageIndex < state.images.size() &&
@@ -5822,6 +5903,7 @@ private:
     }
 
     void capture(const std::string& name, GtkWidget* target = nullptr) {
+        waitForNextWindowFrame();
         // Snapshot the window so a crop retains ancestor backgrounds and styling.
         auto* paintable = GDK_PAINTABLE(g_object_ref(windowPaintable));
         auto* snapshot = gtk_snapshot_new();
@@ -5891,6 +5973,21 @@ private:
             g_usleep(1000);
         }
         require(paints > previousPaints, "Canvas did not paint the requested demo state");
+    }
+
+    void waitForNextWindowFrame() {
+        auto* frameClock = gtk_widget_get_frame_clock(window);
+        require(frameClock != nullptr, "Window does not have a frame clock");
+        const auto previousFrame = gdk_frame_clock_get_frame_counter(frameClock);
+        gtk_widget_queue_draw(window);
+        const gint64 deadline = g_get_monotonic_time() + 500000;
+        while (gdk_frame_clock_get_frame_counter(frameClock) <= previousFrame &&
+               g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(gdk_frame_clock_get_frame_counter(frameClock) > previousFrame,
+                "Window did not render the requested screenshot frame");
     }
 
     static void require(bool condition, const char* message) {
@@ -7351,6 +7448,99 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    gboolean smokeLaserPointers() {
+        switch (laserVerifyStep++) {
+            case 0: {
+                require(bool(nativeSession), "Laser verification requires a native document fixture");
+                laserInitialInkCount = state.ink.size();
+                laserInitialRevision = state.revision();
+                laserInitialUndo = state.canUndo();
+                selectTool(Tool::LaserPointerPen);
+                require(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(laserButtons[0])) &&
+                                std::abs(state.brush.width - 2.4) < 1e-6,
+                        "Laser Pointer Pen toolbar selection or default preset mismatch");
+                const auto from = state.pageScreenPoint(state.page, 70, 110);
+                const auto to = state.pageScreenPoint(state.page, 210, 150);
+                require(input.begin(Device::Stylus, {from.x, from.y, 0.25}),
+                        "Laser Pointer Pen did not accept stylus input");
+                input.motion(Device::Stylus, {to.x, to.y, 0.8});
+                input.finish(Device::Stylus, 0.9);
+                require(state.laserTrails.size() == 1 && state.laserTrails.front().strokes.size() == 1 &&
+                                state.laserTrails.front().strokes.front().brush.tool == Tool::LaserPointerPen &&
+                                state.ink.size() == laserInitialInkCount && state.revision() == laserInitialRevision &&
+                                state.canUndo() == laserInitialUndo,
+                        "Laser Pointer Pen wrote into the document or undo history");
+                update();
+                waitForNextPaint();
+                capture("laser-pen");
+                break;
+            }
+            case 1: {
+                selectTool(Tool::LaserPointerHighlighter);
+                require(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(laserButtons[1])) &&
+                                std::abs(state.brush.width - 8.5) < 1e-6,
+                        "Laser Pointer Highlighter toolbar selection or default preset mismatch");
+                const auto from = state.pageScreenPoint(state.page, 70, 190);
+                const auto to = state.pageScreenPoint(state.page, 220, 190);
+                require(input.begin(Device::Mouse, {from.x, from.y, std::nullopt}),
+                        "Laser Pointer Highlighter did not accept mouse input");
+                input.motion(Device::Mouse, {to.x, to.y, std::nullopt});
+                input.finish(Device::Mouse);
+                require(state.laserTrails.size() == 1 && state.laserTrails.front().strokes.size() == 2 &&
+                                state.laserTrails.front().strokes.back().brush.tool == Tool::LaserPointerHighlighter &&
+                                !state.laserTrails.front().strokes.back().pressureSensitive &&
+                                state.ink.size() == laserInitialInkCount && state.revision() == laserInitialRevision,
+                        "Laser highlighter did not share a transient trail without changing the document");
+                update();
+                waitForNextPaint();
+                capture("laser-highlighter");
+                break;
+            }
+            case 2: {
+                require(state.laserTrails.size() == 1 && state.laserTrails.front().fadeStart,
+                        "Completed laser marks did not schedule their fade delay");
+                require(state.laserTrails.front().alpha == 255,
+                        "Laser marks began fading before the configured delay elapsed");
+                break;
+            }
+            case 3:
+                if (state.laserTrails.size() == 1 && state.laserTrails.front().alpha == 255) {
+                    --laserVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                require(state.laserTrails.size() == 1 && state.laserTrails.front().alpha < 255,
+                        "The real GTK timeout did not start fading the laser trail");
+                capture("laser-fading");
+                break;
+            case 4:
+                if (!state.laserTrails.empty()) {
+                    --laserVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                capture("laser-faded");
+                require(state.ink.size() == laserInitialInkCount && state.revision() == laserInitialRevision &&
+                                state.canUndo() == laserInitialUndo,
+                        "Faded laser marks changed saved or undoable document state");
+                break;
+            case 5:
+                laserOutputPath =
+                        (std::filesystem::path(options.smokeDirectory) / "laser-pointer-saved.xopp").string();
+                saveCopyTo(laserOutputPath, [this] { laserSaveComplete = true; });
+                require(busy, "Saving after laser input did not start the worker operation");
+                break;
+            default:
+                require(laserSaveComplete && std::filesystem::is_regular_file(laserOutputPath),
+                        "The native document save after laser input did not finish");
+                std::cout << "PASS: GTK laser pointer pen/highlighter trails fade without entering document history\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokeLinks() {
         switch (linkVerifyStep++) {
             case 0: {
@@ -7484,6 +7674,9 @@ private:
         }
         if (!linkVerifyMode.empty()) {
             return smokeLinks();
+        }
+        if (!laserVerifyMode.empty()) {
+            return smokeLaserPointers();
         }
         if (!imageVerifyMode.empty()) {
             return smokeImages();
@@ -8707,6 +8900,13 @@ private:
     std::string openedLinkForTest;
     std::string linkOutputPath;
     bool linkSaveComplete = false;
+    std::string laserVerifyMode;
+    int laserVerifyStep = -1;
+    size_t laserInitialInkCount = 0;
+    size_t laserInitialRevision = 0;
+    bool laserInitialUndo = false;
+    std::string laserOutputPath;
+    bool laserSaveComplete = false;
     int pdfTextSelectionVerifyStep = -1;
     std::string pdfClipboardExpected;
     std::string pdfClipboardReadText;
@@ -8733,6 +8933,7 @@ private:
     std::string activeAutosavePath;
     std::function<void()> deferredAction;
     guint autosaveSource = 0;
+    guint laserFadeSource = 0;
     int autosaveHeartbeats = 0;
     int autosaveWaits = 0;
     std::string smokeAutosaveBaseVersion;
@@ -8801,6 +9002,7 @@ private:
     std::unique_ptr<prototype::TextEditorOverlay> textEditor;
     GtkWidget* textButton = nullptr;
     GtkWidget* linkButton = nullptr;
+    std::array<GtkWidget*, 2> laserButtons{};
     GtkWidget* imageButton = nullptr;
     GtkWidget* linkInfoPopover = nullptr;
     GtkWidget* linkInfoLabel = nullptr;
@@ -8891,6 +9093,14 @@ private:
             Tool::Eraser,
             prototype::behavior::whiteoutColor,
             prototype::behavior::eraserWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
+    prototype::Brush laserPenBrush{
+            Tool::LaserPointerPen,
+            prototype::behavior::laserPointerColor,
+            prototype::behavior::laserPenWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
+    prototype::Brush laserHighlighterBrush{
+            Tool::LaserPointerHighlighter,
+            prototype::behavior::laserPointerColor,
+            prototype::behavior::laserHighlighterWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
     bool syncingBrush = false;
     bool syncingTools = false;
     GtkGesture* mouse = nullptr;

@@ -581,8 +581,52 @@ def verify_links(args, evidence):
     return report
 
 
+def verify_laser_pointers(args, evidence):
+    binary = str(args.binary.resolve())
+    worker = str(args.worker.resolve())
+    output = evidence / "laser-pointer" / "run"
+    shutil.rmtree(output.parent, ignore_errors=True)
+    output.mkdir(parents=True, exist_ok=True)
+    source_hash = hashlib.sha256(args.fixture.read_bytes()).hexdigest()
+
+    result = run(
+        [binary, "--document", str(args.fixture.resolve()), "--worker", worker,
+         "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_LASER_VERIFY_MODE="1"),
+    )
+    if "PASS: GTK laser pointer pen/highlighter trails fade without entering document history" not in result:
+        raise RuntimeError("GTK laser pointer verification did not finish")
+
+    screenshots = [output / f"{name}.png" for name in
+                   ("laser-pen", "laser-highlighter", "laser-fading", "laser-faded")]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing laser pointer screenshot: {screenshot}")
+
+    source_root = ET.fromstring(gzip.decompress(args.fixture.read_bytes()))
+    saved = output / "laser-pointer-saved.xopp"
+    saved_root = ET.fromstring(gzip.decompress(saved.read_bytes()))
+    if len(saved_root.findall(".//stroke")) != len(source_root.findall(".//stroke")):
+        raise RuntimeError("Transient laser strokes were serialized into the native document")
+    if hashlib.sha256(args.fixture.read_bytes()).hexdigest() != source_hash:
+        raise RuntimeError("Laser pointer verification modified its source fixture")
+
+    report = {"saved_document": str(saved), "native_stroke_count": len(saved_root.findall(".//stroke")),
+              "screenshots": [str(path) for path in screenshots],
+              "rendering": "Private headless Wayland via Cage"}
+    print("PASS: private GTK4 laser pen/highlighter input, fade, and transient save behavior", flush=True)
+    return report
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.laser_only:
+        laser_evidence = verify_laser_pointers(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"laser-pointer-tools": laser_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.link_only:
         link_evidence = verify_links(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -804,6 +848,7 @@ def main():
     parser.add_argument("--selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdf-text-selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--link-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--laser-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -812,6 +857,8 @@ def main():
         raise RuntimeError("PDF text annotation persistence checks require --worker")
     if args.link_only and not args.worker:
         raise RuntimeError("Native Link tool checks require --worker")
+    if args.laser_only and not args.worker:
+        raise RuntimeError("Laser pointer document round-trip checks require --worker")
     if args.inside:
         inside(args)
         return
@@ -863,6 +910,8 @@ def main():
             command.append("--pdf-text-selection-only")
         if args.link_only:
             command.append("--link-only")
+        if args.laser_only:
+            command.append("--laser-only")
         if args.preferences_only:
             command.append("--preferences-only")
         output = run(command, env=env, private_group=True)

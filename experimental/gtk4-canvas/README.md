@@ -326,6 +326,12 @@ annotation presets and opacity, annotation undo/redo, and native save. All GUI
 checks run in a private headless renderer; their screenshots and result files
 are kept outside Git.
 
+The focused `--laser-only` GUI check selects Laser Pointer Pen and Highlighter,
+draws with stylus and mouse input, waits for the configured delay and GTK fade
+timer, and verifies that the trail disappears without changing saved or undoable
+document state. The trails render per page above document content and restart at
+full alpha when another laser stroke begins.
+
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. Unsupported native objects are not
@@ -395,8 +401,8 @@ The remaining work is tracked exhaustively in
 are unsupported native object editing and full renderer fidelity; text and
 mixed/multi-image clipboard support; paired, horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
-parity; audio playback, vertical-space insertion, laser tools, LaTeX, and the
-general floating toolbox; complete per-device settings and toolbar
+parity; audio playback, vertical-space insertion, LaTeX, and the general
+floating toolbox; complete per-device settings and toolbar
 customization; and all 12 bundled plugins. Accessibility, physical input,
 platform packaging, GPU rendering, and platform-specific validation are also
 still required before replacing the existing application.
