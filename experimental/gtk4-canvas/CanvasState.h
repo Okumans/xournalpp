@@ -164,6 +164,8 @@ public:
     bool snapGridEnabled = true;
     double snapGridSize = behavior::snapGridSize;
     double snapGridTolerance = behavior::snapGridTolerance;
+    double edgePanSpeed = 20.0;
+    double edgePanMaxMultiplier = 5.0;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
     unsigned int laserFadeOutTimeMs = behavior::laserPointerFadeOutTimeMs;
@@ -609,6 +611,10 @@ public:
     bool selecting() const { return selectionGesture.has_value(); }
 
     bool movingSelection() const { return selectionGesture && selectionGesture->moving; }
+
+    bool selectionCanEdgePan() const {
+        return selectionGesture && selectionGesture->moving && selectionGesture->handle < 0;
+    }
 
     const std::vector<Ink>& committedInk() const { return ink; }
 
@@ -1112,8 +1118,38 @@ public:
                 auto factor = projection/(vx*vx+vy*vy);
                 const auto constrained = xs && ys ? std::min(width, height) : (xs ? width : height);
                 factor = std::copysign(std::max(std::abs(factor), (5 / zoom) / constrained), factor);
+                const auto rawFactor = factor;
                 const auto fx = xs ? factor : 1, fy = ys ? factor : 1;
                 g.transform = {fx,0,0,fy,ax*(1-fx),ay*(1-fy),std::sqrt(std::abs(fx*fy))};
+
+                const auto candidate = selectionBox();
+                if (candidate) {
+                    const auto candidateEdgeX = g.transform.xx * (xs < 0 ? g.bounds.x0 : g.bounds.x1) +
+                                                g.transform.x0;
+                    const auto candidateEdgeY = g.transform.yy * (ys < 0 ? g.bounds.y0 : g.bounds.y1) +
+                                                g.transform.y0;
+                    const auto snappedX = snapSelectionResizeAxis(g.targetPage, candidateEdgeX, true, altHeld);
+                    const auto snappedY = snapSelectionResizeAxis(g.targetPage, candidateEdgeY, false, altHeld);
+                    const auto dx = snappedX - candidateEdgeX;
+                    const auto dy = snappedY - candidateEdgeY;
+                    const auto currentWidth = (g.bounds.x1 - g.bounds.x0) * g.transform.xx;
+                    const auto currentHeight = (g.bounds.y1 - g.bounds.y0) * g.transform.yy;
+                    const auto snapFactorX = xs && std::abs(currentWidth) > 5 / zoom ?
+                                                     (currentWidth + dx * xs) / currentWidth : 1.0;
+                    const auto snapFactorY = ys && std::abs(currentHeight) > 5 / zoom ?
+                                                     (currentHeight + dy * ys) / currentHeight : 1.0;
+                    auto correction = (((std::abs(dx) < std::abs(dy)) && snapFactorX != 1) || snapFactorY == 1) ?
+                                              snapFactorX : snapFactorY;
+                    if (std::abs(currentWidth * correction) < 5 / zoom ||
+                        std::abs(currentHeight * correction) < 5 / zoom) {
+                        correction = 1;
+                    }
+                    const auto snappedFactor = rawFactor * correction;
+                    const auto snappedFx = xs ? snappedFactor : 1;
+                    const auto snappedFy = ys ? snappedFactor : 1;
+                    g.transform = {snappedFx, 0, 0, snappedFy, ax * (1 - snappedFx), ay * (1 - snappedFy),
+                                   std::sqrt(std::abs(snappedFx * snappedFy))};
+                }
             }
             const auto& m = g.transform;
             if (!std::isfinite(m.xx) || !std::isfinite(m.xy) || !std::isfinite(m.yx) || !std::isfinite(m.yy) ||
@@ -1123,6 +1159,74 @@ public:
                    std::hypot(g.latest.x-g.boundary.back().x,g.latest.y-g.boundary.back().y) >= .3) {
             g.boundary.push_back(g.latest);
         }
+    }
+
+    bool edgePanSelectionAtPointer(double x, double y, double viewportWidth, double viewportHeight,
+                                   bool altHeld = false) {
+        if (!selectionCanEdgePan() || !std::isfinite(x) || !std::isfinite(y) ||
+            !std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 ||
+            viewportHeight <= 0 || !std::isfinite(zoom) || zoom <= 0 || !std::isfinite(edgePanSpeed) ||
+            !std::isfinite(edgePanMaxMultiplier) || edgePanSpeed <= 0 || edgePanMaxMultiplier <= 0) {
+            return false;
+        }
+        const auto bounds = selectionBox();
+        if (!bounds) {
+            return false;
+        }
+
+        const auto pageIndex = bounds->page;
+        const auto screenX = offsetX + (pageLeft(pageIndex) + bounds->x0) * zoom;
+        const auto screenY = offsetY + (pageTop(pageIndex) + bounds->y0) * zoom;
+        const auto screenWidth = (bounds->x1 - bounds->x0) * zoom;
+        const auto screenHeight = (bounds->y1 - bounds->y0) * zoom;
+
+        const auto scrollAmount = [&](double viewportLength, double bboxMin, double bboxLength, double pointer,
+                                      double layoutLength, double& offset) {
+            if (!std::isfinite(viewportLength) || !std::isfinite(bboxMin) || !std::isfinite(bboxLength) ||
+                !std::isfinite(pointer) || !std::isfinite(layoutLength) || viewportLength <= 0 || bboxLength <= 0) {
+                return;
+            }
+            const auto bboxMax = bboxMin + bboxLength;
+            const auto isLargeSelection = bboxLength > viewportLength;
+            double multiplier = 0;
+            int direction = 0;
+            if (isLargeSelection) {
+                const auto pointerDiff = pointer - viewportLength / 2.0;
+                multiplier = edgePanMaxMultiplier * std::abs(pointerDiff) / viewportLength;
+                if (pointerDiff > 0.05 * viewportLength) {
+                    direction = 1;
+                } else if (pointerDiff < -0.05 * viewportLength) {
+                    direction = -1;
+                }
+            } else if (bboxMax > viewportLength) {
+                direction = 1;
+                multiplier = edgePanMaxMultiplier * std::min(bboxLength, bboxMax - viewportLength) / bboxLength;
+            } else if (bboxMin < 0) {
+                direction = -1;
+                multiplier = edgePanMaxMultiplier * std::min(bboxLength, -bboxMin) / bboxLength;
+            }
+            if (!direction || layoutLength <= viewportLength) {
+                return;
+            }
+
+            constexpr double timerRate = 30.0;
+            const auto requestedScroll = zoom * direction *
+                                         (viewportLength * edgePanSpeed / (100.0 * timerRate) * multiplier);
+            const auto nextOffset = std::clamp(offset - requestedScroll, viewportLength - layoutLength, 0.0);
+            offset = nextOffset;
+        };
+
+        const auto oldOffsetX = offsetX;
+        const auto oldOffsetY = offsetY;
+        scrollAmount(viewportWidth, screenX, screenWidth, x, layoutWidth() * zoom, offsetX);
+        scrollAmount(viewportHeight, screenY, screenHeight, y, layoutHeight() * zoom, offsetY);
+        if (offsetX == oldOffsetX && offsetY == oldOffsetY) {
+            return false;
+        }
+
+        // Re-evaluate at the stationary pointer so the preview follows the content while the viewport scrolls.
+        moveSelectionPointer(x, y, altHeld);
+        return true;
     }
 
     void finishSelection() {
@@ -2885,6 +2989,17 @@ private:
                             point.y - std::remainder(point.y - pageGrid.gridYOffset, stepY), point.pressure};
         const double threshold = 0.5 * std::hypot(stepX, stepY) * snapGridTolerance;
         return std::hypot(snapped.x - point.x, snapped.y - point.y) < threshold ? snapped : point;
+    }
+
+    double snapSelectionResizeAxis(int pageIndex, double value, bool horizontal, bool altHeld) const {
+        if (!std::isfinite(value) || !std::isfinite(snapGridSize) || !std::isfinite(snapGridTolerance) ||
+            snapGridSize <= 0 || snapGridTolerance <= 0 || altHeld == snapGridEnabled) {
+            return value;
+        }
+        const auto& pageGrid = layersForPage(pageIndex);
+        const auto offset = horizontal ? pageGrid.gridXOffset : pageGrid.gridYOffset;
+        const double snapped = value - std::remainder(value - offset, snapGridSize);
+        return std::abs(snapped - value) < snapGridTolerance * snapGridSize / 2.0 ? snapped : value;
     }
 
     void collectVerticalSpaceObjects(VerticalSpacePreview& preview) const {

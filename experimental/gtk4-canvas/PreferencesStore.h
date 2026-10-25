@@ -167,6 +167,9 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     preferences_detail::readDouble(keyFile.get(), "Navigation", "zoom-step", settings.zoomStep, 0.005, 2.0);
     preferences_detail::readDouble(keyFile.get(), "Navigation", "scroll-zoom-step", settings.scrollZoomStep, 0.005,
                                    2.0);
+    preferences_detail::readDouble(keyFile.get(), "Navigation", "edge-pan-speed", settings.edgePanSpeed, 0.0, 100.0);
+    preferences_detail::readDouble(keyFile.get(), "Navigation", "edge-pan-max-multiplier",
+                                   settings.edgePanMaxMultiplier, 0.1, 10.0);
     preferences_detail::readDouble(keyFile.get(), "Selection", "rotation-snap-tolerance",
                                    settings.snapRotationTolerance, 0.0, 1.0);
     detail(keyFile.get(), "Selection", "snap-rotation", settings.snapRotation);
@@ -218,6 +221,8 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_double(keyFile.get(), "Input", "pressure-multiplier", settings.pressureMultiplier);
     g_key_file_set_double(keyFile.get(), "Navigation", "zoom-step", settings.zoomStep);
     g_key_file_set_double(keyFile.get(), "Navigation", "scroll-zoom-step", settings.scrollZoomStep);
+    g_key_file_set_double(keyFile.get(), "Navigation", "edge-pan-speed", settings.edgePanSpeed);
+    g_key_file_set_double(keyFile.get(), "Navigation", "edge-pan-max-multiplier", settings.edgePanMaxMultiplier);
     g_key_file_set_double(keyFile.get(), "Selection", "rotation-snap-tolerance", settings.snapRotationTolerance);
     g_key_file_set_boolean(keyFile.get(), "Selection", "snap-rotation", settings.snapRotation);
     g_key_file_set_boolean(keyFile.get(), "Selection", "snap-grid", settings.snapGrid);

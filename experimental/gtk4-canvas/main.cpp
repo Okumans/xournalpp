@@ -251,7 +251,8 @@ public:
     }
 
     ~Prototype() {
-        for (guint* source: {&heartbeatSource, &autosaveSource, &crashHelperSource, &recoveryVerifySource}) {
+        for (guint* source: {&heartbeatSource, &autosaveSource, &crashHelperSource, &recoveryVerifySource,
+                            &selectionEdgePanSource}) {
             if (*source) {
                 g_source_remove(*source);
                 *source = 0;
@@ -557,6 +558,8 @@ private:
         AutosaveTimeout,
         ZoomStep,
         ScrollZoomStep,
+        EdgePanSpeed,
+        EdgePanMaxMultiplier,
         RotationSnapTolerance,
         SnapRotation,
         SnapGrid,
@@ -566,6 +569,7 @@ private:
         FloatingToolboxRow2,
         FloatingToolboxRow3,
         FloatingToolboxRow4,
+        Count,
     };
 
     GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
@@ -744,6 +748,12 @@ private:
             case PreferenceKey::ScrollZoomStep:
                 settings.scrollZoomStep = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control)) / 100.0;
                 break;
+            case PreferenceKey::EdgePanSpeed:
+                settings.edgePanSpeed = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
+            case PreferenceKey::EdgePanMaxMultiplier:
+                settings.edgePanMaxMultiplier = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
             case PreferenceKey::RotationSnapTolerance:
                 settings.snapRotationTolerance = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
@@ -763,6 +773,7 @@ private:
             case PreferenceKey::FloatingToolboxRow2:
             case PreferenceKey::FloatingToolboxRow3:
             case PreferenceKey::FloatingToolboxRow4:
+            case PreferenceKey::Count:
                 return;
         }
 
@@ -858,6 +869,14 @@ private:
         preferenceSpin(navigationGroup, "Scroll zoom step", "Change zoom with the pointer wheel",
                        importedConfig.settings.scrollZoomStep * 100.0, 0.5, 200.0, 0.5, 1, "%",
                        PreferenceKey::ScrollZoomStep);
+        preferenceSpin(navigationGroup, "Selection edge-pan speed",
+                       "Move the canvas as a selection is dragged beyond its visible edge",
+                       importedConfig.settings.edgePanSpeed, 0.0, 100.0, 1.0, 0, "%",
+                       PreferenceKey::EdgePanSpeed);
+        preferenceSpin(navigationGroup, "Selection edge-pan multiplier",
+                       "Increase panning speed as more of the selection moves out of view",
+                       importedConfig.settings.edgePanMaxMultiplier, 0.1, 10.0, 0.5, 1, "×",
+                       PreferenceKey::EdgePanMaxMultiplier);
         adw_preferences_page_add(behavior, navigationGroup);
         auto* selectionGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
         adw_preferences_group_set_title(selectionGroup, "Selection");
@@ -3676,6 +3695,7 @@ private:
             laserHighlighterBrush = state.brush;
         }
         if (textSelectionOwner) {
+            stopSelectionEdgePan();
             state.cancelSelection();
         }
         textSelectionOwner.reset();
@@ -5493,7 +5513,50 @@ private:
         g_object_unref(dialog);
     }
 
+    void scheduleSelectionEdgePan(double x, double y) {
+        if (!state.selectionCanEdgePan()) {
+            stopSelectionEdgePan();
+            return;
+        }
+        selectionEdgePanPointer = prototype::Point{x, y};
+        if (selectionEdgePanSource) {
+            return;
+        }
+        selectionEdgePanSource = g_timeout_add(
+                1000 / 30,
+                +[](gpointer data) -> gboolean {
+                    auto* self = static_cast<Prototype*>(data);
+                    if (!self->selectionEdgePanPointer || !self->state.selectionCanEdgePan() || !self->canvas) {
+                        self->selectionEdgePanSource = 0;
+                        return G_SOURCE_REMOVE;
+                    }
+                    const auto width = gtk_widget_get_width(self->canvas);
+                    const auto height = gtk_widget_get_height(self->canvas);
+                    const auto pointer = *self->selectionEdgePanPointer;
+                    if (!self->state.edgePanSelectionAtPointer(pointer.x, pointer.y, width, height,
+                                                               self->input.altHeld)) {
+                        self->selectionEdgePanSource = 0;
+                        return G_SOURCE_REMOVE;
+                    }
+                    self->fitted = true;
+                    self->fitMode = false;
+                    self->state.syncActivePage(width, height);
+                    self->update();
+                    return G_SOURCE_CONTINUE;
+                },
+                this);
+    }
+
+    void stopSelectionEdgePan() {
+        if (selectionEdgePanSource) {
+            g_source_remove(selectionEdgePanSource);
+            selectionEdgePanSource = 0;
+        }
+        selectionEdgePanPointer.reset();
+    }
+
     void resetInput(bool interrupted = false) {
+        stopSelectionEdgePan();
         imageGesture.reset();
         smartSelectPdfGesture.reset();
         state.cancelVerticalSpace();
@@ -5698,12 +5761,14 @@ private:
             pendingStylusTextTap.reset();
             if (beginTextTransform(device, start.x, start.y)) {
                 state.moveSelectionPointer(x, y, input.altHeld);
+                scheduleSelectionEdgePan(x, y);
                 update();
             }
             return;
         }
         if (textSelectionOwner && *textSelectionOwner == device) {
             state.moveSelectionPointer(x, y, input.altHeld);
+            scheduleSelectionEdgePan(x, y);
             update();
             return;
         }
@@ -5761,6 +5826,7 @@ private:
             return;
         }
         if (textSelectionOwner && *textSelectionOwner == device) {
+            stopSelectionEdgePan();
             if (releasePoint) {
                 state.moveSelectionPointer(releasePoint->x, releasePoint->y, input.altHeld);
             }
@@ -7676,11 +7742,65 @@ private:
                         "Redo did not reapply the vertical-space edit");
                 waitForNextPaint();
                 capture("vertical-space-applied");
-                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Smart Select edge hit and grid snap, "
-                             "Text-tool mouse/stylus move/resize "
-                             "and formatting, vertical-space direction/preview/undo, "
-                             "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
-                             "remembered tool state, and shortcuts\n";
+                const auto viewportWidth = gtk_widget_get_width(canvas);
+                const auto viewportHeight = gtk_widget_get_height(canvas);
+                require(viewportWidth > 0 && viewportHeight > 0, "Edge-pan verification has no allocated canvas");
+                state.clearSelection();
+                prototype::TextItem edgePanText;
+                edgePanText.page = 0;
+                edgePanText.layerId = 1;
+                edgePanText.originLayer = 0;
+                edgePanText.text = "edge pan";
+                edgePanText.layoutWidth = 40;
+                edgePanText.layoutHeight = 40;
+                edgePanText.x = 80;
+                edgePanText.y = 100;
+                state.texts.push_back(edgePanText);
+                const auto edgePanTextIndex = state.texts.size() - 1;
+                state.selectedTexts = {edgePanTextIndex};
+                state.brush.tool = Tool::SmartSelect;
+                state.snapGridEnabled = false;
+                state.edgePanSpeed = 20;
+                state.edgePanMaxMultiplier = 5;
+                state.zoom = std::max(2.0, (viewportWidth + 50.0) / 500.0);
+                state.offsetX = 0;
+                state.offsetY = 0;
+                const auto edgePanStart = state.pageScreenPoint(0, 100, 120);
+                const auto edgePanPointer = prototype::Point{viewportWidth - 1.0, edgePanStart.y};
+                require(state.beginSelection(edgePanStart.x, edgePanStart.y),
+                        "Smart Select edge-pan move did not begin");
+                state.moveSelectionPointer(edgePanPointer.x, edgePanPointer.y);
+                require(state.selectionCanEdgePan(), "Smart Select move did not enter edge-pan mode");
+                const auto edgePanBounds = state.selectionBox();
+                require(edgePanBounds && edgePanBounds->x1 + state.pageLeft(0) >
+                                                  (viewportWidth - state.offsetX) / state.zoom,
+                        "Edge-pan fixture does not extend past the canvas viewport");
+                selectionVerifyEdgePanOffsetX = state.offsetX;
+                selectionVerifyEdgePanScreenX =
+                        state.offsetX + (state.pageLeft(0) + edgePanBounds->x0) * state.zoom;
+                scheduleSelectionEdgePan(edgePanPointer.x, edgePanPointer.y);
+                update();
+                return G_SOURCE_CONTINUE;
+            }
+            case 6: {
+                if (state.offsetX >= selectionVerifyEdgePanOffsetX) {
+                    --selectionVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                const auto edgePanBounds = state.selectionBox();
+                require(edgePanBounds && state.offsetX < selectionVerifyEdgePanOffsetX &&
+                                std::abs(state.offsetX + (state.pageLeft(0) + edgePanBounds->x0) * state.zoom -
+                                         selectionVerifyEdgePanScreenX) < 1e-6,
+                        "The edge-pan timer did not scroll while keeping the selection under the stationary pointer");
+                stopSelectionEdgePan();
+                state.finishSelection();
+                update();
+                waitForNextPaint();
+                capture("smart-select-edge-pan");
+                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Smart Select edge hit, grid snap, "
+                             "resize snap and edge-pan, Text-tool mouse/stylus move/resize and formatting, "
+                             "vertical-space direction/preview/undo, Select Object and Hand modes, "
+                             "selection-preserving pan, hidden-layer fallback, remembered tool state, and shortcuts\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -8016,7 +8136,9 @@ private:
                                     control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout) &&
                                     control(PreferenceKey::RotationSnapTolerance) &&
                                     control(PreferenceKey::SnapRotation) && control(PreferenceKey::SnapGrid) &&
-                                    control(PreferenceKey::SnapGridSize) && control(PreferenceKey::SnapGridTolerance),
+                                    control(PreferenceKey::SnapGridSize) && control(PreferenceKey::SnapGridTolerance) &&
+                                    control(PreferenceKey::EdgePanSpeed) &&
+                                    control(PreferenceKey::EdgePanMaxMultiplier),
                             "Preferences dialog is missing appearance, stylus or autosave controls");
                     require(control(PreferenceKey::FloatingToolboxRow1) &&
                                     control(PreferenceKey::FloatingToolboxRow2) &&
@@ -8065,6 +8187,8 @@ private:
                     adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapGrid)), false);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridSize)), 24.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridTolerance)), 0.4);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanSpeed)), 31.0);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier)), 3.5);
                     gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow1)),
                                           "SMART_SELECT,PEN");
                     gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow2)), "ZOOM_SLIDER");
@@ -8112,6 +8236,8 @@ private:
                                     !importedConfig.settings.snapGrid && !state.snapGridEnabled &&
                                     std::abs(state.snapGridSize - 24.0) < 1e-8 &&
                                     std::abs(state.snapGridTolerance - 0.4) < 1e-8 &&
+                                    std::abs(state.edgePanSpeed - 31.0) < 1e-8 &&
+                                    std::abs(state.edgePanMaxMultiplier - 3.5) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
@@ -8259,6 +8385,12 @@ private:
                                                      GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridTolerance))) -
                                              0.4) < 1e-8,
                             "Preferences dialog did not restore page-grid snapping values");
+                    require(std::abs(gtk_spin_button_get_value(
+                                             GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanSpeed))) - 31.0) < 1e-8 &&
+                                    std::abs(gtk_spin_button_get_value(
+                                             GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier))) - 3.5) <
+                                            1e-8,
+                            "Preferences dialog did not restore selection edge-pan values");
                     capture("preferences-reloaded");
                     std::cout << "PASS: GTK 4 preferences survive application restart\n";
                     adw_dialog_close(ADW_DIALOG(preferencesDialog));
@@ -10180,6 +10312,7 @@ private:
     std::function<void()> deferredAction;
     guint autosaveSource = 0;
     guint laserFadeSource = 0;
+    guint selectionEdgePanSource = 0;
     int autosaveHeartbeats = 0;
     int autosaveWaits = 0;
     std::string smokeAutosaveBaseVersion;
@@ -10227,6 +10360,7 @@ private:
     std::optional<size_t> selectedImageIndex;
     std::optional<ImageGesture> imageGesture;
     std::optional<Device> textSelectionOwner;
+    std::optional<prototype::Point> selectionEdgePanPointer;
     std::optional<prototype::Point> pendingStylusTextTap;
     std::optional<SmartSelectPdfGesture> smartSelectPdfGesture;
     bool textDragHandled = false;
@@ -10245,6 +10379,8 @@ private:
     int paints = 0;
     int lastSmokePaint = 0;
     int paintWaits = 0;
+    double selectionVerifyEdgePanOffsetX = 0;
+    double selectionVerifyEdgePanScreenX = 0;
     GtkWidget* contentView = nullptr;
     GtkWidget* canvas = nullptr;
     GtkWidget* canvasOverlay = nullptr;
@@ -10333,7 +10469,7 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
-    std::array<GtkWidget*, 21> preferenceControls{};
+    std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;

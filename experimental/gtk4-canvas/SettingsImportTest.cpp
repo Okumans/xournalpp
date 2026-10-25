@@ -36,6 +36,8 @@ int main() {
   <property name="pressureMultiplier" value="1.35"/>
   <property name="zoomStep" value="25.00000000"/>
   <property name="zoomStepScroll" value="4.50000000"/>
+  <property name="edgePanSpeed" value="37"/>
+  <property name="edgePanMaxMult" value="2.5"/>
   <property name="snapRotation" value="false"/>
   <property name="snapRotationTolerance" value="0.65"/>
   <property name="snapGrid" value="false"/>
@@ -117,6 +119,8 @@ int main() {
     require(s.pressureSensitivity && near(s.minimumPressure, 0.14) && near(s.pressureMultiplier, 1.35),
             "Pressure settings mismatch");
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");
+    require(near(s.edgePanSpeed, 37) && near(s.edgePanMaxMultiplier, 2.5),
+            "Selection edge-pan settings were not imported");
     require(near(s.snapRotationTolerance, 0.65), "Selection rotation tolerance import mismatch");
     require(!s.snapRotation, "Selection rotation snapping preference import mismatch");
     require(!s.snapGrid && near(s.snapGridSize, 28.5) && near(s.snapGridTolerance, 0.25),
@@ -133,6 +137,8 @@ int main() {
     prototype::applyImportedSettingsToCanvas(importedState, s);
     require(near(importedState.shapeRecognizerMinSize, 32), "Shape recognizer minimum size was not applied to canvas state");
     require(near(importedState.snapRotationTolerance, 0.65), "Rotation tolerance was not applied to canvas state");
+    require(near(importedState.edgePanSpeed, 37) && near(importedState.edgePanMaxMultiplier, 2.5),
+            "Selection edge-pan settings were not applied to canvas state");
     require(!importedState.snapRotationEnabled, "Rotation snapping setting was not applied to canvas state");
     require(importedState.laserFadeOutTimeMs == 750, "Laser pointer fade delay was not applied to canvas state");
 

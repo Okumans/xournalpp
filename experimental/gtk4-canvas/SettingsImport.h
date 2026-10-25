@@ -60,6 +60,8 @@ struct ImportedSettings {
     double pressureMultiplier = behavior::pressureMultiplier;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
+    double edgePanSpeed = 20.0;
+    double edgePanMaxMultiplier = 5.0;
     std::string textFontName = "Sans";
     double textFontSize = 12;
     double shapeRecognizerMinSize = 40;
@@ -227,6 +229,14 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         // Settings.cpp stores zoomStepScroll in percent (default 2.0 -> 0.02).
         if (const auto pct = parseAsciiDouble(value); pct && *pct > 0.0) {
             out.scrollZoomStep = std::clamp(*pct / 100.0, 0.005, 2.0);
+        }
+    } else if (name == "edgePanSpeed") {
+        if (const auto v = parseAsciiDouble(value); v && *v >= 0) {
+            out.edgePanSpeed = std::clamp(*v, 0.0, 100.0);
+        }
+    } else if (name == "edgePanMaxMult") {
+        if (const auto v = parseAsciiDouble(value); v && *v > 0) {
+            out.edgePanMaxMultiplier = std::clamp(*v, 0.1, 10.0);
         }
     } else if (name == "snapRotation") {
         if (value == "true") {
@@ -625,6 +635,8 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.snapGridTolerance = settings.snapGridTolerance;
     state.zoomStep = settings.zoomStep;
     state.scrollZoomStep = settings.scrollZoomStep;
+    state.edgePanSpeed = settings.edgePanSpeed;
+    state.edgePanMaxMultiplier = settings.edgePanMaxMultiplier;
     state.laserFadeOutTimeMs = settings.laserPointerFadeOutTimeMs;
     state.eraserMode = settings.eraserMode;
     state.eraserWidth = settings.eraserWidth;
