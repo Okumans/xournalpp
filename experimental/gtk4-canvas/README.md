@@ -64,7 +64,7 @@ are not undoable yet. Page background changes use the native document worker,
 persist in the `.xopp` save path, and participate in undo/redo. BeamerPresentation
 steps through repeated-label PDF animations, moves between slides at label
 boundaries, and removes animation pages through the native document worker. The
-full master Lua API, plugin toolbar actions, Search, and most bundled plugin
+most of the master Lua API, plugin toolbar actions, Search, and bundled plugin
 behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
@@ -81,8 +81,12 @@ value-semantic edits. `app.addToSelection()` and `app.clearSelection()` support
 reference-based selection workflows. `app.addTexts()` and `app.addLinks()` create
 editable text and URL links on the current layer, use configured font/color
 defaults, return stable references, and support grouped, individual, and
-non-undoable history policies. Image/spline creation and other master Lua APIs
-remain migration work; see the feature audit.
+non-undoable history policies. `app.addImages()` accepts a file path or binary
+image data, preserves the master sizing and aspect-ratio options, scales images
+to fit the page, and returns stable references or per-image error strings. It
+supports grouped, individual, and non-undoable history policies. Spline creation,
+remaining image/object mutation APIs, and other master Lua APIs remain migration
+work; see the feature audit.
 
 The bundled ImageActions plugin registers all ten legacy image operations.
 When libvips is available at build time, the GTK 4 host performs invert,

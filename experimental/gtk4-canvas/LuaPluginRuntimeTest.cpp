@@ -236,6 +236,34 @@ int main() {
                 "function badAlignment() app.addLinks({links={{text='bad', url='https://example.test', "
                 "alignment=4, x=1, y=2}}}) end\n"
                 "function badUndoPolicy() app.addTexts({texts={}, allowUndoRedoAction='batched'}) end\n");
+    const auto imageCreationPlugin = root / "ImageCreationPlugin";
+    writePlugin(imageCreationPlugin,
+                "[about]\ndescription=Create editable images\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Create images', callback='create'})\n"
+                "  app.registerUi({menu='Reject missing image source', callback='missingSource'})\n"
+                "  app.registerUi({menu='Reject two image sources', callback='twoSources'})\n"
+                "  app.registerUi({menu='Reject invalid image size', callback='badSize'})\n"
+                "  app.registerUi({menu='Reject invalid image scale', callback='badScale'})\n"
+                "  app.registerUi({menu='Reject invalid image data', callback='badData'})\n"
+                "  app.registerUi({menu='Reject invalid image undo policy', callback='badUndoPolicy'})\n"
+                "end\n"
+                "function create()\n"
+                "  local refs = app.addImages({images={\n"
+                "    {data='PNG\\0bytes', x=10, y=20, maxWidth=40, maxHeight=30},\n"
+                "    {path='/tmp/plugin-image-missing.png'},\n"
+                "    {data='encoded', scale=2, aspectRatio=false}\n"
+                "  }, allowUndoRedoAction='individual'})\n"
+                "  assert(#refs == 3 and type(refs[1]) == 'userdata' and type(refs[2]) == 'string' and "
+                "type(refs[3]) == 'userdata')\n"
+                "end\n"
+                "function missingSource() app.addImages({images={{x=1, y=2}}}) end\n"
+                "function twoSources() app.addImages({images={{path='image.png', data='encoded'}}}) end\n"
+                "function badSize() app.addImages({images={{data='encoded', maxWidth=0}}}) end\n"
+                "function badScale() app.addImages({images={{data='encoded', scale=0}}}) end\n"
+                "function badData() app.addImages({images={{data=42}}}) end\n"
+                "function badUndoPolicy() app.addImages({images={}, allowUndoRedoAction='sometimes'}) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -245,9 +273,10 @@ int main() {
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
-                                     quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string(), {});
+                                     quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
+                                     imageCreationPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 15, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 16, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -269,8 +298,10 @@ int main() {
     prototype::PluginStrokeUndoPolicy addedStrokePolicy = prototype::PluginStrokeUndoPolicy::Grouped;
     std::vector<prototype::PluginTextInput> addedTexts;
     std::vector<prototype::PluginLinkInput> addedLinks;
+    std::vector<prototype::PluginImageInput> addedImages;
     prototype::PluginStrokeUndoPolicy addedTextPolicy = prototype::PluginStrokeUndoPolicy::Individual;
     prototype::PluginStrokeUndoPolicy addedLinkPolicy = prototype::PluginStrokeUndoPolicy::Individual;
+    prototype::PluginStrokeUndoPolicy addedImagePolicy = prototype::PluginStrokeUndoPolicy::Grouped;
     double pageWidthChange = 0;
     double pageHeightChange = 0;
     bool pageSizeRelative = false;
@@ -361,6 +392,21 @@ int main() {
         references.clear();
         for (std::size_t index = 0; index < links.size(); ++index) {
             references.push_back(0x73 + index);
+        }
+        return true;
+    };
+    host.addImages = [&](const std::vector<prototype::PluginImageInput>& images,
+                         prototype::PluginStrokeUndoPolicy policy,
+                         std::vector<prototype::PluginImageResult>& results, std::string&) {
+        addedImages = images;
+        addedImagePolicy = policy;
+        results.clear();
+        for (std::size_t index = 0; index < images.size(); ++index) {
+            if (images[index].path) {
+                results.push_back({std::nullopt, "Error: missing fixture image"});
+            } else {
+                results.push_back({0x81 + index, {}});
+            }
         }
         return true;
     };
@@ -471,6 +517,10 @@ int main() {
     require(loadedTextLinkCreationPlugin && loadedTextLinkCreationPlugin->loaded &&
                     loadedTextLinkCreationPlugin->menuItems == 7,
             "Plugin using text and link creation did not load its callbacks");
+    const auto loadedImageCreationPlugin = runtime.findPlugin("ImageCreationPlugin");
+    require(loadedImageCreationPlugin && loadedImageCreationPlugin->loaded &&
+                    loadedImageCreationPlugin->menuItems == 7,
+            "Plugin using image creation did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -546,6 +596,42 @@ int main() {
                     runtime.findPlugin("TextLinkCreationPlugin")->error.find("Unrecognized undo option") !=
                             std::string::npos,
             "app.addTexts accepted an unknown undo policy");
+    require(runtime.invokeMenu("ImageCreationPlugin", 0) && addedImages.size() == 3 &&
+                    addedImagePolicy == prototype::PluginStrokeUndoPolicy::Individual &&
+                    addedImages[0].data == std::optional<std::string>(std::string("PNG\0bytes", 9)) &&
+                    addedImages[0].x == 10 && addedImages[0].y == 20 && addedImages[0].maxWidth == 40 &&
+                    addedImages[0].maxHeight == 30 && addedImages[0].scale == 1 && addedImages[0].aspectRatio &&
+                    addedImages[1].path == std::optional<std::string>("/tmp/plugin-image-missing.png") &&
+                    !addedImages[1].data && addedImages[1].x == 0 && addedImages[1].y == 0 &&
+                    addedImages[1].maxWidth == -1 && addedImages[1].maxHeight == -1 &&
+                    addedImages[1].scale == 1 && addedImages[1].aspectRatio &&
+                    addedImages[2].data == std::optional<std::string>("encoded") &&
+                    addedImages[2].scale == 2 && !addedImages[2].aspectRatio,
+            "app.addImages lost binary data, source selection, sizing options, defaults, or undo policy");
+    require(!runtime.invokeMenu("ImageCreationPlugin", 1) &&
+                    runtime.findPlugin("ImageCreationPlugin")->error.find("No 'path' parameter") !=
+                            std::string::npos,
+            "app.addImages accepted an entry without a path or data source");
+    require(!runtime.invokeMenu("ImageCreationPlugin", 2) &&
+                    runtime.findPlugin("ImageCreationPlugin")->error.find("Only one of 'path' or image 'data'") !=
+                            std::string::npos,
+            "app.addImages accepted both a path and image data");
+    require(!runtime.invokeMenu("ImageCreationPlugin", 3) &&
+                    runtime.findPlugin("ImageCreationPlugin")->error.find("positive integers or -1") !=
+                            std::string::npos,
+            "app.addImages accepted an invalid maximum dimension");
+    require(!runtime.invokeMenu("ImageCreationPlugin", 4) &&
+                    runtime.findPlugin("ImageCreationPlugin")->error.find("scale must be positive") !=
+                            std::string::npos,
+            "app.addImages accepted a nonpositive scale");
+    require(!runtime.invokeMenu("ImageCreationPlugin", 5) &&
+                    runtime.findPlugin("ImageCreationPlugin")->error.find("Field 'data' must be a string") !=
+                            std::string::npos,
+            "app.addImages accepted non-binary data");
+    require(!runtime.invokeMenu("ImageCreationPlugin", 6) &&
+                    runtime.findPlugin("ImageCreationPlugin")->error.find("Unrecognized undo option") !=
+                            std::string::npos,
+            "app.addImages accepted an unknown undo policy");
     require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
                     runtime.findPlugin("StrokeApiPlugin")->error.find("There is no selection") != std::string::npos,
             "app.getStrokes selection errors were not reported to the plugin");
@@ -622,8 +708,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 28 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 12,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 35 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 13,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
