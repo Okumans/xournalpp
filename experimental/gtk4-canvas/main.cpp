@@ -1577,6 +1577,16 @@ private:
                                  std::vector<std::uintptr_t>& references, std::string& error) {
             return addPluginStrokes(strokes, policy, references, error);
         };
+        host.addTexts = [this](const std::vector<prototype::PluginTextInput>& texts,
+                               prototype::PluginStrokeUndoPolicy policy,
+                               std::vector<std::uintptr_t>& references, std::string& error) {
+            return addPluginTexts(texts, policy, references, error);
+        };
+        host.addLinks = [this](const std::vector<prototype::PluginLinkInput>& links,
+                               prototype::PluginStrokeUndoPolicy policy,
+                               std::vector<std::uintptr_t>& references, std::string& error) {
+            return addPluginLinks(links, policy, references, error);
+        };
         host.setPageSize = [this](double width, double height, bool relative, std::string& error) {
             return setPluginPageSize(width, height, relative, error);
         };
@@ -2629,6 +2639,91 @@ private:
         references.reserve(inputs.size());
         for (size_t index = first; index < state.ink.size(); ++index) {
             references.push_back(state.ink[index].pluginReference);
+        }
+        update();
+        return true;
+    }
+
+    bool addPluginTexts(const std::vector<prototype::PluginTextInput>& inputs,
+                        prototype::PluginStrokeUndoPolicy policy,
+                        std::vector<std::uintptr_t>& references, std::string& error) {
+        std::vector<prototype::TextItem> additions;
+        additions.reserve(inputs.size());
+        for (const auto& input: inputs) {
+            prototype::TextItem item;
+            item.text = input.text;
+            item.fontName = input.fontName.value_or(state.textFontName);
+            item.fontSize = input.fontSize.value_or(state.textFontSize);
+            item.color = input.color ? (0xff000000U | *input.color) : packTextColor(state.textColor);
+            item.x = input.x;
+            item.y = input.y;
+            item.wrapWidth = input.wrap.value_or(-1);
+            const auto [width, height] = prototype::textNaturalSize(item);
+            item.layoutWidth = width;
+            item.layoutHeight = height;
+            additions.push_back(std::move(item));
+        }
+        return addPluginTextItems(std::move(additions), policy, references, error);
+    }
+
+    bool addPluginLinks(const std::vector<prototype::PluginLinkInput>& inputs,
+                        prototype::PluginStrokeUndoPolicy policy,
+                        std::vector<std::uintptr_t>& references, std::string& error) {
+        std::vector<prototype::TextItem> additions;
+        additions.reserve(inputs.size());
+        for (const auto& input: inputs) {
+            prototype::TextItem item;
+            item.text = input.text;
+            item.linkUrl = input.url;
+            item.isLink = true;
+            item.alignment = input.alignment.value_or(0);
+            item.fontName = input.fontName.value_or(state.textFontName);
+            item.fontSize = input.fontSize.value_or(state.textFontSize);
+            item.color = input.color ? (0xff000000U | *input.color) : packTextColor(state.textColor);
+            item.x = input.x;
+            item.y = input.y;
+            const auto [width, height] = prototype::textNaturalSize(item);
+            item.layoutWidth = width;
+            item.layoutHeight = height;
+            additions.push_back(std::move(item));
+        }
+        return addPluginTextItems(std::move(additions), policy, references, error);
+    }
+
+    bool addPluginTextItems(std::vector<prototype::TextItem> additions,
+                            prototype::PluginStrokeUndoPolicy policy,
+                            std::vector<std::uintptr_t>& references, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before adding text";
+            return false;
+        }
+        if (additions.empty()) {
+            references.clear();
+            return true;
+        }
+
+        int undoPolicyValue = 0;
+        switch (policy) {
+            case prototype::PluginStrokeUndoPolicy::Grouped:
+                undoPolicyValue = 0;
+                break;
+            case prototype::PluginStrokeUndoPolicy::Individual:
+                undoPolicyValue = 1;
+                break;
+            case prototype::PluginStrokeUndoPolicy::None:
+                undoPolicyValue = 2;
+                break;
+        }
+        const auto first = state.texts.size();
+        const auto count = additions.size();
+        if (!state.addPluginTexts(std::move(additions), undoPolicyValue)) {
+            error = "The text batch could not be added to the current layer";
+            return false;
+        }
+        references.clear();
+        references.reserve(count);
+        for (std::size_t index = first; index < first + count; ++index) {
+            references.push_back(state.texts[index].pluginReference);
         }
         update();
         return true;
@@ -4043,6 +4138,81 @@ private:
                     return !stroke.page && stroke.layer.has_value();
                 }),
                 "app.getStrokes('page') returned the wrong page/layer metadata");
+        state.selected = {state.ink.size() - 1};
+        state.selectedTexts = {savedTextSize};
+        state.selectedImages = {savedImageSize};
+        const auto creationSelection = state.selected;
+        const auto creationTextSelection = state.selectedTexts;
+        const auto creationImageSelection = state.selectedImages;
+        const auto creationTextCount = state.texts.size();
+        std::vector<std::uintptr_t> createdTextReferences;
+        std::string creationError;
+        prototype::PluginTextInput explicitText;
+        explicitText.text = "Lua created note";
+        explicitText.fontName = "Noto Sans";
+        explicitText.fontSize = 9.5;
+        explicitText.color = 0x1259b9;
+        explicitText.x = 70;
+        explicitText.y = 80;
+        explicitText.wrap = 100;
+        prototype::PluginTextInput defaultText;
+        defaultText.text = "Lua default note";
+        defaultText.x = 80;
+        defaultText.y = 100;
+        require(addPluginTexts({explicitText, defaultText}, prototype::PluginStrokeUndoPolicy::Grouped,
+                               createdTextReferences, creationError) && createdTextReferences.size() == 2 &&
+                        state.texts.size() == creationTextCount + 2 &&
+                        state.selected == creationSelection && state.selectedTexts == creationTextSelection &&
+                        state.selectedImages == creationImageSelection,
+                creationError.empty() ?
+                        "app.addTexts did not add its batch with references while preserving selection" :
+                        creationError.c_str());
+        const auto explicitTextIndex = creationTextCount;
+        const auto& createdText = state.texts[explicitTextIndex];
+        const auto& createdDefaultText = state.texts[explicitTextIndex + 1];
+        require(createdText.text == "Lua created note" && createdText.fontName == "Noto Sans" &&
+                        createdText.fontSize == 9.5 && createdText.color == 0xff1259b9U &&
+                        createdText.wrapWidth == 100 && createdText.pluginReference == createdTextReferences[0] &&
+                        createdText.layerId == state.activeLayerId(state.page) &&
+                        createdDefaultText.fontName == state.textFontName &&
+                        createdDefaultText.fontSize == state.textFontSize &&
+                        createdDefaultText.color == packTextColor(state.textColor),
+                "app.addTexts did not apply explicit and configured text defaults");
+        state.undo();
+        require(state.texts.size() == creationTextCount && state.selected == creationSelection,
+                "Grouped app.addTexts batch did not undo in one step while preserving selection");
+        state.redo();
+        require(state.texts.size() == creationTextCount + 2 &&
+                        state.texts[explicitTextIndex].pluginReference == createdTextReferences[0] &&
+                        state.texts[explicitTextIndex + 1].pluginReference == createdTextReferences[1],
+                "app.addTexts redo did not preserve returned references");
+        state.undo();
+
+        const auto creationLinkCount = state.texts.size();
+        prototype::PluginLinkInput linkInput;
+        linkInput.text = "Lua created link";
+        linkInput.url = "https://example.test";
+        linkInput.alignment = 1;
+        linkInput.fontName = "Serif";
+        linkInput.fontSize = 12;
+        linkInput.color = 0xabcdef;
+        linkInput.x = 90;
+        linkInput.y = 110;
+        std::vector<std::uintptr_t> createdLinkReferences;
+        require(addPluginLinks({linkInput}, prototype::PluginStrokeUndoPolicy::Grouped,
+                               createdLinkReferences, creationError) && createdLinkReferences.size() == 1 &&
+                        state.texts.size() == creationLinkCount + 1,
+                creationError.empty() ? "app.addLinks did not add the link and return its reference" :
+                                        creationError.c_str());
+        const auto& createdLink = state.texts.back();
+        require(createdLink.isLink && createdLink.linkUrl == linkInput.url && createdLink.alignment == 1 &&
+                        createdLink.fontName == "Serif" && createdLink.fontSize == 12 &&
+                        createdLink.color == 0xffabcdefU && createdLink.pluginReference == createdLinkReferences[0],
+                "app.addLinks did not preserve URL, alignment, style, or its opaque reference");
+        state.undo();
+        require(state.texts.size() == creationLinkCount,
+                "app.addLinks should create one undoable edit");
+
         state.ink.resize(savedInkSize);
         state.texts.resize(savedTextSize);
         state.images.resize(savedImageSize);

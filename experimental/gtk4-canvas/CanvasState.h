@@ -470,6 +470,70 @@ public:
         return true;
     }
 
+    bool addPluginTexts(std::vector<TextItem> additions, int undoPolicy) {
+        if (additions.empty()) {
+            return true;
+        }
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size() ||
+            undoPolicy < 0 || undoPolicy > 2 || current || eraseGesture || selectionGesture) {
+            return false;
+        }
+
+        ensurePluginReferences();
+        const auto pageIndex = page;
+        const auto layerId = activeLayerId(pageIndex);
+        const auto origin = activeLayerOrigin(pageIndex);
+        size_t nextOrder = nextOriginOrder(pageIndex, origin);
+        for (auto& item: additions) {
+            item.page = pageIndex;
+            item.layerId = layerId;
+            item.originLayer = origin;
+            item.layerOrder = nextOrder++;
+            item.pluginReference = allocatePluginReference();
+            if (!validTextPage(item) || item.alignment < 0 || item.alignment > 2) {
+                return false;
+            }
+        }
+
+        const auto preserveSelection = [this](Edit& edit) {
+            edit.selectionBefore = edit.selectionAfter = selected;
+            edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+            edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
+            edit.hasSelectionFrameState = true;
+            edit.selectionFrameBefore = selectionFrame;
+            edit.selectionFrameAfter = selectionFrame;
+        };
+
+        if (undoPolicy == 2) {
+            for (auto& item: additions) {
+                texts.push_back(std::move(item));
+            }
+            // Non-undoable additions form a dirty revision boundary so older
+            // edits cannot replay against changed text indices.
+            undoStates.clear();
+            redoStates.clear();
+            revisionBase = ++nextRevision;
+            return true;
+        }
+        if (undoPolicy == 0) {
+            Edit edit;
+            edit.textChanges.push_back({texts.size(), {}, texts.size(), std::move(additions)});
+            preserveSelection(edit);
+            apply(edit, true);
+            record(std::move(edit));
+            return true;
+        }
+
+        for (auto& item: additions) {
+            Edit edit;
+            edit.textChanges.push_back({texts.size(), {}, texts.size(), {std::move(item)}});
+            preserveSelection(edit);
+            apply(edit, true);
+            record(std::move(edit));
+        }
+        return true;
+    }
+
     bool changePageBackground(int pageIndex, const std::string& format, const std::string& config = {}) {
         if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size() || format.empty()) {
             return false;

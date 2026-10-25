@@ -78,6 +78,27 @@ struct PluginStrokeInput {
     std::optional<std::string> lineStyle;
 };
 
+struct PluginTextInput {
+    std::string text;
+    std::optional<std::string> fontName;
+    std::optional<double> fontSize;
+    std::optional<std::uint32_t> color;
+    double x = 0;
+    double y = 0;
+    std::optional<double> wrap;
+};
+
+struct PluginLinkInput {
+    std::string text;
+    std::string url;
+    std::optional<int> alignment;
+    std::optional<std::string> fontName;
+    std::optional<double> fontSize;
+    std::optional<std::uint32_t> color;
+    double x = 0;
+    double y = 0;
+};
+
 struct PluginText {
     std::string text;
     std::string fontName;
@@ -141,6 +162,10 @@ struct PluginRuntimeHost {
     std::function<void()> clearSelection;
     std::function<bool(const std::vector<PluginStrokeInput>&, PluginStrokeUndoPolicy,
                        std::vector<std::uintptr_t>&, std::string&)> addStrokes;
+    std::function<bool(const std::vector<PluginTextInput>&, PluginStrokeUndoPolicy,
+                       std::vector<std::uintptr_t>&, std::string&)> addTexts;
+    std::function<bool(const std::vector<PluginLinkInput>&, PluginStrokeUndoPolicy,
+                       std::vector<std::uintptr_t>&, std::string&)> addLinks;
     std::function<bool(double, double, bool, std::string&)> setPageSize;
     std::function<bool(bool, std::string&)> setLayerVisibility;
     std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
@@ -206,6 +231,8 @@ public:
     static int luaAddToSelection(lua_State* state);
     static int luaClearSelection(lua_State* state);
     static int luaAddStrokes(lua_State* state);
+    static int luaAddTexts(lua_State* state);
+    static int luaAddLinks(lua_State* state);
     static int luaSetPageSize(lua_State* state);
     static int luaSetLayerVisibility(lua_State* state);
     static int luaSetCurrentLayerName(lua_State* state);
@@ -236,6 +263,10 @@ private:
     bool clearSelection(std::string& error);
     bool addStrokes(const std::vector<PluginStrokeInput>& strokes, PluginStrokeUndoPolicy undoPolicy,
                     std::vector<std::uintptr_t>& references, std::string& error);
+    bool addTexts(const std::vector<PluginTextInput>& texts, PluginStrokeUndoPolicy undoPolicy,
+                  std::vector<std::uintptr_t>& references, std::string& error);
+    bool addLinks(const std::vector<PluginLinkInput>& links, PluginStrokeUndoPolicy undoPolicy,
+                  std::vector<std::uintptr_t>& references, std::string& error);
     bool setPageSize(double width, double height, bool relative, std::string& error);
     bool setLayerVisibility(bool visible, std::string& error);
     bool setCurrentLayerName(std::string_view name, std::string& error);
