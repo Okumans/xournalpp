@@ -51,6 +51,7 @@
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
 #include "DocumentPublish.h"
+#include "PdfPageLabels.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "StrokeClipboard.h"
@@ -671,6 +672,26 @@ std::vector<int> readPdfPageMap(const Document& document) {
     return pages;
 }
 
+std::vector<std::string> readPdfPageLabels(const Document& document) {
+    std::vector<std::string> labels;
+    labels.reserve(document.getPdfPageCount());
+    size_t totalBytes = 0;
+    for (size_t pageIndex = 0; pageIndex < document.getPdfPageCount(); ++pageIndex) {
+        const auto page = document.getPdfPage(pageIndex);
+        if (!page) {
+            throw std::runtime_error("PDF page label source is missing a page");
+        }
+        auto label = page->getPageLabel();
+        if (label.size() > prototype::bridge::maxPdfPageLabelLength ||
+            label.size() > prototype::bridge::maxPdfPageLabelBytes - totalBytes) {
+            throw std::runtime_error("PDF page labels exceed the supported size limit");
+        }
+        totalBytes += label.size();
+        labels.push_back(std::move(label));
+    }
+    return labels;
+}
+
 void writePdfTextSource(Document& document, const fs::path& output) {
     if (document.getPdfPageCount() == 0) {
         return;
@@ -860,6 +881,7 @@ void renderPreviewBundle(Document& document, const fs::path& preview, const fs::
     createBackgroundPreview(document, preview);
     writePdfTextSource(document, preview.parent_path() / "background.pdf");
     prototype::bridge::writePdfPageMap(preview.parent_path() / "pdf-pages.dat", readPdfPageMap(document));
+    prototype::bridge::writePdfPageLabels(preview.parent_path() / "pdf-labels.dat", readPdfPageLabels(document));
     size_t maxLayers = 0;
     for (size_t index = 0; index < document.getPageCount(); ++index) {
         maxLayers = std::max(maxLayers, document.getPage(index)->getLayerCount());
@@ -959,6 +981,44 @@ std::vector<size_t> readPageInsertionIndices(const fs::path& path, size_t origin
     return afterPages;
 }
 
+std::vector<size_t> readPageDeletionIndices(const fs::path& path, size_t originalPageCount) {
+    std::error_code sizeError;
+    const auto fileSize = fs::file_size(path, sizeError);
+    if (sizeError || fileSize > prototype::bridge::maxPdfPageMapBytes) {
+        throw std::runtime_error("Page deletion list is missing or too large");
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Cannot open page deletion list");
+    }
+
+    std::string magic;
+    size_t count = 0;
+    input.imbue(std::locale::classic());
+    if (!(input >> magic >> count) || magic != "XOURNALPP_GTK4_PAGE_DELETIONS_V1" || count == 0 ||
+        count >= originalPageCount || count > prototype::bridge::maxPdfPageMapPages) {
+        throw std::runtime_error("Invalid page deletion-list header");
+    }
+
+    std::vector<size_t> pageIndices;
+    pageIndices.reserve(count);
+    size_t previous = originalPageCount;
+    for (size_t index = 0; index < count; ++index) {
+        long long page = -1;
+        if (!(input >> page) || page < 0 || static_cast<unsigned long long>(page) >= originalPageCount ||
+            static_cast<size_t>(page) >= previous) {
+            throw std::runtime_error("Page deletion indices must be valid and strictly descending");
+        }
+        previous = static_cast<size_t>(page);
+        pageIndices.push_back(previous);
+    }
+    input >> std::ws;
+    if (!input.eof()) {
+        throw std::runtime_error("Unexpected trailing page deletion-list data");
+    }
+    return pageIndices;
+}
+
 void insertPageAfterInDocument(Document& document, size_t afterPage) {
     const auto source = document.getPage(afterPage);
     if (!source) {
@@ -974,6 +1034,19 @@ void insertPageAfterInDocument(Document& document, size_t afterPage) {
         inserted->setBackgroundColor(Colors::white);
     }
     document.insertPage(inserted, afterPage + 1);
+}
+
+void setPdfPageBackground(Document& document, size_t documentPageIndex, size_t pdfPageIndex) {
+    if (documentPageIndex >= document.getPageCount() || pdfPageIndex >= document.getPdfPageCount()) {
+        throw std::runtime_error("PDF background page selection is out of range");
+    }
+    const auto page = document.getPage(documentPageIndex);
+    const auto pdfPage = document.getPdfPage(pdfPageIndex);
+    if (!page || !pdfPage) {
+        throw std::runtime_error("PDF background page selection is unavailable");
+    }
+    page->setBackgroundPdfPageNr(pdfPageIndex);
+    page->setSize(pdfPage->getWidth(), pdfPage->getHeight());
 }
 
 void saveDocument(Document& document, const fs::path& output, const std::string& expected, bool copy) {
@@ -1062,6 +1135,9 @@ int main(int argc, char** argv) {
                     "insert-page INPUT SNAPSHOT PDF AFTER_PAGE [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "insert-pages INPUT SNAPSHOT PDF INSERTION_LIST [AUDIO_FOLDER AUDIO_CACHE] | "
                     "delete-page INPUT SNAPSHOT PDF PAGE_INDEX [AUDIO_FOLDER [AUDIO_CACHE]] | "
+                    "delete-pages INPUT SNAPSHOT PDF DELETION_LIST [AUDIO_FOLDER AUDIO_CACHE] | "
+                    "set-pdf-page-background INPUT SNAPSHOT PDF DOCUMENT_PAGE PDF_PAGE INK TEXT LAYERS IMAGES "
+                    "[AUDIO_FOLDER AUDIO_CACHE] | "
                     "revision INPUT SNAPSHOT PDF INK TEXT LAYERS IMAGES [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
                     "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES]]] | "
@@ -1165,6 +1241,37 @@ int main(int argc, char** argv) {
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 argc == 8 ? fs::path(argv[6]) : fs::path{},
                                 argc == 8 ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "delete-pages" && (argc == 6 || argc == 8)) {
+            const auto pageIndices = readPageDeletionIndices(fs::absolute(argv[5]), document->getPageCount());
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            for (const auto pageIndex: pageIndices) {
+                document->deletePage(pageIndex);
+            }
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
+                                argc == 8 ? fs::path(argv[6]) : fs::path{}, argc == 8 ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "set-pdf-page-background" && (argc == 11 || argc == 13)) {
+            const auto documentPage = parsePageIndex(argv[5], document->getPageCount(), "document page index");
+            const auto pdfPage = parsePageIndex(argv[6], document->getPdfPageCount(), "PDF page index");
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            const auto strokes = prototype::bridge::readTransfer(fs::absolute(argv[7]));
+            const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[8]));
+            const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[9]));
+            const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[10]));
+            appendLayerAwareObjects(*document, strokes, texts, images, layers);
+            setPdfPageBackground(*document, documentPage, pdfPage);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
+                                argc == 13 ? fs::path(argv[11]) : fs::path{},
+                                argc == 13 ? fs::path(argv[12]) : fs::path{});
         } else if (command == "revision" && (argc == 9 || argc == 11)) {
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
