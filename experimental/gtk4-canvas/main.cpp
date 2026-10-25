@@ -2,6 +2,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -78,6 +79,7 @@ struct Options {
     bool verifyBeamer = false;
     bool verifyLayerActions = false;
     bool verifyLatex = false;
+    bool verifyTextClipboard = false;
     int width = 1100;
     int height = 820;
 };
@@ -6411,6 +6413,50 @@ private:
         }
     }
 
+    void copyTextsToClipboard(const std::vector<prototype::TextItem>& texts,
+                              const prototype::SelectionBox& bounds) {
+        const auto native = prototype::clipboard::encodeTexts(texts, bounds);
+        auto ordered = texts;
+        const auto topLeft = [](const auto& item) {
+            double x0 = std::numeric_limits<double>::infinity();
+            double y0 = std::numeric_limits<double>::infinity();
+            for (const prototype::Point point: {
+                         prototype::Point{0, 0},
+                         prototype::Point{item.layoutWidth, 0},
+                         prototype::Point{item.layoutWidth, item.layoutHeight},
+                         prototype::Point{0, item.layoutHeight},
+                 }) {
+                x0 = std::min(x0, item.xx * point.x + item.xy * point.y + item.x);
+                y0 = std::min(y0, item.yx * point.x + item.yy * point.y + item.y);
+            }
+            return std::pair{y0, x0};
+        };
+        std::stable_sort(ordered.begin(), ordered.end(), [&](const auto& a, const auto& b) {
+            return topLeft(a) < topLeft(b);
+        });
+        std::string plainText;
+        for (const auto& item: ordered) {
+            if (!plainText.empty()) {
+                plainText.push_back('\n');
+            }
+            plainText += item.text;
+        }
+
+        auto* nativeBytes = g_bytes_new(native.data(), native.size());
+        auto* textBytes = g_bytes_new(plainText.data(), plainText.size());
+        GdkContentProvider* providers[] = {
+                gdk_content_provider_new_for_bytes(prototype::clipboard::mime, nativeBytes),
+                gdk_content_provider_new_for_bytes("text/plain;charset=utf-8", textBytes)};
+        g_bytes_unref(nativeBytes);
+        g_bytes_unref(textBytes);
+        auto* provider = gdk_content_provider_new_union(providers, G_N_ELEMENTS(providers));
+        const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), provider);
+        g_object_unref(provider);
+        if (!copied) {
+            throw std::runtime_error("Cannot claim the clipboard");
+        }
+    }
+
     void copySelection(bool cut = false) {
         if (busy) return;
         resetInput(true);
@@ -6426,7 +6472,17 @@ private:
             }
             if (!state.hasSelection()) return;
             if (!state.selectedTexts.empty()) {
-                throw std::runtime_error("Copying text selections is not supported yet");
+                if (!state.selected.empty() || !state.selectedImages.empty()) {
+                    throw std::runtime_error("Copying mixed text and image or stroke selections is not supported yet");
+                }
+                const auto bounds = state.selectionBox();
+                if (!bounds) {
+                    throw std::runtime_error("The text selection has no copyable bounds");
+                }
+                copyTextsToClipboard(state.copyTextSelection(), *bounds);
+                if (cut) state.deleteSelection();
+                update();
+                return;
             }
             if (!state.selectedImages.empty()) {
                 if (!state.selected.empty()) {
@@ -6473,7 +6529,19 @@ private:
         }
         if (!state.hasSelection()) return;
         if (!state.selectedTexts.empty()) {
-            showError("Duplicating text selections is not supported yet");
+            if (!state.selected.empty() || !state.selectedImages.empty()) {
+                showError("Duplicating mixed text and image or stroke selections is not supported yet");
+                return;
+            }
+            const auto bounds = state.selectionBox();
+            if (!bounds || !state.pasteTexts(state.copyTextSelection(), bounds->page,
+                                             {(bounds->x0 / 2.0 + bounds->x1 / 2.0) + 20,
+                                              (bounds->y0 / 2.0 + bounds->y1 / 2.0) + 20})) {
+                showError("Cannot duplicate the selected text");
+                return;
+            }
+            activateSelection(Tool::SmartSelect);
+            update();
             return;
         }
         if (!state.selectedImages.empty()) {
@@ -6533,6 +6601,70 @@ private:
 
     bool placePastedImage(prototype::CanvasImage image) {
         return placePastedImages({std::move(image)});
+    }
+
+    bool placePastedTexts(std::vector<prototype::TextItem> texts) {
+        if (texts.empty()) {
+            return false;
+        }
+        const auto page = state.pageSize(state.page);
+        auto center = state.pageLocalPoint(state.page, gtk_widget_get_width(canvas) / 2.0,
+                                           gtk_widget_get_height(canvas) / 2.0);
+        center.x = std::clamp(center.x, 0.0, page.width);
+        center.y = std::clamp(center.y, 0.0, page.height);
+        if (!state.pasteTexts(std::move(texts), state.page, center)) {
+            return false;
+        }
+        activateSelection(Tool::SmartSelect);
+        return true;
+    }
+
+    void pasteExternalText() {
+        gdk_clipboard_read_text_async(gtk_widget_get_clipboard(canvas), clipboardCancellation,
+                                      +[](GObject* object, GAsyncResult* result, gpointer data) {
+            auto* self = static_cast<Prototype*>(data);
+            GError* error = nullptr;
+            char* text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(object), result, &error);
+            if (!text) {
+                g_clear_error(&error);
+                self->pasteExternalImage();
+                return;
+            }
+            std::string failure;
+            const size_t length = std::strlen(text);
+            if (length == 0 || length > prototype::bridge::maxEditableTextBytes ||
+                !g_utf8_validate(text, static_cast<gssize>(length), nullptr)) {
+                failure = "Clipboard text is empty or exceeds the 4 MiB UTF-8 limit";
+            } else {
+                prototype::TextItem item;
+                item.page = self->state.page;
+                item.text.assign(text, length);
+                item.fontName = self->state.textFontName;
+                item.fontSize = self->state.textFontSize;
+                item.color = 0xff000000U | (uint32_t(std::lround(self->state.textColor[0] * 255)) << 16U) |
+                             (uint32_t(std::lround(self->state.textColor[1] * 255)) << 8U) |
+                             uint32_t(std::lround(self->state.textColor[2] * 255));
+                const auto [width, height] = prototype::textNaturalSize(item);
+                item.layoutWidth = width;
+                item.layoutHeight = height;
+                const auto size = self->state.pageSize(self->state.page);
+                auto center = self->state.pageLocalPoint(self->state.page, gtk_widget_get_width(self->canvas) / 2.0,
+                                                         gtk_widget_get_height(self->canvas) / 2.0);
+                center.x = std::clamp(center.x, 0.0, size.width);
+                center.y = std::clamp(center.y, 0.0, size.height);
+                if (!self->state.pasteTexts({std::move(item)}, self->state.page, center)) {
+                    failure = "Cannot place clipboard text";
+                } else {
+                    self->activateSelection(Tool::SmartSelect);
+                }
+            }
+            g_free(text);
+            if (!failure.empty()) {
+                self->finishClipboardRead(failure);
+            } else {
+                self->finishClipboardRead({});
+            }
+        }, this);
     }
 
     void pasteExternalImage() {
@@ -6620,7 +6752,7 @@ private:
             auto* rawStream = gdk_clipboard_read_finish(GDK_CLIPBOARD(object), result, nullptr, &error);
             if (!rawStream) {
                 g_clear_error(&error);
-                self->pasteExternalImage();
+                self->pasteExternalText();
                 return;
             }
             auto stream = std::shared_ptr<GInputStream>(rawStream, [](GInputStream* stream) { g_object_unref(stream); });
@@ -6664,6 +6796,9 @@ private:
                     if (!decoded->images.empty()) {
                         if (!self->placePastedImages(std::move(decoded->images)))
                             failure = "Cannot place clipboard images";
+                    } else if (!decoded->texts.empty()) {
+                        if (!self->placePastedTexts(std::move(decoded->texts)))
+                            failure = "Cannot place clipboard text";
                     } else {
                         self->selectedImageIndex.reset();
                         const auto sz = self->state.pageSize(self->state.page);
@@ -13430,6 +13565,97 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    void verifyTextClipboard() {
+        const size_t originalTextCount = state.texts.size();
+        prototype::TextItem richText;
+        richText.page = state.page;
+        richText.text = "Rich clipboard text";
+        richText.fontName = "Sans";
+        richText.fontSize = 12;
+        richText.x = 70;
+        richText.y = 600;
+        richText.layoutWidth = 130;
+        richText.layoutHeight = 18;
+        richText.styleRuns = {{0, 4, "Sans Bold", 14, 0xffcc2244U, 1}};
+        prototype::TextItem linkText;
+        linkText.page = state.page;
+        linkText.text = "linked text";
+        linkText.fontName = "Sans";
+        linkText.fontSize = 12;
+        linkText.isLink = true;
+        linkText.linkUrl = "https://example.org/clipboard";
+        linkText.x = 70;
+        linkText.y = 640;
+        linkText.layoutWidth = 90;
+        linkText.layoutHeight = 18;
+        require(state.insertText(richText) && state.insertText(linkText),
+                "Could not create rich text and link fixtures for clipboard verification");
+        const size_t firstTextIndex = state.texts.size() - 2;
+        state.selected.clear();
+        state.selectedImages.clear();
+        state.selectedTexts = {firstTextIndex, firstTextIndex + 1};
+        duplicateSelection();
+        require(state.texts.size() == originalTextCount + 4,
+                "Duplicate did not add the complete selected text group");
+        state.undo();
+        require(state.texts.size() == originalTextCount + 2 &&
+                        state.selectedTexts == std::vector<size_t>{firstTextIndex, firstTextIndex + 1},
+                "One undo did not remove the duplicated text group and restore its source selection");
+        copySelection();
+        const auto* textFormats = gdk_clipboard_get_formats(gtk_widget_get_clipboard(canvas));
+        require(gdk_content_formats_contain_mime_type(textFormats, prototype::clipboard::mime) &&
+                        gdk_content_formats_contain_mime_type(textFormats, "text/plain;charset=utf-8"),
+                "Copy did not offer native Xournal and plain-text targets");
+        copySelection(true);
+        require(state.texts.size() == originalTextCount,
+                "Cut did not remove the selected text and link objects");
+        pasteSelection();
+        const gint64 clipboardDeadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+        while (busy && g_get_monotonic_time() < clipboardDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(!busy && state.texts.size() == originalTextCount + 2 &&
+                        state.texts.back().isLink &&
+                        state.texts.back().linkUrl == "https://example.org/clipboard" &&
+                        state.texts[state.texts.size() - 2].styleRuns == richText.styleRuns,
+                "Native text paste lost formatting, links or group insertion");
+        state.undo();
+        require(state.texts.size() == originalTextCount,
+                "One undo did not remove the pasted text group");
+        state.redo();
+        require(state.texts.size() == originalTextCount + 2,
+                "Redo did not restore the pasted text group");
+        state.undo();
+        state.undo();
+        state.undo();
+        state.undo();
+        require(state.texts.size() == originalTextCount,
+                "Undo did not restore the pre-clipboard document after the text smoke check");
+
+        const std::string plainText = "Pasted plain text";
+        auto* plainBytes = g_bytes_new(plainText.data(), plainText.size());
+        auto* plainProvider = gdk_content_provider_new_for_bytes("text/plain;charset=utf-8", plainBytes);
+        g_bytes_unref(plainBytes);
+        require(gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), plainProvider),
+                "Could not offer a plain-text clipboard fixture");
+        g_object_unref(plainProvider);
+        pasteSelection();
+        const gint64 plainDeadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+        while (busy && g_get_monotonic_time() < plainDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(!busy && state.texts.size() == originalTextCount + 1 && state.texts.back().text == plainText,
+                "Plain-text clipboard paste did not create an editable text object");
+        state.undo();
+        require(state.texts.size() == originalTextCount,
+                "Undo did not remove pasted plain text");
+        state.clearSelection();
+        update();
+        std::cout << "PASS: rich text/link clipboard copy/cut/paste/duplicate, grouped undo/redo and plain-text paste\n";
+    }
+
     gboolean smoke() {
         if (busy || deferredAction) {
             require(++documentWaits < 120, "Document operation did not finish");
@@ -13452,6 +13678,11 @@ private:
         }
         if (!preferencesVerifyMode.empty()) {
             return smokePreferencesVerify();
+        }
+        if (options.verifyTextClipboard) {
+            verifyTextClipboard();
+            g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
+            return G_SOURCE_REMOVE;
         }
         if (!settingsVerifyMode.empty()) {
             return smokeSettingsVerify();
@@ -14513,8 +14744,10 @@ private:
                 }
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Escape, 0u, GdkModifierType(0), &handled);
                 require(state.selected.empty(), "Escape did not clear selection");
+
+                verifyTextClipboard();
                 std::cout << "PASS: rectangle selection, native stroke move/delete, saved-state undo/redo, "
-                             "selection cancellation, committed autosave snapshots, Select All and Escape\n";
+                             "selection cancellation, Select All and Escape\n";
                 break;
             }
             case 52: {
@@ -15040,6 +15273,8 @@ int main(int argc, char** argv) {
                 options.verifyLayerActions = true;
             } else if (argument == "--verify-latex") {
                 options.verifyLatex = true;
+            } else if (argument == "--verify-text-clipboard") {
+                options.verifyTextClipboard = true;
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
                         argument == "--smoke-dir") &&
                        i + 1 < argc) {
@@ -15058,7 +15293,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-beamer] "
-                                         "[--verify-layer-actions] [--verify-latex] "
+                                         "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
                                          "[--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
             }
@@ -15081,6 +15316,10 @@ int main(int argc, char** argv) {
         if (options.verifyLatex && (options.smokeDirectory.empty() || options.nativeDocument.empty() ||
                                     options.worker.empty())) {
             throw std::runtime_error("LaTeX verification requires --smoke-dir, --document and --worker");
+        }
+        if (options.verifyTextClipboard && (options.smokeDirectory.empty() || options.nativeDocument.empty() ||
+                                            options.worker.empty())) {
+            throw std::runtime_error("Text clipboard verification requires --smoke-dir, --document and --worker");
         }
         Prototype app(std::move(options));
         return app.run();

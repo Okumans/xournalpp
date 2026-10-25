@@ -646,6 +646,24 @@ printf '%s\n' "$source" >> "$XOURNALPP_LATEX_EDITOR_MARKER"
     return report
 
 
+def verify_text_clipboard(args, evidence):
+    if not args.worker:
+        raise RuntimeError("Text clipboard verification requires --worker")
+    fixture = args.fixture.resolve()
+    before = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    output_dir = evidence / "text-clipboard"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    command = [str(args.binary.resolve()), "--document", str(fixture), "--worker",
+               str(args.worker.resolve()), "--smoke-dir", str(output_dir), "--verify-text-clipboard"]
+    output = run(command, env=dict(os.environ, G_DEBUG="fatal-criticals"))
+    if "PASS: rich text/link clipboard copy/cut/paste/duplicate" not in output:
+        raise RuntimeError("Text clipboard checks did not finish")
+    if hashlib.sha256(fixture.read_bytes()).hexdigest() != before:
+        raise RuntimeError("Text clipboard verification modified the native fixture")
+    return {"fixture": str(fixture), "clipboard_targets": ["application/xournal", "text/plain;charset=utf-8"],
+            "rendering": "Private headless Wayland via Cage"}
+
+
 def make_png(path, width=32, height=24):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data +
@@ -1023,6 +1041,13 @@ def inside(args):
              "rendering": "Private headless Wayland via Cage"},
             indent=2) + "\n")
         return
+    if args.clipboard_only:
+        clipboard_evidence = verify_text_clipboard(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"text-clipboard": clipboard_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.layer_actions_only:
         layer_actions_evidence = verify_layer_actions(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1285,6 +1310,7 @@ def main():
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--latex-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--clipboard-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1300,6 +1326,8 @@ def main():
         raise RuntimeError("LayerActions verification requires --worker")
     if args.latex_only and not args.worker:
         raise RuntimeError("LaTeX editor verification requires --worker")
+    if args.clipboard_only and not args.worker:
+        raise RuntimeError("Text clipboard verification requires --worker")
     if args.inside:
         inside(args)
         return
@@ -1365,6 +1393,8 @@ def main():
             command.append("--layer-actions-only")
         if args.latex_only:
             command.append("--latex-only")
+        if args.clipboard_only:
+            command.append("--clipboard-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

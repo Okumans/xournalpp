@@ -199,9 +199,13 @@ and Save, autosave, and PDF export retain the text content and style ranges.
 Rectangle and lasso selection include native text with strokes on the active
 visible layer; visible-layer mode stops at the first matching visible layer.
 Shared selection handles move, resize, and rotate selected text, and Delete,
-cross-page transfer, and mixed stroke/text edits join undo/redo. Text clipboard
-copy and duplicate are not implemented yet. The inline editor does not follow
-transformed text. IME and accessibility behavior remain unverified.
+cross-page transfer, and mixed stroke/text edits join undo/redo. Selected text
+and links can be copied, cut, pasted, and duplicated as native editable objects;
+formatting runs and link URLs survive clipboard round trips, and copied text
+also offers a plain-text target. Plain-text clipboard content pastes as an
+editable text item. Mixed text/stroke/image clipboard groups remain unsupported.
+The inline editor does not follow transformed text. IME and accessibility
+behavior remain unverified.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
 Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,
@@ -550,7 +554,7 @@ Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes, t
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Selected images copy and cut as editable native data plus PNG, and paste from native image data or a standard PNG clipboard. Multi-image copy/cut/paste and duplicate preserve relative transforms and are grouped into one undo step. Mixed-object clipboard actions remain pending; unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. Resize edge snapping and edge auto-pan use the imported legacy settings. A committed rotation keeps the visible handle frame axis-aligned while subsequent resize follows the accumulated selection rotation; undo and redo restore this state. Other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter, opaque whiteout strokes, rich text, and links through bounded `application/xournal` streams. Selected text also offers plain text. Plain-text clipboard content pastes as an editable text object. Selected images copy and cut as editable native data plus PNG, and paste from native image data or a standard PNG clipboard. Multi-image copy/cut/paste and duplicate preserve relative transforms and are grouped into one undo step. Mixed-object clipboard actions remain pending; unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. Resize edge snapping and edge auto-pan use the imported legacy settings. A committed rotation keeps the visible handle frame axis-aligned while subsequent resize follows the accumulated selection rotation; undo and redo restore this state. Other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
 
 ## PDF text selection
 

@@ -1,12 +1,19 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <charconv>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
+#include <system_error>
 
 #include "CanvasImage.h"
 #include "DocumentInk.h"
+#include "DocumentTextTransfer.h"
 
 namespace prototype::clipboard {
 
@@ -54,10 +61,10 @@ public:
         return result;
     }
 
-    std::string_view string() {
+    std::string_view string(size_t maxLength = maxBytes) {
         tag("_s");
         const auto length = raw<size_t>();
-        if (length > bytes.size() - position || length > 4096)
+        if (length > bytes.size() - position || length > maxLength)
             fail();
         auto result = bytes.substr(position, length);
         position += length;
@@ -76,8 +83,20 @@ public:
 
     void object(std::string_view name) {
         tag("_{");
-        if (string() != name)
+        if (string(4096) != name)
             fail();
+    }
+    bool nextObjectIs(std::string_view name) const {
+        constexpr size_t tagSize = 2;
+        constexpr size_t lengthSize = sizeof(size_t);
+        if (bytes.substr(position, tagSize) != "_{" || bytes.substr(position + tagSize, tagSize) != "_s" ||
+            position + tagSize + tagSize + lengthSize > bytes.size()) {
+            return false;
+        }
+        size_t length = 0;
+        std::memcpy(&length, bytes.data() + position + tagSize + tagSize, lengthSize);
+        const size_t start = position + tagSize + tagSize + lengthSize;
+        return length == name.size() && length <= bytes.size() - start && bytes.substr(start, length) == name;
     }
     void end() { tag("_}"); }
 
@@ -357,13 +376,326 @@ inline CanvasImage decodeImage(std::string_view bytes) {
 struct DecodedPayload {
     std::vector<Ink> strokes;
     std::vector<CanvasImage> images;
+    std::vector<TextItem> texts;
 };
+
+namespace text_clipboard_detail {
+
+template <typename T>
+inline T integer(std::string_view value) {
+    T result{};
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size()) {
+        Reader::fail();
+    }
+    return result;
+}
+
+inline double real(std::string_view value) {
+    double result = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result,
+                                              std::chars_format::general);
+    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result)) {
+        Reader::fail();
+    }
+    return result;
+}
+
+inline std::string decodeFont(std::string_view encoded) {
+    if (encoded.size() > maxBytes / 2 || encoded.empty() || encoded.size() % 4 != 0 ||
+        !std::all_of(encoded.begin(), encoded.end(), [](unsigned char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' ||
+                   c == '/' || c == '=';
+        })) {
+        Reader::fail();
+    }
+    gsize length = 0;
+    auto* decoded = g_base64_decode(std::string(encoded).c_str(), &length);
+    if (!decoded || length == 0 || length > bridge::maxEditableFontBytes ||
+        !g_utf8_validate(reinterpret_cast<const char*>(decoded), static_cast<gssize>(length), nullptr) ||
+        std::memchr(decoded, '\0', length)) {
+        g_free(decoded);
+        Reader::fail();
+    }
+    std::string result(reinterpret_cast<const char*>(decoded), length);
+    g_free(decoded);
+    return result;
+}
+
+inline std::vector<TextStyleRun> parseStyleRuns(std::string_view encoded) {
+    if (encoded.size() > bridge::maxEditableTextBytes) {
+        Reader::fail();
+    }
+    std::vector<TextStyleRun> runs;
+    size_t start = 0;
+    while (start < encoded.size()) {
+        const size_t end = encoded.find(';', start);
+        const auto record = encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+        std::array<std::string_view, 5> fields{};
+        size_t count = 0;
+        size_t fieldStart = 0;
+        while (true) {
+            if (count == fields.size()) {
+                Reader::fail();
+            }
+            const size_t colon = record.find(':', fieldStart);
+            fields[count++] = record.substr(fieldStart, colon == std::string_view::npos ? record.size() - fieldStart :
+                                                                                          colon - fieldStart);
+            if (colon == std::string_view::npos) {
+                break;
+            }
+            fieldStart = colon + 1;
+        }
+        if (count < 3 || fields[0].empty()) {
+            Reader::fail();
+        }
+        const size_t dash = fields[0].find('-');
+        if (dash == std::string_view::npos) {
+            Reader::fail();
+        }
+        TextStyleRun run;
+        run.start = integer<size_t>(fields[0].substr(0, dash));
+        run.end = integer<size_t>(fields[0].substr(dash + 1));
+        run.fontName = decodeFont(fields[1]);
+        run.fontSize = real(fields[2]);
+        if (count >= 4 && fields[3] != "-") {
+            run.color = integer<uint32_t>(fields[3]);
+        }
+        if (count == 5) {
+            run.attributes = integer<uint32_t>(fields[4]);
+        }
+        runs.push_back(std::move(run));
+        if (runs.size() > bridge::maxEditableTextStyleRuns) {
+            Reader::fail();
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return runs;
+}
+
+inline std::string serializeStyleRuns(const TextItem& item) {
+    std::string result;
+    for (const auto& run: item.styleRuns) {
+        if (!result.empty()) {
+            result.push_back(';');
+        }
+        gchar* encodedName = g_base64_encode(reinterpret_cast<const guchar*>(run.fontName.data()), run.fontName.size());
+        if (!encodedName) {
+            Reader::fail();
+        }
+        result += std::to_string(run.start) + "-" + std::to_string(run.end) + ":" + encodedName + ":";
+        g_free(encodedName);
+        char sizeBuffer[G_ASCII_DTOSTR_BUF_SIZE];
+        g_ascii_dtostr(sizeBuffer, sizeof(sizeBuffer), run.fontSize);
+        result += sizeBuffer;
+        if (run.color || run.attributes) {
+            result += ":" + (run.color ? std::to_string(*run.color) : "-");
+        }
+        if (run.attributes) {
+            result += ":" + std::to_string(run.attributes);
+        }
+    }
+    return result;
+}
+
+inline void decodeBase(Reader& in, TextItem& item) {
+    in.object("RectangularElement");
+    in.object("Element");
+    item.color = in.value<uint32_t>("_u");
+    in.end();
+    item.xx = in.number();
+    item.yx = in.number();
+    item.xy = in.number();
+    item.yy = in.number();
+    item.x = in.number();
+    item.y = in.number();
+    item.layoutWidth = in.number();
+    item.layoutHeight = in.number();
+    in.end();
+}
+
+inline void decodeFont(Reader& in, TextItem& item) {
+    in.object("XojFont");
+    const auto fontName = in.string(bridge::maxEditableFontBytes);
+    if (!g_utf8_validate(fontName.data(), static_cast<gssize>(fontName.size()), nullptr) ||
+        fontName.find('\0') != std::string_view::npos) {
+        Reader::fail();
+    }
+    item.fontName.assign(fontName);
+    item.fontSize = in.number();
+    in.end();
+}
+
+}  // namespace text_clipboard_detail
+
+inline std::vector<TextItem> decodeTexts(std::string_view bytes) {
+    Reader in(bytes);
+    if (in.string(4096) != "XojStrm1:") {
+        Reader::fail();
+    }
+    in.string(4096);
+    in.object("EditSelection");
+    for (int n = 0; n < 9; ++n) in.number();
+    in.object("EditSelectionContents");
+    for (int n = 0; n < 11; ++n) in.number();
+    in.end();
+    in.end();
+    const auto count = in.value<int>("_i");
+    if (count <= 0 || static_cast<size_t>(count) > bridge::maxEditableTexts) {
+        Reader::fail();
+    }
+
+    std::vector<TextItem> texts;
+    texts.reserve(static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        TextItem item;
+        if (in.nextObjectIs("Link")) {
+            in.object("Link");
+            text_clipboard_detail::decodeBase(in, item);
+            const auto text = in.string(bridge::maxEditableTextBytes);
+            const auto url = in.string(bridge::maxEditableTextBytes);
+            item.text.assign(text);
+            item.linkUrl.assign(url);
+            const auto alignment = in.value<int>("_i");
+            if (alignment < 0 || alignment > 2) {
+                Reader::fail();
+            }
+            item.alignment = alignment;
+            item.isLink = true;
+            text_clipboard_detail::decodeFont(in, item);
+            item.wrapWidth = -1;
+            in.end();
+        } else {
+            in.object("Text");
+            text_clipboard_detail::decodeBase(in, item);
+            in.object("AudioContent");
+            if (!in.string(4096).empty() || in.value<size_t>("_l") != 0) {
+                Reader::fail();
+            }
+            in.end();
+            const auto text = in.string(bridge::maxEditableTextBytes);
+            item.text.assign(text);
+            text_clipboard_detail::decodeFont(in, item);
+            item.wrapWidth = in.number();
+            const auto alignment = in.value<int>("_i");
+            const auto justify = in.value<int>("_i");
+            if (alignment < 0 || alignment > 2 || (justify != 0 && justify != 1)) {
+                Reader::fail();
+            }
+            item.alignment = alignment;
+            item.justify = justify != 0;
+            if (in.nextObjectIs("TextStyles")) {
+                in.object("TextStyles");
+                item.styleRuns = text_clipboard_detail::parseStyleRuns(in.string(bridge::maxEditableTextBytes));
+                in.end();
+            }
+            in.end();
+        }
+        if (!g_utf8_validate(item.text.data(), static_cast<gssize>(item.text.size()), nullptr) ||
+            item.text.find('\0') != std::string::npos) {
+            Reader::fail();
+        }
+        bridge::text_transfer_detail::validateTextItem(item);
+        texts.push_back(std::move(item));
+    }
+    if (!in.done()) {
+        Reader::fail();
+    }
+    return texts;
+}
+
+inline std::string encodeTexts(const std::vector<TextItem>& texts, const SelectionBox& bounds) {
+    if (texts.empty() || texts.size() > bridge::maxEditableTexts || !std::isfinite(bounds.x0) ||
+        !std::isfinite(bounds.y0) || !std::isfinite(bounds.x1) || !std::isfinite(bounds.y1) ||
+        bounds.x1 < bounds.x0 || bounds.y1 < bounds.y0) {
+        Reader::fail();
+    }
+    for (const auto& item: texts) {
+        bridge::text_transfer_detail::validateTextItem(item);
+        if (item.page != texts.front().page) {
+            Reader::fail();
+        }
+    }
+    const double rectangle[] = {bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0};
+    Writer out;
+    out.string("XojStrm1:");
+    out.string("Xournal++ GTK 4 migration");
+    out.object("EditSelection");
+    for (int n = 0; n < 2; ++n) {
+        for (const auto value: rectangle) out.number(value);
+    }
+    out.number(0);
+    out.object("EditSelectionContents");
+    for (int n = 0; n < 2; ++n) {
+        for (const auto value: rectangle) out.number(value);
+    }
+    for (int n = 0; n < 3; ++n) out.number(0);
+    out.end();
+    out.end();
+    out.value<int>("_i", static_cast<int>(texts.size()));
+    for (const auto& item: texts) {
+        out.object(item.isLink ? "Link" : "Text");
+        out.object("RectangularElement");
+        out.object("Element");
+        out.value<uint32_t>("_u", item.color);
+        out.end();
+        out.number(item.xx);
+        out.number(item.yx);
+        out.number(item.xy);
+        out.number(item.yy);
+        out.number(item.x);
+        out.number(item.y);
+        out.number(item.layoutWidth);
+        out.number(item.layoutHeight);
+        out.end();
+        if (item.isLink) {
+            out.string(item.text);
+            out.string(item.linkUrl);
+            out.value<int>("_i", item.alignment);
+            out.object("XojFont");
+            out.string(item.fontName);
+            out.number(item.fontSize);
+            out.end();
+        } else {
+            out.object("AudioContent");
+            out.string("");
+            out.value<size_t>("_l", 0);
+            out.end();
+            out.string(item.text);
+            out.object("XojFont");
+            out.string(item.fontName);
+            out.number(item.fontSize);
+            out.end();
+            out.number(item.wrapWidth);
+            out.value<int>("_i", item.alignment);
+            out.value<int>("_i", item.justify ? 1 : 0);
+            const auto styleRuns = text_clipboard_detail::serializeStyleRuns(item);
+            if (!styleRuns.empty()) {
+                out.object("TextStyles");
+                out.string(styleRuns);
+                out.end();
+            }
+        }
+        out.end();
+    }
+    if (out.bytes.size() > maxBytes) {
+        Reader::fail();
+    }
+    return std::move(out.bytes);
+}
 
 inline DecodedPayload decodePayload(std::string_view bytes) {
     try {
-        return {{}, decodeImages(bytes)};
+        return {{}, decodeImages(bytes), {}};
     } catch (const std::exception&) {
-        return {decode(bytes), {}};
+        try {
+            return {decode(bytes), {}, {}};
+        } catch (const std::exception&) {
+            return {{}, {}, decodeTexts(bytes)};
+        }
     }
 }
 
