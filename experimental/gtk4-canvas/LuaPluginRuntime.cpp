@@ -382,6 +382,7 @@ int luaOpenApp(lua_State* state) {
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
+            {"getFolder", LuaPluginRuntime::luaGetFolder},
             {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
             {"getZoom", LuaPluginRuntime::luaGetZoom},
             {"setZoom", LuaPluginRuntime::luaSetZoom},
@@ -1429,6 +1430,63 @@ int LuaPluginRuntime::luaGetDisplayDpi(lua_State* state) {
     }
     lua_pushinteger(state, dpi);
     return 1;
+}
+
+int LuaPluginRuntime::luaGetFolder(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    lua_settop(state, 1);
+    const char* type = luaL_checkstring(state, 1);
+
+    char error[512]{};
+    int resultCount = 0;
+    {
+        std::filesystem::path base;
+        std::filesystem::path subfolder;
+        if (std::string_view(type) == "config") {
+            base = g_get_user_config_dir();
+            subfolder = "plugin-settings";
+        } else if (std::string_view(type) == "data") {
+            base = g_get_user_data_dir();
+            subfolder = "plugin-data";
+        } else if (std::string_view(type) == "state") {
+#ifdef _WIN32
+            base = g_get_user_data_dir();
+#else
+            const char* stateHome = g_getenv("XDG_STATE_HOME");
+            if (stateHome && stateHome[0] != '\0') {
+                base = stateHome;
+            } else {
+                base = std::filesystem::path(g_get_home_dir()) / ".local" / "state";
+            }
+#endif
+            subfolder = "plugin-state";
+        } else {
+            std::snprintf(error, sizeof(error), "Unsupported folder type '%s'", type);
+        }
+
+        if (error[0] == '\0') {
+            auto path = base / "xournalpp" / subfolder / plugin->name;
+            std::error_code filesystemError;
+            std::filesystem::create_directories(path, filesystemError);
+            if (filesystemError) {
+                const auto message = filesystemError.message();
+                std::snprintf(error, sizeof(error), "Could not create plugin folder '%s': %s", path.string().c_str(),
+                              message.c_str());
+            } else {
+                const auto folder = path.string();
+                lua_pushlstring(state, folder.data(), folder.size());
+                resultCount = 1;
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return resultCount;
 }
 
 int LuaPluginRuntime::luaGetZoom(lua_State* state) {

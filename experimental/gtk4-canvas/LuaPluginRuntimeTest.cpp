@@ -37,6 +37,21 @@ int main() {
     const auto root = std::filesystem::temp_directory_path() /
                       ("xournalpp-gtk4-lua-plugins-" + std::to_string(static_cast<long long>(::getpid())));
     std::filesystem::remove_all(root);
+    const auto xdgConfigRoot = root / "xdg-config";
+    const auto xdgDataRoot = root / "xdg-data";
+    const auto xdgStateRoot = root / "xdg-state";
+#ifdef _WIN32
+    const auto expectedStateRoot = xdgDataRoot;
+#else
+    const auto expectedStateRoot = xdgStateRoot;
+#endif
+    const auto xdgConfigString = xdgConfigRoot.string();
+    const auto xdgDataString = xdgDataRoot.string();
+    const auto xdgStateString = xdgStateRoot.string();
+    require(g_setenv("XDG_CONFIG_HOME", xdgConfigString.c_str(), TRUE) &&
+                    g_setenv("XDG_DATA_HOME", xdgDataString.c_str(), TRUE) &&
+                    g_setenv("XDG_STATE_HOME", xdgStateString.c_str(), TRUE),
+            "Could not isolate the XDG roots for plugin folder tests");
 
     const auto colorCycle = root / "ColorCycle";
     writePlugin(colorCycle,
@@ -311,6 +326,19 @@ int main() {
                 "  local dpi = app.getDisplayDpi()\n"
                 "  assert(math.type(dpi) == 'integer' and dpi == 144)\n"
                 "end\n");
+    const auto folderApiPlugin = root / "FolderApiPlugin";
+    writePlugin(folderApiPlugin,
+                "[about]\ndescription=Get persistent plugin folders\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read plugin folders', callback='read'})\n"
+                "  app.registerUi({menu='Reject unsupported folder', callback='badType'})\n"
+                "end\n"
+                "function read()\n"
+                "  app.changeActionState('plugin-folder-paths', app.getFolder('config') .. '\\n' .. "
+                "      app.getFolder('data') .. '\\n' .. app.getFolder('state'))\n"
+                "end\n"
+                "function badType() app.getFolder('cache') end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -322,9 +350,9 @@ int main() {
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
                                      quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
                                      imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
-                                     zoomApiPlugin.string(), {});
+                                     zoomApiPlugin.string() + "," + folderApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 18, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 19, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -371,6 +399,7 @@ int main() {
     std::function<void(int)> dialogResponse;
     std::string changedBackgroundFormat;
     std::string changedBackgroundConfig;
+    std::string pluginFolderPaths;
     std::vector<std::string> activatedActions;
     double zoomValue = 1.25;
     prototype::PluginRuntimeHost host;
@@ -382,6 +411,13 @@ int main() {
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
+        if (action == "plugin-folder-paths") {
+            if (!std::holds_alternative<std::string>(value)) {
+                return false;
+            }
+            pluginFolderPaths = std::get<std::string>(value);
+            return true;
+        }
         if ((action != "test-mode" && action != "stroke-count" && action != "document-page-count" &&
              action != "object-count") ||
             !std::holds_alternative<std::int64_t>(value)) {
@@ -586,6 +622,9 @@ int main() {
     const auto loadedZoomApiPlugin = runtime.findPlugin("ZoomApiPlugin");
     require(loadedZoomApiPlugin && loadedZoomApiPlugin->loaded && loadedZoomApiPlugin->menuItems == 6,
             "Plugin using zoom and display DPI APIs did not load its callbacks");
+    const auto loadedFolderApiPlugin = runtime.findPlugin("FolderApiPlugin");
+    require(loadedFolderApiPlugin && loadedFolderApiPlugin->loaded && loadedFolderApiPlugin->menuItems == 2,
+            "Plugin using persistent plugin folders did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -618,6 +657,23 @@ int main() {
             "app.setZoom accepted a nonfinite value");
     require(runtime.invokeMenu("ZoomApiPlugin", 5),
             "app.getDisplayDpi did not return the host display DPI as a Lua integer");
+    require(runtime.invokeMenu("FolderApiPlugin", 0) &&
+                    pluginFolderPaths == (xdgConfigRoot / "xournalpp" / "plugin-settings" / "FolderApiPlugin")
+                                                  .string() + "\n" +
+                                                  (xdgDataRoot / "xournalpp" / "plugin-data" / "FolderApiPlugin")
+                                                          .string() + "\n" +
+                                                  (expectedStateRoot / "xournalpp" / "plugin-state" / "FolderApiPlugin")
+                                                          .string() &&
+                    std::filesystem::is_directory(xdgConfigRoot / "xournalpp" / "plugin-settings" /
+                                                  "FolderApiPlugin") &&
+                    std::filesystem::is_directory(xdgDataRoot / "xournalpp" / "plugin-data" / "FolderApiPlugin") &&
+                    std::filesystem::is_directory(expectedStateRoot / "xournalpp" / "plugin-state" /
+                                                  "FolderApiPlugin"),
+            "app.getFolder did not create and return the plugin's config, data, and state directories");
+    require(!runtime.invokeMenu("FolderApiPlugin", 1) &&
+                    runtime.findPlugin("FolderApiPlugin")->error.find("Unsupported folder type 'cache'") !=
+                            std::string::npos,
+            "app.getFolder accepted an unsupported folder type");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -826,8 +882,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 47 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 15,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 49 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 16,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
