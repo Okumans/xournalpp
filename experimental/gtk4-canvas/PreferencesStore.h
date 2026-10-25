@@ -150,6 +150,11 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     preferences_detail::readDouble(keyFile.get(), "Selection", "rotation-snap-tolerance",
                                    settings.snapRotationTolerance, 0.0, 1.0);
     detail(keyFile.get(), "Selection", "snap-rotation", settings.snapRotation);
+    detail(keyFile.get(), "Selection", "snap-grid", settings.snapGrid);
+    preferences_detail::readDouble(keyFile.get(), "Selection", "snap-grid-size", settings.snapGridSize, 0.1,
+                                   1000.0);
+    preferences_detail::readDouble(keyFile.get(), "Selection", "snap-grid-tolerance", settings.snapGridTolerance,
+                                   0.0, 1.0);
     if (g_key_file_has_key(keyFile.get(), "Appearance", "theme", nullptr)) {
         gchar* value = g_key_file_get_string(keyFile.get(), "Appearance", "theme", nullptr);
         settings.themeVariant = preferences_detail::parseTheme(value, settings.themeVariant);
@@ -194,6 +199,9 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_double(keyFile.get(), "Navigation", "scroll-zoom-step", settings.scrollZoomStep);
     g_key_file_set_double(keyFile.get(), "Selection", "rotation-snap-tolerance", settings.snapRotationTolerance);
     g_key_file_set_boolean(keyFile.get(), "Selection", "snap-rotation", settings.snapRotation);
+    g_key_file_set_boolean(keyFile.get(), "Selection", "snap-grid", settings.snapGrid);
+    g_key_file_set_double(keyFile.get(), "Selection", "snap-grid-size", settings.snapGridSize);
+    g_key_file_set_double(keyFile.get(), "Selection", "snap-grid-tolerance", settings.snapGridTolerance);
     g_key_file_set_boolean(keyFile.get(), "Editing", "autosave-enabled", settings.autosaveEnabled);
     g_key_file_set_integer(keyFile.get(), "Editing", "autosave-timeout-minutes", settings.autosaveTimeoutMinutes);
     g_key_file_set_integer(keyFile.get(), "Stylus", "button-one", static_cast<int>(settings.stylusButtonOne));

@@ -101,11 +101,21 @@ def read_layers(path):
         return value
 
     magic, count = read_line().split()
-    assert magic in ("XOURNALPP_GTK4_LAYERS_V1", "XOURNALPP_GTK4_LAYERS_V2")
-    version2 = magic == "XOURNALPP_GTK4_LAYERS_V2"
+    assert magic in ("XOURNALPP_GTK4_LAYERS_V1", "XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3")
+    version2 = magic in ("XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3")
+    version3 = magic == "XOURNALPP_GTK4_LAYERS_V3"
     pages = []
     for _ in range(int(count)):
-        initial_count, selected, background, layer_count = map(int, read_line().split())
+        if version3:
+            initial_count, selected, background, grid_y_offset, layer_count = read_line().split()
+            initial_count = int(initial_count)
+            selected = int(selected)
+            background = int(background)
+            grid_y_offset = float(grid_y_offset)
+            layer_count = int(layer_count)
+        else:
+            initial_count, selected, background, layer_count = map(int, read_line().split())
+            grid_y_offset = 0.0
         background_name = None
         if version2:
             has_background_name, name_bytes = map(int, read_line().split())
@@ -126,7 +136,7 @@ def read_layers(path):
             layers.append({"name": name, "visible": bool(visible), "origins": origins})
         pages.append({"initial_count": initial_count, "selected": selected,
                       "background_visible": bool(background), "background_name": background_name,
-                      "layers": layers})
+                      "grid_y_offset": grid_y_offset, "layers": layers})
     assert offset == len(data)
     return pages
 
@@ -424,7 +434,7 @@ def main():
         layered_root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
         ET.SubElement(layered_root, "title").text = "Layer-aware round trip"
         layered_page = ET.SubElement(layered_root, "page", {"width": "595", "height": "842"})
-        ET.SubElement(layered_page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+        ET.SubElement(layered_page, "background", {"type": "solid", "color": "#ffffffff", "style": "lined"})
         layered_lower = ET.SubElement(layered_page, "layer", {"name": "Lower"})
         ET.SubElement(layered_lower, "stroke", {"tool": "pen", "capStyle": "round", "style": "dash",
                                                   "color": "#222222ff", "width": "2"}).text = "10 10 50 10"
@@ -444,6 +454,7 @@ def main():
         run("open", layered, layered_snap, layered_pdf, layered_ink, layered_text, layered_state)
         layer_pages = read_layers(layered_state)
         assert len(layer_pages) == 1 and layer_pages[0]["initial_count"] == 2
+        assert layer_pages[0]["grid_y_offset"] == 80
         assert [(layer["name"], layer["origins"]) for layer in layer_pages[0]["layers"]] == [
             ("Lower", [0]), ("Upper", [1])]
         layered_packets = read_ink_transfer(layered_ink)

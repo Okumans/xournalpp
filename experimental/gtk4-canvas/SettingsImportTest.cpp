@@ -38,6 +38,9 @@ int main() {
   <property name="zoomStepScroll" value="4.50000000"/>
   <property name="snapRotation" value="false"/>
   <property name="snapRotationTolerance" value="0.65"/>
+  <property name="snapGrid" value="false"/>
+  <property name="snapGridSize" value="28.5"/>
+  <property name="snapGridTolerance" value="0.25"/>
   <property name="strokeRecognizerMinSize" value="32"/>
   <property name="stabilizerAveragingMethod" value="2"/>
   <property name="stabilizerPreprocessor" value="1"/>
@@ -95,6 +98,8 @@ int main() {
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");
     require(near(s.snapRotationTolerance, 0.65), "Selection rotation tolerance import mismatch");
     require(!s.snapRotation, "Selection rotation snapping preference import mismatch");
+    require(!s.snapGrid && near(s.snapGridSize, 28.5) && near(s.snapGridTolerance, 0.25),
+            "Page-grid snapping preferences did not import");
     require(near(s.shapeRecognizerMinSize, 32) &&
                     s.stabilizer.averaging == prototype::AveragingMethod::VelocityGaussian &&
                     s.stabilizer.preprocessor == prototype::StrokePreprocessor::Deadzone &&
@@ -108,6 +113,9 @@ int main() {
     require(near(importedState.shapeRecognizerMinSize, 32), "Shape recognizer minimum size was not applied to canvas state");
     require(near(importedState.snapRotationTolerance, 0.65), "Rotation tolerance was not applied to canvas state");
     require(!importedState.snapRotationEnabled, "Rotation snapping setting was not applied to canvas state");
+    require(!importedState.snapGridEnabled && near(importedState.snapGridSize, 28.5) &&
+                    near(importedState.snapGridTolerance, 0.25),
+            "Page-grid snapping preferences were not applied to canvas state");
     require(!s.showSidebar && s.themeVariant == prototype::ThemeVariant::ForceDark,
             "showSidebar or forceDark mismatch");
     require(s.autosaveEnabled && s.autosaveTimeoutMinutes == 7 && s.effectiveAutosaveSeconds() == 420,

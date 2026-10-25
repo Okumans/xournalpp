@@ -343,7 +343,8 @@ def verify_preferences(args, evidence):
             raise RuntimeError(f"Missing GTK 4 Preferences screenshot: {path}")
     stored = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
     for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
-                     "rotation-snap-tolerance=0.45", "snap-rotation=false", "button-one=1", "button-two=4"):
+                     "rotation-snap-tolerance=0.45", "snap-rotation=false", "snap-grid=false",
+                     "snap-grid-size=24", "snap-grid-tolerance=0.4", "button-one=1", "button-two=4"):
         if expected not in stored:
             raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
     print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)
@@ -445,14 +446,15 @@ def verify_selection_modes(args, evidence):
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_SELECTION_VERIFY_MODE="visible-layers"),
     )
     if ("PASS: GTK visible-layer rectangle/lasso selection, Text-tool mouse/stylus move/resize "
-            "and formatting, "
+            "and formatting, vertical-space direction/preview/undo, "
             "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
             "remembered tool state, and shortcuts"
             not in result):
         raise RuntimeError("GTK visible-layer selection mode verification did not finish")
     for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",
                  "selection-hidden-layer-fallback", "selection-text-object", "selection-text-moved",
-                 "text-tool-edited", "text-tool-moved", "text-tool-resized", "text-tool-stylus-moved"):
+                 "text-tool-edited", "text-tool-moved", "text-tool-resized", "text-tool-stylus-moved",
+                 "vertical-space-preview", "vertical-space-applied"):
         screenshot = output / f"{name}.png"
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty visible-layer selection screenshot: {screenshot}")
@@ -527,6 +529,13 @@ def verify_pdf_text_selection(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.preferences_only:
+        preferences_evidence = verify_preferences(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"preferences": preferences_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.pdf_text_selection_only:
         pdf_evidence = verify_pdf_text_selection(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -734,6 +743,7 @@ def main():
     parser.add_argument("--image-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdf-text-selection-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -788,6 +798,8 @@ def main():
             command.append("--selection-only")
         if args.pdf_text_selection_only:
             command.append("--pdf-text-selection-only")
+        if args.preferences_only:
+            command.append("--preferences-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

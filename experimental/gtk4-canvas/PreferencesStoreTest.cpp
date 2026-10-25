@@ -50,6 +50,9 @@ int main() {
     saved.scrollZoomStep = 0.035;
     saved.snapRotation = false;
     saved.snapRotationTolerance = 0.45;
+    saved.snapGrid = false;
+    saved.snapGridSize = 23.5;
+    saved.snapGridTolerance = 0.35;
     saved.autosaveEnabled = true;
     saved.autosaveTimeoutMinutes = 11;
     saved.stylusButtonOne = prototype::ButtonToolAction::Eraser;
@@ -66,6 +69,8 @@ int main() {
                     near(loaded.pressureMultiplier, 1.75) && near(loaded.zoomStep, 0.22) &&
                     near(loaded.scrollZoomStep, 0.035) && !loaded.snapRotation &&
                     near(loaded.snapRotationTolerance, 0.45) &&
+                    !loaded.snapGrid && near(loaded.snapGridSize, 23.5) &&
+                    near(loaded.snapGridTolerance, 0.35) &&
                     loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
                     loaded.stylusButtonTwo == prototype::ButtonToolAction::Pen,

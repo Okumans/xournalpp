@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -133,6 +134,113 @@ static void editableImageHistory() {
     state.undo();
     check(state.images.size() == 1 && state.images[0].encodedData == "bounded image bytes",
           "image deletion should restore image bytes and transform");
+}
+
+static void verticalSpaceMovement() {
+    CanvasState state;
+    state.setPages({{200, 300}});
+    state.pageLayers[0].layers = {{"Lower", true, {0}}, {"Upper", true, {1}}};
+    state.pageLayers[0].selectedLayer = 2;
+    state.snapGridEnabled = false;
+
+    auto stroke = [](double y, size_t layerId, size_t origin) {
+        Ink item{0, {{20, y}, {80, y}}, {Tool::Pen, {0.1, 0.2, 0.3}, 2}, false};
+        item.layerId = layerId;
+        item.originLayer = origin;
+        return item;
+    };
+    state.ink = {stroke(20, 1, 0), stroke(20, 2, 1), stroke(80, 2, 1), stroke(50, 2, 1)};
+
+    auto text = [](double y, size_t layerId, size_t origin, const char* content) {
+        TextItem item;
+        item.page = 0;
+        item.layerId = layerId;
+        item.originLayer = origin;
+        item.text = content;
+        item.x = 10;
+        item.y = y;
+        item.layoutWidth = 40;
+        item.layoutHeight = 8;
+        return item;
+    };
+    state.texts = {text(20, 1, 0, "lower"), text(20, 2, 1, "above"),
+                   text(80, 2, 1, "below"), text(46, 2, 1, "crossing")};
+
+    auto image = [](double y, size_t layerId, size_t origin) {
+        CanvasImage item;
+        item.page = 0;
+        item.layerId = layerId;
+        item.originLayer = origin;
+        item.pixelWidth = 20;
+        item.pixelHeight = 8;
+        item.transform.x = 10;
+        item.transform.y = y;
+        item.encodedData = "image bytes";
+        return item;
+    };
+    state.images = {image(20, 1, 0), image(20, 2, 1), image(80, 2, 1), image(46, 2, 1)};
+
+    const auto lowerStroke = state.ink[0];
+    const auto lowerText = state.texts[0];
+    const auto lowerImage = state.images[0];
+    const auto beforeRevision = state.revision();
+    auto screen = state.pageScreenPoint(0, 10, 50);
+    check(state.beginVerticalSpace(screen.x, screen.y), "Vertical-space drag should begin on a page");
+    screen = state.pageScreenPoint(0, 10, 60);
+    state.moveVerticalSpace(screen.x, screen.y, false);
+    const auto* preview = state.verticalSpacePreview();
+    check(preview && preview->inkIndices == std::vector<size_t>{2} &&
+                  preview->textIndices == std::vector<size_t>{2} &&
+                  preview->imageIndices == std::vector<size_t>{2},
+          "Moving space below the line should affect only fully contained objects below it on the active layer");
+    check(state.displayText(2).y == 90 && state.displayImage(2).transform.y == 90 &&
+                  state.selectionMatrix(2).y0 == 10 && state.ink[2].points.front().y == 80,
+          "Vertical-space preview should translate ink, text and images without changing committed ink");
+    check(state.finishVerticalSpace() && state.revision() != beforeRevision,
+          "Finishing vertical space should commit one document edit");
+    check(state.ink[2].points.front().y == 90 && state.texts[2].y == 90 && state.images[2].transform.y == 90 &&
+                  state.ink[0].points == lowerStroke.points && state.ink[0].layerId == lowerStroke.layerId &&
+                  state.texts[0] == lowerText && state.images[0].transform.y == lowerImage.transform.y,
+          "Vertical space should move the supported active-layer objects and preserve other layers");
+    const auto movedRevision = state.revision();
+    state.undo();
+    check(state.revision() == beforeRevision && state.ink[2].points.front().y == 80 && state.texts[2].y == 80 &&
+                  state.images[2].transform.y == 80,
+          "Undo should restore the entire vertical-space movement as one action");
+    state.redo();
+    check(state.revision() == movedRevision && state.ink[2].points.front().y == 90 && state.texts[2].y == 90 &&
+                  state.images[2].transform.y == 90,
+          "Redo should reapply the entire vertical-space movement");
+
+    screen = state.pageScreenPoint(0, 10, 50);
+    check(state.beginVerticalSpace(screen.x, screen.y), "A second vertical-space drag should begin");
+    screen = state.pageScreenPoint(0, 10, 65);
+    state.moveVerticalSpace(screen.x, screen.y, true);
+    preview = state.verticalSpacePreview();
+    check(preview && preview->inkIndices == std::vector<size_t>{1} &&
+                  preview->textIndices == std::vector<size_t>{1} &&
+                  preview->imageIndices == std::vector<size_t>{1},
+          "Switching to Control direction should reselect objects fully above the boundary");
+    check(state.finishVerticalSpace() && state.ink[1].points.front().y == 35 && state.texts[1].y == 35 &&
+                  state.images[1].transform.y == 35 && state.ink[3].points.front().y == 50,
+          "Moving space above the line should move only fully contained active-layer objects");
+
+    state.snapGridEnabled = true;
+    state.snapGridSize = 10;
+    state.snapGridTolerance = 0.5;
+    state.pageLayers[0].gridYOffset = 80;
+    const auto beforeCancelledPreview = state.revision();
+    screen = state.pageScreenPoint(0, 10, 102);
+    check(state.beginVerticalSpace(screen.x, screen.y), "Grid-snapped vertical-space drag should begin");
+    check(std::abs(state.verticalSpacePreview()->startY - 100) < 1e-9,
+          "Vertical-space start should snap using the page's grid offset and user grid size");
+    screen = state.pageScreenPoint(0, 10, 112);
+    state.moveVerticalSpace(screen.x, screen.y, false);
+    check(std::abs(state.verticalSpacePreview()->endY - 110) < 1e-9,
+          "Vertical-space end should use the configured grid spacing and tolerance");
+    state.cancelVerticalSpace();
+    check(!state.finishVerticalSpace() && state.revision() == beforeCancelledPreview,
+          "Cancelling a vertical-space preview should leave committed history intact");
 }
 
 static void imageRotationGeometry() {
@@ -654,6 +762,7 @@ int main() {
     try {
         savedHistory();
         editableImageHistory();
+        verticalSpaceMovement();
         imageRotationGeometry();
         editableTextHistory();
         selectedTextAppearanceHistory();

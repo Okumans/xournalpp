@@ -24,6 +24,7 @@ struct PageLayers {
     size_t selectedLayer = 1;
     bool backgroundVisible = true;
     std::optional<std::string> backgroundName;
+    double gridYOffset = 0;
     std::vector<CanvasLayer> layers{{"Layer 1", true, {0}}};
 
     bool operator==(const PageLayers&) const = default;

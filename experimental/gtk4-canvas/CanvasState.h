@@ -44,6 +44,7 @@ enum class Tool {
     Hand,
     SelectPdfTextLinear,
     SelectPdfTextRect,
+    VerticalSpace,
 };
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
@@ -96,6 +97,17 @@ struct SelectionBox {
     double x0, y0, x1, y1;
 };
 
+struct VerticalSpacePreview {
+    int page = 0;
+    size_t layerId = 1;
+    double startY = 0;
+    double endY = 0;
+    bool moveAbove = false;
+    std::vector<size_t> inkIndices;
+    std::vector<size_t> textIndices;
+    std::vector<size_t> imageIndices;
+};
+
 struct SelectionTransform {
     double xx = 1, yx = 0, xy = 0, yy = 1, x0 = 0, y0 = 0;
     double widthScale = 1;
@@ -128,6 +140,9 @@ public:
     double shapeRecognizerMinSize = 40;
     bool snapRotationEnabled = true;
     double snapRotationTolerance = 0.30;
+    bool snapGridEnabled = true;
+    double snapGridSize = behavior::snapGridSize;
+    double snapGridTolerance = behavior::snapGridTolerance;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
     std::string textFontName = "Sans";
@@ -582,6 +597,9 @@ public:
         if (selectionGesture && selectionGesture->moving && std::binary_search(selected.begin(), selected.end(), index)) {
             return selectionGesture->transform;
         }
+        if (verticalSpaceAffectsInk(index)) {
+            return {1, 0, 0, 1, 0, verticalSpace->endY - verticalSpace->startY, 1};
+        }
         return {};
     }
 
@@ -594,6 +612,9 @@ public:
 
     TextItem displayText(size_t index) const {
         auto item = texts.at(index);
+        if (verticalSpaceAffectsText(index)) {
+            item.y += verticalSpace->endY - verticalSpace->startY;
+        }
         if (!selectionGesture || !selectionGesture->moving ||
             !std::binary_search(selectionGesture->textIndices.begin(), selectionGesture->textIndices.end(), index)) {
             return item;
@@ -611,6 +632,9 @@ public:
 
     CanvasImage displayImage(size_t index) const {
         auto image = images.at(index);
+        if (verticalSpaceAffectsImage(index)) {
+            image.transform.y += verticalSpace->endY - verticalSpace->startY;
+        }
         if (!selectionGesture || !selectionGesture->moving ||
             !std::binary_search(selectionGesture->imageIndices.begin(), selectionGesture->imageIndices.end(), index)) {
             return image;
@@ -695,6 +719,116 @@ public:
         return {matrix.x0, matrix.y0};
     }
 
+    const VerticalSpacePreview* verticalSpacePreview() const {
+        return verticalSpace ? &*verticalSpace : nullptr;
+    }
+
+    bool verticalSpaceAffectsInk(size_t index) const {
+        return verticalSpace && std::binary_search(verticalSpace->inkIndices.begin(), verticalSpace->inkIndices.end(),
+                                                   index);
+    }
+
+    bool verticalSpaceAffectsText(size_t index) const {
+        return verticalSpace && std::binary_search(verticalSpace->textIndices.begin(),
+                                                   verticalSpace->textIndices.end(), index);
+    }
+
+    bool verticalSpaceAffectsImage(size_t index) const {
+        return verticalSpace && std::binary_search(verticalSpace->imageIndices.begin(),
+                                                   verticalSpace->imageIndices.end(), index);
+    }
+
+    bool beginVerticalSpace(double x, double y, bool moveAbove = false) {
+        const auto hit = hitPage(x, y);
+        if (!hit || current || eraseGesture || selectionGesture || verticalSpace || pinching) {
+            return false;
+        }
+
+        selectActivePage(hit->page);
+        VerticalSpacePreview preview;
+        preview.page = hit->page;
+        preview.layerId = activeLayerId(hit->page);
+        preview.startY = preview.endY = snapVertical(hit->page, hit->local.y);
+        preview.moveAbove = moveAbove;
+        collectVerticalSpaceObjects(preview);
+        verticalSpace = std::move(preview);
+        return true;
+    }
+
+    void moveVerticalSpace(double x, double y, bool moveAbove) {
+        if (!verticalSpace || !std::isfinite(x) || !std::isfinite(y)) {
+            return;
+        }
+        setVerticalSpaceDirection(moveAbove);
+        const auto local = pageLocalPoint(verticalSpace->page, x, y);
+        verticalSpace->endY = snapVertical(verticalSpace->page, local.y);
+    }
+
+    void setVerticalSpaceDirection(bool moveAbove) {
+        if (verticalSpace && verticalSpace->moveAbove != moveAbove) {
+            verticalSpace->moveAbove = moveAbove;
+            collectVerticalSpaceObjects(*verticalSpace);
+        }
+    }
+
+    bool finishVerticalSpace() {
+        if (!verticalSpace) {
+            return false;
+        }
+        auto preview = std::move(*verticalSpace);
+        verticalSpace.reset();
+        const double deltaY = preview.endY - preview.startY;
+        if (deltaY == 0 || (preview.inkIndices.empty() && preview.textIndices.empty() &&
+                            preview.imageIndices.empty())) {
+            return false;
+        }
+
+        Edit edit;
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+        edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
+        for (const auto index: preview.inkIndices) {
+            if (index >= ink.size()) {
+                return false;
+            }
+            auto moved = ink[index];
+            for (auto& point: moved.points) {
+                point.y += deltaY;
+                if (!std::isfinite(point.y)) {
+                    return false;
+                }
+            }
+            edit.changes.push_back({index, {ink[index]}, index, {std::move(moved)}});
+        }
+        for (const auto index: preview.textIndices) {
+            if (index >= texts.size()) {
+                return false;
+            }
+            auto moved = texts[index];
+            moved.y += deltaY;
+            if (!validTextPage(moved)) {
+                return false;
+            }
+            edit.textChanges.push_back({index, {texts[index]}, index, {std::move(moved)}});
+        }
+        for (const auto index: preview.imageIndices) {
+            if (index >= images.size()) {
+                return false;
+            }
+            auto moved = images[index];
+            moved.transform.y += deltaY;
+            if (!validCanvasImage(moved)) {
+                return false;
+            }
+            edit.imageChanges.push_back({index, {images[index]}, index, {std::move(moved)}});
+        }
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    void cancelVerticalSpace() { verticalSpace.reset(); }
+
     void cancelSelection() {
         if (selectionGesture) {
             selected = std::move(selectionGesture->previousSelection);
@@ -706,6 +840,7 @@ public:
 
     void clearSelection() {
         cancelSelection();
+        cancelVerticalSpace();
         selected.clear();
         selectedTexts.clear();
         selectedImages.clear();
@@ -2120,6 +2255,7 @@ public:
 
     void cancel() {
         cancelSelection();
+        cancelVerticalSpace();
         finishErase();
         current.reset();
         rawCurrent.clear();
@@ -2515,6 +2651,84 @@ private:
         };
         return {transform(0, 0), transform(item.layoutWidth, 0),
                 transform(item.layoutWidth, item.layoutHeight), transform(0, item.layoutHeight)};
+    }
+
+    static std::optional<SelectionBox> inkBounds(const Ink& stroke) {
+        if (stroke.points.empty() || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0) {
+            return std::nullopt;
+        }
+        double x0 = stroke.points.front().x;
+        double x1 = x0;
+        double y0 = stroke.points.front().y;
+        double y1 = y0;
+        double maxPressure = stroke.pressureSensitive ? std::max(0.01, stroke.points.front().pressure) : 1.0;
+        for (const auto& point: stroke.points) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.pressure)) {
+                return std::nullopt;
+            }
+            x0 = std::min(x0, point.x);
+            x1 = std::max(x1, point.x);
+            y0 = std::min(y0, point.y);
+            y1 = std::max(y1, point.y);
+            if (stroke.pressureSensitive) {
+                maxPressure = std::max(maxPressure, point.pressure);
+            }
+        }
+        const double radius = stroke.brush.width * maxPressure / 2.0;
+        return SelectionBox{stroke.page, x0 - radius, y0 - radius, x1 + radius, y1 + radius};
+    }
+
+    double snapVertical(int pageIndex, double y) const {
+        if (!std::isfinite(y) || !std::isfinite(snapGridSize) || !std::isfinite(snapGridTolerance) ||
+            !snapGridEnabled || snapGridSize <= 0 || snapGridTolerance <= 0) {
+            return y;
+        }
+        const double offset = layersForPage(pageIndex).gridYOffset;
+        const double snapped = y - std::remainder(y - offset, snapGridSize);
+        return std::abs(snapped - y) < snapGridTolerance * snapGridSize / 2.0 ? snapped : y;
+    }
+
+    void collectVerticalSpaceObjects(VerticalSpacePreview& preview) const {
+        preview.inkIndices.clear();
+        preview.textIndices.clear();
+        preview.imageIndices.clear();
+        const auto belongsToSide = [&](const SelectionBox& bounds) {
+            return preview.moveAbove ? bounds.y1 <= preview.startY : bounds.y0 >= preview.startY;
+        };
+        for (size_t index = 0; index < ink.size(); ++index) {
+            const auto& stroke = ink[index];
+            if (stroke.page == preview.page && stroke.layerId == preview.layerId) {
+                const auto bounds = inkBounds(stroke);
+                if (bounds && belongsToSide(*bounds)) {
+                    preview.inkIndices.push_back(index);
+                }
+            }
+        }
+        for (size_t index = 0; index < texts.size(); ++index) {
+            const auto& text = texts[index];
+            if (text.page != preview.page || text.layerId != preview.layerId || text.text.empty() ||
+                !validTextPage(text)) {
+                continue;
+            }
+            const auto corners = textCorners(text);
+            const auto bounds = std::minmax_element(corners.begin(), corners.end(),
+                                                    [](const Point& a, const Point& b) { return a.y < b.y; });
+            if ((preview.moveAbove && bounds.second->y <= preview.startY) ||
+                (!preview.moveAbove && bounds.first->y >= preview.startY)) {
+                preview.textIndices.push_back(index);
+            }
+        }
+        for (size_t index = 0; index < images.size(); ++index) {
+            const auto& image = images[index];
+            if (image.page != preview.page || image.layerId != preview.layerId || !validCanvasImage(image)) {
+                continue;
+            }
+            const auto bounds = canvasImageBounds(image);
+            if ((preview.moveAbove && bounds.y1 <= preview.startY) ||
+                (!preview.moveAbove && bounds.y0 >= preview.startY)) {
+                preview.imageIndices.push_back(index);
+            }
+        }
     }
 
     static double strokeDistance(const Ink& stroke, Point point) {
@@ -3013,6 +3227,7 @@ private:
     std::vector<Edit> redoStates;
     std::optional<EraseGesture> eraseGesture;
     std::optional<SelectionGesture> selectionGesture;
+    std::optional<VerticalSpacePreview> verticalSpace;
 };
 
 }  // namespace prototype
