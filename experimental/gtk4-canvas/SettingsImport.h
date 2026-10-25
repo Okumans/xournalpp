@@ -36,6 +36,7 @@ enum class ButtonToolAction {
     Highlighter,
     Eraser,
     Hand,
+    FloatingToolbox,
 };
 
 struct ImportedSettings {
@@ -349,6 +350,8 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.activeTool = Tool::LaserPointerHighlighter;
             } else if (value == "playObject") {
                 out.activeTool = Tool::PlayObject;
+            } else if (value == "showFloatingToolbox") {
+                out.activeTool = Tool::FloatingToolbox;
             }
         }
         return;
@@ -430,6 +433,8 @@ inline void applyButtonAttribute(ImportedSettings& out, const std::vector<std::s
         action = ButtonToolAction::Eraser;
     } else if (value == "hand") {
         action = ButtonToolAction::Hand;
+    } else if (value == "showFloatingToolbox") {
+        action = ButtonToolAction::FloatingToolbox;
     } else if (value != "none") {
         return;
     }

@@ -51,6 +51,7 @@ enum class Tool {
     LaserPointerPen,
     LaserPointerHighlighter,
     PlayObject,
+    FloatingToolbox,
 };
 inline bool isLaserPointerTool(Tool tool) {
     return tool == Tool::LaserPointerPen || tool == Tool::LaserPointerHighlighter;

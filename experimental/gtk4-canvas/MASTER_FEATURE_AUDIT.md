@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **52 task areas — 37 Partial, 15 Pending, 0 Covered, and 0
+Current ledger count: **52 task areas — 38 Partial, 14 Pending, 0 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -46,7 +46,7 @@ registration in `ToolHandler::initTools`.
 | `drawArrow` | Partial | Arrow path drawing works; match native geometry and styling. |
 | `drawDoubleArrow` | Partial | Double-arrow path drawing works; match native geometry and styling. |
 | `drawCoordinateSystem` | Partial | Coordinate-axis paths work; match native geometry and production modifiers. |
-| `showFloatingToolbox` | Pending | Port floating toolbox creation, placement, persistence, and interaction. |
+| `showFloatingToolbox` | Partial | A GTK4 floating panel opens centered at the pointer, clamps to the canvas bounds, closes on pointer leave or after choosing a tool, and is available from canvas mode or a stylus side-button mapping. Add `toolbar.ini` customization, mouse-button mappings, stroke-filter tap triggers, the configuration/persistent placement workflow, and exact legacy toolbar contents. |
 | `drawSpline` | Partial | Knot, tangent, preview, and editing behavior work; verify generated geometry against the production handler. |
 | `selectPdfTextLinear` | Partial | Linear drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
 | `selectPdfTextRect` | Partial | Rectangular drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
@@ -104,7 +104,7 @@ it stays listed because it is part of the master plugin distribution.
 
 | Area | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, spacing, tolerance, laser tool colors/sizes, laser fade delay, and audio playback folder/seek/disable settings. Audit every user-facing setting, per-device `deviceClasses`, audio device/recording controls, and `toolbar.ini` customization. |
+| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, spacing, tolerance, laser tool colors/sizes, laser fade delay, stylus Floating Toolbox mapping, and audio playback folder/seek/disable settings. Audit every user-facing setting, per-device `deviceClasses`, audio device/recording controls, and `toolbar.ini` customization. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |

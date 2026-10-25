@@ -60,9 +60,14 @@ thresholds, stylus side-button actions, autosave cadence, and keyboard/wheel zoo
 steps save immediately to `gtk4-canvas.ini` in the selected configuration
 directory. These values take precedence over imported GTK 3 settings. Stylus
 side buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
-releasing a mapped button restores the toolbar tool. The Hand toolbar button pans
-with a primary-button drag across the canvas and keeps the current selection.
-Space-drag, middle-mouse, and touch panning remain available.
+releasing a mapped button restores the toolbar tool. A Floating Toolbox mapping
+opens the panel at the pointer without changing the active tool. Select the
+Floating Toolbox toolbar mode and click the canvas to open the panel there. It
+closes when the pointer leaves or a tool is chosen. Its current tool set is
+built in; legacy `toolbar.ini` customization and tap-action triggers remain
+unported. The Hand toolbar button pans with a primary-button drag across the
+canvas and keeps the current selection. Space-drag, middle-mouse, and touch
+panning remain available.
 
 The **Play Object** toolbar mode plays audio-linked strokes and rectangular
 objects on the active layer when the pointer is within 15 document points.
@@ -311,7 +316,7 @@ Transfer serialization, geometric drawing/recognition/spline/stabilizer checks,
 rich-text transfer/rendering, background task/main-context checks, read-only
 `settings.xml` and `.gpl` palette import/fallback checks, CLI rejection checks,
 filesystem backup/publication, PDF text extraction, and autosave/recovery checks
-bring the standalone CTest suite to twenty-six tests.
+bring the standalone CTest suite to twenty-nine tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -325,6 +330,11 @@ at the current zoom, and the inline rich-text editor's create, edit, and style
 path. It explicitly renders a 2x raster cache
 and checks its dimensions. This is **not** a compositor-at-2x or physical HiDPI display test;
 the headless compositor reports device scale 1.
+
+The focused `--preferences-only` GUI check verifies Adw Preferences editing and
+restart persistence, including the stylus Floating Toolbox mapping. It opens the
+toolbox through canvas mode and the stylus mapping, checks that the drawing tool
+stays active, and captures the panel in the private renderer.
 
 The focused `--selection-only` GUI check loads a two-layer native document and
 verifies visible-layer rectangle and lasso selection, hidden-layer fallback,
