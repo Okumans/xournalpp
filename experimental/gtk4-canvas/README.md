@@ -81,7 +81,10 @@ zoom and change it around the viewport center, leaving fit mode and using the
 canvas zoom limits. `app.getFolder()` creates and returns the calling plugin's
 persistent config, data, or state directory under the XDG user roots.
 `app.setCurrentPage()` clamps a one-based page number and changes the active page
-without scrolling. `app.getPageLabel()` returns a one-based PDF page label, or
+without scrolling. `app.setCurrentLayer()` selects a foreground layer and clears
+the current selection; its optional visibility flag shows layers through the
+selected layer and hides higher layers without changing background visibility or
+adding an undo step. `app.getPageLabel()` returns a one-based PDF page label, or
 `nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. Lua plugins can also query editable strokes, text, links, and
 images by selection, layer, page, or
 document; returned element references remain valid across vector growth and
