@@ -1616,6 +1616,28 @@ private:
             if (!state.selectedTexts.empty()) {
                 throw std::runtime_error("Copying text selections is not supported yet");
             }
+            if (!state.selectedImages.empty()) {
+                if (state.selectedImages.size() != 1 || !state.selected.empty()) {
+                    throw std::runtime_error("Copying multiple or mixed image selections is not supported yet");
+                }
+                const auto& image = state.images.at(state.selectedImages.front());
+                const auto native = prototype::clipboard::encodeImage(image);
+                const auto png = encodeImageForClipboard(image);
+                auto* nativeBytes = g_bytes_new(native.data(), native.size());
+                auto* pngBytes = g_bytes_new(png.data(), png.size());
+                GdkContentProvider* providers[] = {
+                        gdk_content_provider_new_for_bytes(prototype::clipboard::mime, nativeBytes),
+                        gdk_content_provider_new_for_bytes("image/png", pngBytes)};
+                g_bytes_unref(nativeBytes);
+                g_bytes_unref(pngBytes);
+                auto* provider = gdk_content_provider_new_union(providers, G_N_ELEMENTS(providers));
+                const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), provider);
+                g_object_unref(provider);
+                if (!copied) throw std::runtime_error("Cannot claim the clipboard");
+                if (cut) state.deleteSelection();
+                update();
+                return;
+            }
             const auto bytes = prototype::clipboard::encode(state.copySelection());
             auto* data = g_bytes_new(bytes.data(), bytes.size());
             auto* provider = gdk_content_provider_new_for_bytes(prototype::clipboard::mime, data);
@@ -1637,15 +1659,26 @@ private:
             auto duplicate = state.images[*selectedImageIndex];
             duplicate.transform.x += 20;
             duplicate.transform.y += 20;
-            if (state.insertImage(std::move(duplicate))) {
-                selectedImageIndex = state.images.size() - 1;
-            }
+            selectedImageIndex.reset();
+            state.insertImage(std::move(duplicate));
             update();
             return;
         }
         if (!state.hasSelection()) return;
         if (!state.selectedTexts.empty()) {
             showError("Duplicating text selections is not supported yet");
+            return;
+        }
+        if (!state.selectedImages.empty()) {
+            if (state.selectedImages.size() != 1 || !state.selected.empty()) {
+                showError("Duplicating multiple or mixed image selections is not supported yet");
+                return;
+            }
+            auto duplicate = state.images.at(state.selectedImages.front());
+            duplicate.transform.x += 20;
+            duplicate.transform.y += 20;
+            state.insertImage(std::move(duplicate));
+            update();
             return;
         }
         const auto box = state.selectionBox();
@@ -1681,7 +1714,6 @@ private:
         if (!state.insertImage(std::move(image))) {
             return false;
         }
-        selectedImageIndex = state.images.size() - 1;
         activateSelection(Tool::SmartSelect);
         return true;
     }
@@ -3271,11 +3303,11 @@ private:
         return {gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
     }
 
-    const prototype::CanvasImage& displayedImage(size_t index) const {
+    prototype::CanvasImage displayedImage(size_t index) const {
         if (imageGesture && imageGesture->index == index) {
             return imageGesture->preview;
         }
-        return state.images.at(index);
+        return state.displayImage(index);
     }
 
     std::optional<size_t> imageHandleAt(const prototype::CanvasImage& image, const prototype::Point& point) const {
@@ -3294,7 +3326,7 @@ private:
     }
 
     bool beginImageGesture(Device device, double x, double y) {
-        if (state.brush.tool != Tool::SmartSelect || input.spaceHeld || input.panning() ||
+        if (state.hasSelection() || state.brush.tool != Tool::SmartSelect || input.spaceHeld || input.panning() ||
             (device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
             return false;
         }
@@ -3318,6 +3350,16 @@ private:
         if (!picked) {
             selectedImageIndex.reset();
             return false;
+        }
+
+        if (!handle) {
+            const auto pickedStroke = state.pickStroke(hit->page, hit->local);
+            const auto pickedText = state.pickText(hit->page, hit->local);
+            const auto imageOrder = state.images[*picked].layerOrder;
+            if ((pickedStroke && state.ink[*pickedStroke].layerOrder > imageOrder) ||
+                (pickedText && state.texts[*pickedText].layerOrder > imageOrder)) {
+                return false;
+            }
         }
 
         const auto& image = state.images[*picked];
@@ -3428,12 +3470,12 @@ private:
             const double width = image.pixelWidth * scale;
             const double height = image.pixelHeight * scale;
             image.transform = {scale, 0, 0, scale, (page.width - width) / 2, (page.height - height) / 2};
+            selectedImageIndex.reset();
             selectTool(Tool::SmartSelect);
             if (!state.insertImage(std::move(image))) {
                 showError("The image could not be inserted into the active page.");
                 return;
             }
-            selectedImageIndex = state.images.size() - 1;
             thumbnails.clear();
             update();
         } catch (const std::exception& error) {
@@ -3497,6 +3539,7 @@ private:
             update();
             return;
         }
+        selectedImageIndex.reset();
         gtk_widget_grab_focus(canvas);
         const auto toolbarBrush = state.brush;
         const bool previousSpaceHeld = input.spaceHeld;
@@ -4047,6 +4090,7 @@ private:
                                (key == GDK_KEY_r || key == GDK_KEY_R)) {
                         self->activateSelection(Tool::SelectRectangle);
                     } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_a || key == GDK_KEY_A)) {
+                        self->selectedImageIndex.reset();
                         self->input.cancel();
                         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->toolButtons[3]), true);
                         self->state.selectAllOnPage();
@@ -4376,7 +4420,7 @@ private:
                         }
                     }
                     for (size_t index = 0; index < state.images.size(); ++index) {
-                        const auto& image = state.images[index];
+                        const auto image = displayedImage(index);
                         if (image.page == i && image.layerId == layerId && image.originLayer == origin) {
                             layerItems.push_back({image.layerOrder, EditableKind::Image, index});
                         }
@@ -5160,7 +5204,7 @@ private:
             case 2:
                 require(!choosingFile, "Cancelling Insert Image did not close the image chooser");
                 insertImageFromPath(imageVerifySource);
-                require(state.images.size() == 1 && selectedImageIndex == 0 && modified(),
+                require(state.images.size() == 1 && state.selectedImages == std::vector<size_t>{0} && modified(),
                         "Insert Image did not add a selected, undoable image");
                 break;
             case 3: {
@@ -5168,11 +5212,23 @@ private:
                 break;
             }
             case 4: {
+                state.clearSelection();
+                activateSelection(Tool::SelectRectangle);
+                const auto selectionBounds = prototype::canvasImageBounds(state.images.at(0));
+                const auto selectionStart = state.pageScreenPoint(state.page, selectionBounds.x0 - 2,
+                                                                   selectionBounds.y0 - 2);
+                const auto selectionEnd = state.pageScreenPoint(state.page, selectionBounds.x1 + 2,
+                                                                 selectionBounds.y1 + 2);
+                begin(Device::Mouse, selectionStart.x, selectionStart.y);
+                motion(Device::Mouse, selectionEnd.x, selectionEnd.y);
+                finish(Device::Mouse);
+                require(state.selectedImages == std::vector<size_t>{0},
+                        "Rectangle selection did not select the inserted image");
                 const auto originalScale = state.images.at(0).transform.xx;
                 const auto corners = prototype::canvasImageCorners(state.images.at(0));
                 const auto start = state.pageScreenPoint(state.images[0].page, corners[2].x, corners[2].y);
-                const auto releasePoint = state.pageScreenPoint(state.images[0].page, corners[2].x + 40,
-                                                                corners[2].y + 30);
+                const auto releasePoint = state.pageScreenPoint(state.images[0].page, corners[2].x + 10,
+                                                                corners[2].y + 7.5);
                 begin(Device::Mouse, start.x, start.y);
                 motion(Device::Mouse, releasePoint.x, releasePoint.y);
                 finish(Device::Mouse);
@@ -5197,7 +5253,7 @@ private:
                         "Dragging an image body did not move the image");
                 const auto movedTransform = state.images[0].transform;
                 const auto centerBeforeRotation = prototype::canvasImageCenter(state.images[0]);
-                const auto rotationHandle = prototype::canvasImageRotationHandle(state.images[0], state.zoom);
+                const auto rotationHandle = state.selectionHandles()[8];
                 const double handleRadius = std::hypot(rotationHandle.x - centerBeforeRotation.x,
                                                        rotationHandle.y - centerBeforeRotation.y);
                 const double startAngle = std::atan2(rotationHandle.y - centerBeforeRotation.y,
@@ -5220,7 +5276,7 @@ private:
                                            prototype::canvasImageCenter(state.images[0]).y - centerBeforeRotation.y) < 1e-6,
                         "Image rotation should snap to 30 degrees around its center");
                 const auto snappedTransform = state.images[0].transform;
-                const auto snappedHandle = prototype::canvasImageRotationHandle(state.images[0], state.zoom);
+                const auto snappedHandle = state.selectionHandles()[8];
                 const double snappedHandleAngle = std::atan2(snappedHandle.y - centerBeforeRotation.y,
                                                              snappedHandle.x - centerBeforeRotation.x);
                 const prototype::Point unsnappedHandle{
@@ -5235,8 +5291,8 @@ private:
                 motion(Device::Mouse, unsnappedEnd.x, unsnappedEnd.y);
                 finish(Device::Mouse);
                 input.setModifiers(false, false, false);
-                require(std::abs(std::atan2(state.images[0].transform.yx, state.images[0].transform.xx) -
-                                         (G_PI / 6.0 + 2 * G_PI / 180.0)) < 1e-6,
+                const double altRotation = std::atan2(state.images[0].transform.yx, state.images[0].transform.xx);
+                require(std::abs(altRotation - (G_PI / 6.0 + 2 * G_PI / 180.0)) < 1e-6,
                         "Holding Alt should temporarily disable rotation snapping");
                 const auto rotatedTransform = state.images[0].transform;
                 state.undo();
@@ -5298,9 +5354,9 @@ private:
                         "Exporting the image document did not create a PDF");
                 if (imageVerifyStep == 9) {
                     activateSelection(Tool::SmartSelect);
-                    selectedImageIndex = 0;
+                    state.selectedImages = {0};
                     copySelection(true);
-                    require(state.images.empty() && !selectedImageIndex,
+                    require(state.images.empty() && state.selectedImages.empty(),
                             "Cut did not remove the selected image after copying it");
                     auto* clipboard = gtk_widget_get_clipboard(canvas);
                     auto* formats = gdk_clipboard_get_formats(clipboard);
@@ -5312,15 +5368,14 @@ private:
                     break;
                 }
                 if (imageVerifyStep == 10) {
-                    require(state.images.size() == 1 && selectedImageIndex == 0 &&
+                    require(state.images.size() == 1 && state.selectedImages == std::vector<size_t>{0} &&
                                     state.images[0].encodedData.size() > 0,
                             "Native image clipboard paste did not restore an editable image");
                     state.undo();
-                    selectedImageIndex.reset();
                     require(state.images.empty(), "Undo did not remove the pasted image");
                     state.redo();
-                    require(state.images.size() == 1, "Redo did not restore the pasted image");
-                    selectedImageIndex = 0;
+                    require(state.images.size() == 1 && state.selectedImages == std::vector<size_t>{0},
+                            "Redo did not restore the pasted image selection");
 
                     const auto pngData = encodeImageForClipboard(state.images[0]);
                     auto* bytes = g_bytes_new(pngData.data(), pngData.size());
@@ -5330,12 +5385,12 @@ private:
                             "Could not offer a PNG-only clipboard fixture");
                     g_object_unref(provider);
                     state.deleteImage(0);
-                    selectedImageIndex.reset();
                     pasteSelection();
                     require(busy, "PNG clipboard paste did not begin its asynchronous read");
                     break;
                 }
-                require(imageVerifyStep == 11 && state.images.size() == 1 && selectedImageIndex == 0 &&
+                require(imageVerifyStep == 11 && state.images.size() == 1 &&
+                                state.selectedImages == std::vector<size_t>{0} &&
                                 prototype::validCanvasImage(state.images[0]),
                         "A standard PNG clipboard image was not pasted as an editable object");
                 state.undo();

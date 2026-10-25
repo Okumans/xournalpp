@@ -118,6 +118,7 @@ public:
     bool currentAlt = false;
     std::vector<size_t> selected;
     std::vector<size_t> selectedTexts;
+    std::vector<size_t> selectedImages;
     bool selectionAcrossLayers = false;
     bool pinching = false;
     long long scrollBlockedUntil = 0;
@@ -520,6 +521,21 @@ public:
                 }
             }
         }
+        for (auto index: selectedImages) {
+            if (index >= images.size()) {
+                continue;
+            }
+            for (const auto& point: canvasImageCorners(images[index])) {
+                if (!box) {
+                    box = SelectionBox{images[index].page, point.x, point.y, point.x, point.y};
+                } else {
+                    box->x0 = std::min(box->x0, point.x);
+                    box->y0 = std::min(box->y0, point.y);
+                    box->x1 = std::max(box->x1, point.x);
+                    box->y1 = std::max(box->y1, point.y);
+                }
+            }
+        }
         return box;
     }
 
@@ -561,6 +577,26 @@ public:
             item.layerOrder = nextOriginOrder(item.page, item.originLayer);
         }
         return item;
+    }
+
+    CanvasImage displayImage(size_t index) const {
+        auto image = images.at(index);
+        if (!selectionGesture || !selectionGesture->moving ||
+            !std::binary_search(selectionGesture->imageIndices.begin(), selectionGesture->imageIndices.end(), index)) {
+            return image;
+        }
+
+        image = transformImage(std::move(image), selectionGesture->transform);
+        if (selectionGesture->targetPage != selectionGesture->page) {
+            image.page = selectionGesture->targetPage;
+            image.layerId = activeLayerId(image.page);
+            image.originLayer = activeLayerOrigin(image.page);
+            const auto position = std::lower_bound(selectionGesture->imageIndices.begin(),
+                                                   selectionGesture->imageIndices.end(), index) -
+                                  selectionGesture->imageIndices.begin();
+            image.layerOrder = nextOriginOrder(image.page, image.originLayer) + static_cast<size_t>(position);
+        }
+        return image;
     }
 
     int displayTextPage(size_t index) const { return displayText(index).page; }
@@ -633,6 +669,7 @@ public:
         if (selectionGesture) {
             selected = std::move(selectionGesture->previousSelection);
             selectedTexts = std::move(selectionGesture->previousTextSelection);
+            selectedImages = std::move(selectionGesture->previousImageSelection);
             selectionGesture.reset();
         }
     }
@@ -641,11 +678,12 @@ public:
         cancelSelection();
         selected.clear();
         selectedTexts.clear();
+        selectedImages.clear();
     }
 
-    bool hasSelection() const { return !selected.empty() || !selectedTexts.empty(); }
+    bool hasSelection() const { return !selected.empty() || !selectedTexts.empty() || !selectedImages.empty(); }
 
-    size_t selectionCount() const { return selected.size() + selectedTexts.size(); }
+    size_t selectionCount() const { return selected.size() + selectedTexts.size() + selectedImages.size(); }
 
     std::optional<size_t> pickStroke(int pageIndex, Point point) const {
         const size_t active = activeLayerId(pageIndex);
@@ -739,6 +777,7 @@ public:
         gesture.start = gesture.latest = hit->local;
         gesture.previousSelection = selected;
         gesture.previousTextSelection = selectedTexts;
+        gesture.previousImageSelection = selectedImages;
         gesture.multiLayer = selectionAcrossLayers;
         auto bounds = selectionBox();
         if (bounds && bounds->page == hit->page && !forceRectangle) {
@@ -757,14 +796,33 @@ public:
         if (!gesture.moving && brush.tool == Tool::SmartSelect && !forceRectangle) {
             const auto pickedStroke = pickStroke(hit->page, hit->local);
             const auto pickedText = pickText(hit->page, hit->local);
-            if (pickedText && (!pickedStroke || texts[*pickedText].layerOrder >= ink[*pickedStroke].layerOrder)) {
+            const auto pickedImage = pickImage(hit->page, hit->local);
+            enum class PickedObject { None, Stroke, Text, Image };
+            PickedObject pickedObject = PickedObject::None;
+            size_t bestOrder = 0;
+            if (pickedStroke) {
+                pickedObject = PickedObject::Stroke;
+                bestOrder = ink[*pickedStroke].layerOrder;
+            }
+            if (pickedText && (pickedObject == PickedObject::None || texts[*pickedText].layerOrder >= bestOrder)) {
+                pickedObject = PickedObject::Text;
+                bestOrder = texts[*pickedText].layerOrder;
+            }
+            if (pickedImage && (pickedObject == PickedObject::None || images[*pickedImage].layerOrder >= bestOrder)) {
+                pickedObject = PickedObject::Image;
+            }
+
+            if (pickedObject != PickedObject::None) {
                 selected.clear();
-                selectedTexts = {*pickedText};
-                bounds = selectionBox();
-                gesture.moving = true;
-            } else if (pickedStroke) {
-                selected = {*pickedStroke};
                 selectedTexts.clear();
+                selectedImages.clear();
+                if (pickedObject == PickedObject::Stroke) {
+                    selected = {*pickedStroke};
+                } else if (pickedObject == PickedObject::Text) {
+                    selectedTexts = {*pickedText};
+                } else {
+                    selectedImages = {*pickedImage};
+                }
                 bounds = selectionBox();
                 gesture.moving = true;
             }
@@ -772,10 +830,12 @@ public:
         if (gesture.moving) {
             gesture.indices = selected;
             gesture.textIndices = selectedTexts;
+            gesture.imageIndices = selectedImages;
             gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds) : *bounds;
         } else {
             selected.clear();
             selectedTexts.clear();
+            selectedImages.clear();
             gesture.lasso = brush.tool == Tool::SelectLasso && !forceRectangle;
             gesture.boundary.push_back(hit->local);
             gesture.additive = forceRectangle && bounds && bounds->page == hit->page;
@@ -785,7 +845,7 @@ public:
         return true;
     }
 
-    void moveSelectionPointer(double x, double y) {
+    void moveSelectionPointer(double x, double y, bool altHeld = false) {
         if (!selectionGesture || !std::isfinite(x) || !std::isfinite(y)) {
             return;
         }
@@ -802,7 +862,13 @@ public:
                 g.transform.y0 = g.latest.y - g.start.y;
             } else if (g.handle == 8) {
                 const auto cx = (g.bounds.x0+g.bounds.x1)/2, cy = (g.bounds.y0+g.bounds.y1)/2;
-                const auto angle = std::atan2(g.latest.y-cy, g.latest.x-cx) - std::atan2(g.start.y-cy, g.start.x-cx);
+                auto angle = std::atan2(g.latest.y-cy, g.latest.x-cx) -
+                             std::atan2(g.start.y-cy, g.start.x-cx);
+                if (!g.imageIndices.empty() && snapRotationEnabled != altHeld) {
+                    angle = canvasImageRotationDelta(std::atan2(g.start.y - cy, g.start.x - cx),
+                                                     std::atan2(g.latest.y - cy, g.latest.x - cx), true,
+                                                     snapRotationTolerance);
+                }
                 const auto cosine = std::cos(angle), sine = std::sin(angle);
                 g.transform = {cosine,sine,-sine,cosine,cx-cosine*cx+sine*cy,cy-sine*cx-cosine*cy,1};
             } else {
@@ -887,16 +953,44 @@ public:
                     edit.textChanges.push_back({texts.size(), {}, texts.size() - transferredTexts.size(),
                                                 std::move(transferredTexts)});
                 }
+
+                std::vector<CanvasImage> transferredImages;
+                for (auto index: g.imageIndices) {
+                    auto moved = transformImage(images.at(index), g.transform);
+                    moved.page = g.targetPage;
+                    if (!validCanvasImage(moved) || moved.page < 0 || moved.page >= pageCount()) {
+                        return;
+                    }
+                    if (g.targetPage == g.page) {
+                        edit.imageChanges.push_back({index, {images[index]}, index, {std::move(moved)}});
+                    } else {
+                        moved.layerId = activeLayerId(g.targetPage);
+                        moved.originLayer = activeLayerOrigin(g.targetPage);
+                        moved.layerOrder = nextOriginOrder(g.targetPage, moved.originLayer) + transferredImages.size();
+                        const auto removed = transferredImages.size();
+                        edit.imageChanges.push_back({index, {images[index]}, index - removed, {}});
+                        transferredImages.push_back(std::move(moved));
+                    }
+                }
+                if (!transferredImages.empty()) {
+                    edit.imageChanges.push_back({images.size(), {}, images.size() - transferredImages.size(),
+                                                 std::move(transferredImages)});
+                }
             }
             if (!edit.changes.empty() || !edit.textChanges.empty() || !edit.imageChanges.empty()) {
                 edit.selectionBefore = edit.selectionAfter = selected;
                 edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+                edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
                 if (g.targetPage != g.page) {
                     edit.selectionAfter = std::vector<size_t>{};
                     for (size_t n = ink.size()-selected.size(); n < ink.size(); ++n) edit.selectionAfter->push_back(n);
                     edit.textSelectionAfter = std::vector<size_t>{};
                     for (size_t n = texts.size() - selectedTexts.size(); n < texts.size(); ++n) {
                         edit.textSelectionAfter->push_back(n);
+                    }
+                    edit.imageSelectionAfter = std::vector<size_t>{};
+                    for (size_t n = images.size() - selectedImages.size(); n < images.size(); ++n) {
+                        edit.imageSelectionAfter->push_back(n);
                     }
                 }
                 apply(edit, true);
@@ -947,7 +1041,28 @@ public:
                     }
                 }
                 selectedTexts.insert(selectedTexts.end(), textLayerSelection.begin(), textLayerSelection.end());
-                return !layerSelection.empty() || !textLayerSelection.empty();
+
+                std::vector<size_t> imageLayerSelection;
+                for (size_t i = 0; i < images.size(); ++i) {
+                    const auto& image = images[i];
+                    if (image.page != g.page || image.layerId != layerId || !layerVisible(g.page, image.layerId) ||
+                        !validCanvasImage(image)) {
+                        continue;
+                    }
+                    const auto corners = canvasImageCorners(image);
+                    const bool contained = std::all_of(corners.begin(), corners.end(), [&](const Point& point) {
+                        if (g.lasso) {
+                            return polygonContains(g.boundary, point);
+                        }
+                        return (x0 <= 1 || point.x >= x0) && (x1 >= size.width - 1 || point.x <= x1) &&
+                               (y0 <= 1 || point.y >= y0) && (y1 >= size.height - 1 || point.y <= y1);
+                    });
+                    if (contained) {
+                        imageLayerSelection.push_back(i);
+                    }
+                }
+                selectedImages.insert(selectedImages.end(), imageLayerSelection.begin(), imageLayerSelection.end());
+                return !layerSelection.empty() || !textLayerSelection.empty() || !imageLayerSelection.empty();
             };
             if (g.multiLayer) {
                 const auto& layers = layersForPage(g.page).layers;
@@ -963,6 +1078,8 @@ public:
             selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
             std::sort(selectedTexts.begin(), selectedTexts.end());
             selectedTexts.erase(std::unique(selectedTexts.begin(), selectedTexts.end()), selectedTexts.end());
+            std::sort(selectedImages.begin(), selectedImages.end());
+            selectedImages.erase(std::unique(selectedImages.begin(), selectedImages.end()), selectedImages.end());
         }
     }
 
@@ -980,6 +1097,12 @@ public:
                 selectedTexts.push_back(i);
             }
         }
+        for (size_t i = 0; i < images.size(); ++i) {
+            if (images[i].page == page && images[i].layerId == activeLayerId(page) &&
+                layerVisible(page, images[i].layerId) && validCanvasImage(images[i])) {
+                selectedImages.push_back(i);
+            }
+        }
     }
 
     void deleteSelection() {
@@ -992,6 +1115,8 @@ public:
         edit.selectionAfter = std::vector<size_t>{};
         edit.textSelectionBefore = selectedTexts;
         edit.textSelectionAfter = std::vector<size_t>{};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
         for (size_t n = 0; n < selected.size(); ++n) {
             const auto i = selected[n];
             edit.changes.push_back({i, {ink.at(i)}, i - n, {}});
@@ -999,6 +1124,10 @@ public:
         for (size_t n = 0; n < selectedTexts.size(); ++n) {
             const auto i = selectedTexts[n];
             edit.textChanges.push_back({i, {texts.at(i)}, i - n, {}});
+        }
+        for (size_t n = 0; n < selectedImages.size(); ++n) {
+            const auto i = selectedImages[n];
+            edit.imageChanges.push_back({i, {images.at(i)}, i - n, {}});
         }
         apply(edit, true);
         record(std::move(edit));
@@ -1617,6 +1746,12 @@ public:
         image.layerOrder = nextOriginOrder(image.page, image.originLayer);
         Edit edit;
         edit.imageChanges.push_back({images.size(), {}, images.size(), {image}});
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{images.size()};
         apply(edit, true);
         record(std::move(edit));
         return true;
@@ -1632,6 +1767,9 @@ public:
         image.originLayer = images[index].originLayer;
         Edit edit;
         edit.imageChanges.push_back({index, {images[index]}, index, {std::move(image)}});
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+        edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
         apply(edit, true);
         record(std::move(edit));
         return true;
@@ -1643,6 +1781,17 @@ public:
         }
         Edit edit;
         edit.imageChanges.push_back({index, {images[index]}, index, {}});
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+        edit.imageSelectionBefore = selectedImages;
+        auto remainingImages = selectedImages;
+        std::erase(remainingImages, index);
+        for (auto& selectedIndex: remainingImages) {
+            if (selectedIndex > index) {
+                --selectedIndex;
+            }
+        }
+        edit.imageSelectionAfter = std::move(remainingImages);
         apply(edit, true);
         record(std::move(edit));
         return true;
@@ -1876,6 +2025,8 @@ private:
         std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
         std::optional<std::vector<size_t>> textSelectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> textSelectionAfter = std::nullopt;
+        std::optional<std::vector<size_t>> imageSelectionBefore = std::nullopt;
+        std::optional<std::vector<size_t>> imageSelectionAfter = std::nullopt;
     };
 
     bool validTextPage(const TextItem& item) const {
@@ -2050,8 +2201,10 @@ private:
         int handle = -1, targetPage = 0;
         std::vector<size_t> previousSelection;
         std::vector<size_t> previousTextSelection;
+        std::vector<size_t> previousImageSelection;
         std::vector<size_t> indices;
         std::vector<size_t> textIndices;
+        std::vector<size_t> imageIndices;
         SelectionBox bounds{};
         SelectionTransform transform;
         std::vector<Point> boundary;
@@ -2088,6 +2241,17 @@ private:
         item.x = x;
         item.y = y;
         return item;
+    }
+
+    static CanvasImage transformImage(CanvasImage image, const SelectionTransform& transform) {
+        const auto source = image.transform;
+        image.transform = {transform.xx * source.xx + transform.xy * source.yx,
+                           transform.yx * source.xx + transform.yy * source.yx,
+                           transform.xx * source.xy + transform.xy * source.yy,
+                           transform.yx * source.xy + transform.yy * source.yy,
+                           transform.xx * source.x + transform.xy * source.y + transform.x0,
+                           transform.yx * source.x + transform.yy * source.y + transform.y0};
+        return image;
     }
 
     static Point pointAt(const Ink& stroke, PathParam param) {
@@ -2495,6 +2659,7 @@ private:
         }
         selected = (forward ? edit.selectionAfter : edit.selectionBefore).value_or(std::vector<size_t>{});
         selectedTexts = (forward ? edit.textSelectionAfter : edit.textSelectionBefore).value_or(std::vector<size_t>{});
+        selectedImages = (forward ? edit.imageSelectionAfter : edit.imageSelectionBefore).value_or(std::vector<size_t>{});
     }
 
     Device owner = Device::Mouse;

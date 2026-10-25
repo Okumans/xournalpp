@@ -100,7 +100,7 @@ public:
                 }
                 break;
             case Mode::Select:
-                state.moveSelectionPointer(sample.x, sample.y);
+                state.moveSelectionPointer(sample.x, sample.y, altHeld);
                 break;
             case Mode::Spline:
                 state.moveSplineTangent(sample.x, sample.y, pressure(sample.pressure));
