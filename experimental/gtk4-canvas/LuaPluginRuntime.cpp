@@ -158,6 +158,7 @@ int luaOpenApp(lua_State* state) {
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
             {"export", LuaPluginRuntime::luaExport},
+            {"quickScreenshot", LuaPluginRuntime::luaQuickScreenshot},
             {"getDocumentStructure", LuaPluginRuntime::luaGetDocumentStructure},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
@@ -737,6 +738,14 @@ bool LuaPluginRuntime::exportDocument(const DocumentExportOptions& options, std:
         return false;
     }
     return host.exportDocument(options, error);
+}
+
+bool LuaPluginRuntime::quickScreenshot(std::string_view plugin, std::string& error) {
+    if (!host.quickScreenshot) {
+        error = "Screen-region capture is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.quickScreenshot(plugin, error);
 }
 
 std::string LuaPluginRuntime::documentFilename() const {
@@ -1539,6 +1548,19 @@ int LuaPluginRuntime::luaExport(lua_State* state) {
     if (error[0] != '\0') {
         lua_pushstring(state, error);
         return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaQuickScreenshot(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    std::string error;
+    if (!plugin->runtime->quickScreenshot(plugin->name, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Screen-region capture failed" : error.c_str());
     }
     return 0;
 }
