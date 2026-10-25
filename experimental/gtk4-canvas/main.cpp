@@ -555,6 +555,10 @@ private:
         SnapGrid,
         SnapGridSize,
         SnapGridTolerance,
+        FloatingToolboxRow1,
+        FloatingToolboxRow2,
+        FloatingToolboxRow3,
+        FloatingToolboxRow4,
     };
 
     GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
@@ -633,6 +637,57 @@ private:
         return GTK_WIDGET(spin);
     }
 
+    GtkWidget* preferenceTextEntry(AdwPreferencesGroup* group, const char* title, const char* subtitle,
+                                   const std::string& value, PreferenceKey key) {
+        auto* row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        adw_action_row_set_subtitle(row, subtitle);
+        auto* entry = gtk_entry_new();
+        gtk_editable_set_text(GTK_EDITABLE(entry), value.c_str());
+        gtk_editable_set_width_chars(GTK_EDITABLE(entry), 30);
+        gtk_widget_set_hexpand(entry, true);
+        gtk_widget_set_size_request(entry, 240, -1);
+        adw_action_row_add_suffix(row, entry);
+        adw_action_row_set_activatable_widget(row, entry);
+        preferenceControls[static_cast<size_t>(key)] = entry;
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return entry;
+    }
+
+    bool applyFloatingToolboxRows() {
+        static constexpr std::array<PreferenceKey, 4> keys = {
+                PreferenceKey::FloatingToolboxRow1,
+                PreferenceKey::FloatingToolboxRow2,
+                PreferenceKey::FloatingToolboxRow3,
+                PreferenceKey::FloatingToolboxRow4,
+        };
+        const auto previousRows = importedConfig.settings.floatingToolboxRows;
+        prototype::FloatingToolboxRows rows;
+        for (std::size_t index = 0; index < keys.size(); ++index) {
+            auto* entry = preferenceControls[static_cast<size_t>(keys[index])];
+            const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
+            auto parsed = prototype::parseFloatingToolboxRow(raw ? raw : "");
+            if (!parsed) {
+                gtk_widget_add_css_class(entry, "error");
+                showAlert("Invalid floating toolbox row",
+                          "Use comma-separated toolbar action names. Empty rows are allowed.");
+                return false;
+            }
+            gtk_widget_remove_css_class(entry, "error");
+            rows[index] = std::move(*parsed);
+        }
+
+        importedConfig.settings.floatingToolboxRows = std::move(rows);
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            importedConfig.settings.floatingToolboxRows = previousRows;
+            showAlert("Could not save toolbar preferences", error);
+            return false;
+        }
+        rebuildFloatingToolboxRows();
+        return true;
+    }
+
     void changePreference(PreferenceKey key, GtkWidget* control) {
         auto& settings = importedConfig.settings;
         switch (key) {
@@ -697,6 +752,11 @@ private:
             case PreferenceKey::SnapGridTolerance:
                 settings.snapGridTolerance = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
+            case PreferenceKey::FloatingToolboxRow1:
+            case PreferenceKey::FloatingToolboxRow2:
+            case PreferenceKey::FloatingToolboxRow3:
+            case PreferenceKey::FloatingToolboxRow4:
+                return;
         }
 
         prototype::applyImportedSettingsToCanvas(state, settings);
@@ -812,6 +872,46 @@ private:
                        PreferenceKey::SnapGridTolerance);
         adw_preferences_page_add(behavior, selectionGroup);
         adw_preferences_dialog_add(preferencesDialog, behavior);
+
+        auto* toolbarPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+        adw_preferences_page_set_name(toolbarPage, "toolbar");
+        adw_preferences_page_set_title(toolbarPage, "Toolbar");
+        adw_preferences_page_set_icon_name(toolbarPage, "view-grid-symbolic");
+        auto* toolboxGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(toolboxGroup, "Floating toolbox rows");
+        adw_preferences_group_set_description(
+                toolboxGroup,
+                "Reorder or remove comma-separated Xournal++ actions such as PEN, HIGHLIGHTER, LASER_POINTER, "
+                "PDF_TOOL, UNDO, ZOOM_SLIDER, DRAW_ELLIPSE, FINE, COLOR(n), and DRAW_ARROW. Imported rows are "
+                "saved in GTK 4 preferences when you apply changes.");
+        static constexpr std::array<PreferenceKey, 4> rowKeys = {
+                PreferenceKey::FloatingToolboxRow1,
+                PreferenceKey::FloatingToolboxRow2,
+                PreferenceKey::FloatingToolboxRow3,
+                PreferenceKey::FloatingToolboxRow4,
+        };
+        static constexpr std::array<const char*, 4> rowTitles = {
+                "Row 1", "Row 2", "Row 3", "Row 4",
+        };
+        for (std::size_t index = 0; index < rowKeys.size(); ++index) {
+            const auto value = prototype::serializeFloatingToolboxRow(
+                    importedConfig.settings.floatingToolboxRows[index]);
+            preferenceTextEntry(toolboxGroup, rowTitles[index], "Comma-separated toolbar actions", value,
+                                rowKeys[index]);
+        }
+        auto* applyRow = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(applyRow), "Save toolbar layout");
+        adw_action_row_set_subtitle(applyRow, "Apply the four rows and save them for future sessions");
+        auto* applyButton = gtk_button_new_with_label("Apply");
+        floatingToolboxApplyButton = applyButton;
+        g_signal_connect(applyButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->applyFloatingToolboxRows();
+                         }),
+                         this);
+        adw_action_row_add_suffix(applyRow, applyButton);
+        adw_preferences_group_add(toolboxGroup, GTK_WIDGET(applyRow));
+        adw_preferences_page_add(toolbarPage, toolboxGroup);
+        adw_preferences_dialog_add(preferencesDialog, toolbarPage);
         adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
     }
 
@@ -2195,6 +2295,256 @@ private:
         gtk_widget_set_can_target(linkInfoPopover, false);
     }
 
+    void addFloatingToolboxToolAction(GtkWidget* row, Tool tool, const char* label) {
+        auto* toolButton = gtk_toggle_button_new_with_label(label);
+        gtk_widget_add_css_class(toolButton, "flat");
+        gtk_widget_set_size_request(toolButton, 82, 36);
+        floatingToolboxToolButtons.emplace_back(tool, toolButton);
+        g_object_set_data(G_OBJECT(toolButton), "floating-toolbox-tool", GINT_TO_POINTER(static_cast<int>(tool)));
+        g_signal_connect(toolButton, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!gtk_toggle_button_get_active(button) || self->syncingTools) {
+                                 return;
+                             }
+                             const auto selectedTool = static_cast<Tool>(GPOINTER_TO_INT(
+                                     g_object_get_data(G_OBJECT(button), "floating-toolbox-tool")));
+                             self->selectTool(selectedTool);
+                             self->hideFloatingToolbox();
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(row), toolButton);
+    }
+
+    void addFloatingToolboxAction(GtkWidget* row, const std::string& token) {
+        auto addTool = [&](Tool tool, const char* label) { addFloatingToolboxToolAction(row, tool, label); };
+        auto addButton = [&](const char* label, GCallback callback) {
+            auto* action = gtk_button_new_with_label(label);
+            gtk_widget_add_css_class(action, "flat");
+            g_signal_connect(action, "clicked", callback, this);
+            gtk_box_append(GTK_BOX(row), action);
+        };
+
+        if (token == "PEN") {
+            addTool(Tool::Pen, "Pen");
+        } else if (token == "HIGHLIGHTER") {
+            addTool(Tool::Highlighter, "Highlight");
+        } else if (token == "ERASER") {
+            addTool(Tool::Eraser, "Eraser");
+        } else if (token == "HAND") {
+            addTool(Tool::Hand, "Hand");
+        } else if (token == "SELECT") {
+            addTool(Tool::SelectRectangle, "Select");
+        } else if (token == "SELECT_RECT") {
+            addTool(Tool::SelectRectangle, "Rectangle select");
+        } else if (token == "SELECT_LASSO" || token == "SELECT_REGION") {
+            addTool(Tool::SelectLasso, "Lasso");
+        } else if (token == "SMART_SELECT") {
+            addTool(Tool::SmartSelect, "Smart Select");
+        } else if (token == "SELECT_OBJECT") {
+            addTool(Tool::SelectObject, "Select object");
+        } else if (token == "TEXT") {
+            addTool(Tool::Text, "Text");
+        } else if (token == "LINK") {
+            addTool(Tool::Link, "Link");
+        } else if (token == "PLAY_OBJECT") {
+            addTool(Tool::PlayObject, "Play audio");
+        } else if (token == "LASER_POINTER") {
+            addTool(Tool::LaserPointerPen, "Laser pen");
+            addTool(Tool::LaserPointerHighlighter, "Laser marker");
+        } else if (token == "PDF_TOOL") {
+            addTool(Tool::SelectPdfTextLinear, "PDF text");
+            addTool(Tool::SelectPdfTextRect, "PDF area");
+        } else if (token == "UNDO") {
+            addButton("Undo", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          g_signal_emit_by_name(self->undoButton, "clicked");
+                      }));
+        } else if (token == "REDO") {
+            addButton("Redo", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          g_signal_emit_by_name(self->redoButton, "clicked");
+                      }));
+        } else if (token == "ZOOM_SLIDER") {
+            auto* scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 25.0, 400.0, 5.0);
+            gtk_widget_set_size_request(scale, 132, -1);
+            gtk_scale_set_draw_value(GTK_SCALE(scale), true);
+            gtk_scale_set_digits(GTK_SCALE(scale), 0);
+            gtk_scale_set_value_pos(GTK_SCALE(scale), GTK_POS_RIGHT);
+            gtk_scale_set_format_value_func(
+                    GTK_SCALE(scale),
+                    +[](GtkScale*, double value, gpointer) { return g_strdup_printf("%.0f%%", value); }, nullptr,
+                    nullptr);
+            gtk_widget_set_tooltip_text(scale, "Zoom percentage");
+            gtk_range_set_value(GTK_RANGE(scale), state.zoom * 100.0);
+            g_signal_connect(scale, "value-changed", G_CALLBACK(+[](GtkRange* range, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 const double x = gtk_widget_get_width(self->canvas) / 2.0;
+                                 const double y = gtk_widget_get_height(self->canvas) / 2.0;
+                                 self->zoom(gtk_range_get_value(range) / 100.0, x, y);
+                             }),
+                             this);
+            gtk_box_append(GTK_BOX(row), scale);
+        } else if (token == "DRAW_ELLIPSE" || token == "DRAW_RECTANGLE" || token == "DRAW_ARROW" ||
+                   token == "DRAW_LINE") {
+            const auto mode = token == "DRAW_ELLIPSE" ? prototype::DrawingMode::Ellipse :
+                              token == "DRAW_RECTANGLE" ? prototype::DrawingMode::Rectangle :
+                              token == "DRAW_ARROW" ? prototype::DrawingMode::Arrow : prototype::DrawingMode::Line;
+            const char* label = token == "DRAW_ELLIPSE" ? "Ellipse" :
+                                token == "DRAW_RECTANGLE" ? "Rectangle" :
+                                token == "DRAW_ARROW" ? "Arrow" : "Line";
+            addButton(label, G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          const auto selectedMode = static_cast<prototype::DrawingMode>(GPOINTER_TO_INT(
+                                  g_object_get_data(G_OBJECT(button), "floating-drawing-mode")));
+                          if (self->drawingModeDropdown) {
+                              gtk_drop_down_set_selected(GTK_DROP_DOWN(self->drawingModeDropdown),
+                                                         static_cast<guint>(selectedMode));
+                          } else {
+                              self->state.drawingMode = selectedMode;
+                              self->update();
+                          }
+                      }));
+            g_object_set_data(G_OBJECT(gtk_widget_get_last_child(row)), "floating-drawing-mode",
+                              GINT_TO_POINTER(static_cast<int>(mode)));
+        } else if (token == "TOOL_FILL") {
+            auto* unsupported = gtk_button_new_with_label("Fill");
+            gtk_widget_set_sensitive(unsupported, false);
+            gtk_widget_set_tooltip_text(unsupported, "Filled native drawing shapes are not ported yet");
+            gtk_box_append(GTK_BOX(row), unsupported);
+        } else if (token == "FINE" || token == "MEDIUM" || token == "THICK" || token == "VERY_FINE" ||
+                   token == "VERY_THICK") {
+            const guint preset = token == "VERY_FINE" ? 0u : token == "FINE" ? 1u : token == "MEDIUM" ? 2u :
+                                 token == "THICK" ? 3u : 4u;
+            const char* label = token == "VERY_FINE" ? "Very fine" : token == "FINE" ? "Fine" :
+                                token == "MEDIUM" ? "Medium" : token == "THICK" ? "Thick" : "Very thick";
+            addButton(label, G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          const auto selectedPreset = GPOINTER_TO_UINT(
+                                  g_object_get_data(G_OBJECT(button), "floating-toolbox-preset"));
+                          if (self->sizeDropdown) {
+                              gtk_drop_down_set_selected(GTK_DROP_DOWN(self->sizeDropdown), selectedPreset);
+                          }
+                      }));
+            g_object_set_data(G_OBJECT(gtk_widget_get_last_child(row)), "floating-toolbox-preset",
+                              GUINT_TO_POINTER(preset));
+        } else if (token.starts_with("COLOR(") && token.back() == ')') {
+            unsigned int swatchIndex = 0;
+            bool validIndex = true;
+            for (std::size_t index = 6; index + 1 < token.size(); ++index) {
+                const unsigned int digit = static_cast<unsigned int>(token[index] - '0');
+                if (swatchIndex > 100 || digit > 9) {
+                    validIndex = false;
+                    break;
+                }
+                swatchIndex = swatchIndex * 10 + digit;
+            }
+            if (!validIndex || swatchIndex >= importedConfig.palette.swatches.size()) {
+                auto* unsupported = gtk_button_new_with_label(token.c_str());
+                gtk_widget_set_sensitive(unsupported, false);
+                gtk_widget_set_tooltip_text(unsupported, "This color index is not present in the imported palette");
+                gtk_box_append(GTK_BOX(row), unsupported);
+            } else {
+                auto* swatch = gtk_button_new();
+                gtk_widget_add_css_class(swatch, "flat");
+                auto* dot = gtk_drawing_area_new();
+                gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(dot), 20);
+                gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(dot), 20);
+                const auto color = importedConfig.palette.swatches[swatchIndex].color;
+                gtk_drawing_area_set_draw_func(
+                        GTK_DRAWING_AREA(dot),
+                        +[](GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
+                            const auto* rgba = static_cast<const std::array<double, 3>*>(data);
+                            cairo_arc(cr, width / 2.0, height / 2.0, std::max(2.0, std::min(width, height) / 2.0 - 2.0),
+                                      0, 2 * G_PI);
+                            cairo_set_source_rgb(cr, (*rgba)[0], (*rgba)[1], (*rgba)[2]);
+                            cairo_fill_preserve(cr);
+                            cairo_set_source_rgba(cr, 0.45, 0.45, 0.45, 0.65);
+                            cairo_set_line_width(cr, 1.0);
+                            cairo_stroke(cr);
+                        },
+                        new std::array<double, 3>(color), +[](gpointer data) {
+                            delete static_cast<std::array<double, 3>*>(data);
+                        });
+                gtk_button_set_child(GTK_BUTTON(swatch), dot);
+                gtk_widget_set_tooltip_text(swatch, importedConfig.palette.swatches[swatchIndex].name.c_str());
+                gtk_accessible_update_property(GTK_ACCESSIBLE(swatch), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                               importedConfig.palette.swatches[swatchIndex].name.c_str(), -1);
+                g_object_set_data(G_OBJECT(swatch), "floating-toolbox-color-index", GUINT_TO_POINTER(swatchIndex));
+                g_signal_connect(swatch, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                                     auto* self = static_cast<Prototype*>(data);
+                                     const auto index = GPOINTER_TO_UINT(
+                                             g_object_get_data(G_OBJECT(button), "floating-toolbox-color-index"));
+                                     self->selectPaletteColor(index);
+                                 }),
+                                 this);
+                gtk_box_append(GTK_BOX(row), swatch);
+            }
+        } else if (token == "COLOR_SELECT") {
+            addButton("Color…", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          gtk_widget_activate(self->colorButton);
+                      }));
+        } else if (token == "ZOOM_IN" || token == "ZOOM_OUT") {
+            const bool zoomIn = token == "ZOOM_IN";
+            addButton(zoomIn ? "Zoom in" : "Zoom out", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          const bool zoomIn = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "zoom-in")) != 0;
+                          self->zoom(self->state.steppedZoom(zoomIn, false), gtk_widget_get_width(self->canvas) / 2.0,
+                                     gtk_widget_get_height(self->canvas) / 2.0);
+                      }));
+            g_object_set_data(G_OBJECT(gtk_widget_get_last_child(row)), "zoom-in", GINT_TO_POINTER(zoomIn));
+        } else if (token == "SEPARATOR") {
+            gtk_box_append(GTK_BOX(row), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
+        } else {
+            auto* unsupported = gtk_button_new_with_label(token.c_str());
+            gtk_widget_set_sensitive(unsupported, false);
+            gtk_widget_set_tooltip_text(unsupported, "This toolbar action is not ported yet");
+            gtk_box_append(GTK_BOX(row), unsupported);
+        }
+    }
+
+    void rebuildFloatingToolboxRows() {
+        if (!floatingToolboxRowsContainer) {
+            return;
+        }
+        if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
+            floatingToolboxToolButtons.erase(
+                    floatingToolboxToolButtons.begin() +
+                            static_cast<std::ptrdiff_t>(floatingToolboxStaticToolButtonCount),
+                    floatingToolboxToolButtons.end());
+        }
+        while (auto* child = gtk_widget_get_first_child(floatingToolboxRowsContainer)) {
+            gtk_box_remove(GTK_BOX(floatingToolboxRowsContainer), child);
+        }
+
+        for (const auto& items: importedConfig.settings.floatingToolboxRows) {
+            auto* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+            for (const auto& token: items) {
+                addFloatingToolboxAction(row, token);
+            }
+            if (gtk_widget_get_first_child(row)) {
+                gtk_box_append(GTK_BOX(floatingToolboxRowsContainer), row);
+            }
+        }
+        if (floatingToolbox && gtk_widget_get_visible(floatingToolbox)) {
+            positionFloatingToolbox(floatingToolboxAnchor.x, floatingToolboxAnchor.y);
+        }
+    }
+
+    void selectPaletteColor(size_t index) {
+        if (index >= importedConfig.palette.swatches.size() || !colorButton) {
+            return;
+        }
+        const auto& color = importedConfig.palette.swatches[index].color;
+        const GdkRGBA rgba{static_cast<float>(color[0]), static_cast<float>(color[1]),
+                           static_cast<float>(color[2]), 1.0f};
+        gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
+        if (palettePopover) {
+            gtk_popover_popdown(GTK_POPOVER(palettePopover));
+        }
+        gtk_widget_grab_focus(textEditor && textEditor->active() ? textEditor->widget() : canvas);
+    }
+
     void createFloatingToolbox() {
         floatingToolbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
         gtk_widget_add_css_class(floatingToolbox, "card");
@@ -2221,20 +2571,18 @@ private:
         auto* close = button(
                 "window-close-symbolic", "Hide floating toolbox",
                 G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->hideFloatingToolbox(); }));
-        gtk_box_append(GTK_BOX(heading), close);
         gtk_box_append(GTK_BOX(contents), heading);
 
         auto* grid = gtk_grid_new();
         gtk_grid_set_column_spacing(GTK_GRID(grid), 4);
         gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
-        const std::array<std::pair<Tool, const char*>, 15> tools = {{
+        const std::array<std::pair<Tool, const char*>, 14> tools = {{
                 {Tool::Pen, "Pen"},
                 {Tool::Highlighter, "Highlight"},
                 {Tool::Eraser, "Eraser"},
                 {Tool::Hand, "Hand"},
                 {Tool::SelectRectangle, "Rectangle"},
                 {Tool::SelectLasso, "Lasso"},
-                {Tool::SmartSelect, "Smart select"},
                 {Tool::SelectObject, "Select object"},
                 {Tool::Text, "Text"},
                 {Tool::Link, "Link"},
@@ -2265,39 +2613,16 @@ private:
                              }),
                              this);
         }
-        gtk_box_append(GTK_BOX(contents), grid);
+        addFloatingToolboxToolAction(heading, Tool::SmartSelect, "Smart Select");
+        gtk_box_append(GTK_BOX(heading), close);
+        auto* moreTools = gtk_expander_new("More tools");
+        gtk_expander_set_child(GTK_EXPANDER(moreTools), grid);
+        gtk_box_append(GTK_BOX(contents), moreTools);
+        floatingToolboxStaticToolButtonCount = floatingToolboxToolButtons.size();
 
-        auto* actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-        for (const auto& [icon, label, callback]: std::array<std::tuple<const char*, const char*, GCallback>, 4>{
-                     std::tuple{"edit-undo-symbolic", "Undo", G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                    auto* self = static_cast<Prototype*>(data);
-                                    g_signal_emit_by_name(self->undoButton, "clicked");
-                                    self->hideFloatingToolbox();
-                                })},
-                     std::tuple{"edit-redo-symbolic", "Redo", G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                    auto* self = static_cast<Prototype*>(data);
-                                    g_signal_emit_by_name(self->redoButton, "clicked");
-                                    self->hideFloatingToolbox();
-                                })},
-                     std::tuple{"zoom-out-symbolic", "Zoom out", G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                    auto* self = static_cast<Prototype*>(data);
-                                    const double x = gtk_widget_get_width(self->canvas) / 2.0;
-                                    const double y = gtk_widget_get_height(self->canvas) / 2.0;
-                                    self->zoom(self->state.steppedZoom(false, false), x, y);
-                                    self->hideFloatingToolbox();
-                                })},
-                     std::tuple{"zoom-in-symbolic", "Zoom in", G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                    auto* self = static_cast<Prototype*>(data);
-                                    const double x = gtk_widget_get_width(self->canvas) / 2.0;
-                                    const double y = gtk_widget_get_height(self->canvas) / 2.0;
-                                    self->zoom(self->state.steppedZoom(true, false), x, y);
-                                    self->hideFloatingToolbox();
-                                })},
-             }) {
-            auto* action = button(icon, label, callback);
-            gtk_box_append(GTK_BOX(actions), action);
-        }
-        gtk_box_append(GTK_BOX(contents), actions);
+        floatingToolboxRowsContainer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_box_append(GTK_BOX(contents), floatingToolboxRowsContainer);
+        rebuildFloatingToolboxRows();
 
         gtk_overlay_add_overlay(GTK_OVERLAY(canvasOverlay), floatingToolbox);
         auto* motion = gtk_event_controller_motion_new();
@@ -7395,8 +7720,8 @@ private:
 
     gboolean smokePreferencesVerify() {
         const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
-        if (preferencesVerifyMode == "edit" && ((preferencesVerifyStep >= 3 && !floatingToolboxSmokeReady) ||
-                                                (preferencesVerifyStep >= 4 && !floatingToolboxDismissSmokeReady))) {
+        if (preferencesVerifyMode == "edit" && ((preferencesVerifyStep >= 4 && !floatingToolboxSmokeReady) ||
+                                                (preferencesVerifyStep >= 5 && !floatingToolboxDismissSmokeReady))) {
             return G_SOURCE_CONTINUE;
         }
         if (preferencesVerifyMode == "edit") {
@@ -7414,6 +7739,18 @@ private:
                                     control(PreferenceKey::SnapRotation) && control(PreferenceKey::SnapGrid) &&
                                     control(PreferenceKey::SnapGridSize) && control(PreferenceKey::SnapGridTolerance),
                             "Preferences dialog is missing appearance, stylus or autosave controls");
+                    require(control(PreferenceKey::FloatingToolboxRow1) &&
+                                    control(PreferenceKey::FloatingToolboxRow2) &&
+                                    control(PreferenceKey::FloatingToolboxRow3) &&
+                                    control(PreferenceKey::FloatingToolboxRow4) && floatingToolboxApplyButton,
+                            "Preferences dialog is missing the four floating toolbox rows");
+                    require(std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::FloatingToolboxRow1)))) ==
+                                            "PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO" &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::FloatingToolboxRow2)))) ==
+                                            "ZOOM_SLIDER,DRAW_ELLIPSE",
+                            "Preferences rows did not show the imported legacy floating toolbar layout");
                     require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Highlighter) &&
                                     adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonTwo))) ==
@@ -7423,12 +7760,18 @@ private:
                                     ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
                             "Rotation snapping should be enabled by default in Preferences");
                     capture("preferences-dialog");
+                    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "toolbar");
+                    require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "toolbar",
+                            "Preferences dialog did not switch to the Toolbar page");
+                    break;
+                }
+                case 2:
+                    capture("preferences-toolbar");
                     adw_preferences_dialog_set_visible_page_name(preferencesDialog, "behavior");
                     require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "behavior",
                             "Preferences dialog did not switch to the Behavior page");
                     break;
-                }
-                case 2: {
+                case 3: {
                     capture("preferences-behavior");
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne)),
@@ -7443,6 +7786,44 @@ private:
                     adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapGrid)), false);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridSize)), 24.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridTolerance)), 0.4);
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow1)),
+                                          "SMART_SELECT,PEN");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow2)), "ZOOM_SLIDER");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow3)), "FINE");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow4)), "DRAW_ARROW");
+                    g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
+                    require(importedConfig.settings.floatingToolboxRows[0] ==
+                                            std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
+                                    importedConfig.settings.floatingToolboxRows[1] ==
+                                            std::vector<std::string>({"ZOOM_SLIDER"}) &&
+                                    importedConfig.settings.floatingToolboxRows[2] ==
+                                            std::vector<std::string>({"FINE"}) &&
+                                    importedConfig.settings.floatingToolboxRows[3] ==
+                                            std::vector<std::string>({"DRAW_ARROW"}),
+                            "Applying toolbar rows did not update the active layout");
+                    g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
+                    size_t renderedRows = 0;
+                    for (auto* row = gtk_widget_get_first_child(floatingToolboxRowsContainer); row;
+                         row = gtk_widget_get_next_sibling(row)) {
+                        ++renderedRows;
+                    }
+                    require(renderedRows == 4 && floatingToolboxToolButtons.size() == 17,
+                            "Configured rows were not rendered or rebuilding duplicated tool buttons");
+                    auto* firstConfiguredRow = gtk_widget_get_first_child(floatingToolboxRowsContainer);
+                    auto* configuredSmartSelect = gtk_widget_get_first_child(firstConfiguredRow);
+                    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(configuredSmartSelect), true);
+                    require(state.brush.tool == Tool::SmartSelect,
+                            "Configured Smart Select action did not select the Smart Select tool");
+                    selectTool(Tool::Pen);
+                    auto* thirdConfiguredRow = gtk_widget_get_next_sibling(
+                            gtk_widget_get_next_sibling(firstConfiguredRow));
+                    g_signal_emit_by_name(gtk_widget_get_first_child(thirdConfiguredRow), "clicked");
+                    require(std::abs(state.brush.width - prototype::widthsForTool(Tool::Pen)[1]) < 1e-8,
+                            "Configured FINE action did not select the Pen fine-width preset");
+                    auto* fourthConfiguredRow = gtk_widget_get_next_sibling(thirdConfiguredRow);
+                    g_signal_emit_by_name(gtk_widget_get_first_child(fourthConfiguredRow), "clicked");
+                    require(state.drawingMode == prototype::DrawingMode::Arrow,
+                            "Configured DRAW_ARROW action did not select arrow drawing mode");
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     importedConfig.settings.stylusButtonTwo ==
@@ -7455,6 +7836,10 @@ private:
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
+                                    importedConfig.settings.floatingToolboxRows[0] ==
+                                            std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
+                                    importedConfig.settings.floatingToolboxRows[3] ==
+                                            std::vector<std::string>({"DRAW_ARROW"}) &&
                                     std::filesystem::is_regular_file(preferencesConfigDir / "gtk4-canvas.ini"),
                             "Changing preferences did not immediately save and apply the edited values");
                     {
@@ -7521,14 +7906,14 @@ private:
                                 self->showFloatingToolbox(gtk_widget_get_width(self->canvas) / 2.0,
                                                           gtk_widget_get_height(self->canvas) / 2.0);
                                 self->floatingToolboxSmokeReady = gtk_widget_get_visible(self->floatingToolbox) &&
-                                                                  self->floatingToolboxToolButtons.size() == 15;
+                                                                  self->floatingToolboxToolButtons.size() >= 15;
                                 self->floatingToolboxSmokeSource = 0;
                                 return G_SOURCE_REMOVE;
                             },
                             this);
                     break;
                 }
-                case 3:
+                case 4:
                     require(floatingToolboxSmokeReady, "Floating toolbox did not open with the expected tool actions");
                     capture("floating-toolbox");
                     floatingToolboxDismissSmokeReady = false;
@@ -7565,7 +7950,15 @@ private:
                                     std::abs(state.snapGridTolerance - 0.4) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
-                                    std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8,
+                                    std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
+                                    importedConfig.settings.floatingToolboxRows[0] ==
+                                            std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
+                                    importedConfig.settings.floatingToolboxRows[1] ==
+                                            std::vector<std::string>({"ZOOM_SLIDER"}) &&
+                                    importedConfig.settings.floatingToolboxRows[2] ==
+                                            std::vector<std::string>({"FINE"}) &&
+                                    importedConfig.settings.floatingToolboxRows[3] ==
+                                            std::vector<std::string>({"DRAW_ARROW"}),
                             "GTK 4 preference edits were not restored at next startup");
                     openPreferences();
                     break;
@@ -9581,6 +9974,9 @@ private:
     GtkWidget* playObjectButton = nullptr;
     GtkWidget* floatingToolboxToolButton = nullptr;
     GtkWidget* floatingToolbox = nullptr;
+    GtkWidget* floatingToolboxRowsContainer = nullptr;
+    GtkWidget* floatingToolboxApplyButton = nullptr;
+    size_t floatingToolboxStaticToolButtonCount = 0;
     std::vector<std::pair<Tool, GtkWidget*>> floatingToolboxToolButtons;
     prototype::Point floatingToolboxAnchor{};
     guint floatingToolboxHideSource = 0;
@@ -9657,7 +10053,7 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
-    std::array<GtkWidget*, 17> preferenceControls{};
+    std::array<GtkWidget*, 21> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;

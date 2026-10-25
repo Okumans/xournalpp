@@ -122,6 +122,12 @@ target_compile_options(preferences-store-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(preferences-store-test PRIVATE PkgConfig::UI)
 add_test(NAME preferences-store COMMAND preferences-store-test)
 
+add_executable(floating-toolbox-config-test FloatingToolboxConfigTest.cpp)
+target_compile_features(floating-toolbox-config-test PRIVATE cxx_std_20)
+target_compile_options(floating-toolbox-config-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(floating-toolbox-config-test PRIVATE PkgConfig::UI)
+add_test(NAME floating-toolbox-config COMMAND floating-toolbox-config-test)
+
 add_executable(pdf-text-selection-test PdfTextSelectionTest.cpp)
 target_compile_features(pdf-text-selection-test PRIVATE cxx_std_20)
 target_compile_options(pdf-text-selection-test PRIVATE -Wall -Wextra -Wpedantic)

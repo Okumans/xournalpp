@@ -55,16 +55,22 @@ deletions, and multi-sample partial splits while retaining session history. Thum
 include session ink, with up to 16 small PDF backgrounds cached at a time.
 
 The header's Preferences button opens an `AdwPreferencesDialog` with Appearance,
-Input, and Behavior pages. Color scheme, page-sidebar visibility, pressure
-thresholds, stylus side-button actions, autosave cadence, and keyboard/wheel zoom
-steps save immediately to `gtk4-canvas.ini` in the selected configuration
-directory. These values take precedence over imported GTK 3 settings. Stylus
-side buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
+Input, Behavior, and Toolbar pages. Color scheme, page-sidebar visibility,
+pressure thresholds, stylus side-button actions, autosave cadence, and
+keyboard/wheel zoom steps save immediately to `gtk4-canvas.ini` in the selected
+configuration directory. These values take precedence over imported GTK 3
+settings. The four floating-toolbox rows import read-only from `toolbar.ini` and
+can be edited on Preferences > Toolbar; applying them saves the rows in
+`gtk4-canvas.ini` without changing `settings.xml` or `toolbar.ini`. Common
+actions such as Pen, Highlighter, Laser Pointer, PDF selection, Undo, zoom,
+drawing modes, and palette colors work in these rows. `TOOL_FILL` and unknown
+tokens are visible but disabled until their behavior is ported. Stylus side
+buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
 releasing a mapped button restores the toolbar tool. A Floating Toolbox mapping
-opens the panel at the pointer without changing the active tool. Select the
-Floating Toolbox toolbar mode and click the canvas to open the panel there. It
-closes when the pointer leaves or a tool is chosen. Its current tool set is
-built in; legacy `toolbar.ini` customization and tap-action triggers remain
+opens the panel at the pointer without changing the active tool. Smart Select
+stays pinned in the panel header and secondary tools are under More tools. The
+panel closes when the pointer leaves or a tool is chosen. Mouse-button mappings,
+stroke-filter tap triggers, and the legacy drag/drop configuration mode remain
 unported. The Hand toolbar button pans with a primary-button drag across the
 canvas and keeps the current selection. Space-drag, middle-mouse, and touch
 panning remain available.
@@ -332,9 +338,10 @@ and checks its dimensions. This is **not** a compositor-at-2x or physical HiDPI 
 the headless compositor reports device scale 1.
 
 The focused `--preferences-only` GUI check verifies Adw Preferences editing and
-restart persistence, including the stylus Floating Toolbox mapping. It opens the
-toolbox through canvas mode and the stylus mapping, checks that the drawing tool
-stays active, and captures the panel in the private renderer.
+restart persistence, including imported legacy toolbar rows and custom GTK 4
+row edits. It opens the toolbox through canvas mode and the stylus mapping,
+checks that the drawing tool stays active, and captures the panel in the private
+renderer.
 
 The focused `--selection-only` GUI check loads a two-layer native document and
 verifies visible-layer rectangle and lasso selection, hidden-layer fallback,

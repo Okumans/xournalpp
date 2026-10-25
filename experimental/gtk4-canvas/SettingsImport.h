@@ -20,6 +20,7 @@
 #include "BehaviorDefaults.h"
 #include "CanvasState.h"
 #include "CanvasStabilizer.h"
+#include "FloatingToolboxConfig.h"
 #include "PaletteImport.h"
 
 namespace prototype {
@@ -79,6 +80,7 @@ struct ImportedSettings {
     bool disableAudio = false;
     ButtonToolAction stylusButtonOne = ButtonToolAction::None;
     ButtonToolAction stylusButtonTwo = ButtonToolAction::None;
+    FloatingToolboxRows floatingToolboxRows = defaultFloatingToolboxRows();
 
     int effectiveAutosaveSeconds() const {
         if (!autosaveEnabled || autosaveTimeoutMinutes <= 0) {
@@ -554,6 +556,10 @@ inline SettingsImportResult importSettingsFromConfigDir(const std::filesystem::p
         return out;
     }
 
+    const auto floatingToolboxConfig = importFloatingToolboxConfig(configDir);
+    out.settings.floatingToolboxRows = floatingToolboxConfig.rows;
+    out.warning = floatingToolboxConfig.warning;
+
     const auto settingsPath = configDir / "settings.xml";
     std::error_code ec;
     const auto status = std::filesystem::symlink_status(settingsPath, ec);
@@ -599,8 +605,9 @@ inline SettingsImportResult importSettingsFromConfigDir(const std::filesystem::p
     }
 
     out.settings = std::move(parsed.settings);
+    out.settings.floatingToolboxRows = floatingToolboxConfig.rows;
     out.palette = resolvePalette(out.settings.colorPalettePath, configDir);
-    if (!out.palette.warning.empty()) {
+    if (!out.palette.warning.empty() && out.warning.empty()) {
         out.warning = out.palette.warning;
     }
     return out;
