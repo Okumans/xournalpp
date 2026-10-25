@@ -19,6 +19,7 @@
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
+#include "PageSizeTransfer.h"
 #include "PdfPageLabels.h"
 
 namespace prototype::bridge {
@@ -46,6 +47,7 @@ public:
         std::filesystem::path editableInkPath() const { return directory / "editable-ink.dat"; }
         std::filesystem::path editableTextPath() const { return directory / "editable-text.dat"; }
         std::filesystem::path editableImagesPath() const { return directory / "editable-images.dat"; }
+        std::filesystem::path pageSizesPath() const { return directory / "page-sizes.dat"; }
 
         std::vector<std::filesystem::path> layerPreviewPaths() const {
             std::vector<std::filesystem::path> paths;
@@ -103,6 +105,7 @@ public:
             initialTexts = readTextTransfer(extractedTexts);
             initialImages = readImageTransfer(extractedImages);
             initialLayers = readLayerTransfer(layers);
+            initialPageSizes = readPageSizeTransfer(StagedRevision{activeDir}.pageSizesPath());
             initialAudioTargets = readAudioTargets(StagedRevision{activeDir}.audioTargetPath());
             initialPdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
             pdfPageMap = initialPdfPageMap;
@@ -132,32 +135,38 @@ public:
     void saveCopy(const std::string& worker, const std::string& output,
                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
                   const std::vector<ImagePacket>& images,
-                  const LayerDocument& layers) const {
+                  const LayerDocument& layers, const std::vector<PageSizePacket>& pageSizes) const {
         const auto transfer = path / "session.ink";
         const auto textTransfer = path / "session.text";
         const auto layerTransfer = path / "session.layers";
         const auto imageTransfer = path / "session.images";
+        const auto pageSizeTransfer = path / "session.page-sizes";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
         writeImageTransfer(imageTransfer, images);
+        writePageSizeTransfer(pageSizeTransfer, pageSizes);
         runWorker(worker, {"save-copy", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
-                           layerTransfer.string(), imageTransfer.string()});
+                           layerTransfer.string(), imageTransfer.string(), pageSizeTransfer.string()});
     }
 
     std::string save(const std::string& worker, const std::string& output, const std::vector<StrokePacket>& packets,
                      const std::vector<TextItem>& texts, const std::vector<ImagePacket>& images,
-                     const LayerDocument& layers, const std::string& expected) const {
+                     const LayerDocument& layers, const std::vector<PageSizePacket>& pageSizes,
+                     const std::string& expected) const {
         const auto transfer = path / "session.ink";
         const auto textTransfer = path / "session.text";
         const auto layerTransfer = path / "session.layers";
         const auto imageTransfer = path / "session.images";
+        const auto pageSizeTransfer = path / "session.page-sizes";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
         writeImageTransfer(imageTransfer, images);
+        writePageSizeTransfer(pageSizeTransfer, pageSizes);
         auto version = runWorker(worker, {"save", snapshotPath().string(), output, transfer.string(), expected,
-                                          textTransfer.string(), layerTransfer.string(), imageTransfer.string()});
+                                          textTransfer.string(), layerTransfer.string(), imageTransfer.string(),
+                                          pageSizeTransfer.string()});
         if (!version.empty() && version.back() == '\n') {
             version.pop_back();
         }
@@ -167,38 +176,42 @@ public:
     void autosave(const std::string& worker, const std::string& output,
                   const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
                   const std::vector<ImagePacket>& images,
-                  const LayerDocument& layers) const {
+                  const LayerDocument& layers, const std::vector<PageSizePacket>& pageSizes) const {
         const auto transfer = path / "autosave.ink";
         const auto textTransfer = path / "autosave.text";
         const auto layerTransfer = path / "autosave.layers";
         const auto imageTransfer = path / "autosave.images";
+        const auto pageSizeTransfer = path / "autosave.page-sizes";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
         writeImageTransfer(imageTransfer, images);
+        writePageSizeTransfer(pageSizeTransfer, pageSizes);
         runWorker(worker, {"autosave", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
-                           layerTransfer.string(), imageTransfer.string()});
+                           layerTransfer.string(), imageTransfer.string(), pageSizeTransfer.string()});
     }
 
     void exportPdf(const std::string& worker, const std::string& output,
                    const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
                    const std::vector<ImagePacket>& images,
-                   const LayerDocument& layers) const {
+                   const LayerDocument& layers, const std::vector<PageSizePacket>& pageSizes) const {
         const auto transfer = path / "export.ink";
         const auto textTransfer = path / "export.text";
         const auto layerTransfer = path / "export.layers";
         const auto imageTransfer = path / "export.images";
+        const auto pageSizeTransfer = path / "export.page-sizes";
         writeTransfer(transfer, packets);
         writeTextTransfer(textTransfer, texts);
         writeLayerTransfer(layerTransfer, layers);
         writeImageTransfer(imageTransfer, images);
+        writePageSizeTransfer(pageSizeTransfer, pageSizes);
         runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
-                           layerTransfer.string(), imageTransfer.string()});
+                           layerTransfer.string(), imageTransfer.string(), pageSizeTransfer.string()});
     }
 
     StagedRevision stageRevision(const std::string& worker, const std::vector<StrokePacket>& packets,
                                  const std::vector<TextItem>& texts, const std::vector<ImagePacket>& images,
-                                 const LayerDocument& layers) {
+                                 const LayerDocument& layers, const std::vector<PageSizePacket>& pageSizes) {
         StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
         std::filesystem::create_directories(staged.directory);
         try {
@@ -206,14 +219,16 @@ public:
             const auto textTransfer = staged.directory / "revision.text";
             const auto layerTransfer = staged.directory / "revision.layers";
             const auto imageTransfer = staged.directory / "revision.images";
+            const auto pageSizeTransfer = staged.directory / "revision.page-sizes";
             writeTransfer(transfer, packets);
             writeTextTransfer(textTransfer, texts);
             writeLayerTransfer(layerTransfer, layers);
             writeImageTransfer(imageTransfer, images);
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
             runWorker(worker,
                       {"revision", snapshotPath().string(), staged.snapshotPath().string(),
                        staged.previewPath().string(), transfer.string(), textTransfer.string(), layerTransfer.string(),
-                       imageTransfer.string(), audioFolder.string(), audioDirectory.string()});
+                       imageTransfer.string(), audioFolder.string(), audioDirectory.string(), pageSizeTransfer.string()});
         } catch (...) {
             discardRevision(staged);
             throw;
@@ -221,11 +236,13 @@ public:
         return staged;
     }
 
-    StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
-        return stagePageMutation(worker, "insert-page", afterPage);
+    StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage,
+                                        const std::vector<PageSizePacket>& pageSizes) {
+        return stagePageMutation(worker, "insert-page", afterPage, pageSizes);
     }
 
-    StagedRevision stageInsertPagesAfter(const std::string& worker, const std::vector<int>& afterPages) {
+    StagedRevision stageInsertPagesAfter(const std::string& worker, const std::vector<int>& afterPages,
+                                         const std::vector<PageSizePacket>& pageSizes) {
         if (afterPages.empty() || afterPages.size() > maxPdfPageMapPages || pdfPageMap.size() > maxPdfPageMapPages) {
             throw std::runtime_error("Invalid page insertion batch size");
         }
@@ -254,9 +271,11 @@ public:
                 throw std::runtime_error("Cannot write page insertion list");
             }
 
+            const auto pageSizeTransfer = staged.directory / "page-mutation.page-sizes";
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
             runWorker(worker, {"insert-pages", snapshotPath().string(), staged.snapshotPath().string(),
                                staged.previewPath().string(), insertions.string(), audioFolder.string(),
-                               audioDirectory.string()});
+                               audioDirectory.string(), pageSizeTransfer.string()});
         } catch (...) {
             discardRevision(staged);
             throw;
@@ -264,11 +283,13 @@ public:
         return staged;
     }
 
-    StagedRevision stageDeletePageAt(const std::string& worker, int pageIndex) {
-        return stagePageMutation(worker, "delete-page", pageIndex);
+    StagedRevision stageDeletePageAt(const std::string& worker, int pageIndex,
+                                     const std::vector<PageSizePacket>& pageSizes) {
+        return stagePageMutation(worker, "delete-page", pageIndex, pageSizes);
     }
 
-    StagedRevision stageDeletePagesAt(const std::string& worker, const std::vector<int>& pageIndices) {
+    StagedRevision stageDeletePagesAt(const std::string& worker, const std::vector<int>& pageIndices,
+                                      const std::vector<PageSizePacket>& pageSizes) {
         if (pageIndices.empty() || pageIndices.size() >= pdfPageMap.size() || pageIndices.size() > maxPdfPageMapPages) {
             throw std::runtime_error("Invalid page deletion batch size");
         }
@@ -296,9 +317,11 @@ public:
             if (!output) {
                 throw std::runtime_error("Cannot write page deletion list");
             }
+            const auto pageSizeTransfer = staged.directory / "page-mutation.page-sizes";
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
             runWorker(worker, {"delete-pages", snapshotPath().string(), staged.snapshotPath().string(),
                                staged.previewPath().string(), deletions.string(), audioFolder.string(),
-                               audioDirectory.string()});
+                               audioDirectory.string(), pageSizeTransfer.string()});
         } catch (...) {
             discardRevision(staged);
             throw;
@@ -309,7 +332,8 @@ public:
     StagedRevision stageSetPdfPageBackground(const std::string& worker, int documentPage, int pdfPage,
                                              const std::vector<StrokePacket>& packets,
                                              const std::vector<TextItem>& texts, const std::vector<ImagePacket>& images,
-                                             const LayerDocument& layers) {
+                                             const LayerDocument& layers,
+                                             const std::vector<PageSizePacket>& pageSizes) {
         if (documentPage < 0 || static_cast<size_t>(documentPage) >= pdfPageMap.size() || pdfPage < 0 ||
             static_cast<size_t>(pdfPage) >= pdfPageLabels.size()) {
             throw std::runtime_error("Invalid PDF background page selection");
@@ -321,14 +345,16 @@ public:
             const auto text = staged.directory / "background-change.text";
             const auto layer = staged.directory / "background-change.layers";
             const auto image = staged.directory / "background-change.images";
+            const auto pageSizeTransfer = staged.directory / "background-change.page-sizes";
             writeTransfer(ink, packets);
             writeTextTransfer(text, texts);
             writeLayerTransfer(layer, layers);
             writeImageTransfer(image, images);
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
             runWorker(worker, {"set-pdf-page-background", snapshotPath().string(), staged.snapshotPath().string(),
                                staged.previewPath().string(), std::to_string(documentPage), std::to_string(pdfPage),
                                ink.string(), text.string(), layer.string(), image.string(), audioFolder.string(),
-                               audioDirectory.string()});
+                               audioDirectory.string(), pageSizeTransfer.string()});
         } catch (...) {
             discardRevision(staged);
             throw;
@@ -385,7 +411,8 @@ public:
                                               bool allowAnnotated, const std::vector<StrokePacket>& packets,
                                               const std::vector<TextItem>& texts,
                                               const std::vector<ImagePacket>& images,
-                                              const LayerDocument& layers) {
+                                              const LayerDocument& layers,
+                                              const std::vector<PageSizePacket>& pageSizes) {
         if (currentPage < 0 || static_cast<size_t>(currentPage + 1) >= pdfPageMap.size() || pdfPage < 0 ||
             pdfPageMap[static_cast<size_t>(currentPage + 1)] != pdfPage) {
             throw std::runtime_error("The next LayerActions page changed before the operation could start");
@@ -398,14 +425,16 @@ public:
             const auto text = staged.directory / "layer-action.text";
             const auto layer = staged.directory / "layer-action.layers";
             const auto image = staged.directory / "layer-action.images";
+            const auto pageSizeTransfer = staged.directory / "layer-action.page-sizes";
             writeTransfer(ink, packets);
             writeTextTransfer(text, texts);
             writeLayerTransfer(layer, layers);
             writeImageTransfer(image, images);
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
             runWorker(worker, {"layer-actions-clone-next", snapshotPath().string(), staged.snapshotPath().string(),
                                staged.previewPath().string(), std::to_string(currentPage), std::to_string(pdfPage),
                                allowAnnotated ? "1" : "0", ink.string(), text.string(), layer.string(),
-                               image.string(), audioFolder.string(), audioDirectory.string()});
+                               image.string(), audioFolder.string(), audioDirectory.string(), pageSizeTransfer.string()});
             static_cast<void>(readTransfer(staged.editableInkPath()));
             static_cast<void>(readTextTransfer(staged.editableTextPath()));
             static_cast<void>(readImageTransfer(staged.editableImagesPath()));
@@ -442,6 +471,7 @@ public:
     std::vector<StrokePacket> initialInk;
     std::vector<TextItem> initialTexts;
     std::vector<ImagePacket> initialImages;
+    std::vector<PageSizePacket> initialPageSizes;
     std::vector<AudioTarget> initialAudioTargets;
     LayerDocument initialLayers;
     std::vector<int> initialPdfPageMap;
@@ -457,13 +487,16 @@ public:
     const std::filesystem::path& getAudioFolder() const { return audioFolder; }
 
 private:
-    StagedRevision stagePageMutation(const std::string& worker, const char* command, int index) {
+    StagedRevision stagePageMutation(const std::string& worker, const char* command, int index,
+                                     const std::vector<PageSizePacket>& pageSizes) {
         StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
         std::filesystem::create_directories(staged.directory);
         try {
+            const auto pageSizeTransfer = staged.directory / "page-mutation.page-sizes";
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
             runWorker(worker, {command, snapshotPath().string(), staged.snapshotPath().string(),
                                staged.previewPath().string(), std::to_string(index), audioFolder.string(),
-                               audioDirectory.string()});
+                               audioDirectory.string(), pageSizeTransfer.string()});
         } catch (...) {
             discardRevision(staged);
             throw;

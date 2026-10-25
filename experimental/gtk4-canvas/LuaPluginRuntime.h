@@ -26,6 +26,33 @@ struct PluginDialogButton {
     std::string label;
 };
 
+struct PluginStroke {
+    std::vector<double> x;
+    std::vector<double> y;
+    std::vector<double> pressure;
+    std::string tool;
+    double width = 1;
+    std::uint32_t color = 0;
+    int fill = -1;
+    std::string lineStyle = "plain";
+    std::uintptr_t reference = 0;
+    std::optional<std::size_t> page;
+    std::optional<std::size_t> layer;
+};
+
+struct PluginStrokeInput {
+    std::vector<double> x;
+    std::vector<double> y;
+    std::vector<double> pressure;
+    std::optional<std::string> tool;
+    std::optional<double> width;
+    std::optional<std::uint32_t> color;
+    std::optional<int> fill;
+    std::optional<std::string> lineStyle;
+};
+
+enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
+
 struct PluginRuntimeHost {
     std::function<bool(const std::optional<std::string>&, std::uint32_t, bool, std::string&)> changeToolColor;
     std::function<bool(std::string_view, const PluginActionValue&, std::string&)> changeActionState;
@@ -33,6 +60,12 @@ struct PluginRuntimeHost {
     std::function<bool(std::string_view, std::string_view, std::string&)> changeCurrentPageBackground;
     std::function<bool(bool, std::string&)> addEmptyPages;
     std::function<bool(std::int64_t, std::string&)> transformSelectedImages;
+    std::function<bool(std::string_view, std::vector<PluginStroke>&, std::string&)> getStrokes;
+    std::function<bool(const std::vector<PluginStrokeInput>&, PluginStrokeUndoPolicy,
+                       std::vector<std::uintptr_t>&, std::string&)> addStrokes;
+    std::function<bool(double, double, bool, std::string&)> setPageSize;
+    std::function<bool(bool, std::string&)> setLayerVisibility;
+    std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
     std::function<bool(std::string_view, std::string_view, const std::vector<PluginDialogButton>&, bool,
                        std::function<void(int)>, std::string&)>
             openDialog;
@@ -84,6 +117,11 @@ public:
     static int luaChangeCurrentPageBackground(lua_State* state);
     static int luaAddEmptyPages(lua_State* state);
     static int luaTransformSelectedImages(lua_State* state);
+    static int luaGetStrokes(lua_State* state);
+    static int luaAddStrokes(lua_State* state);
+    static int luaSetPageSize(lua_State* state);
+    static int luaSetLayerVisibility(lua_State* state);
+    static int luaSetCurrentLayerName(lua_State* state);
     static int luaOpenDialog(lua_State* state);
 
 private:
@@ -100,6 +138,12 @@ private:
     bool changeCurrentPageBackground(std::string_view format, std::string_view config, std::string& error);
     bool addEmptyPages(bool force, std::string& error);
     bool transformSelectedImages(std::int64_t action, std::string& error);
+    bool getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error);
+    bool addStrokes(const std::vector<PluginStrokeInput>& strokes, PluginStrokeUndoPolicy undoPolicy,
+                    std::vector<std::uintptr_t>& references, std::string& error);
+    bool setPageSize(double width, double height, bool relative, std::string& error);
+    bool setLayerVisibility(bool visible, std::string& error);
+    bool setCurrentLayerName(std::string_view name, std::string& error);
     bool openDialog(Plugin& plugin, std::string_view message, const std::vector<PluginDialogButton>& buttons,
                     bool isError, std::string_view callback, std::string& error);
     void reportError(const Plugin& plugin, std::string_view message) const;

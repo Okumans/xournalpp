@@ -78,6 +78,16 @@ struct RecoveryInfo {
     std::string autosavePath;
 };
 
+std::vector<prototype::bridge::PageSizePacket> currentPageSizes(const CanvasState& state) {
+    std::vector<prototype::bridge::PageSizePacket> sizes;
+    sizes.reserve(static_cast<size_t>(state.pageCount()));
+    for (int page = 0; page < state.pageCount(); ++page) {
+        const auto size = state.pageSize(page);
+        sizes.push_back({size.width, size.height});
+    }
+    return sizes;
+}
+
 struct SurfaceDeleter {
     void operator()(cairo_surface_t* surface) const { cairo_surface_destroy(surface); }
 };
@@ -508,6 +518,7 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto previous = activeAutosavePath;
@@ -516,8 +527,8 @@ private:
         auto* application = G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
         g_application_hold(application);
         prototype::bridge::documentJob(
-                [session, worker, target, packets, texts, images, layers] {
-                    session->autosave(worker, target, packets, texts, images, layers);
+                [session, worker, target, packets, texts, images, layers, pageSizes] {
+                    session->autosave(worker, target, packets, texts, images, layers, pageSizes);
                 },
                 [this, application, session, revision, target, previous](const std::string& error) {
                     autosaving = false;
@@ -979,6 +990,22 @@ private:
         host.transformSelectedImages = [this](std::int64_t action, std::string& error) {
             return transformSelectedImagesFromPlugin(action, error);
         };
+        host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
+                                 std::string& error) { return getPluginStrokes(type, strokes, error); };
+        host.addStrokes = [this](const std::vector<prototype::PluginStrokeInput>& strokes,
+                                 prototype::PluginStrokeUndoPolicy policy,
+                                 std::vector<std::uintptr_t>& references, std::string& error) {
+            return addPluginStrokes(strokes, policy, references, error);
+        };
+        host.setPageSize = [this](double width, double height, bool relative, std::string& error) {
+            return setPluginPageSize(width, height, relative, error);
+        };
+        host.setLayerVisibility = [this](bool visible, std::string& error) {
+            return setPluginLayerVisibility(visible, error);
+        };
+        host.setCurrentLayerName = [this](std::string_view name, std::string& error) {
+            return setPluginCurrentLayerName(name, error);
+        };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -1091,11 +1118,12 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Updating page background…",
-                [session, worker, packets, texts, images, layers, staged] {
-                    *staged = session->stageRevision(worker, packets, texts, images, layers);
+                [session, worker, packets, texts, images, layers, pageSizes, staged] {
+                    *staged = session->stageRevision(worker, packets, texts, images, layers, pageSizes);
                 },
                 [this, session, staged] {
                     PopplerDocument* candidate = nullptr;
@@ -1296,6 +1324,232 @@ private:
         return true;
     }
 
+    bool getPluginStrokes(std::string_view type, std::vector<prototype::PluginStroke>& strokes, std::string& error) {
+        if (type != "selection" && type != "layer" && type != "page" && type != "all") {
+            error = "Unknown argument (" + std::string(type) + ") for getting selection";
+            return false;
+        }
+        if (type == "selection" && !state.hasSelection()) {
+            error = "There is no selection";
+            return false;
+        }
+
+        if (type != "selection" && state.hasSelection()) {
+            state.clearSelection();
+            update();
+        }
+
+        const auto appendStroke = [this, &strokes](size_t index, bool includePage, bool includeLayer) {
+            if (index >= state.ink.size()) {
+                return;
+            }
+            const auto& ink = state.ink[index];
+            prototype::PluginStroke stroke;
+            stroke.x.reserve(ink.points.size());
+            stroke.y.reserve(ink.points.size());
+            if (ink.pressureSensitive) {
+                stroke.pressure.reserve(ink.points.size());
+            }
+            for (const auto& point: ink.points) {
+                stroke.x.push_back(point.x);
+                stroke.y.push_back(point.y);
+                if (ink.pressureSensitive) {
+                    stroke.pressure.push_back(point.pressure);
+                }
+            }
+            switch (ink.brush.tool) {
+                case Tool::Highlighter:
+                case Tool::LaserPointerHighlighter:
+                    stroke.tool = "highlighter";
+                    break;
+                case Tool::Eraser:
+                    stroke.tool = "eraser";
+                    break;
+                default:
+                    stroke.tool = "pen";
+                    break;
+            }
+            stroke.width = ink.brush.width;
+            const auto channel = [](double value) {
+                return static_cast<std::uint32_t>(std::clamp(std::lround(value * 255.0), 0L, 255L));
+            };
+            stroke.color = (channel(ink.brush.color[0]) << 16U) | (channel(ink.brush.color[1]) << 8U) |
+                           channel(ink.brush.color[2]);
+            stroke.fill = ink.fill;
+            stroke.lineStyle = "plain";
+            stroke.reference = reinterpret_cast<std::uintptr_t>(&ink);
+            if (includePage) {
+                stroke.page = static_cast<std::size_t>(ink.page + 1);
+            }
+            if (includeLayer) {
+                stroke.layer = ink.layerId;
+            }
+            strokes.push_back(std::move(stroke));
+        };
+
+        if (type == "selection") {
+            for (const auto index: state.selected) {
+                appendStroke(index, false, false);
+            }
+            return true;
+        }
+
+        const auto appendLayer = [this, &appendStroke](int page, size_t layer, bool includePage,
+                                                       bool includeLayer) {
+            std::vector<size_t> indices;
+            for (size_t index = 0; index < state.ink.size(); ++index) {
+                const auto& ink = state.ink[index];
+                if (ink.page == page && ink.layerId == layer) {
+                    indices.push_back(index);
+                }
+            }
+            std::stable_sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
+                return state.ink[a].layerOrder < state.ink[b].layerOrder;
+            });
+            for (const auto index: indices) {
+                appendStroke(index, includePage, includeLayer);
+            }
+        };
+
+        if (type == "layer") {
+            appendLayer(state.page, state.activeLayerId(state.page), false, false);
+            return true;
+        }
+        const int firstPage = type == "all" ? 0 : state.page;
+        const int lastPage = type == "all" ? state.pageCount() : state.page + 1;
+        for (int page = firstPage; page < lastPage; ++page) {
+            const auto& layers = state.layersForPage(page).layers;
+            for (size_t layer = 1; layer <= layers.size(); ++layer) {
+                appendLayer(page, layer, type == "all", true);
+            }
+        }
+        return true;
+    }
+
+    bool addPluginStrokes(const std::vector<prototype::PluginStrokeInput>& inputs,
+                          prototype::PluginStrokeUndoPolicy policy,
+                          std::vector<std::uintptr_t>& references, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before adding strokes";
+            return false;
+        }
+        if (inputs.empty()) {
+            return true;
+        }
+
+        std::vector<prototype::Ink> additions;
+        additions.reserve(inputs.size());
+        for (const auto& inputStroke: inputs) {
+            const bool highlighter = inputStroke.tool && *inputStroke.tool == "highlighter";
+            const auto& defaults = highlighter ? highlightBrush : penBrush;
+            prototype::Ink stroke{};
+            stroke.page = state.page;
+            stroke.brush.tool = highlighter ? Tool::Highlighter : Tool::Pen;
+            stroke.brush.color = defaults.color;
+            stroke.brush.width = defaults.width;
+            if (inputStroke.width) {
+                stroke.brush.width = *inputStroke.width;
+            }
+            if (inputStroke.color) {
+                const auto color = *inputStroke.color;
+                stroke.brush.color = {static_cast<double>((color >> 16U) & 0xffU) / 255.0,
+                                      static_cast<double>((color >> 8U) & 0xffU) / 255.0,
+                                      static_cast<double>(color & 0xffU) / 255.0};
+            }
+            stroke.fill = inputStroke.fill.value_or(-1);
+            if (inputStroke.lineStyle && *inputStroke.lineStyle != "plain" && *inputStroke.lineStyle != "solid") {
+                error = "The GTK 4 stroke model does not yet support the requested line style";
+                return false;
+            }
+            stroke.pressureSensitive = !inputStroke.pressure.empty() && !highlighter;
+            stroke.points.reserve(inputStroke.x.size());
+            for (size_t index = 0; index < inputStroke.x.size(); ++index) {
+                const double pressure = inputStroke.pressure.empty() ? 1.0 : inputStroke.pressure[index];
+                stroke.points.push_back({inputStroke.x[index], inputStroke.y[index], pressure});
+            }
+            additions.push_back(std::move(stroke));
+        }
+
+        int undoPolicyValue = 0;
+        switch (policy) {
+            case prototype::PluginStrokeUndoPolicy::Grouped:
+                undoPolicyValue = 0;
+                break;
+            case prototype::PluginStrokeUndoPolicy::Individual:
+                undoPolicyValue = 1;
+                break;
+            case prototype::PluginStrokeUndoPolicy::None:
+                undoPolicyValue = 2;
+                break;
+        }
+        const auto first = state.ink.size();
+        if (!state.addPluginStrokes(std::move(additions), undoPolicyValue)) {
+            error = "The stroke batch could not be added to the current layer";
+            return false;
+        }
+        references.clear();
+        references.reserve(inputs.size());
+        for (size_t index = first; index < state.ink.size(); ++index) {
+            references.push_back(reinterpret_cast<std::uintptr_t>(&state.ink[index]));
+        }
+        update();
+        return true;
+    }
+
+    bool setPluginPageSize(double width, double height, bool relative, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before changing page size";
+            return false;
+        }
+        const auto current = state.pageSize(state.page);
+        if (relative) {
+            width += current.width;
+            height += current.height;
+        }
+        if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
+            error = "Page dimensions must be finite and greater than zero";
+            return false;
+        }
+        if (!state.resizePage(state.page, width, height) &&
+            (state.pageSize(state.page).width != width || state.pageSize(state.page).height != height)) {
+            error = "The current page size could not be changed";
+            return false;
+        }
+        update();
+        return true;
+    }
+
+    bool setPluginLayerVisibility(bool visible, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before changing layer visibility";
+            return false;
+        }
+        if (state.page < 0 || static_cast<size_t>(state.page) >= state.pageLayers.size()) {
+            error = "There is no current layer";
+            return false;
+        }
+        state.setLayerVisible(state.page, state.activeLayerId(state.page), visible);
+        update();
+        return true;
+    }
+
+    bool setPluginCurrentLayerName(std::string_view name, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before renaming the layer";
+            return false;
+        }
+        if (!state.renameLayer(state.page, state.activeLayerId(state.page), std::string(name))) {
+            const auto& layers = state.layersForPage(state.page).layers;
+            const auto layer = state.activeLayerId(state.page);
+            if (layer == 0 || layer > layers.size()) {
+                error = "There is no current layer to rename";
+                return false;
+            }
+        }
+        update();
+        return true;
+    }
+
     bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
                                  std::string& error) {
         if (action == "position-highlighting") {
@@ -1473,12 +1727,13 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Advancing Beamer animation…",
-                [session, worker, documentPage, pdfPage, packets, texts, images, layers, staged] {
+                [session, worker, documentPage, pdfPage, packets, texts, images, layers, pageSizes, staged] {
                     *staged = session->stageSetPdfPageBackground(worker, documentPage, pdfPage, packets, texts, images,
-                                                                 layers);
+                                                                 layers, pageSizes);
                 },
                 [this, session, documentPage, staged] {
                     PopplerDocument* candidate = nullptr;
@@ -1581,10 +1836,13 @@ private:
         resetInput(true);
         const auto session = nativeSession;
         const auto worker = options.worker;
+        const auto pageSizes = currentPageSizes(state);
         const auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Removing Beamer animation pages…",
-                [session, worker, pageIndices, staged] { *staged = session->stageDeletePagesAt(worker, pageIndices); },
+                [session, worker, pageIndices, pageSizes, staged] {
+                    *staged = session->stageDeletePagesAt(worker, pageIndices, pageSizes);
+                },
                 [this, session, pageIndices, staged] {
                     PopplerDocument* candidate = nullptr;
                     std::vector<PopplerDocument*> candidateLayers;
@@ -1650,7 +1908,8 @@ private:
                                 const std::vector<prototype::bridge::StrokePacket>& packets,
                                 const std::vector<prototype::TextItem>& texts,
                                 const std::vector<prototype::bridge::ImagePacket>& images,
-                                const prototype::bridge::LayerDocument& layers) {
+                                const prototype::bridge::LayerDocument& layers,
+                                const std::vector<prototype::bridge::PageSizePacket>& pageSizes) {
         if (nativeSession != session || currentPage < 0 || currentPage + 1 >= pageCount) {
             showError("The LayerActions source page changed before cloning could start");
             return;
@@ -1658,9 +1917,10 @@ private:
         auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Cloning layers to the next PDF page…",
-                [session, worker, currentPage, pdfPage, allowAnnotated, packets, texts, images, layers, staged] {
+                [session, worker, currentPage, pdfPage, allowAnnotated, packets, texts, images, layers, pageSizes,
+                 staged] {
                     *staged = session->stageLayerActionsCloneNext(worker, currentPage, pdfPage, allowAnnotated,
-                                                                  packets, texts, images, layers);
+                                                                  packets, texts, images, layers, pageSizes);
                 },
                 [this, session, currentPage, staged] {
                     PopplerDocument* candidate = nullptr;
@@ -1770,13 +2030,14 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         auto target = std::make_shared<prototype::bridge::LayerActionTargetInfo>();
         runDocumentJob(
                 "Checking the next page…",
                 [session, worker, currentPage, packets, texts, images, layers, target] {
                     *target = session->inspectLayerActionTarget(worker, currentPage, packets, texts, images, layers);
                 },
-                [this, currentPage, session, worker, packets, texts, images, layers, target] {
+                [this, currentPage, session, worker, packets, texts, images, layers, pageSizes, target] {
                     if (!target->hasNextPage) {
                         showLayerActionsNotice("No next page. ");
                         return;
@@ -1787,7 +2048,7 @@ private:
                     }
                     if (!target->nextPageAnnotated) {
                         startLayerActionsClone(currentPage, target->nextPdfPage, false, session, worker, packets,
-                                               texts, images, layers);
+                                               texts, images, layers, pageSizes);
                         return;
                     }
 
@@ -1796,10 +2057,10 @@ private:
                             "LayerActions", "Next page contains annotations that will be lost, when proceeding. ",
                             {{1, "Cancel"}, {2, "Proceed"}}, false,
                             [this, currentPage, pdfPage = target->nextPdfPage, session, worker, packets, texts, images,
-                             layers](int response) {
+                             layers, pageSizes](int response) {
                                 if (response == 2) {
                                     startLayerActionsClone(currentPage, pdfPage, true, session, worker, packets, texts,
-                                                           images, layers);
+                                                           images, layers, pageSizes);
                                 }
                             },
                             dialogError);
@@ -1913,6 +2174,16 @@ private:
             return hideLayersFromLayerActions(error);
         } else if (action == "layer-actions-add-top") {
             return addTopLayerToEveryPageFromLayerActions(error);
+        } else if (action == "layer-new-above-current") {
+            if (busy || choosingFile || messageDialog || closed || autosaving) {
+                error = "Wait for the current document operation to finish before adding a layer";
+                return false;
+            }
+            if (!state.addLayerAboveCurrent()) {
+                error = "A layer could not be added above the current layer";
+                return false;
+            }
+            refreshAfterLayerMutation();
         } else {
             error = "This master action is not available in the GTK 4 prototype yet: " + std::string(action);
             return false;
@@ -2294,6 +2565,59 @@ private:
 
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto savedInkSize = state.ink.size();
+        const auto savedSelection = state.selected;
+        const auto savedTextSelection = state.selectedTexts;
+        const auto savedImageSelection = state.selectedImages;
+        prototype::Ink sample;
+        sample.page = state.page;
+        sample.points = {{10, 20, 0.25}, {12.5, 24.5, 0.75}};
+        sample.brush = {Tool::Pen, {0x12 / 255.0, 0x34 / 255.0, 0x56 / 255.0}, 2.25};
+        sample.pressureSensitive = true;
+        sample.layerId = state.activeLayerId(state.page);
+        sample.layerOrder = 999999;
+        state.ink.push_back(sample);
+
+        std::vector<prototype::PluginStroke> allStrokes;
+        std::string strokeError;
+        require(getPluginStrokes("all", allStrokes, strokeError) && allStrokes.size() == savedInkSize + 1,
+                "app.getStrokes('all') did not enumerate every editable stroke");
+        const auto sampleOutput = std::find_if(allStrokes.begin(), allStrokes.end(), [&](const auto& stroke) {
+            return stroke.reference == reinterpret_cast<std::uintptr_t>(&state.ink.back());
+        });
+        require(sampleOutput != allStrokes.end() && sampleOutput->x == std::vector<double>({10, 12.5}) &&
+                        sampleOutput->y == std::vector<double>({20, 24.5}) &&
+                        sampleOutput->pressure == std::vector<double>({0.25, 0.75}) &&
+                        sampleOutput->tool == "pen" && std::abs(sampleOutput->width - 2.25) < 1e-9 &&
+                        sampleOutput->color == 0x123456 && sampleOutput->page == static_cast<size_t>(state.page + 1) &&
+                        sampleOutput->layer == state.activeLayerId(state.page),
+                "app.getStrokes('all') did not preserve native point, pressure, style, or index values");
+        for (const auto& stroke: allStrokes) {
+            require(!stroke.x.empty() && stroke.x.size() == stroke.y.size() && stroke.reference != 0 &&
+                            stroke.page && stroke.layer && *stroke.page >= 1 && *stroke.page <= state.pages.size() &&
+                            *stroke.layer >= 1 &&
+                            *stroke.layer <= state.layersForPage(static_cast<int>(*stroke.page - 1)).layers.size(),
+                    "app.getStrokes('all') lost stroke geometry, references, or 1-based page/layer indices");
+        }
+        state.selected = {state.ink.size() - 1};
+        state.selectedTexts.clear();
+        state.selectedImages.clear();
+        std::vector<prototype::PluginStroke> selectedStrokes;
+        require(getPluginStrokes("selection", selectedStrokes, strokeError) && selectedStrokes.size() == 1 &&
+                        !selectedStrokes.front().page && !selectedStrokes.front().layer,
+                "app.getStrokes('selection') did not return the selected stroke without page metadata");
+        std::vector<prototype::PluginStroke> pageStrokes;
+        require(getPluginStrokes("page", pageStrokes, strokeError) && !state.hasSelection(),
+                "app.getStrokes('page') did not clear the current selection");
+        require(std::all_of(pageStrokes.begin(), pageStrokes.end(), [](const auto& stroke) {
+                    return !stroke.page && stroke.layer.has_value();
+                }),
+                "app.getStrokes('page') returned the wrong page/layer metadata");
+        state.ink.resize(savedInkSize);
+        state.selected = savedSelection;
+        state.selectedTexts = savedTextSelection;
+        state.selectedImages = savedImageSelection;
+        update();
         const auto plugins = pluginRuntime->plugins();
         require(plugins.size() >= 12, "Bundled plugin discovery did not find the full master plugin set");
         const auto colorCycle = pluginRuntime->findPlugin("ColorCycle");
@@ -2317,11 +2641,14 @@ private:
         const auto imageActions = pluginRuntime->findPlugin("ImageActions");
         require(imageActions && imageActions->loaded && imageActions->menuItems == 10,
                 "Enabled bundled ImageActions plugin did not register all ten image operations");
+        const auto fitToContent = pluginRuntime->findPlugin("FitToContent");
+        require(fitToContent && fitToContent->loaded && fitToContent->menuItems == 2,
+                "Enabled bundled FitToContent plugin did not register both page-fitting actions");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 7,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 8,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -2402,7 +2729,8 @@ private:
                 (std::filesystem::path(options.smokeDirectory) / "space-for-notes-round-trip.xopp").string();
         nativeSession->saveCopy(options.worker, notesRoundTripPath,
                                 prototype::bridge::transferInk(state.committedInk()), state.texts,
-                                prototype::bridge::transferImages(state.images), state.pageLayers);
+                                prototype::bridge::transferImages(state.images), state.pageLayers,
+                                currentPageSizes(state));
         const prototype::bridge::DocumentSession reopenedNotes(options.worker, notesRoundTripPath);
         require(reopenedNotes.pdfPageMap == std::vector<int>({0, -1, -1, -1, 1, -1, -1, -1}),
                 "Saving and reopening a SpaceForNotes document changed PDF and note page placement");
@@ -2464,7 +2792,8 @@ private:
         const auto roundTripPath =
                 (std::filesystem::path(options.smokeDirectory) / "toggle-grid-round-trip.xopp").string();
         nativeSession->saveCopy(options.worker, roundTripPath, prototype::bridge::transferInk(state.committedInk()),
-                                state.texts, prototype::bridge::transferImages(state.images), state.pageLayers);
+                                state.texts, prototype::bridge::transferImages(state.images), state.pageLayers,
+                                currentPageSizes(state));
         const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
         require(!reopened.initialLayers.empty() && reopened.initialLayers[0].backgroundFormat == "graph",
                 "Saving and reopening a ToggleGrid document did not preserve its graph background");
@@ -2502,9 +2831,160 @@ private:
                         !pluginRuntime->findPlugin("Example")->pendingEnabled,
                 "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
+        verifyFitToContentPlugin();
         std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-                     "HighlightPosition, ImageActions, SpaceForNotes page insertion, ToggleGrid paper changes, and "
-                     "background undo/redo\n";
+                     "HighlightPosition, ImageActions, FitToContent page resizing, SpaceForNotes page insertion, "
+                     "ToggleGrid paper changes, and background undo/redo\n";
+    }
+
+    void verifyFitToContentPlugin() {
+        const int originalPage = state.page;
+        const auto originalInk = state.ink;
+        const auto originalSelection = state.selected;
+        const auto originalTextSelection = state.selectedTexts;
+        const auto originalImageSelection = state.selectedImages;
+        const auto originalRevision = state.revision();
+        require(nativeSession && !nativeSession->pdfPageMap.empty(),
+                "FitToContent verification requires a native multi-page document");
+        const auto blankPage = std::find(nativeSession->pdfPageMap.begin(), nativeSession->pdfPageMap.end(), -1);
+        require(blankPage != nativeSession->pdfPageMap.end(),
+                "FitToContent verification requires an inserted blank note page");
+        const int page = static_cast<int>(std::distance(nativeSession->pdfPageMap.begin(), blankPage));
+        navigateToPage(page);
+        require(state.page == page, "FitToContent verification could not select the inserted note page");
+        const auto originalSize = state.pageSize(page);
+        const auto originalLayer = state.activeLayerId(page);
+        require(originalLayer > 0, "FitToContent verification requires a foreground layer");
+        const auto originalLayerName = state.layersForPage(page).layers.at(originalLayer - 1).name;
+        require(state.layerVisible(page, originalLayer),
+                "FitToContent verification requires a visible foreground layer");
+
+        state.ink.clear();
+        state.selected.clear();
+        state.selectedTexts.clear();
+        state.selectedImages.clear();
+        prototype::Ink content;
+        content.page = page;
+        content.layerId = originalLayer;
+        content.originLayer = state.activeLayerOrigin(page);
+        content.layerOrder = 0;
+        content.brush = {Tool::Pen, {0.15, 0.35, 0.75}, 4};
+        content.points = {{100, 120, 1}, {220, 180, 1}};
+        state.ink.push_back(content);
+
+        require(pluginRuntime->invokeMenu("FitToContent", 0),
+                "FitToContent layer action did not execute through the plugin menu");
+        const auto fitted = state.pageSize(page);
+        require(std::abs(fitted.width - 124) < 1e-8 && std::abs(fitted.height - 64) < 1e-8,
+                "FitToContent did not account for stroke width when resizing the page");
+        capture("fit-to-content-page");
+        const auto& layers = state.layersForPage(page);
+        require(layers.layers.size() >= originalLayer + 1 &&
+                        layers.layers[originalLayer - 1].name == originalLayerName &&
+                        !layers.layers[originalLayer - 1].visible &&
+                        state.activeLayerId(page) == originalLayer + 1 &&
+                        layers.layers[originalLayer].name == "moved for fitting" &&
+                        layers.layers[originalLayer].visible,
+                "FitToContent did not hide the source layer and name/select its moved-content layer");
+        require(state.ink.size() == 2 && state.ink[0].points.front().x == 100 &&
+                        std::abs(state.ink[1].points.front().x - 2) < 1e-8 &&
+                        std::abs(state.ink[1].points.front().y - 2) < 1e-8 &&
+                        std::abs(state.ink[1].points.back().x - 122) < 1e-8 &&
+                        std::abs(state.ink[1].points.back().y - 62) < 1e-8 &&
+                        state.ink[1].layerId == originalLayer + 1,
+                "FitToContent did not move a copy of the layer strokes into fitted coordinates");
+
+        const auto roundTripPath =
+                (std::filesystem::path(options.smokeDirectory) / "fit-to-content-round-trip.xopp").string();
+        const auto packets = prototype::bridge::transferInk(state.committedInk());
+        const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
+        const auto pageLayers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
+        nativeSession->saveCopy(options.worker, roundTripPath, packets, texts, images, pageLayers, pageSizes);
+        const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
+        require(reopened.initialPageSizes.size() == state.pages.size() &&
+                        std::abs(reopened.initialPageSizes[static_cast<size_t>(page)].width - fitted.width) < 1e-8 &&
+                        std::abs(reopened.initialPageSizes[static_cast<size_t>(page)].height - fitted.height) < 1e-8 &&
+                        reopened.initialInk.size() == 2,
+                "Saving and reopening FitToContent did not preserve fitted page dimensions and strokes");
+
+        const auto nativeSavePath =
+                (std::filesystem::path(options.smokeDirectory) / "fit-to-content-native-save.xopp").string();
+        nativeSession->save(options.worker, nativeSavePath, packets, texts, images, pageLayers, pageSizes,
+                            prototype::bridge::documentVersion(nativeSavePath).token);
+        const prototype::bridge::DocumentSession reopenedNativeSave(options.worker, nativeSavePath);
+        require(std::abs(reopenedNativeSave.initialPageSizes[static_cast<size_t>(page)].width - fitted.width) < 1e-8 &&
+                        std::abs(reopenedNativeSave.initialPageSizes[static_cast<size_t>(page)].height - fitted.height) <
+                                1e-8,
+                "Normal Save did not persist the fitted page dimensions");
+
+        const auto autosavePath =
+                (std::filesystem::path(options.smokeDirectory) / "fit-to-content.autosave.xopp").string();
+        nativeSession->autosave(options.worker, autosavePath, packets, texts, images, pageLayers, pageSizes);
+        const prototype::bridge::DocumentSession reopenedAutosave(options.worker, autosavePath);
+        require(std::abs(reopenedAutosave.initialPageSizes[static_cast<size_t>(page)].width - fitted.width) < 1e-8 &&
+                        std::abs(reopenedAutosave.initialPageSizes[static_cast<size_t>(page)].height - fitted.height) <
+                                1e-8,
+                "Autosave did not persist the fitted page dimensions");
+
+        const auto exportPath = (std::filesystem::path(options.smokeDirectory) / "fit-to-content.pdf").string();
+        nativeSession->exportPdf(options.worker, exportPath, packets, texts, images, pageLayers, pageSizes);
+        auto [exportedPdf, exportedSizes] = openPreviewPdf(exportPath);
+        require(exportedSizes.size() == state.pages.size() &&
+                        std::abs(exportedSizes[static_cast<size_t>(page)].width - fitted.width) < 1e-8 &&
+                        std::abs(exportedSizes[static_cast<size_t>(page)].height - fitted.height) < 1e-8,
+                "PDF export did not use the fitted page dimensions");
+        g_object_unref(exportedPdf);
+
+        const auto insertedRevision = nativeSession->stageInsertPageAfter(options.worker, page, pageSizes);
+        const auto insertedPageSizes = prototype::bridge::readPageSizeTransfer(insertedRevision.pageSizesPath());
+        prototype::bridge::DocumentSession::discardRevision(insertedRevision);
+        require(insertedPageSizes.size() == state.pages.size() + 1 &&
+                        std::abs(insertedPageSizes[static_cast<size_t>(page)].width - fitted.width) < 1e-8 &&
+                        std::abs(insertedPageSizes[static_cast<size_t>(page)].height - fitted.height) < 1e-8 &&
+                        std::abs(insertedPageSizes[static_cast<size_t>(page + 1)].width - fitted.width) < 1e-8 &&
+                        std::abs(insertedPageSizes[static_cast<size_t>(page + 1)].height - fitted.height) < 1e-8,
+                "Page insertion did not preserve the fitted page and inherit its dimensions");
+
+        for (int edit = 0; edit < 5; ++edit) {
+            require(state.canUndo(), "FitToContent lost one of its five grouped undo steps");
+            state.undo();
+        }
+        require(state.revision() == originalRevision && state.pageSize(page).width == originalSize.width &&
+                        state.pageSize(page).height == originalSize.height && state.ink.size() == 1 &&
+                        state.layersForPage(page).layers[originalLayer - 1].visible,
+                "Undo did not restore the document state from before FitToContent");
+        for (int edit = 0; edit < 5; ++edit) {
+            require(state.canRedo(), "FitToContent undo history could not be replayed");
+            state.redo();
+        }
+        require(std::abs(state.pageSize(page).width - fitted.width) < 1e-8 && state.ink.size() == 2,
+                "Redo did not restore FitToContent's page size and moved stroke");
+        for (int edit = 0; edit < 5; ++edit) {
+            state.undo();
+        }
+
+        state.selected = {0};
+        require(pluginRuntime->invokeMenu("FitToContent", 1),
+                "FitToContent selection action did not execute through the plugin menu");
+        require(std::abs(state.pageSize(page).width - fitted.width) < 1e-8 &&
+                        std::abs(state.pageSize(page).height - fitted.height) < 1e-8 && state.ink.size() == 2,
+                "FitToContent selection action did not fit the selected stroke");
+        for (int edit = 0; edit < 5; ++edit) {
+            require(state.canUndo(), "FitToContent selection action lost one of its undo steps");
+            state.undo();
+        }
+        require(state.revision() == originalRevision && state.pageSize(page).width == originalSize.width &&
+                        state.pageSize(page).height == originalSize.height && state.ink.size() == 1,
+                "Undo did not restore the document state from before the selection fit");
+
+        state.ink = originalInk;
+        state.selected = originalSelection;
+        state.selectedTexts = originalTextSelection;
+        state.selectedImages = originalImageSelection;
+        navigateToPage(originalPage);
+        update();
     }
 
     void verifyBeamerIntegration() {
@@ -2542,7 +3022,8 @@ private:
         const auto roundTripPath = std::filesystem::path(options.smokeDirectory) / "beamer-cleaned.xopp";
         nativeSession->saveCopy(options.worker, roundTripPath.string(),
                                 prototype::bridge::transferInk(state.committedInk()), state.texts,
-                                prototype::bridge::transferImages(state.images), state.pageLayers);
+                                prototype::bridge::transferImages(state.images), state.pageLayers,
+                                currentPageSizes(state));
         const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath.string());
         require(reopened.pdfPageMap == std::vector<int>({0}) && reopened.pdfPageLabels.size() >= 2 &&
                         reopened.pdfPageLabels[0] == reopened.pdfPageLabels[1],
@@ -2615,7 +3096,8 @@ private:
                 (std::filesystem::path(options.smokeDirectory) / "layer-actions-clone-round-trip.xopp").string();
         nativeSession->saveCopy(options.worker, cloneRoundTripPath,
                                 prototype::bridge::transferInk(state.committedInk()), state.texts,
-                                prototype::bridge::transferImages(state.images), state.pageLayers);
+                                prototype::bridge::transferImages(state.images), state.pageLayers,
+                                currentPageSizes(state));
         const prototype::bridge::DocumentSession cloneReopened(options.worker, cloneRoundTripPath);
         require(cloneReopened.pdfPageMap == std::vector<int>({0, 1}) && cloneReopened.initialInk.size() == 2 &&
                         cloneReopened.initialInk[0].page == 0 && cloneReopened.initialInk[1].page == 1 &&
@@ -2661,7 +3143,8 @@ private:
         const auto roundTripPath =
                 (std::filesystem::path(options.smokeDirectory) / "layer-actions-round-trip.xopp").string();
         nativeSession->saveCopy(options.worker, roundTripPath, prototype::bridge::transferInk(state.committedInk()),
-                                state.texts, prototype::bridge::transferImages(state.images), state.pageLayers);
+                                state.texts, prototype::bridge::transferImages(state.images), state.pageLayers,
+                                currentPageSizes(state));
         const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
         require(reopened.initialLayers.size() == 2 && reopened.initialLayers[0].layers.size() == 4 &&
                         reopened.initialLayers[1].layers.size() == 4 && reopened.initialInk.size() == 2,
@@ -2703,7 +3186,8 @@ private:
                         (std::filesystem::path(options.smokeDirectory) / "image-actions-round-trip.xopp").string();
                 nativeSession->saveCopy(options.worker, roundTripPath,
                                         prototype::bridge::transferInk(state.committedInk()), state.texts,
-                                        prototype::bridge::transferImages(state.images), state.pageLayers);
+                                        prototype::bridge::transferImages(state.images), state.pageLayers,
+                                        currentPageSizes(state));
                 const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
                 require(reopened.initialImages.size() == 2,
                         "Saving and reopening a split image group did not preserve both image parts");
@@ -2974,7 +3458,8 @@ private:
                 [loaded, worker, recoveryPath, adopted, audioFolder] {
                     *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath, audioFolder);
                     (*loaded)->autosave(worker, adopted, (*loaded)->initialInk, (*loaded)->initialTexts,
-                                        (*loaded)->initialImages, (*loaded)->initialLayers);
+                                        (*loaded)->initialImages, (*loaded)->initialLayers,
+                                        (*loaded)->initialPageSizes);
                     if (adopted != recoveryPath) {
                         prototype::bridge::removeAutosaveFiles(recoveryPath);
                     }
@@ -3068,10 +3553,11 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         const auto session = nativeSession;
         const auto worker = options.worker;
-        runDocumentJob("Saving copy…", [session, worker, path, packets, texts, images, layers] {
-            session->saveCopy(worker, path, packets, texts, images, layers);
+        runDocumentJob("Saving copy…", [session, worker, path, packets, texts, images, layers, pageSizes] {
+            session->saveCopy(worker, path, packets, texts, images, layers, pageSizes);
         },
                        [this, revision, path, after = std::move(after)] {
             savedRevision = revision;
@@ -3117,12 +3603,13 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         const auto session = nativeSession;
         const auto worker = options.worker;
         const auto version = std::make_shared<std::string>();
-        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, images, layers, version] {
+        runDocumentJob("Saving…", [session, worker, path, expected, packets, texts, images, layers, pageSizes, version] {
             const auto before = expected.empty() ? prototype::bridge::documentVersion(path).token : expected;
-            *version = session->save(worker, path, packets, texts, images, layers, before);
+            *version = session->save(worker, path, packets, texts, images, layers, pageSizes, before);
         }, [this, path, revision, version, after = std::move(after)] {
             saveTarget = path;
             saveVersion = *version;
@@ -3424,12 +3911,13 @@ private:
         const auto texts = state.texts;
         const auto images = prototype::bridge::transferImages(state.images);
         const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
         const auto session = nativeSession;
         const auto worker = options.worker;
         // Exporting to PDF never alters .xopp savedRevision, saveTarget, or active autosave artifacts.
         runDocumentJob("Exporting PDF…",
-                       [session, worker, path, packets, texts, images, layers] {
-                           session->exportPdf(worker, path, packets, texts, images, layers);
+                       [session, worker, path, packets, texts, images, layers, pageSizes] {
+                           session->exportPdf(worker, path, packets, texts, images, layers, pageSizes);
                        },
                        [this, path] { exportedPdfPath = path; });
     }
@@ -3485,11 +3973,12 @@ private:
         const int afterPage = state.page;
         const auto session = nativeSession;
         const auto worker = options.worker;
+        const auto pageSizes = currentPageSizes(state);
         auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Inserting page…",
-                [session, worker, afterPage, staged] {
-                    *staged = session->stageInsertPageAfter(worker, afterPage);
+                [session, worker, afterPage, pageSizes, staged] {
+                    *staged = session->stageInsertPageAfter(worker, afterPage, pageSizes);
                 },
                 [this, session, afterPage, staged] {
                     PopplerDocument* candidate = nullptr;
@@ -3586,12 +4075,15 @@ private:
         resetInput(true);
         const int finalPage = afterPages.back() == 0 ? 1 : 0;
         const auto sourcePageSizes = state.pages;
+        const auto pageSizes = currentPageSizes(state);
         const auto session = nativeSession;
         const auto worker = options.worker;
         auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Adding note pages…",
-                [session, worker, afterPages, staged] { *staged = session->stageInsertPagesAfter(worker, afterPages); },
+                [session, worker, afterPages, pageSizes, staged] {
+                    *staged = session->stageInsertPagesAfter(worker, afterPages, pageSizes);
+                },
                 [this, session, afterPages, sourcePageSizes, finalPage, staged] {
                     PopplerDocument* candidate = nullptr;
                     std::vector<PopplerDocument*> candidateLayers;
@@ -3664,11 +4156,12 @@ private:
         const int removeIndex = state.page;
         const auto session = nativeSession;
         const auto worker = options.worker;
+        const auto pageSizes = currentPageSizes(state);
         auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
         runDocumentJob(
                 "Deleting page…",
-                [session, worker, removeIndex, staged] {
-                    *staged = session->stageDeletePageAt(worker, removeIndex);
+                [session, worker, removeIndex, pageSizes, staged] {
+                    *staged = session->stageDeletePageAt(worker, removeIndex, pageSizes);
                 },
                 [this, session, removeIndex, staged] {
                     PopplerDocument* candidate = nullptr;
@@ -11943,14 +12436,15 @@ private:
                 auto texts = state.texts;
                 auto images = prototype::bridge::transferImages(state.images);
                 auto layers = state.pageLayers;
+                auto pageSizes = currentPageSizes(state);
                 packets.push_back({0, false, false, 2, {0, 1, 0}, {{200, 220, 1}, {230, 220, 1}}});
                 const auto session = nativeSession;
                 const auto worker = options.worker;
                 const auto target = saveTarget;
                 const auto before = saveVersion;
                 runDocumentJob("Testing external edit…",
-                               [session, worker, target, before, packets, texts, images, layers] {
-                    session->save(worker, target, packets, texts, images, layers, before);
+                               [session, worker, target, before, packets, texts, images, layers, pageSizes] {
+                    session->save(worker, target, packets, texts, images, layers, pageSizes, before);
                 }, [] {});
                 break;
             }
