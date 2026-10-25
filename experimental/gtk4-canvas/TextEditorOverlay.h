@@ -103,9 +103,56 @@ public:
         if (!draft || fontName.empty() || !std::isfinite(size) || size <= 0) {
             return;
         }
+
+        GtkTextIter start;
+        GtkTextIter end;
+        const bool hasSelection = gtk_text_buffer_get_selection_bounds(editorBuffer, &start, &end) &&
+                                  !gtk_text_iter_equal(&start, &end);
+        if (hasSelection) {
+            auto run = styleAt(start);
+            run.fontName = fontName;
+            run.fontSize = size;
+            pendingStyle = run;
+            removeStyleTags(start, end);
+            applyTagRange(run, start, end);
+            return;
+        }
+
         draft->fontName = fontName;
         draft->fontSize = size;
         applyBaseStyle();
+
+        gtk_text_buffer_get_iter_at_mark(editorBuffer, &start, gtk_text_buffer_get_insert(editorBuffer));
+        auto run = styleAt(start);
+        run.fontName = fontName;
+        run.fontSize = size;
+        pendingStyle = run;
+    }
+
+    void setTextColor(uint32_t color) {
+        if (!active()) {
+            return;
+        }
+
+        GtkTextIter start;
+        GtkTextIter end;
+        const bool hasSelection = gtk_text_buffer_get_selection_bounds(editorBuffer, &start, &end) &&
+                                  !gtk_text_iter_equal(&start, &end);
+        if (hasSelection) {
+            auto run = styleAt(start);
+            run.color = color;
+            pendingStyle = run;
+            removeStyleTags(start, end);
+            applyTagRange(run, start, end);
+            return;
+        }
+
+        draft->color = color;
+        applyBaseStyle();
+        gtk_text_buffer_get_iter_at_mark(editorBuffer, &start, gtk_text_buffer_get_insert(editorBuffer));
+        auto run = styleAt(start);
+        run.color = color;
+        pendingStyle = run;
     }
 
     void applyFormat(Format format) {
@@ -126,6 +173,60 @@ public:
             removeStyleTags(start, end);
             applyTagRange(run, start, end);
         }
+    }
+
+    static void applyFormatToItem(TextItem& item, Format format) {
+        if (item.text.empty()) {
+            return;
+        }
+
+        std::vector<size_t> boundaries{0, item.text.size()};
+        for (const auto& run: item.styleRuns) {
+            if (run.start < run.end && run.end <= item.text.size()) {
+                boundaries.push_back(run.start);
+                boundaries.push_back(run.end);
+            }
+        }
+        std::sort(boundaries.begin(), boundaries.end());
+        boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+
+        std::vector<TextStyleRun> runs;
+        runs.reserve(boundaries.size() - 1);
+        bool allEnabled = true;
+        for (size_t index = 1; index < boundaries.size(); ++index) {
+            const auto start = boundaries[index - 1];
+            const auto end = boundaries[index];
+            if (start == end) {
+                continue;
+            }
+            auto existing = std::find_if(item.styleRuns.begin(), item.styleRuns.end(), [&](const auto& candidate) {
+                return candidate.start <= start && candidate.end >= end;
+            });
+            TextStyleRun run = existing != item.styleRuns.end() ? *existing :
+                    TextStyleRun{start, end, item.fontName, item.fontSize, std::nullopt, 0};
+            run.start = start;
+            run.end = end;
+            allEnabled = allEnabled && formatEnabled(run, format);
+            runs.push_back(std::move(run));
+        }
+
+        const bool enabled = !allEnabled;
+        std::vector<TextStyleRun> formatted;
+        formatted.reserve(runs.size());
+        for (auto& run: runs) {
+            setFormat(run, format, enabled);
+            if (!formatted.empty()) {
+                auto& previous = formatted.back();
+                if (previous.end == run.start && previous.fontName == run.fontName &&
+                    previous.fontSize == run.fontSize && previous.color == run.color &&
+                    previous.attributes == run.attributes) {
+                    previous.end = run.end;
+                    continue;
+                }
+            }
+            formatted.push_back(std::move(run));
+        }
+        item.styleRuns = std::move(formatted);
     }
 
     std::optional<Completion> finish() {
@@ -256,14 +357,35 @@ private:
         return result;
     }
 
-    static void applyFormatToRun(TextStyleRun& run, Format format) {
+    static bool formatEnabled(const TextStyleRun& run, Format format) {
+        if (format == Format::Bold || format == Format::Italic) {
+            auto* font = pango_font_description_from_string(run.fontName.c_str());
+            const bool enabled = format == Format::Bold ?
+                                         pango_font_description_get_weight(font) >= PANGO_WEIGHT_SEMIBOLD :
+                                         pango_font_description_get_style(font) != PANGO_STYLE_NORMAL;
+            pango_font_description_free(font);
+            return enabled;
+        }
+        const uint32_t attribute = formatAttribute(format);
+        return attribute != 0 && (run.attributes & attribute) != 0;
+    }
+
+    static uint32_t formatAttribute(Format format) {
+        switch (format) {
+            case Format::Underline: return 1U;
+            case Format::Strikethrough: return 2U;
+            case Format::Superscript: return 4U;
+            case Format::Subscript: return 8U;
+            default: return 0;
+        }
+    }
+
+    static void setFormat(TextStyleRun& run, Format format, bool enabled) {
         if (format == Format::Bold || format == Format::Italic) {
             auto* font = pango_font_description_from_string(run.fontName.c_str());
             if (format == Format::Bold) {
-                const bool enabled = pango_font_description_get_weight(font) < PANGO_WEIGHT_SEMIBOLD;
                 pango_font_description_set_weight(font, enabled ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL);
             } else {
-                const bool enabled = pango_font_description_get_style(font) != PANGO_STYLE_ITALIC;
                 pango_font_description_set_style(font, enabled ? PANGO_STYLE_ITALIC : PANGO_STYLE_NORMAL);
             }
             char* name = pango_font_description_to_string(font);
@@ -272,19 +394,18 @@ private:
             pango_font_description_free(font);
             return;
         }
-        uint32_t attribute = 0;
-        switch (format) {
-            case Format::Underline: attribute = 1U; break;
-            case Format::Strikethrough: attribute = 2U; break;
-            case Format::Superscript: attribute = 4U; break;
-            case Format::Subscript: attribute = 8U; break;
-            default: return;
+        const uint32_t attribute = formatAttribute(format);
+        if (attribute == 0) {
+            return;
         }
-        const bool enabled = (run.attributes & attribute) == 0;
         if (enabled && (attribute == 4U || attribute == 8U)) {
             run.attributes &= ~(4U | 8U);
         }
         run.attributes = enabled ? (run.attributes | attribute) : (run.attributes & ~attribute);
+    }
+
+    static void applyFormatToRun(TextStyleRun& run, Format format) {
+        setFormat(run, format, !formatEnabled(run, format));
     }
 
     std::vector<TextStyleRun> collectStyleRuns() const {

@@ -2423,6 +2423,127 @@ private:
         return best;
     }
 
+    static uint32_t packTextColor(const std::array<double, 3>& color) {
+        const auto red = static_cast<uint32_t>(std::lround(std::clamp(color[0], 0.0, 1.0) * 255));
+        const auto green = static_cast<uint32_t>(std::lround(std::clamp(color[1], 0.0, 1.0) * 255));
+        const auto blue = static_cast<uint32_t>(std::lround(std::clamp(color[2], 0.0, 1.0) * 255));
+        return 0xff000000U | (red << 16U) | (green << 8U) | blue;
+    }
+
+    void syncTextColorControl(uint32_t color) {
+        state.textColor = {static_cast<double>((color >> 16U) & 0xffU) / 255.0,
+                           static_cast<double>((color >> 8U) & 0xffU) / 255.0,
+                           static_cast<double>(color & 0xffU) / 255.0};
+        if (state.brush.tool == Tool::Text) {
+            state.brush.color = state.textColor;
+        }
+        if (colorButton) {
+            const GdkRGBA rgba{static_cast<float>(state.textColor[0]), static_cast<float>(state.textColor[1]),
+                               static_cast<float>(state.textColor[2]), 1};
+            syncingBrush = true;
+            gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
+            syncingBrush = false;
+        }
+    }
+
+    void updateTextToolbarVisibility() {
+        const bool editingText = textEditor && textEditor->active();
+        const bool textContext = state.brush.tool == Tool::Text || editingText;
+        const bool regularColorContext = state.brush.tool != Tool::Eraser && state.brush.tool != Tool::Hand &&
+                                         !prototype::isSelectionTool(state.brush.tool);
+        if (textFontEntry) {
+            gtk_widget_set_visible(textFontEntry, textContext);
+        }
+        if (textFontSize) {
+            gtk_widget_set_visible(textFontSize, textContext);
+        }
+        if (textFormatBox) {
+            gtk_widget_set_visible(textFormatBox, textContext);
+        }
+        if (colorBox) {
+            gtk_widget_set_visible(colorBox, textContext || regularColorContext);
+        }
+        if (colorButton) {
+            gtk_widget_set_tooltip_text(colorButton, textContext ? "Text color" : "Ink color");
+        }
+    }
+
+    bool beginTextTransform(Device device, double x, double y) {
+        if (state.brush.tool != Tool::Text || !nativeSession || (textEditor && textEditor->active()) || busy || choosingFile ||
+            messageDialog || input.spaceHeld || input.panning() ||
+            (device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
+            return false;
+        }
+
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            return false;
+        }
+
+        const bool textOnlySelection = !state.selectedTexts.empty() && state.selected.empty() &&
+                                       state.selectedImages.empty();
+        const auto bounds = state.selectionBox();
+        bool insideSelectedBounds = false;
+        bool onSelectedHandle = false;
+        if (textOnlySelection && bounds && bounds->page == hit->page) {
+            const auto padding = 5 / state.zoom;
+            insideSelectedBounds = hit->local.x >= bounds->x0 - padding && hit->local.x <= bounds->x1 + padding &&
+                                   hit->local.y >= bounds->y0 - padding && hit->local.y <= bounds->y1 + padding;
+            for (const auto& handle: state.selectionHandles()) {
+                if (std::hypot(handle.x - hit->local.x, handle.y - hit->local.y) <= 5 / state.zoom) {
+                    onSelectedHandle = true;
+                    break;
+                }
+            }
+        }
+
+        const auto pickedText = state.pickText(hit->page, hit->local);
+        const bool pickedTextSelected = pickedText && textOnlySelection &&
+                std::find(state.selectedTexts.begin(), state.selectedTexts.end(), *pickedText) !=
+                        state.selectedTexts.end();
+        if (!onSelectedHandle && pickedText && !pickedTextSelected) {
+            state.clearSelection();
+            state.selectedTexts = {*pickedText};
+        } else if (!onSelectedHandle && !pickedText && !insideSelectedBounds) {
+            return false;
+        } else if (!textOnlySelection && pickedText) {
+            state.clearSelection();
+            state.selectedTexts = {*pickedText};
+        } else if (!textOnlySelection && !pickedText) {
+            return false;
+        }
+
+        state.selectActivePage(hit->page);
+        selectedImageIndex.reset();
+        const auto tool = state.brush.tool;
+        state.brush.tool = Tool::SmartSelect;
+        const bool started = state.beginSelection(x, y);
+        state.brush.tool = tool;
+        if (!started || !state.movingSelection()) {
+            if (started) {
+                state.cancelSelection();
+            }
+            return false;
+        }
+
+        textSelectionOwner = device;
+        if (device == Device::Mouse) {
+            textDragHandled = true;
+        }
+        return true;
+    }
+
+    void applyTextColor(uint32_t color) {
+        if (textEditor && textEditor->active()) {
+            textEditor->setTextColor(color);
+            gtk_widget_grab_focus(textEditor->widget());
+        } else if (state.brush.tool == Tool::Text && !state.selectedTexts.empty()) {
+            if (state.recolorSelectedTexts(color)) {
+                thumbnails.clear();
+            }
+        }
+    }
+
     void startTextEditing(double x, double y) {
         if (!textEditor || !nativeSession || busy || choosingFile || messageDialog) {
             return;
@@ -2439,21 +2560,20 @@ private:
         prototype::TextItem item;
         if (index) {
             item = state.texts[*index];
+            syncTextColorControl(item.color);
         } else {
             item.page = hit->page;
             item.x = hit->local.x;
             item.y = hit->local.y;
             item.fontName = state.textFontName;
             item.fontSize = state.textFontSize;
-            const auto red = static_cast<uint32_t>(std::lround(std::clamp(state.brush.color[0], 0.0, 1.0) * 255));
-            const auto green = static_cast<uint32_t>(std::lround(std::clamp(state.brush.color[1], 0.0, 1.0) * 255));
-            const auto blue = static_cast<uint32_t>(std::lround(std::clamp(state.brush.color[2], 0.0, 1.0) * 255));
-            item.color = 0xff000000U | (red << 16U) | (green << 8U) | blue;
+            item.color = packTextColor(state.textColor);
         }
         textEditor->begin(item, index, state.zoom);
         textEditor->setWrap(item.wrapWidth >= 0);
         gtk_editable_set_text(GTK_EDITABLE(textFontEntry), item.fontName.c_str());
         gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), item.fontSize);
+        updateTextToolbarVisibility();
         updateTextEditorPosition();
         update();
     }
@@ -2477,6 +2597,7 @@ private:
                 state.insertText(completed->item);
             }
         }
+        updateTextToolbarVisibility();
         if (canvas) {
             gtk_widget_grab_focus(canvas);
         }
@@ -2506,6 +2627,16 @@ private:
         if (textEditor && textEditor->active()) {
             textEditor->applyFormat(format);
             gtk_widget_grab_focus(textEditor->widget());
+        } else if (state.brush.tool == Tool::Text && !state.selectedTexts.empty()) {
+            if (state.updateSelectedTexts([&](prototype::TextItem& item) {
+                    prototype::TextEditorOverlay::applyFormatToItem(item, format);
+                    const auto [width, height] = prototype::textNaturalSize(item);
+                    item.layoutWidth = width;
+                    item.layoutHeight = height;
+                })) {
+                thumbnails.clear();
+                update();
+            }
         }
     }
 
@@ -2543,6 +2674,12 @@ private:
             eraserBrush = state.brush;
             state.eraserWidth = eraserBrush.width;
         }
+        if (textSelectionOwner) {
+            state.cancelSelection();
+        }
+        textSelectionOwner.reset();
+        pendingStylusTextTap.reset();
+        textDragHandled = false;
         input.cancel();
         if (!prototype::isSelectionTool(tool) && tool != Tool::Hand) {
             state.clearSelection();
@@ -2551,6 +2688,9 @@ private:
                               highlightBrush :
                       tool == Tool::Eraser ? eraserBrush : penBrush;
         state.brush.tool = tool;
+        if (tool == Tool::Text) {
+            state.brush.color = state.textColor;
+        }
         if (tool == Tool::Eraser) {
             state.brush.color = prototype::behavior::whiteoutColor;
             state.eraserWidth = state.brush.width;
@@ -2602,6 +2742,7 @@ private:
             gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" :
                                                    prototype::isPdfTextSelectionTool(tool) ? "text" : nullptr);
         }
+        updateTextToolbarVisibility();
         gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), static_cast<guint>(state.eraserMode));
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));
         gtk_drop_down_set_selected(GTK_DROP_DOWN(averagingDropdown),
@@ -2688,7 +2829,8 @@ private:
                                                                       &rgba);
                                  }
                                  gtk_popover_popdown(GTK_POPOVER(self->palettePopover));
-                                 gtk_widget_grab_focus(self->canvas);
+                                 gtk_widget_grab_focus(self->textEditor && self->textEditor->active() ?
+                                                              self->textEditor->widget() : self->canvas);
                              })),
                              this);
             gtk_grid_attach(GTK_GRID(grid), swatch, static_cast<int>(i) % columns, static_cast<int>(i) / columns, 1, 1);
@@ -3275,6 +3417,7 @@ private:
                                     "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S), Object");
         gtk_widget_set_tooltip_text(toolButtons[4], "Drag anywhere on the canvas to pan; keep selections active");
         textButton = gtk_toggle_button_new();
+        gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(textButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
         gtk_button_set_child(GTK_BUTTON(textButton), gtk_image_new_from_icon_name("format-text-symbolic"));
         gtk_widget_set_tooltip_text(textButton, "Text tool (T)");
         gtk_accessible_update_property(GTK_ACCESSIBLE(textButton), GTK_ACCESSIBLE_PROPERTY_LABEL, "Text tool", -1);
@@ -3308,6 +3451,17 @@ private:
                                      const auto* item = self->textEditor->item();
                                      self->textEditor->setBaseFont(self->state.textFontName, item->fontSize);
                                      self->updateTextEditorPosition();
+                                 } else if (self->state.brush.tool == Tool::Text &&
+                                            !self->state.selectedTexts.empty()) {
+                                     if (self->state.updateSelectedTexts([&](prototype::TextItem& item) {
+                                             item.fontName = self->state.textFontName;
+                                             const auto [width, height] = prototype::textNaturalSize(item);
+                                             item.layoutWidth = width;
+                                             item.layoutHeight = height;
+                                         })) {
+                                         self->thumbnails.clear();
+                                         self->update();
+                                     }
                                  }
                              }
                          }),
@@ -3324,6 +3478,17 @@ private:
                                  const auto* item = self->textEditor->item();
                                  self->textEditor->setBaseFont(item->fontName, self->state.textFontSize);
                                  self->updateTextEditorPosition();
+                             } else if (self->state.brush.tool == Tool::Text &&
+                                        !self->state.selectedTexts.empty()) {
+                                 if (self->state.updateSelectedTexts([&](prototype::TextItem& item) {
+                                         item.fontSize = self->state.textFontSize;
+                                         const auto [width, height] = prototype::textNaturalSize(item);
+                                         item.layoutWidth = width;
+                                         item.layoutHeight = height;
+                                     })) {
+                                     self->thumbnails.clear();
+                                     self->update();
+                                 }
                              }
                          }),
                          this);
@@ -3355,18 +3520,29 @@ private:
         // The button constructor takes ownership of the dialog.
         colorButton = gtk_color_dialog_button_new(colorDialog);
         gtk_widget_set_tooltip_text(colorButton, "Ink color");
-        g_signal_connect(colorButton, "notify::rgba", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+        g_signal_connect(colorButton, "notify::rgba", G_CALLBACK((+[](GObject*, GParamSpec*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              if (!self->syncingBrush && self->state.brush.tool != Tool::Eraser) {
                                  const auto* color =
                                          gtk_color_dialog_button_get_rgba(GTK_COLOR_DIALOG_BUTTON(self->colorButton));
-                                 self->state.brush.color[0] = color->red;
-                                 self->state.brush.color[1] = color->green;
-                                 self->state.brush.color[2] = color->blue;
+                                 const bool textContext = self->state.brush.tool == Tool::Text ||
+                                         (self->textEditor && self->textEditor->active());
+                                 const std::array selectedColor{static_cast<double>(color->red),
+                                                                static_cast<double>(color->green),
+                                                                static_cast<double>(color->blue)};
+                                 if (textContext) {
+                                     self->state.textColor = selectedColor;
+                                     if (self->state.brush.tool == Tool::Text) {
+                                         self->state.brush.color = selectedColor;
+                                     }
+                                     self->applyTextColor(Prototype::packTextColor(selectedColor));
+                                 } else {
+                                     self->state.brush.color = selectedColor;
+                                 }
                                  self->input.cancel();
                                  self->update();
                              }
-                         }),
+                         })),
                          this);
         gtk_box_append(GTK_BOX(colorBox), colorButton);
         gtk_box_append(GTK_BOX(colorBox), createPalette());
@@ -4127,6 +4303,12 @@ private:
 
     void resetInput(bool interrupted = false) {
         imageGesture.reset();
+        if (textSelectionOwner) {
+            state.cancelSelection();
+        }
+        textSelectionOwner.reset();
+        pendingStylusTextTap.reset();
+        textDragHandled = false;
         if (interrupted) {
             input.interrupt();
         } else {
@@ -4142,6 +4324,17 @@ private:
 
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        if (state.brush.tool == Tool::Text && device == Device::Stylus && !eraserEnd &&
+            activeStylusAction == prototype::ButtonToolAction::None && !(textEditor && textEditor->active())) {
+            pendingStylusTextTap = prototype::Point{x, y};
+            gtk_widget_grab_focus(canvas);
+            return;
+        }
+        if (beginTextTransform(device, x, y)) {
+            gtk_widget_grab_focus(canvas);
+            update();
+            return;
+        }
         if (prototype::isPdfTextSelectionTool(state.brush.tool)) {
             gtk_widget_grab_focus(canvas);
             beginPdfTextSelection(device, x, y);
@@ -4196,6 +4389,23 @@ private:
 
     void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                 uint32_t timeMs = 0) {
+        if (device == Device::Stylus && pendingStylusTextTap) {
+            const auto start = *pendingStylusTextTap;
+            if (std::hypot(x - start.x, y - start.y) < 3.0) {
+                return;
+            }
+            pendingStylusTextTap.reset();
+            if (beginTextTransform(device, start.x, start.y)) {
+                state.moveSelectionPointer(x, y, input.altHeld);
+                update();
+            }
+            return;
+        }
+        if (textSelectionOwner && *textSelectionOwner == device) {
+            state.moveSelectionPointer(x, y, input.altHeld);
+            update();
+            return;
+        }
         if (pdfTextSelection && pdfTextSelection->dragging && pdfTextSelection->owner == device) {
             updatePdfTextSelection(device, x, y);
             return;
@@ -4214,7 +4424,25 @@ private:
         update();
     }
 
-    void finish(Device device, std::optional<double> releasePressure = std::nullopt) {
+    void finish(Device device, std::optional<double> releasePressure = std::nullopt,
+                std::optional<prototype::Point> releasePoint = std::nullopt) {
+        if (textSelectionOwner && *textSelectionOwner == device) {
+            if (releasePoint) {
+                state.moveSelectionPointer(releasePoint->x, releasePoint->y, input.altHeld);
+            }
+            state.finishSelection();
+            textSelectionOwner.reset();
+            gtk_widget_set_cursor_from_name(canvas, nullptr);
+            update();
+            return;
+        }
+        if (device == Device::Stylus && pendingStylusTextTap) {
+            const auto point = *pendingStylusTextTap;
+            pendingStylusTextTap.reset();
+            startTextEditing(point.x, point.y);
+            update();
+            return;
+        }
         if (pdfTextSelection && pdfTextSelection->dragging && pdfTextSelection->owner == device) {
             finishPdfTextSelection(device);
             return;
@@ -4243,7 +4471,11 @@ private:
     void consumeBacklog(std::span<const GdkTimeCoord> samples) {
         for (const auto& sample: samples) {
             if (const auto point = prototype::historySample(sample)) {
-                input.motion(Device::Stylus, *point);
+                if (pendingStylusTextTap || (textSelectionOwner && *textSelectionOwner == Device::Stylus)) {
+                    motion(Device::Stylus, point->x, point->y, point->pressure, point->timeMs);
+                } else {
+                    input.motion(Device::Stylus, *point);
+                }
             }
         }
     }
@@ -4311,6 +4543,7 @@ private:
                          G_CALLBACK(+[](GtkGestureClick* gesture, int presses, double x, double y, gpointer data) {
                              if (!mouseEvent(GTK_EVENT_CONTROLLER(gesture))) return;
                              auto* self = static_cast<Prototype*>(data);
+                             self->textDragHandled = false;
                              if (self->state.drawingMode == prototype::DrawingMode::Spline &&
                                  (self->state.brush.tool == Tool::Pen || self->state.brush.tool == Tool::Highlighter)) {
                                  self->input.splinePress(Device::Mouse, {x, y, std::nullopt}, presses >= 2);
@@ -4325,6 +4558,10 @@ private:
                                  (self->state.brush.tool == Tool::Pen || self->state.brush.tool == Tool::Highlighter)) {
                                  self->input.finish(Device::Mouse);
                                  self->update();
+                                 return;
+                             }
+                             if (self->textDragHandled) {
+                                 self->textDragHandled = false;
                                  return;
                              }
                              const auto tool = self->state.brush.tool;
@@ -4390,9 +4627,9 @@ private:
                              static_cast<Prototype*>(data)->stylusMotion(gesture, x, y);
                          }),
                          this);
-        g_signal_connect(stylus, "up", G_CALLBACK(+[](GtkGestureStylus* gesture, double, double, gpointer data) {
+        g_signal_connect(stylus, "up", G_CALLBACK(+[](GtkGestureStylus* gesture, double x, double y, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
-                             self->finish(Device::Stylus, pressure(gesture));
+                             self->finish(Device::Stylus, pressure(gesture), prototype::Point{x, y});
                              self->update();
                          }),
                          this);
@@ -5703,7 +5940,118 @@ private:
                                 std::abs(state.texts[0].y - 208) < 1e-6 &&
                                 state.selectedTexts == std::vector<size_t>{0},
                         "Undo did not restore the native text position and selection");
+
+                auto* upperLayer = findLayerControl(2, false);
+                require(upperLayer, "Upper layer selector is missing for Text-tool verification");
+                g_signal_emit_by_name(upperLayer, "clicked");
+                selectTool(Tool::Text);
+                require(state.brush.tool == Tool::Text &&
+                                gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(textButton)) &&
+                                std::none_of(toolButtons.begin(), toolButtons.end(), [](GtkWidget* button) {
+                                    return gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button));
+                                }) &&
+                                !gtk_widget_get_visible(selectionModeDropdown),
+                        "Selecting the Text tool left another tool selected in the toolbar");
+                const auto originalText = state.texts[0];
+                const auto editPoint = state.pageScreenPoint(0, originalText.x + originalText.layoutWidth / 2,
+                                                             originalText.y + originalText.layoutHeight / 2);
+                g_signal_emit_by_name(textClick, "released", 1, editPoint.x, editPoint.y);
+                require(textEditor->active() && gtk_widget_get_visible(textFontEntry) &&
+                                gtk_widget_get_visible(textFormatBox) && gtk_widget_get_visible(colorBox),
+                        "Text editing did not expose the quick-format toolbar controls");
+                const GdkRGBA textColor{208.0f / 255, 32.0f / 255, 16.0f / 255, 1};
+                gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &textColor);
+                finishTextEditing();
+                require(state.texts[0].color == 0xffd02010U && state.selectedTexts == std::vector<size_t>{0},
+                        "Text color editing did not persist or leave the edited text selected");
+                waitForNextPaint();
+                capture("text-tool-edited");
+
+                const auto beforeMove = state.texts[0];
+                const auto moveStart = state.pageScreenPoint(0, beforeMove.x + beforeMove.layoutWidth / 2,
+                                                             beforeMove.y + beforeMove.layoutHeight / 2);
+                g_signal_emit_by_name(textClick, "pressed", 1, moveStart.x, moveStart.y);
+                g_signal_emit_by_name(mouse, "drag-begin", moveStart.x, moveStart.y);
+                require(state.movingSelection() && state.selectedTexts == std::vector<size_t>{0},
+                        "Text-tool drag did not begin moving the edited text");
+                g_signal_emit_by_name(mouse, "drag-update", 18.0 * state.zoom, 10.0 * state.zoom);
+                g_signal_emit_by_name(mouse, "drag-end", 18.0 * state.zoom, 10.0 * state.zoom);
+                g_signal_emit_by_name(textClick, "released", 1, moveStart.x, moveStart.y);
+                require(!textEditor->active() && std::abs(state.texts[0].x - beforeMove.x - 18) < 1e-6 &&
+                                std::abs(state.texts[0].y - beforeMove.y - 10) < 1e-6 &&
+                                state.selectedTexts == std::vector<size_t>{0},
+                        "Text-tool drag did not move the object or suppressed click-to-edit incorrectly");
+                waitForNextPaint();
+                capture("text-tool-moved");
+
+                const auto beforeResize = state.texts[0];
+                const auto handle = state.selectionHandles()[4];
+                const auto resizeStart = state.pageScreenPoint(0, handle.x, handle.y);
+                g_signal_emit_by_name(textClick, "pressed", 1, resizeStart.x, resizeStart.y);
+                g_signal_emit_by_name(mouse, "drag-begin", resizeStart.x, resizeStart.y);
+                require(state.movingSelection(), "Text-tool corner drag did not start a resize");
+                g_signal_emit_by_name(mouse, "drag-update", 18.0 * state.zoom, 18.0 * state.zoom);
+                g_signal_emit_by_name(mouse, "drag-end", 18.0 * state.zoom, 18.0 * state.zoom);
+                g_signal_emit_by_name(textClick, "released", 1, resizeStart.x, resizeStart.y);
+                require(std::abs(state.texts[0].xx - beforeResize.xx) > 1e-5 &&
+                                state.selectedTexts == std::vector<size_t>{0},
+                        "Text-tool corner drag did not resize text while keeping the selection active");
+                waitForNextPaint();
+                capture("text-tool-resized");
+
+                const auto stylusTap = state.pageScreenPoint(0, state.texts[0].x + state.texts[0].layoutWidth / 2,
+                                                             state.texts[0].y + state.texts[0].layoutHeight / 2);
+                begin(Device::Stylus, stylusTap.x, stylusTap.y);
+                require(pendingStylusTextTap.has_value(), "A stylus tap did not wait for click-versus-drag routing");
+                finish(Device::Stylus, std::nullopt, stylusTap);
+                require(textEditor->active(), "A stylus tap on text did not open the inline editor");
+                const auto tappedText = textEditor->finish();
+                require(tappedText && tappedText->existingIndex == std::optional<size_t>{0},
+                        "Stylus text editing lost the existing object identity");
+                updateTextToolbarVisibility();
+
+                const auto beforeStylusMove = state.texts[0];
+                const auto stylusStart = state.pageScreenPoint(0, state.texts[0].x + state.texts[0].layoutWidth / 2,
+                                                               state.texts[0].y + state.texts[0].layoutHeight / 2);
+                begin(Device::Stylus, stylusStart.x, stylusStart.y);
+                motion(Device::Stylus, stylusStart.x + 14.0 * state.zoom, stylusStart.y + 8.0 * state.zoom);
+                require(state.movingSelection(), "A stylus drag did not begin moving text with the Text tool");
+                finish(Device::Stylus, std::nullopt,
+                       prototype::Point{stylusStart.x + 14.0 * state.zoom, stylusStart.y + 8.0 * state.zoom});
+                require(std::abs(state.texts[0].x - beforeStylusMove.x - 14) < 1e-6 &&
+                                std::abs(state.texts[0].y - beforeStylusMove.y - 8) < 1e-6 &&
+                                state.selectedTexts == std::vector<size_t>{0},
+                        "Stylus text drag did not commit with the text selected");
+                waitForNextPaint();
+                capture("text-tool-stylus-moved");
+
+                gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), 18);
+                require(state.texts[0].fontSize == 18,
+                        "The font-size toolbar control did not update selected text");
+                g_signal_emit_by_name(textFormatButtons[0], "clicked");
+                require(!state.texts[0].styleRuns.empty(),
+                        "The style toolbar did not format selected text outside the inline editor");
+                const GdkRGBA selectedColor{32.0f / 255, 80.0f / 255, 210.0f / 255, 1};
+                gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &selectedColor);
+                require(state.texts[0].color == 0xff2050d2U,
+                        "The color toolbar did not recolor a selected text object");
+                state.undo();
+                state.undo();
+                state.undo();
+                state.undo();
+                state.undo();
+                state.undo();
+                state.undo();
+                require(state.texts[0].color == originalText.color && state.texts[0].fontSize == originalText.fontSize &&
+                                std::abs(state.texts[0].x - originalText.x) < 1e-6 &&
+                                std::abs(state.texts[0].y - originalText.y) < 1e-6 &&
+                                std::abs(state.texts[0].xx - originalText.xx) < 1e-6 &&
+                                state.texts[0].styleRuns == originalText.styleRuns,
+                        "Undo did not restore the edited text, move, resize and toolbar formatting sequence");
+
                 selectTool(Tool::Pen);
+                require(!gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(textButton)),
+                        "Switching away from Text left the Text tool selected in the header");
                 require(state.selectionAcrossLayers, "Changing drawing tools discarded the remembered selection mode");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
                 require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers &&
@@ -5773,8 +6121,10 @@ private:
                 require(state.ink.size() == handInkCount && state.selected == handSelection &&
                                 state.offsetX != handOffsetX && state.offsetY != handOffsetY && !input.active(),
                         "Hand drag did not pan the canvas while retaining its selected objects");
-                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Select Object and Hand modes, "
-                             "selection-preserving pan, hidden-layer fallback, remembered tool state, and shortcuts\n";
+                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Text-tool mouse/stylus move/resize "
+                             "and formatting, "
+                             "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
+                             "remembered tool state, and shortcuts\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -6693,8 +7043,10 @@ private:
                     update();
                     selectTool(Tool::Text);
                     require(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(textButton)) &&
-                                    !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toolButtons[0])),
-                            "Text tool did not show its selected state in the header");
+                                    std::none_of(toolButtons.begin(), toolButtons.end(), [](GtkWidget* button) {
+                                        return gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button));
+                                    }),
+                            "Text tool did not exclusively show its selected state");
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), 24.0);
                     const auto createAt = state.pageScreenPoint(0, blank->x, blank->y);
                     g_signal_emit_by_name(textClick, "released", 1, createAt.x, createAt.y);
@@ -6708,6 +7060,10 @@ private:
                     gboolean handled = false;
                     g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_b, 0u, GDK_CONTROL_MASK, &handled);
                     require(handled, "Ctrl+B did not format selected text in the inline editor");
+                    const GdkRGBA textColor{208.0f / 255, 32.0f / 255, 16.0f / 255, 1};
+                    gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &textColor);
+                    require(state.textColor == std::array<double, 3>{208.0 / 255, 32.0 / 255, 16.0 / 255},
+                            "The Text toolbar color control did not update the active text color");
                     updateTextEditorPosition();
                     update();
                 } else {
@@ -6725,16 +7081,20 @@ private:
                 finishTextEditing();
                 require(state.texts.size() == newTextIndex + 1 && state.texts.back().text == "GTK rich π" &&
                                 state.texts.back().fontSize == 24.0 && !state.texts.back().styleRuns.empty() &&
-                                state.canUndo(),
-                        "Inline text creation did not preserve its UTF-8 content, size and formatting");
+                                state.texts.back().styleRuns[0].color == 0xffd02010U &&
+                                state.selectedTexts == std::vector<size_t>{newTextIndex} && state.canUndo(),
+                        "Inline text creation did not preserve its formatting or select the new object for transforms");
                 state.undo();
                 require(state.texts.size() == newTextIndex, "Undo did not remove a newly created text item");
                 state.redo();
-                require(state.texts.size() == newTextIndex + 1, "Redo did not restore a newly created text item");
+                require(state.texts.size() == newTextIndex + 1 &&
+                                state.selectedTexts == std::vector<size_t>{newTextIndex},
+                        "Redo did not restore a newly created text item and its selection");
 
                 activateSelection(Tool::SmartSelect);
-                const auto created = state.texts.back();
-                const auto editAt = state.pageScreenPoint(created.page, created.x + 2, created.y + 2);
+                auto created = state.texts.back();
+                const auto editAt = state.pageScreenPoint(created.page, created.x + created.layoutWidth / 2,
+                                                          created.y + created.layoutHeight / 2);
                 g_signal_emit_by_name(textClick, "released", 1, editAt.x, editAt.y);
                 require(textEditor->active(), "Smart Select click did not edit native text");
                 buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
@@ -6742,8 +7102,42 @@ private:
                 gtk_text_buffer_get_end_iter(buffer, &textEnd);
                 gtk_text_buffer_insert(buffer, &textEnd, "!", 1);
                 finishTextEditing();
-                require(state.texts.back().text == "GTK rich π!" && !state.texts.back().styleRuns.empty(),
+                require(state.texts.back().text == "GTK rich π!" && !state.texts.back().styleRuns.empty() &&
+                                state.selectedTexts == std::vector<size_t>{newTextIndex},
                         "Editing existing rich text lost content or its style runs");
+
+                selectTool(Tool::Text);
+                created = state.texts.back();
+                const auto moveStart = state.pageScreenPoint(created.page, created.x + created.layoutWidth / 2,
+                                                             created.y + created.layoutHeight / 2);
+                g_signal_emit_by_name(textClick, "pressed", 1, moveStart.x, moveStart.y);
+                g_signal_emit_by_name(mouse, "drag-begin", moveStart.x, moveStart.y);
+                require(state.movingSelection() && state.selectedTexts == std::vector<size_t>{newTextIndex},
+                        "Dragging existing text with the Text tool did not start its transform");
+                g_signal_emit_by_name(mouse, "drag-update", 24.0 * state.zoom, 16.0 * state.zoom);
+                g_signal_emit_by_name(mouse, "drag-end", 24.0 * state.zoom, 16.0 * state.zoom);
+                g_signal_emit_by_name(textClick, "released", 1, moveStart.x, moveStart.y);
+                require(!textEditor->active() && std::abs(state.texts.back().x - created.x - 24) < 1e-6 &&
+                                std::abs(state.texts.back().y - created.y - 16) < 1e-6 &&
+                                state.selectedTexts == std::vector<size_t>{newTextIndex},
+                        "Text-tool drag did not move the object or incorrectly opened the inline editor");
+
+                const auto beforeResize = state.texts.back();
+                const auto resizeHandle = state.pageScreenPoint(beforeResize.page, state.selectionHandles()[4].x,
+                                                                state.selectionHandles()[4].y);
+                g_signal_emit_by_name(textClick, "pressed", 1, resizeHandle.x, resizeHandle.y);
+                g_signal_emit_by_name(mouse, "drag-begin", resizeHandle.x, resizeHandle.y);
+                require(state.movingSelection(), "A selected text corner did not start resizing in the Text tool");
+                g_signal_emit_by_name(mouse, "drag-update", 20.0 * state.zoom, 20.0 * state.zoom);
+                g_signal_emit_by_name(mouse, "drag-end", 20.0 * state.zoom, 20.0 * state.zoom);
+                g_signal_emit_by_name(textClick, "released", 1, resizeHandle.x, resizeHandle.y);
+                require(std::abs(state.texts.back().xx - beforeResize.xx) > 1e-5 &&
+                                state.selectedTexts == std::vector<size_t>{newTextIndex},
+                        "Text-tool corner drag did not resize text while retaining its selection");
+                state.undo();
+                require(std::abs(state.texts.back().xx - beforeResize.xx) < 1e-8 &&
+                                state.selectedTexts == std::vector<size_t>{newTextIndex},
+                        "Undo did not restore the text resize and its selection");
                 update();
                 break;
             }
@@ -7755,6 +8149,9 @@ private:
     prototype::CanvasInput input{state};
     std::optional<size_t> selectedImageIndex;
     std::optional<ImageGesture> imageGesture;
+    std::optional<Device> textSelectionOwner;
+    std::optional<prototype::Point> pendingStylusTextTap;
+    bool textDragHandled = false;
     std::optional<PdfTextSelectionState> pdfTextSelection;
     PopplerDocument* document = nullptr;
     PopplerDocument* pdfTextDocument = nullptr;
