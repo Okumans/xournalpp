@@ -16,6 +16,7 @@
 #include "DocumentExport.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
+#include "DocumentPathTransfer.h"
 #include "DocumentPdfPages.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
@@ -508,6 +509,19 @@ public:
     std::filesystem::path previewPath() const { return activeDir / "preview.pdf"; }
     std::filesystem::path backgroundPdfPath() const { return activeDir / "background.pdf"; }
     const std::filesystem::path& getAudioFolder() const { return audioFolder; }
+
+    std::string pdfBackgroundFilename() const {
+        const auto metadataPath = activeDir / "pdf-background-path.dat";
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(metadataPath, error)) || error) {
+            return {};
+        }
+        try {
+            return readDocumentPathTransfer(metadataPath);
+        } catch (const std::exception&) {
+            return {};
+        }
+    }
 
 private:
     StagedRevision stagePageMutation(const std::string& worker, const char* command, int index,

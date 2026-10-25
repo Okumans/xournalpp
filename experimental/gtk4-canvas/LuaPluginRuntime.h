@@ -28,6 +28,31 @@ struct PluginDialogButton {
     std::string label;
 };
 
+struct PluginDocumentLayer {
+    bool visible = true;
+    std::string name;
+    std::optional<bool> isAnnotated;
+};
+
+struct PluginDocumentPage {
+    double width = 595;
+    double height = 842;
+    bool isAnnotated = false;
+    std::string pageTypeFormat = "plain";
+    std::string pageTypeConfig;
+    std::uint32_t backgroundColor = 0xffffff;
+    int pdfBackgroundPageNo = 0;
+    std::vector<PluginDocumentLayer> layers;
+    std::size_t currentLayer = 1;
+};
+
+struct PluginDocumentStructure {
+    std::vector<PluginDocumentPage> pages;
+    std::size_t currentPage = 1;
+    std::string pdfBackgroundFilename;
+    std::string xoppFilename;
+};
+
 struct PluginStroke {
     std::vector<double> x;
     std::vector<double> y;
@@ -71,6 +96,7 @@ struct PluginRuntimeHost {
     std::function<bool(const DocumentExportOptions&, std::string&)> exportDocument;
     std::function<bool(std::string_view, std::string&)> quickScreenshot;
     std::function<std::string()> documentFilename;
+    std::function<PluginDocumentStructure()> documentStructure;
     std::function<bool(std::string_view, std::string_view, const std::vector<PluginDialogButton>&, bool,
                        std::function<void(int)>, std::string&)>
             openDialog;
@@ -155,6 +181,7 @@ private:
     bool exportDocument(const DocumentExportOptions& options, std::string& error);
     bool quickScreenshot(std::string_view plugin, std::string& error);
     std::string documentFilename() const;
+    PluginDocumentStructure documentStructure() const;
     bool openDialog(Plugin& plugin, std::string_view message, const std::vector<PluginDialogButton>& buttons,
                     bool isError, std::string_view callback, std::string& error);
     void reportError(const Plugin& plugin, std::string_view message) const;

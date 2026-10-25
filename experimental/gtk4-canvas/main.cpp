@@ -1580,6 +1580,7 @@ private:
             return startQuickScreenshot(plugin, error);
         };
         host.documentFilename = [this] { return saveTarget; };
+        host.documentStructure = [this] { return pluginDocumentStructure(); };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -1984,6 +1985,57 @@ private:
             return true;
         }
         return true;
+    }
+
+    prototype::PluginDocumentStructure pluginDocumentStructure() const {
+        prototype::PluginDocumentStructure structure;
+        structure.currentPage = static_cast<std::size_t>(std::max(0, state.page)) + 1;
+        structure.xoppFilename = saveTarget;
+        if (nativeSession) {
+            structure.pdfBackgroundFilename = nativeSession->pdfBackgroundFilename();
+        }
+
+        structure.pages.reserve(static_cast<std::size_t>(state.pageCount()));
+        for (int pageIndex = 0; pageIndex < state.pageCount(); ++pageIndex) {
+            const auto& pageLayers = state.layersForPage(pageIndex);
+            prototype::PluginDocumentPage page;
+            if (static_cast<std::size_t>(pageIndex) < state.pages.size()) {
+                page.width = state.pages[static_cast<std::size_t>(pageIndex)].width;
+                page.height = state.pages[static_cast<std::size_t>(pageIndex)].height;
+            }
+            page.pageTypeFormat = pageLayers.backgroundFormat.empty() ? "plain" : pageLayers.backgroundFormat;
+            page.pageTypeConfig = pageLayers.backgroundConfig;
+            page.backgroundColor = pageLayers.backgroundColor & 0xffffffU;
+            page.currentLayer = pageLayers.selectedLayer;
+            if (nativeSession && static_cast<std::size_t>(pageIndex) < nativeSession->pdfPageMap.size() &&
+                nativeSession->pdfPageMap[static_cast<std::size_t>(pageIndex)] >= 0) {
+                page.pdfBackgroundPageNo = nativeSession->pdfPageMap[static_cast<std::size_t>(pageIndex)] + 1;
+            }
+
+            page.layers.reserve(pageLayers.layers.size() + 1);
+            page.layers.push_back({pageLayers.backgroundVisible, pageLayers.backgroundName.value_or("Background"),
+                                   std::nullopt});
+            for (std::size_t layerIndex = 0; layerIndex < pageLayers.layers.size(); ++layerIndex) {
+                const auto& canvasLayer = pageLayers.layers[layerIndex];
+                const auto layerId = layerIndex + 1;
+                const bool hasEditableContent =
+                        std::any_of(state.ink.begin(), state.ink.end(), [pageIndex, layerId](const auto& item) {
+                            return item.page == pageIndex && item.layerId == layerId;
+                        }) ||
+                        (state.current && state.current->page == pageIndex && state.current->layerId == layerId) ||
+                        std::any_of(state.texts.begin(), state.texts.end(), [pageIndex, layerId](const auto& item) {
+                            return item.page == pageIndex && item.layerId == layerId;
+                        }) ||
+                        std::any_of(state.images.begin(), state.images.end(), [pageIndex, layerId](const auto& item) {
+                            return item.page == pageIndex && item.layerId == layerId;
+                        });
+                const bool annotated = canvasLayer.hasNonEditableElements || hasEditableContent;
+                page.isAnnotated = page.isAnnotated || annotated;
+                page.layers.push_back({canvasLayer.visible, canvasLayer.name, annotated});
+            }
+            structure.pages.push_back(std::move(page));
+        }
+        return structure;
     }
 
     bool transformSelectedImagesFromPlugin(std::int64_t action, std::string& error) {
@@ -3655,6 +3707,23 @@ private:
 
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto documentStructure = pluginDocumentStructure();
+        require(documentStructure.pages.size() == state.pages.size() &&
+                        documentStructure.currentPage == static_cast<std::size_t>(state.page + 1) &&
+                        documentStructure.pdfBackgroundFilename == sourcePath &&
+                        documentStructure.xoppFilename.empty(),
+                "app.getDocumentStructure did not expose the active PDF and page count");
+        for (std::size_t pageIndex = 0; pageIndex < documentStructure.pages.size(); ++pageIndex) {
+            const auto& page = documentStructure.pages[pageIndex];
+            const auto& pageSize = state.pages[pageIndex];
+            const auto pdfPage = nativeSession->pdfPageMap.at(pageIndex);
+            require(std::abs(page.width - pageSize.width) < 1e-9 &&
+                            std::abs(page.height - pageSize.height) < 1e-9 &&
+                            page.pdfBackgroundPageNo == (pdfPage < 0 ? 0 : pdfPage + 1) &&
+                            page.currentLayer == state.activeLayerId(static_cast<int>(pageIndex)) &&
+                            page.layers.size() == state.layersForPage(static_cast<int>(pageIndex)).layers.size() + 1,
+                    "app.getDocumentStructure lost page dimensions, PDF mapping, current layer, or layer stack");
+        }
         const auto savedInkSize = state.ink.size();
         const auto savedSelection = state.selected;
         const auto savedTextSelection = state.selectedTexts;
@@ -3667,6 +3736,12 @@ private:
         sample.layerId = state.activeLayerId(state.page);
         sample.layerOrder = 999999;
         state.ink.push_back(sample);
+        const auto annotatedStructure = pluginDocumentStructure();
+        require(annotatedStructure.pages.at(static_cast<std::size_t>(state.page)).isAnnotated &&
+                        annotatedStructure.pages.at(static_cast<std::size_t>(state.page))
+                                        .layers.at(sample.layerId)
+                                        .isAnnotated == std::optional<bool>{true},
+                "app.getDocumentStructure did not reflect an editable stroke in page/layer annotation state");
 
         std::vector<prototype::PluginStroke> allStrokes;
         std::string strokeError;

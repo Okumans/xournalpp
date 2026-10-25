@@ -1,4 +1,5 @@
 #include "DocumentLayers.h"
+#include "DocumentPathTransfer.h"
 
 #include <chrono>
 #include <filesystem>
@@ -43,11 +44,12 @@ int main() {
         original[0].backgroundName = "Paper";
         original[0].backgroundFormat = "graph";
         original[0].backgroundConfig = "r1=14.17\nf1=cccccc";
+        original[0].backgroundColor = 0x123456;
         original[0].gridXOffset = 3;
         original[0].gridYOffset = 80;
         original[0].gridXStep = 12.27;
         original[0].gridYStep = 7.085;
-        original[0].layers = {{"Lower", true, {0}}, {"上の層", false, {1, 2}}};
+        original[0].layers = {{"Lower", true, {0}, true}, {"上の層", false, {1, 2}, false}};
         original[1].initialLayerCount = 1;
         original[1].selectedLayer = 1;
         original[1].layers = {{"Page 2", true, {0}}};
@@ -55,6 +57,12 @@ int main() {
         writeLayerTransfer(path, original);
         const auto decoded = readLayerTransfer(path);
         check(decoded == original, "Layer transfer changed page, visibility, name, origin, or active-layer metadata");
+
+        const auto documentPath = root / "pdf-background-path.dat";
+        const std::string backgroundPdfPath = "/tmp/lecture notes/背景.pdf";
+        writeDocumentPathTransfer(documentPath, backgroundPdfPath);
+        check(readDocumentPathTransfer(documentPath) == backgroundPdfPath,
+              "Document-path transfer changed a Unicode PDF background path");
 
         writeLayerTransfer(path, {});
         check(readLayerTransfer(path).empty(), "Empty layer transfer did not round-trip");
@@ -126,6 +134,17 @@ int main() {
         check(version4Decoded.size() == 1 && version4Decoded[0].backgroundName == "P" &&
                       version4Decoded[0].backgroundFormat.empty() && version4Decoded[0].layers[0].name == "L",
               "Version 4 layer-transfer metadata must remain readable without background type metadata");
+
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_LAYERS_V5 1\n1 1 1 0 80 0 0 1\n1 1\nP\n5 8\ngraph\nr1=14.17\n"
+                      "1 1 1\n0\nL\n";
+        }
+        const auto version5Decoded = readLayerTransfer(path);
+        check(version5Decoded.size() == 1 && version5Decoded[0].backgroundFormat == "graph" &&
+                      version5Decoded[0].backgroundConfig == "r1=14.17" &&
+                      version5Decoded[0].layers[0].name == "L",
+              "Version 5 layer-transfer metadata must remain readable after adding page color and annotation fields");
 
         {
             std::ofstream truncated(path, std::ios::binary);

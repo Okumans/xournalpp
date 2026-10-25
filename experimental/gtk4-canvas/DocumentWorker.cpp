@@ -54,6 +54,7 @@
 #include "DocumentAutosave.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
+#include "DocumentPathTransfer.h"
 #include "DocumentPdfPages.h"
 #include "DocumentPublish.h"
 #include "PageSizeTransfer.h"
@@ -664,7 +665,8 @@ void requireNewTarget(const fs::path& target) {
     }
 }
 
-prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
+prototype::bridge::LayerDocument readLayerDocument(
+        const Document& document, const prototype::bridge::LayerDocument* layerMetadata = nullptr) {
     using namespace background_config_strings;
     prototype::bridge::LayerDocument layers;
     layers.reserve(document.getPageCount());
@@ -680,6 +682,7 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
         const auto background = page->getBackgroundType();
         pageInfo.backgroundFormat = PageTypeHandler::getStringForPageTypeFormat(background.format);
         pageInfo.backgroundConfig = background.config;
+        pageInfo.backgroundColor = static_cast<uint32_t>(page->getBackgroundColor()) & 0xffffffU;
         if (background.format == PageTypeFormat::Lined || background.format == PageTypeFormat::Ruled) {
             pageInfo.gridYOffset = 80.0;
         } else if (background.format == PageTypeFormat::IsoDotted ||
@@ -705,7 +708,12 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
         for (size_t layerIndex = 0; layerIndex < page->getLayerCount(); ++layerIndex) {
             const auto* layer = page->getLayersView()[layerIndex];
             auto name = layer->hasName() ? layer->getName() : "";
-            pageInfo.layers.push_back({std::move(name), layer->isVisible(), {layerIndex}});
+            const bool hasNonEditableElements =
+                    layerMetadata && pageIndex < layerMetadata->size() &&
+                                    layerIndex < (*layerMetadata)[pageIndex].layers.size() ?
+                            (*layerMetadata)[pageIndex].layers[layerIndex].hasNonEditableElements :
+                            layer->isAnnotated();
+            pageInfo.layers.push_back({std::move(name), layer->isVisible(), {layerIndex}, hasNonEditableElements});
         }
         layers.push_back(std::move(pageInfo));
     }
@@ -935,8 +943,17 @@ std::vector<prototype::AudioTarget> renderAudioTargets(Document& document, const
 std::vector<prototype::bridge::PageSizePacket> readDocumentPageSizes(const Document& document);
 
 void renderPreviewBundle(Document& document, const fs::path& preview, const fs::path& layerState,
-                         const fs::path& audioFolder = {}, const fs::path& audioDirectory = {}) {
+                         const fs::path& audioFolder = {}, const fs::path& audioDirectory = {},
+                         const prototype::bridge::LayerDocument* layerMetadata = nullptr) {
     createBackgroundPreview(document, preview);
+    auto pdfBackgroundFilename = document.getPdfFilepath().string();
+    const auto sourceMetadata = document.getFilepath().parent_path() / "pdf-background-path.dat";
+    std::error_code metadataError;
+    if (fs::is_regular_file(fs::symlink_status(sourceMetadata, metadataError)) && !metadataError) {
+        pdfBackgroundFilename = prototype::bridge::readDocumentPathTransfer(sourceMetadata);
+    }
+    prototype::bridge::writeDocumentPathTransfer(preview.parent_path() / "pdf-background-path.dat",
+                                                  pdfBackgroundFilename);
     writePdfTextSource(document, preview.parent_path() / "background.pdf");
     prototype::bridge::writePdfPageMap(preview.parent_path() / "pdf-pages.dat", readPdfPageMap(document));
     prototype::bridge::writePdfPageLabels(preview.parent_path() / "pdf-labels.dat", readPdfPageLabels(document));
@@ -951,7 +968,7 @@ void renderPreviewBundle(Document& document, const fs::path& preview, const fs::
         createLayerPreview(document, layerIndex,
                            preview.parent_path() / ("audio-layer-" + std::to_string(layerIndex) + ".pdf"), true);
     }
-    prototype::bridge::writeLayerTransfer(layerState, readLayerDocument(document));
+    prototype::bridge::writeLayerTransfer(layerState, readLayerDocument(document, layerMetadata));
     const auto mediaPath = audioDirectory.empty() ? preview.parent_path() / "audio" : audioDirectory;
     const auto targets = renderAudioTargets(document, audioFolder, mediaPath);
     prototype::writeAudioTargets(preview.parent_path() / "audio-targets.dat", targets);
@@ -1589,7 +1606,7 @@ int main(int argc, char** argv) {
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 hasAudioPaths ? fs::path(argv[11]) : fs::path{},
-                                hasAudioPaths ? fs::path(argv[12]) : fs::path{});
+                                hasAudioPaths ? fs::path(argv[12]) : fs::path{}, &layers);
         } else if (command == "layer-actions-clone-next" &&
                    (argc == 12 || argc == 13 || argc == 14 || argc == 15)) {
             const auto sourcePage = parsePageIndex(argv[5], document->getPageCount(), "source page index");
@@ -1642,7 +1659,7 @@ int main(int argc, char** argv) {
             const auto layerStatePath = pdf.parent_path() / "layers.dat";
             renderPreviewBundle(*document, pdf, layerStatePath,
                                 hasAudioPaths ? fs::path(argv[12]) : fs::path{},
-                                hasAudioPaths ? fs::path(argv[13]) : fs::path{});
+                                hasAudioPaths ? fs::path(argv[13]) : fs::path{}, &layers);
             auto clonedLayers = prototype::bridge::readLayerTransfer(layerStatePath);
             if (clonedLayers.size() != layers.size()) {
                 throw std::runtime_error("LayerActions clone output does not match its source layers");
@@ -1658,6 +1675,8 @@ int main(int argc, char** argv) {
                     // XojPage copy clones layer names and contents but resets visibility to true.
                     clonedLayers[page].layers[layer].visible =
                             isClonePage ? true : sourceState.layers[layer].visible;
+                    clonedLayers[page].layers[layer].hasNonEditableElements =
+                            sourceState.layers[layer].hasNonEditableElements;
                 }
             }
             prototype::bridge::writeLayerTransfer(layerStatePath, clonedLayers);
@@ -1680,8 +1699,9 @@ int main(int argc, char** argv) {
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 argc >= 11 ? fs::path(argv[9]) : fs::path{},
-                                argc >= 11 ? fs::path(argv[10]) : fs::path{});
+                                argc >= 11 ? fs::path(argv[10]) : fs::path{}, &layers);
         } else if (command == "open" && (argc >= 5 && argc <= 11)) {
+            const auto pdfBackgroundFilename = document->getPdfFilepath().string();
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&
                                     g_ascii_strcasecmp(input.extension().string().c_str(), ".xopp") == 0;
@@ -1709,6 +1729,8 @@ int main(int argc, char** argv) {
                 }
             }
             saveCopy(*document, snapshot);
+            prototype::bridge::writeDocumentPathTransfer(snapshot.parent_path() / "pdf-background-path.dat",
+                                                          pdfBackgroundFilename);
             document = load(snapshot, snapshotContext);
             if (argc >= 8) {
                 renderPreviewBundle(*document, pdf, fs::absolute(argv[7]),
