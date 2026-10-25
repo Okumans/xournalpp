@@ -92,9 +92,34 @@ static void visibleLayerSelection() {
           "Multilayer selection should skip hidden layers and continue to the next visible match");
 }
 
+static void resizeHandleOutsidePage() {
+    auto state = fixture();
+    state.clearSelection();
+    TextItem text;
+    text.page = 0;
+    text.layerId = 1;
+    text.text = "bottom edge";
+    text.x = 320;
+    text.y = 285;
+    text.layoutWidth = 40;
+    text.layoutHeight = 20;
+    state.texts.push_back(text);
+    state.selectedTexts = {0};
+    state.brush.tool = Tool::SmartSelect;
+
+    const auto handle = state.selectionHandles()[4];
+    const auto screen = state.pageScreenPoint(0, handle.x, handle.y);
+    check(!state.hitPage(screen.x, screen.y), "Resize fixture handle should be outside the page edge");
+    check(state.hitSelectionHandle(screen.x, screen.y).has_value(),
+          "An exposed selection handle should remain hittable beyond the page edge");
+    check(state.beginSelection(screen.x, screen.y) && state.movingSelection(),
+          "A selection handle outside the page should start its resize gesture");
+}
+
 int main() {
     try {
         visibleLayerSelection();
+        resizeHandleOutsidePage();
         auto state = fixture();
         state.zoom = 1.8;
         state.offsetX = -15;

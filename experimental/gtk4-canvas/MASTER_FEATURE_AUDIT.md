@@ -24,12 +24,13 @@ its status changes with source and test evidence.
 ## Default UI target
 
 Ship a compact, canvas-first default inspired by the established Xournal++
-workspace: use a compact menu row, a slim icon toolbar, and a narrow left rail
-for frequent tools and color swatches. Give the page most of the window, and put
-infrequent actions in menus or secondary tool sections. Keep Smart Select easy
-to find and preserve its native text, PDF, object, and modifier behavior. Keep
-toolbar contents and placement user-configurable, including the existing
-customization paths, as the visual design evolves.
+workspace: use the Adw header, one tool-and-page control strip, and a narrow
+left rail for frequent tools and color swatches. Start with a dark charcoal
+canvas surround and the page sidebar closed. Put infrequent actions in menus or
+secondary tool sections. Keep Smart Select easy to find and preserve its native
+text, PDF, object, and modifier behavior. Keep toolbar contents and placement
+user-configurable, including the existing customization paths, as the visual
+design evolves.
 
 ## Master tools
 
@@ -56,7 +57,7 @@ registration in `ToolHandler::initTools`.
 | `drawArrow` | Partial | Arrow path drawing works; match native geometry and styling. |
 | `drawDoubleArrow` | Partial | Double-arrow path drawing works; match native geometry and styling. |
 | `drawCoordinateSystem` | Partial | Coordinate-axis paths work; match native geometry and production modifiers. |
-| `showFloatingToolbox` | Partial | A GTK4 floating panel opens at the pointer, clamps to the canvas, closes on pointer leave or tool choice, and works from canvas mode or a stylus mapping. Smart Select is pinned in the header, while secondary tools are grouped under a collapsed More tools disclosure. Four `toolbarFloat` rows import read-only from `toolbar.ini`, can be edited in Preferences > Toolbar, and persist separately in `gtk4-canvas.ini`; common pen/highlighter, laser/PDF, undo/redo, zoom, size, drawing-mode, and palette actions render. `TOOL_FILL` and unknown tokens are disabled pending parity. Add complete token coverage, mouse-button mappings, stroke-filter tap triggers, the legacy drag/drop/configuration workflow, and exact placement/dismiss/reopen behavior. |
+| `showFloatingToolbox` | Partial | A GTK4 floating panel opens at the pointer, clamps to the canvas, closes on pointer leave or tool choice, and works from canvas mode or a stylus mapping. Smart Select is pinned in the main left rail, while secondary tools are grouped under More tools. Four `toolbarFloat` rows import read-only from `toolbar.ini`, can be edited in Preferences > Toolbar, and persist separately in `gtk4-canvas.ini`; common pen/highlighter, laser/PDF, undo/redo, zoom, size, drawing-mode, and palette actions render. `TOOL_FILL` and unknown tokens are disabled pending parity. Add complete token coverage, mouse-button mappings, stroke-filter tap triggers, the legacy drag/drop/configuration workflow, and exact placement/dismiss/reopen behavior. |
 | `drawSpline` | Partial | Knot, tangent, preview, and editing behavior work; verify generated geometry against the production handler. |
 | `selectPdfTextLinear` | Partial | Linear drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
 | `selectPdfTextRect` | Partial | Rectangular drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
@@ -114,7 +115,7 @@ it stays listed because it is part of the master plugin distribution.
 
 | Area | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, selection edge-pan speed/multiplier, spacing, tolerance, laser tool colors/sizes, laser fade delay, stylus Floating Toolbox mapping, audio playback folder/seek/disable settings, and editable floating-toolbar rows. Audit every user-facing setting, per-device `deviceClasses`, audio device/recording controls, unsupported toolbar actions, and the legacy drag/drop customization workflow. |
+| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, selection edge-pan speed/multiplier, spacing, tolerance, laser tool colors/sizes, laser fade delay, stylus Floating Toolbox mapping, audio playback folder/seek/disable settings, the customizable main tool rail, and editable floating-toolbar rows. Audit every user-facing setting, per-device `deviceClasses`, audio device/recording controls, unsupported toolbar actions, and the legacy drag/drop customization workflow. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |

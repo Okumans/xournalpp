@@ -186,6 +186,18 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     settings.stylusButtonOne = preferences_detail::readButtonAction(keyFile.get(), "button-one", settings.stylusButtonOne);
     settings.stylusButtonTwo = preferences_detail::readButtonAction(keyFile.get(), "button-two", settings.stylusButtonTwo);
     preferences_detail::readFloatingToolboxRows(keyFile.get(), settings.floatingToolboxRows);
+    if (g_key_file_has_key(keyFile.get(), "Toolbar", "main-tool-rail", nullptr)) {
+        GError* railError = nullptr;
+        gchar* value = g_key_file_get_string(keyFile.get(), "Toolbar", "main-tool-rail", &railError);
+        if (!railError && value) {
+            const auto parsed = parseMainToolRail(value);
+            if (parsed) {
+                settings.mainToolRail = *parsed;
+            }
+        }
+        g_clear_error(&railError);
+        g_free(value);
+    }
     return result;
 }
 
@@ -237,6 +249,12 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
         const auto value = serializeFloatingToolboxRow(settings.floatingToolboxRows[index]);
         g_key_file_set_string(keyFile.get(), "Floating Toolbox", toolboxKeys[index], value.c_str());
     }
+    const auto mainToolRail = serializeMainToolRail(settings.mainToolRail);
+    if (mainToolRail.empty()) {
+        errorMessage = "Cannot save an invalid GTK 4 main tool rail layout";
+        return false;
+    }
+    g_key_file_set_string(keyFile.get(), "Toolbar", "main-tool-rail", mainToolRail.c_str());
     gsize length = 0;
     gchar* data = g_key_file_to_data(keyFile.get(), &length, nullptr);
     if (!data) {

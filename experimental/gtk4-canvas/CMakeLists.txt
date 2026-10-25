@@ -128,6 +128,11 @@ target_compile_options(floating-toolbox-config-test PRIVATE -Wall -Wextra -Wpeda
 target_link_libraries(floating-toolbox-config-test PRIVATE PkgConfig::UI)
 add_test(NAME floating-toolbox-config COMMAND floating-toolbox-config-test)
 
+add_executable(main-tool-rail-test MainToolRailTest.cpp)
+target_compile_features(main-tool-rail-test PRIVATE cxx_std_20)
+target_compile_options(main-tool-rail-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME main-tool-rail COMMAND main-tool-rail-test)
+
 add_executable(pdf-text-selection-test PdfTextSelectionTest.cpp)
 target_compile_features(pdf-text-selection-test PRIVATE cxx_std_20)
 target_compile_options(pdf-text-selection-test PRIVATE -Wall -Wextra -Wpedantic)

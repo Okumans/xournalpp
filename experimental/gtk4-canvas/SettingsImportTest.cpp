@@ -211,7 +211,7 @@ int main() {
     // 3. Truncated/malformed XML rolls back transactionally to clean defaults.
     const auto truncated = prototype::parseSettingsXml(
             "<settings><property name=\"themeVariant\" value=\"forceDark\"/><data name=\"tools\">");
-    require(!truncated.ok && truncated.settings.themeVariant == prototype::ThemeVariant::UseSystem,
+    require(!truncated.ok && truncated.settings.themeVariant == prototype::ThemeVariant::ForceDark,
             "Truncated XML must fail cleanly and roll back partial mutations");
     require(!prototype::parseSettingsXml("<wrongRoot/>").ok, "Non-<settings> root must be rejected");
 

@@ -585,6 +585,7 @@ private:
     enum class PreferenceKey : guint {
         Theme = 1,
         Sidebar,
+        MainToolRail,
         PressureSensitivity,
         MinimumPressure,
         PressureMultiplier,
@@ -735,6 +736,30 @@ private:
         return true;
     }
 
+    bool applyMainToolRail() {
+        auto* entry = preferenceControls[static_cast<size_t>(PreferenceKey::MainToolRail)];
+        const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
+        const auto parsed = prototype::parseMainToolRail(raw ? raw : "");
+        if (!parsed) {
+            gtk_widget_add_css_class(entry, "error");
+            showAlert("Invalid main tool rail layout",
+                      "Use comma-separated action names and keep SMART_SELECT in the rail.");
+            return false;
+        }
+        gtk_widget_remove_css_class(entry, "error");
+
+        const auto previous = importedConfig.settings.mainToolRail;
+        importedConfig.settings.mainToolRail = *parsed;
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            importedConfig.settings.mainToolRail = previous;
+            showAlert("Could not save toolbar preferences", error);
+            return false;
+        }
+        rebuildMainToolRail();
+        return true;
+    }
+
     void changePreference(PreferenceKey key, GtkWidget* control) {
         auto& settings = importedConfig.settings;
         switch (key) {
@@ -809,6 +834,7 @@ private:
             case PreferenceKey::FloatingToolboxRow2:
             case PreferenceKey::FloatingToolboxRow3:
             case PreferenceKey::FloatingToolboxRow4:
+            case PreferenceKey::MainToolRail:
             case PreferenceKey::Count:
                 return;
         }
@@ -974,6 +1000,27 @@ private:
         adw_preferences_group_add(toolboxGroup, GTK_WIDGET(applyRow));
         adw_preferences_page_add(toolbarPage, toolboxGroup);
         adw_preferences_dialog_add(preferencesDialog, toolbarPage);
+
+        auto* mainRailGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(mainRailGroup, "Main tool rail");
+        adw_preferences_group_set_description(
+                mainRailGroup,
+                "Choose the tools shown directly beside the canvas. Omitted tools stay available under More tools. "
+                "Keep SMART_SELECT in this list so it is always one click away.");
+        preferenceTextEntry(mainRailGroup, "Tool order", "Comma-separated actions",
+                            prototype::serializeMainToolRail(importedConfig.settings.mainToolRail),
+                            PreferenceKey::MainToolRail);
+        auto* mainRailApplyRow = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(mainRailApplyRow), "Save main tool rail");
+        adw_action_row_set_subtitle(mainRailApplyRow, "Apply the tool order and save it for future sessions");
+        auto* mainRailApplyButton = gtk_button_new_with_label("Apply");
+        mainToolRailApplyButton = mainRailApplyButton;
+        g_signal_connect(mainRailApplyButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->applyMainToolRail();
+                         }), this);
+        adw_action_row_add_suffix(mainRailApplyRow, mainRailApplyButton);
+        adw_preferences_group_add(mainRailGroup, GTK_WIDGET(mainRailApplyRow));
+        adw_preferences_page_add(toolbarPage, mainRailGroup);
         adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
     }
 
@@ -3503,7 +3550,10 @@ private:
             return false;
         }
 
-        const auto hit = state.hitPage(x, y);
+        auto hit = state.hitPage(x, y);
+        if (!hit) {
+            hit = state.hitSelectionHandle(x, y);
+        }
         if (!hit) {
             return false;
         }
@@ -3816,6 +3866,10 @@ private:
         }
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser && tool != Tool::PlayObject);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser && tool != Tool::PlayObject);
+        if (paletteRailBox) {
+            gtk_widget_set_sensitive(paletteRailBox, tool != Tool::Eraser && tool != Tool::PlayObject &&
+                                                           tool != Tool::Hand && tool != Tool::Link);
+        }
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
         if (tool != Tool::Link && linkInfoPopover) {
             gtk_popover_popdown(GTK_POPOVER(linkInfoPopover));
@@ -3840,8 +3894,162 @@ private:
         }
     }
 
-    GtkWidget* createPalette() {
+    GtkWidget* createPaletteSwatch(size_t index) {
+        const auto& entry = importedConfig.palette.swatches[index];
+        auto* swatch = gtk_button_new();
+        gtk_widget_add_css_class(swatch, "flat");
+        gtk_widget_set_size_request(swatch, 42, 34);
+        auto* dot = gtk_drawing_area_new();
+        gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(dot), 20);
+        gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(dot), 20);
+        g_object_set_data(G_OBJECT(dot), "swatch-index", GUINT_TO_POINTER(static_cast<guint>(index)));
+        gtk_drawing_area_set_draw_func(
+                GTK_DRAWING_AREA(dot),
+                +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    const auto swatchIndex = static_cast<size_t>(
+                            GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(area), "swatch-index")));
+                    if (swatchIndex >= self->importedConfig.palette.swatches.size()) {
+                        return;
+                    }
+                    const auto& color = self->importedConfig.palette.swatches[swatchIndex].color;
+                    const double radius = std::max(2.0, std::min(width, height) / 2.0 - 2.0);
+                    cairo_arc(cr, width / 2.0, height / 2.0, radius, 0, 2 * G_PI);
+                    cairo_set_source_rgb(cr, color[0], color[1], color[2]);
+                    cairo_fill_preserve(cr);
+                    cairo_set_source_rgba(cr, 0.45, 0.45, 0.45, 0.65);
+                    cairo_set_line_width(cr, 1.0);
+                    cairo_stroke(cr);
+                },
+                this, nullptr);
+        gtk_button_set_child(GTK_BUTTON(swatch), dot);
+        gtk_widget_set_tooltip_text(swatch, entry.name.c_str());
+        gtk_accessible_update_property(GTK_ACCESSIBLE(swatch), GTK_ACCESSIBLE_PROPERTY_LABEL, entry.name.c_str(), -1);
+        g_object_set_data(G_OBJECT(swatch), "swatch-index", GUINT_TO_POINTER(static_cast<guint>(index)));
+        g_signal_connect(swatch, "clicked", G_CALLBACK((+[](GtkButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto swatchIndex = static_cast<size_t>(
+                                     GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "swatch-index")));
+                             if (swatchIndex < self->importedConfig.palette.swatches.size()) {
+                                 const auto& color = self->importedConfig.palette.swatches[swatchIndex].color;
+                                 const GdkRGBA rgba{static_cast<float>(color[0]), static_cast<float>(color[1]),
+                                                    static_cast<float>(color[2]), 1.0f};
+                                 gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(self->colorButton), &rgba);
+                             }
+                             if (self->palettePopover) {
+                                 gtk_popover_popdown(GTK_POPOVER(self->palettePopover));
+                             }
+                             gtk_widget_grab_focus(self->textEditor && self->textEditor->active() ?
+                                                           self->textEditor->widget() : self->canvas);
+                         })),
+                         this);
+        return swatch;
+    }
+
+    GtkWidget* mainToolWidget(prototype::MainToolAction action) const {
+        switch (action) {
+            case prototype::MainToolAction::SmartSelect:
+                return toolButtons[3];
+            case prototype::MainToolAction::Pen:
+                return toolButtons[0];
+            case prototype::MainToolAction::Highlighter:
+                return toolButtons[1];
+            case prototype::MainToolAction::Eraser:
+                return toolButtons[2];
+            case prototype::MainToolAction::Text:
+                return textButton;
+            case prototype::MainToolAction::Hand:
+                return toolButtons[4];
+            case prototype::MainToolAction::Link:
+                return linkButton;
+            case prototype::MainToolAction::LaserPointerPen:
+                return laserButtons[0];
+            case prototype::MainToolAction::LaserPointerHighlighter:
+                return laserButtons[1];
+            case prototype::MainToolAction::PlayObject:
+                return playObjectButton;
+            case prototype::MainToolAction::FloatingToolbox:
+                return floatingToolboxToolButton;
+        }
+        return nullptr;
+    }
+
+    void rebuildMainToolRail() {
+        std::vector<GtkWidget*> retainedWidgets;
+        const auto clearBox = [&retainedWidgets](GtkWidget* box) {
+            for (auto* child = gtk_widget_get_first_child(box); child;) {
+                auto* next = gtk_widget_get_next_sibling(child);
+                g_object_ref(child);
+                retainedWidgets.push_back(child);
+                gtk_box_remove(GTK_BOX(box), child);
+                child = next;
+            }
+        };
+        clearBox(mainToolGroup);
+        clearBox(moreToolsGroup);
+
+        const auto& actions = importedConfig.settings.mainToolRail;
+        for (const auto action: actions) {
+            if (auto* widget = mainToolWidget(action)) {
+                gtk_box_append(GTK_BOX(mainToolGroup), widget);
+            }
+        }
+        bool hasMore = false;
+        for (const auto& entry: prototype::mainToolRailNames) {
+            if (std::find(actions.begin(), actions.end(), entry.first) != actions.end()) {
+                continue;
+            }
+            if (auto* widget = mainToolWidget(entry.first)) {
+                gtk_box_append(GTK_BOX(moreToolsGroup), widget);
+                hasMore = true;
+            }
+        }
+        gtk_widget_set_visible(moreToolsButton, hasMore);
+        for (auto* widget: retainedWidgets) {
+            g_object_unref(widget);
+        }
+    }
+
+    GtkWidget* createMainToolRail() {
+        auto* contents = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        mainToolGroup = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_add_css_class(mainToolGroup, "linked");
+        moreToolsButton = gtk_menu_button_new();
+        gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(moreToolsButton), "view-more-symbolic");
+        gtk_widget_set_tooltip_text(moreToolsButton, "More tools");
+        auto* moreToolsPopover = gtk_popover_new();
+        moreToolsGroup = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_add_css_class(moreToolsGroup, "linked");
+        gtk_widget_set_margin_top(moreToolsGroup, 6);
+        gtk_widget_set_margin_bottom(moreToolsGroup, 6);
+        gtk_widget_set_margin_start(moreToolsGroup, 6);
+        gtk_widget_set_margin_end(moreToolsGroup, 6);
+        gtk_popover_set_child(GTK_POPOVER(moreToolsPopover), moreToolsGroup);
+        gtk_menu_button_set_popover(GTK_MENU_BUTTON(moreToolsButton), moreToolsPopover);
+        gtk_box_append(GTK_BOX(contents), mainToolGroup);
+        gtk_box_append(GTK_BOX(contents), moreToolsButton);
+        gtk_box_append(GTK_BOX(contents), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+        paletteRailBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
         paletteSwatchButtons.clear();
+        for (size_t index = 0; index < importedConfig.palette.swatches.size(); ++index) {
+            auto* swatch = createPaletteSwatch(index);
+            paletteSwatchButtons.push_back(swatch);
+            gtk_box_append(GTK_BOX(paletteRailBox), swatch);
+        }
+        gtk_box_append(GTK_BOX(contents), paletteRailBox);
+        rebuildMainToolRail();
+
+        auto* scroll = gtk_scrolled_window_new();
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), contents);
+        gtk_widget_set_size_request(scroll, 58, -1);
+        gtk_widget_set_vexpand(scroll, true);
+        gtk_widget_add_css_class(scroll, "sidebar");
+        return scroll;
+    }
+
+    GtkWidget* createPalette() {
         paletteButton = gtk_menu_button_new();
         gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(paletteButton), "view-more-symbolic");
         const auto buttonTip = "Quick colors (" + importedConfig.palette.paletteName + ")";
@@ -3867,57 +4075,8 @@ private:
 
         const int columns = std::clamp(importedConfig.palette.columns, 4, 8);
         for (size_t i = 0; i < importedConfig.palette.swatches.size(); ++i) {
-            const auto& entry = importedConfig.palette.swatches[i];
-            auto* swatch = gtk_button_new();
-            gtk_widget_add_css_class(swatch, "flat");
-            auto* dot = gtk_drawing_area_new();
-            gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(dot), 20);
-            gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(dot), 20);
-            g_object_set_data(G_OBJECT(dot), "swatch-index", GUINT_TO_POINTER(static_cast<guint>(i)));
-            gtk_drawing_area_set_draw_func(
-                    GTK_DRAWING_AREA(dot),
-                    +[](GtkDrawingArea* area, cairo_t* cr, int w, int h, gpointer data) {
-                        auto* self = static_cast<Prototype*>(data);
-                        const auto idx =
-                                static_cast<size_t>(GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(area), "swatch-index")));
-                        if (idx >= self->importedConfig.palette.swatches.size()) {
-                            return;
-                        }
-                        const auto& c = self->importedConfig.palette.swatches[idx].color;
-                        const double cx = w / 2.0;
-                        const double cy = h / 2.0;
-                        const double r = std::max(2.0, std::min(w, h) / 2.0 - 2.0);
-                        cairo_arc(cr, cx, cy, r, 0, 2 * G_PI);
-                        cairo_set_source_rgb(cr, c[0], c[1], c[2]);
-                        cairo_fill_preserve(cr);
-                        cairo_set_source_rgba(cr, 0.45, 0.45, 0.45, 0.65);
-                        cairo_set_line_width(cr, 1.0);
-                        cairo_stroke(cr);
-                    },
-                    this, nullptr);
-            gtk_button_set_child(GTK_BUTTON(swatch), dot);
-            gtk_widget_set_tooltip_text(swatch, entry.name.c_str());
-            gtk_accessible_update_property(GTK_ACCESSIBLE(swatch), GTK_ACCESSIBLE_PROPERTY_LABEL, entry.name.c_str(),
-                                           -1);
-            g_object_set_data(G_OBJECT(swatch), "swatch-index", GUINT_TO_POINTER(static_cast<guint>(i)));
-            g_signal_connect(swatch, "clicked", G_CALLBACK((+[](GtkButton* button, gpointer data) {
-                                 auto* self = static_cast<Prototype*>(data);
-                                 const auto idx = static_cast<size_t>(
-                                         GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "swatch-index")));
-                                 if (idx < self->importedConfig.palette.swatches.size()) {
-                                     const auto& c = self->importedConfig.palette.swatches[idx].color;
-                                     const GdkRGBA rgba{static_cast<float>(c[0]), static_cast<float>(c[1]),
-                                                        static_cast<float>(c[2]), 1.0f};
-                                     gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(self->colorButton),
-                                                                      &rgba);
-                                 }
-                                 gtk_popover_popdown(GTK_POPOVER(self->palettePopover));
-                                 gtk_widget_grab_focus(self->textEditor && self->textEditor->active() ?
-                                                              self->textEditor->widget() : self->canvas);
-                             })),
-                             this);
+            auto* swatch = createPaletteSwatch(i);
             gtk_grid_attach(GTK_GRID(grid), swatch, static_cast<int>(i) % columns, static_cast<int>(i) / columns, 1, 1);
-            paletteSwatchButtons.push_back(swatch);
         }
         gtk_box_append(GTK_BOX(box), grid);
         gtk_popover_set_child(GTK_POPOVER(palettePopover), box);
@@ -4476,19 +4635,21 @@ private:
 
         auto* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         gtk_widget_add_css_class(toolbar, "toolbar");
-        gtk_widget_set_halign(toolbar, GTK_ALIGN_CENTER);
-        auto* toolGroup = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        gtk_widget_add_css_class(toolGroup, "linked");
-        const std::array names = {"Pen", "Highlight", "Eraser", "Select", "Hand"};
+        gtk_widget_set_halign(toolbar, GTK_ALIGN_FILL);
+        gtk_widget_set_hexpand(toolbar, true);
+        const std::array<const char*, 5> toolNames = {
+                "Pen", "Highlighter", "Eraser", "Smart Select", "Hand tool",
+        };
+        const std::array<const char*, 5> toolIcons = {
+                "document-edit-symbolic", "applications-graphics-symbolic", "edit-clear-symbolic",
+                "edit-select-all-symbolic", "pan-down-symbolic",
+        };
         for (size_t i = 0; i < toolButtons.size(); ++i) {
-            if (i == 4) {
-                toolButtons[i] = gtk_toggle_button_new();
-                gtk_button_set_child(GTK_BUTTON(toolButtons[i]), gtk_image_new_from_icon_name("pan-down-symbolic"));
-                gtk_accessible_update_property(GTK_ACCESSIBLE(toolButtons[i]), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                               "Hand tool", -1);
-            } else {
-                toolButtons[i] = gtk_toggle_button_new_with_label(names[i]);
-            }
+            toolButtons[i] = gtk_toggle_button_new();
+            gtk_button_set_child(GTK_BUTTON(toolButtons[i]), gtk_image_new_from_icon_name(toolIcons[i]));
+            gtk_accessible_update_property(GTK_ACCESSIBLE(toolButtons[i]), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                           toolNames[i], -1);
+            gtk_widget_set_tooltip_text(toolButtons[i], toolNames[i]);
             if (i) {
                 gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(toolButtons[i]), GTK_TOGGLE_BUTTON(toolButtons[0]));
             }
@@ -4497,16 +4658,15 @@ private:
                                  auto* self = static_cast<Prototype*>(data);
                                  if (gtk_toggle_button_get_active(button) && !self->syncingTools) {
                                      const auto index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "tool"));
-                                     const auto tool = index == 3 ? self->selectionTool :
+                                     const auto tool = index == 3 ? Tool::SmartSelect :
                                                        index == 4 ? Tool::Hand : static_cast<Tool>(index);
                                      self->selectTool(tool);
                                  }
                              }),
                              this);
-            gtk_box_append(GTK_BOX(toolGroup), toolButtons[i]);
         }
         gtk_widget_set_tooltip_text(toolButtons[3],
-                                    "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S), Object");
+                                    "Smart Select (S); open Selection mode for rectangle, lasso, object, and PDF text");
         gtk_widget_set_tooltip_text(toolButtons[4], "Drag anywhere on the canvas to pan; keep selections active");
         floatingToolboxToolButton = gtk_toggle_button_new();
         gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(floatingToolboxToolButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
@@ -4522,7 +4682,6 @@ private:
                              }
                          }),
                          this);
-        gtk_box_append(GTK_BOX(toolGroup), floatingToolboxToolButton);
         textButton = gtk_toggle_button_new();
         gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(textButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
         gtk_button_set_child(GTK_BUTTON(textButton), gtk_image_new_from_icon_name("format-text-symbolic"));
@@ -4536,7 +4695,6 @@ private:
                              }
                          }),
                          this);
-        adw_header_bar_pack_start(ADW_HEADER_BAR(header), textButton);
         linkButton = gtk_toggle_button_new();
         gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(linkButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
         gtk_button_set_child(GTK_BUTTON(linkButton), gtk_image_new_from_icon_name("insert-link-symbolic"));
@@ -4549,7 +4707,6 @@ private:
                                  self->selectTool(Tool::Link);
                              }
                          }), this);
-        adw_header_bar_pack_start(ADW_HEADER_BAR(header), linkButton);
         for (size_t i = 0; i < laserButtons.size(); ++i) {
             laserButtons[i] = gtk_toggle_button_new();
             gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(laserButtons[i]), GTK_TOGGLE_BUTTON(toolButtons[0]));
@@ -4570,7 +4727,6 @@ private:
                                  self->selectTool(index == 0 ? Tool::LaserPointerPen :
                                                                   Tool::LaserPointerHighlighter);
                              }), this);
-            gtk_box_append(GTK_BOX(toolGroup), laserButtons[i]);
         }
         playObjectButton = gtk_toggle_button_new();
         gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(playObjectButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
@@ -4584,13 +4740,11 @@ private:
                                  self->selectTool(Tool::PlayObject);
                              }
                          }), this);
-        gtk_box_append(GTK_BOX(toolGroup), playObjectButton);
         imageButton = button("insert-image-symbolic", "Insert Image",
                              G_CALLBACK(+[](GtkButton*, gpointer data) {
                                  static_cast<Prototype*>(data)->chooseImage();
                              }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), imageButton);
-        gtk_box_append(GTK_BOX(toolbar), toolGroup);
 
         audioControls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_widget_add_css_class(audioControls, "linked");
@@ -4944,12 +5098,9 @@ private:
         selectionLabel = gtk_label_new("Drag to select");
         gtk_widget_set_tooltip_text(selectionLabel, "Drag to move, drag a square to resize, or drag the circle to rotate");
         gtk_box_append(GTK_BOX(toolbar), selectionLabel);
-        selectTool(importedConfig.settings.activeTool);
-        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), toolbar);
-
-        auto* navigation = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-        gtk_widget_add_css_class(navigation, "toolbar");
-        gtk_widget_set_halign(navigation, GTK_ALIGN_CENTER);
+        gtk_box_append(GTK_BOX(toolbar), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
+        auto* navigation = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_widget_add_css_class(navigation, "linked");
         prevPageButton = button("go-previous-symbolic", "Previous page (Page Up / Shift+K)",
                                 G_CALLBACK(+[](GtkButton*, gpointer data) {
                                     auto* self = static_cast<Prototype*>(data);
@@ -4987,7 +5138,10 @@ private:
         zoomLabel = gtk_label_new("");
         gtk_widget_set_size_request(zoomLabel, 60, -1);
         gtk_box_append(GTK_BOX(navigation), zoomLabel);
-        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), navigation);
+        gtk_box_append(GTK_BOX(toolbar), navigation);
+        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), toolbar);
+        mainToolRailWidget = createMainToolRail();
+        selectTool(importedConfig.settings.activeTool);
 
         canvas = gtk_drawing_area_new();
         gtk_widget_set_focusable(canvas, true);
@@ -5045,7 +5199,10 @@ private:
                                GBindingFlags(G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE));
         auto* adaptive = adw_breakpoint_bin_new();
         gtk_widget_set_size_request(adaptive, 320, 240);
-        adw_breakpoint_bin_set_child(ADW_BREAKPOINT_BIN(adaptive), GTK_WIDGET(splitView));
+        auto* workspace = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_box_append(GTK_BOX(workspace), mainToolRailWidget);
+        gtk_box_append(GTK_BOX(workspace), GTK_WIDGET(splitView));
+        adw_breakpoint_bin_set_child(ADW_BREAKPOINT_BIN(adaptive), workspace);
         auto* breakpoint = adw_breakpoint_new(
                 adw_breakpoint_condition_new_length(ADW_BREAKPOINT_CONDITION_MAX_WIDTH, 720, ADW_LENGTH_UNIT_PX));
         adw_breakpoint_add_setters(breakpoint, G_OBJECT(splitView), "collapsed", TRUE, nullptr);
@@ -6738,9 +6895,27 @@ private:
         lastWidth = width;
         lastHeight = height;
         const int deviceScale = gtk_widget_get_scale_factor(canvas);
-        const double background = options.dark ? 0.10 : 0.88;
-        cairo_set_source_rgb(cr, background, background, background);
+        const auto theme = importedConfig.settings.themeVariant;
+        const bool darkCanvas = options.explicitDark || theme == prototype::ThemeVariant::ForceDark ||
+                (theme == prototype::ThemeVariant::UseSystem &&
+                 adw_style_manager_get_dark(adw_style_manager_get_default()));
+        if (darkCanvas) {
+            cairo_set_source_rgb(cr, 0.13, 0.15, 0.19);
+        } else {
+            cairo_set_source_rgb(cr, 0.88, 0.88, 0.88);
+        }
         cairo_paint(cr);
+        if (darkCanvas) {
+            cairo_new_path(cr);
+            for (int y = 12; y < height; y += 26) {
+                for (int x = 12; x < width; x += 26) {
+                    cairo_new_sub_path(cr);
+                    cairo_arc(cr, x, y, 1.25, 0, 2 * G_PI);
+                }
+            }
+            cairo_set_source_rgba(cr, 0.25, 0.28, 0.33, 0.55);
+            cairo_fill(cr);
+        }
         bool drewAny = false;
         for (int i = 0; i < state.pageCount(); ++i) {
             const auto sz = state.pageSize(i);
@@ -6754,7 +6929,7 @@ private:
             drewAny = true;
             const auto& cached = ensurePageCache(i, deviceScale);
             cairo_save(cr);
-            cairo_set_source_rgba(cr, 0, 0, 0, options.dark ? 0.45 : 0.18);
+            cairo_set_source_rgba(cr, 0, 0, 0, darkCanvas ? 0.45 : 0.18);
             cairo_rectangle(cr, sx0 - 0.5, sy0 - 0.5, (sx1 - sx0) + 1.0, (sy1 - sy0) + 1.0);
             cairo_set_line_width(cr, 1.0);
             cairo_stroke(cr);
@@ -7662,9 +7837,12 @@ private:
                         "Switching away from Text left the Text tool selected in the header");
                 require(state.selectionAcrossLayers, "Changing drawing tools discarded the remembered selection mode");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+                require(state.brush.tool == Tool::SmartSelect,
+                        "The main selection tool button did not reopen Smart Select");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
                 require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers &&
                                 gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 3,
-                        "Reopening selection did not restore the visible-layer rectangle mode");
+                        "The selection mode menu did not restore the visible-layer rectangle mode");
                 gboolean handled = false;
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_r, 0u,
                                       GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
@@ -7682,9 +7860,10 @@ private:
                         "Select Object mode did not activate as a distinct tool");
                 selectTool(Tool::Pen);
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
-                require(state.brush.tool == Tool::SelectObject &&
-                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 5,
-                        "Reopening selection did not restore Select Object mode");
+                require(state.brush.tool == Tool::SmartSelect &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 2,
+                        "The primary selection button did not return to Smart Select");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 5);
                 std::vector<size_t> activeStrokeIndices;
                 for (size_t index = 0; index < state.ink.size(); ++index) {
                     if (state.ink[index].page == 0 && state.ink[index].layerId == state.activeLayerId(0) &&
@@ -8241,6 +8420,15 @@ private:
                     require(importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Highlighter &&
                                     importedConfig.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand,
                             "Legacy stylus mappings were not imported before opening Preferences");
+                    require(!importedConfig.settings.showSidebar &&
+                                    !adw_overlay_split_view_get_show_sidebar(splitView) &&
+                                    importedConfig.settings.mainToolRail == std::vector<prototype::MainToolAction>(
+                                            prototype::defaultMainToolRail.begin(),
+                                            prototype::defaultMainToolRail.end()) &&
+                                    importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceDark &&
+                                    paletteSwatchButtons.size() == importedConfig.palette.swatches.size(),
+                            "Fresh GTK 4 startup did not use the canvas-first tool and color rail defaults");
+                    capture("main-tool-rail-default");
                     openPreferences();
                     break;
                 case 1: {
@@ -8257,6 +8445,11 @@ private:
                                     control(PreferenceKey::FloatingToolboxRow3) &&
                                     control(PreferenceKey::FloatingToolboxRow4) && floatingToolboxApplyButton,
                             "Preferences dialog is missing the four floating toolbox rows");
+                    require(control(PreferenceKey::MainToolRail) && mainToolRailApplyButton &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::MainToolRail)))) ==
+                                            "SMART_SELECT,PEN,HIGHLIGHTER,ERASER,TEXT,HAND",
+                            "Preferences dialog did not show the canvas-first main tool rail layout");
                     require(std::string(gtk_editable_get_text(GTK_EDITABLE(
                                             control(PreferenceKey::FloatingToolboxRow1)))) ==
                                             "PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO" &&
@@ -8317,6 +8510,31 @@ private:
                                             std::vector<std::string>({"DRAW_ARROW"}),
                             "Applying toolbar rows did not update the active layout");
                     g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)),
+                                          "SMART_SELECT,TEXT,PEN,HAND");
+                    g_signal_emit_by_name(mainToolRailApplyButton, "clicked");
+                    require(importedConfig.settings.mainToolRail ==
+                                            std::vector<prototype::MainToolAction>({
+                                                    prototype::MainToolAction::SmartSelect,
+                                                    prototype::MainToolAction::Text,
+                                                    prototype::MainToolAction::Pen,
+                                                    prototype::MainToolAction::Hand,
+                                            }) &&
+                                    gtk_widget_get_first_child(mainToolGroup) == toolButtons[3] &&
+                                    gtk_widget_get_next_sibling(gtk_widget_get_first_child(mainToolGroup)) == textButton,
+                            "Applying main tool rail preferences did not preserve the configured order");
+                    size_t moreToolsCount = 0;
+                    for (auto* child = gtk_widget_get_first_child(moreToolsGroup); child;
+                         child = gtk_widget_get_next_sibling(child)) {
+                        ++moreToolsCount;
+                    }
+                    require(moreToolsCount == prototype::mainToolRailNames.size() - 4 &&
+                                    gtk_widget_get_visible(moreToolsButton),
+                            "Tools omitted from the main rail were not kept under More tools");
+                    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+                    require(state.brush.tool == Tool::SmartSelect,
+                            "The primary Smart Select rail button did not activate Smart Select");
+                    selectTool(Tool::Pen);
                     size_t renderedRows = 0;
                     for (auto* row = gtk_widget_get_first_child(floatingToolboxRowsContainer); row;
                          row = gtk_widget_get_next_sibling(row)) {
@@ -8357,6 +8575,13 @@ private:
                                             std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
                                     importedConfig.settings.floatingToolboxRows[3] ==
                                             std::vector<std::string>({"DRAW_ARROW"}) &&
+                                    importedConfig.settings.mainToolRail ==
+                                            std::vector<prototype::MainToolAction>({
+                                                    prototype::MainToolAction::SmartSelect,
+                                                    prototype::MainToolAction::Text,
+                                                    prototype::MainToolAction::Pen,
+                                                    prototype::MainToolAction::Hand,
+                                            }) &&
                                     std::filesystem::is_regular_file(preferencesConfigDir / "gtk4-canvas.ini"),
                             "Changing preferences did not immediately save and apply the edited values");
                     {
@@ -9423,7 +9648,9 @@ private:
                     require(handled, "Ctrl+B did not format selected text in the inline editor");
                     const GdkRGBA textColor{208.0f / 255, 32.0f / 255, 16.0f / 255, 1};
                     gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &textColor);
-                    require(state.textColor == std::array<double, 3>{208.0 / 255, 32.0 / 255, 16.0 / 255},
+                    require(std::abs(state.textColor[0] - 208.0 / 255) < 1e-7 &&
+                                    std::abs(state.textColor[1] - 32.0 / 255) < 1e-7 &&
+                                    std::abs(state.textColor[2] - 16.0 / 255) < 1e-7,
                             "The Text toolbar color control did not update the active text color");
                     updateTextEditorPosition();
                     update();
@@ -10299,12 +10526,15 @@ private:
                 const auto b = state.pageScreenPoint(0,handles[0].x+1.5*(handles[4].x-handles[0].x),
                                                          handles[0].y+1.5*(handles[4].y-handles[0].y));
                 smokeTransformWidth = state.ink.back().brush.width;
+                const bool oldSnapGridEnabled = state.snapGridEnabled;
+                state.snapGridEnabled = false;
                 g_signal_emit_by_name(mouse,"drag-begin",a.x,a.y);
                 require(state.selected == std::vector<size_t>{smokeSelectionIndex} && state.selectedTexts.empty(),
                         "Resize handle press discarded the selected stroke");
                 g_signal_emit_by_name(mouse,"drag-update",b.x-a.x,b.y-a.y);
                 require(state.committedInk().back().brush.width == smokeTransformWidth,"Resize preview leaked into autosave");
                 g_signal_emit_by_name(mouse,"drag-end",b.x-a.x,b.y-a.y);
+                state.snapGridEnabled = oldSnapGridEnabled;
                 require(std::abs(state.ink.back().brush.width-1.5*smokeTransformWidth)<1e-6,
                         "Resize lost native width scaling");
                 break;
@@ -10563,6 +10793,7 @@ private:
     GtkWidget* floatingToolbox = nullptr;
     GtkWidget* floatingToolboxRowsContainer = nullptr;
     GtkWidget* floatingToolboxApplyButton = nullptr;
+    GtkWidget* mainToolRailApplyButton = nullptr;
     size_t floatingToolboxStaticToolButtonCount = 0;
     std::vector<std::pair<Tool, GtkWidget*>> floatingToolboxToolButtons;
     prototype::Point floatingToolboxAnchor{};
@@ -10607,6 +10838,11 @@ private:
     GtkWidget* paletteButton = nullptr;
     GtkWidget* palettePopover = nullptr;
     GtkWidget* paletteContent = nullptr;
+    GtkWidget* paletteRailBox = nullptr;
+    GtkWidget* mainToolRailWidget = nullptr;
+    GtkWidget* mainToolGroup = nullptr;
+    GtkWidget* moreToolsButton = nullptr;
+    GtkWidget* moreToolsGroup = nullptr;
     prototype::ButtonToolAction activeStylusAction = prototype::ButtonToolAction::None;
     guint activeStylusButton = 0;
     std::vector<GtkWidget*> paletteSwatchButtons;
