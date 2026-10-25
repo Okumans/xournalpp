@@ -95,6 +95,57 @@ int main(int argc, char** argv) {
                       state.ink[0].brush.width == 4,
               "Rotation must preserve width and rotate around selection center");
         state = fixture();
+        const auto originalFrame = *state.selectionBox();
+        const auto originalRotationHandle = state.selectionHandles()[8];
+        const Point selectionCenter{(originalFrame.x0 + originalFrame.x1) / 2,
+                                    (originalFrame.y0 + originalFrame.y1) / 2};
+        const auto frameRotationRadius = std::hypot(originalRotationHandle.x - selectionCenter.x,
+                                                    originalRotationHandle.y - selectionCenter.y);
+        drag(state, originalRotationHandle,
+             {selectionCenter.x, selectionCenter.y + frameRotationRadius});
+        state.finishSelection();
+        check(near(state.selectionBox()->x0, originalFrame.x0) &&
+                      near(state.selectionBox()->y0, originalFrame.y0) &&
+                      near(state.selectionBox()->x1, originalFrame.x1) &&
+                      near(state.selectionBox()->y1, originalFrame.y1),
+              "A committed rotation must keep the axis-aligned native selection frame");
+        const auto frameRotationHandle = state.selectionHandles()[3];
+        drag(state, frameRotationHandle, {frameRotationHandle.x + 40, frameRotationHandle.y});
+        state.finishSelection();
+        check(near(state.ink[0].points[0].x, 170) && near(state.ink[0].points[0].y, 90) &&
+                      near(state.ink[0].points[1].x, 110) && near(state.ink[0].points[1].y, 210) &&
+                      near(state.selectionBox()->x0, 100) && near(state.selectionBox()->x1, 220) &&
+                      near(state.selectionBox()->y0, 100) && near(state.selectionBox()->y1, 160),
+              "Resizing a rotated selection must scale along its accumulated native rotation");
+        state.undo();
+        check(near(state.ink[0].points[1].y, 170) && near(state.selectionBox()->x1, originalFrame.x1),
+              "Undo resize did not restore the rotated selection frame and objects");
+        state.undo();
+        check(near(state.ink[0].points[0].x, 100) && near(state.ink[0].points[0].y, 100) &&
+                      near(state.selectionBox()->x1, originalFrame.x1),
+              "Undo rotation did not restore the original selection frame");
+        state.redo();
+        state.redo();
+        check(near(state.ink[0].points[1].y, 210) && near(state.selectionBox()->x1, 220),
+              "Redo did not restore accumulated rotation-aware resize");
+        state = fixture();
+        const auto deleteFrame = *state.selectionBox();
+        const auto deleteRotationHandle = state.selectionHandles()[8];
+        const Point deleteCenter{(deleteFrame.x0 + deleteFrame.x1) / 2,
+                                 (deleteFrame.y0 + deleteFrame.y1) / 2};
+        const auto deleteRadius = std::hypot(deleteRotationHandle.x - deleteCenter.x,
+                                             deleteRotationHandle.y - deleteCenter.y);
+        drag(state, deleteRotationHandle, {deleteCenter.x, deleteCenter.y + deleteRadius});
+        state.finishSelection();
+        state.deleteSelection();
+        state.undo();
+        const auto restoredRightHandle = state.selectionHandles()[3];
+        drag(state, restoredRightHandle, {restoredRightHandle.x + 40, restoredRightHandle.y});
+        state.finishSelection();
+        check(near(state.ink[0].points[0].x, 170) && near(state.ink[0].points[0].y, 90) &&
+                      near(state.ink[0].points[1].x, 110) && near(state.ink[0].points[1].y, 210),
+              "Undoing deletion did not restore the rotated selection transform state");
+        state = fixture();
         drag(state, {130, 125}, {130, 125});
         const auto destination = state.pageScreenPoint(1, 150, 100);
         state.moveSelectionPointer(destination.x, destination.y);

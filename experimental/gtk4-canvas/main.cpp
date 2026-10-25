@@ -7742,6 +7742,73 @@ private:
                         "Redo did not reapply the vertical-space edit");
                 waitForNextPaint();
                 capture("vertical-space-applied");
+                activateSelection(Tool::SmartSelect);
+                state.clearSelection();
+                state.snapGridEnabled = false;
+                prototype::Ink rotationStroke{0, {{120, 300}, {220, 340}},
+                                               {Tool::Pen, {0.8, 0.1, 0.1}, 3.0}};
+                rotationStroke.layerId = state.activeLayerId(0);
+                rotationStroke.originLayer = state.activeLayerOrigin(0);
+                rotationStroke.layerOrder = state.ink.size();
+                state.ink.push_back(rotationStroke);
+                const auto rotationStrokeIndex = state.ink.size() - 1;
+                state.selected = {rotationStrokeIndex};
+                const auto originalFrame = *state.selectionBox();
+                const auto rotationHandle = state.selectionHandles()[8];
+                const prototype::Point rotationCenter{(originalFrame.x0 + originalFrame.x1) / 2,
+                                                       (originalFrame.y0 + originalFrame.y1) / 2};
+                const auto radius = std::hypot(rotationHandle.x - rotationCenter.x,
+                                               rotationHandle.y - rotationCenter.y);
+                const auto rotationStart = state.pageScreenPoint(0, rotationHandle.x, rotationHandle.y);
+                const auto rotationEnd = state.pageScreenPoint(0, rotationCenter.x, rotationCenter.y + radius);
+                g_signal_emit_by_name(mouse, "drag-begin", rotationStart.x, rotationStart.y);
+                g_signal_emit_by_name(mouse, "drag-update", rotationEnd.x - rotationStart.x,
+                                      rotationEnd.y - rotationStart.y);
+                g_signal_emit_by_name(mouse, "drag-end", rotationEnd.x - rotationStart.x,
+                                      rotationEnd.y - rotationStart.y);
+                require(state.selectionBox() &&
+                                std::abs(state.selectionBox()->x0 - originalFrame.x0) < 1e-6 &&
+                                std::abs(state.selectionBox()->y0 - originalFrame.y0) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - originalFrame.x1) < 1e-6 &&
+                                std::abs(state.selectionBox()->y1 - originalFrame.y1) < 1e-6,
+                        "Smart Select rotation did not retain the native axis-aligned handle frame");
+                waitForNextPaint();
+                capture("smart-select-rotated-frame");
+                const auto rightHandle = state.selectionHandles()[3];
+                const auto rotationResizeStart = state.pageScreenPoint(0, rightHandle.x, rightHandle.y);
+                const auto rotationResizeEnd = state.pageScreenPoint(0, rightHandle.x + 40, rightHandle.y);
+                g_signal_emit_by_name(mouse, "drag-begin", rotationResizeStart.x, rotationResizeStart.y);
+                g_signal_emit_by_name(mouse, "drag-update", rotationResizeEnd.x - rotationResizeStart.x,
+                                      rotationResizeEnd.y - rotationResizeStart.y);
+                g_signal_emit_by_name(mouse, "drag-end", rotationResizeEnd.x - rotationResizeStart.x,
+                                      rotationResizeEnd.y - rotationResizeStart.y);
+                require(state.selectionBox() && std::abs(state.selectionBox()->x1 - 260) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[0].x - 190) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[0].y - 270) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].x - 150) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].y - 410) < 1e-6,
+                        "Smart Select resize did not apply scaling in the accumulated rotated coordinates");
+                waitForNextPaint();
+                capture("smart-select-rotated-resize");
+                state.undo();
+                require(state.selectionBox() && std::abs(state.selectionBox()->x1 - originalFrame.x1) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].y - 370) < 1e-6,
+                        "Undo did not restore the rotated handle frame and stroke geometry");
+                state.undo();
+                require(std::abs(state.ink[rotationStrokeIndex].points[0].x - 120) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[0].y - 300) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - originalFrame.x1) < 1e-6,
+                        "Undo rotation did not restore the original Smart Select state");
+                state.redo();
+                state.redo();
+                require(std::abs(state.ink[rotationStrokeIndex].points[1].y - 410) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - 260) < 1e-6,
+                        "Redo did not restore the rotated Smart Select resize");
+                state.undo();
+                state.undo();
+                state.clearSelection();
+                state.ink.pop_back();
+
                 const auto viewportWidth = gtk_widget_get_width(canvas);
                 const auto viewportHeight = gtk_widget_get_height(canvas);
                 require(viewportWidth > 0 && viewportHeight > 0, "Edge-pan verification has no allocated canvas");
@@ -7798,7 +7865,7 @@ private:
                 waitForNextPaint();
                 capture("smart-select-edge-pan");
                 std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Smart Select edge hit, grid snap, "
-                             "resize snap and edge-pan, Text-tool mouse/stylus move/resize and formatting, "
+                             "resize snap, rotation-aware resize and edge-pan, Text-tool mouse/stylus move/resize and formatting, "
                              "vertical-space direction/preview/undo, Select Object and Hand modes, "
                              "selection-preserving pan, hidden-layer fallback, remembered tool state, and shortcuts\n";
                 closeWindow();

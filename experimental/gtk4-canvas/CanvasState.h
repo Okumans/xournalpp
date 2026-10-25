@@ -546,7 +546,7 @@ public:
     std::optional<SelectionBox> selectionBox() const {
         if (selectionGesture && selectionGesture->moving) {
             const auto& g = *selectionGesture;
-            const auto corners = transformedCorners(g.bounds, g.transform);
+            const auto corners = transformedCorners(g.bounds, g.frameTransform);
             SelectionBox box{g.targetPage, corners[0].x, corners[0].y, corners[0].x, corners[0].y};
             for (const auto& p: corners) {
                 box.x0 = std::min(box.x0, p.x); box.y0 = std::min(box.y0, p.y);
@@ -558,6 +558,9 @@ public:
             const auto& g = *selectionGesture;
             return SelectionBox{g.page, std::min(g.start.x, g.latest.x), std::min(g.start.y, g.latest.y),
                                  std::max(g.start.x, g.latest.x), std::max(g.start.y, g.latest.y)};
+        }
+        if (selectionFrameMatchesCurrentSelection()) {
+            return selectionFrame->bounds;
         }
         std::optional<SelectionBox> box;
         for (auto index: selected) {
@@ -611,6 +614,11 @@ public:
     bool selecting() const { return selectionGesture.has_value(); }
 
     bool movingSelection() const { return selectionGesture && selectionGesture->moving; }
+
+    bool selectionFrameMatchesCurrentSelection() const {
+        return selectionFrame && selectionFrame->inkIndices == selected &&
+               selectionFrame->textIndices == selectedTexts && selectionFrame->imageIndices == selectedImages;
+    }
 
     bool selectionCanEdgePan() const {
         return selectionGesture && selectionGesture->moving && selectionGesture->handle < 0;
@@ -731,7 +739,7 @@ public:
         const auto b = selectionBox();
         if (!b) return {};
         auto corners = selectionGesture && selectionGesture->moving ?
-                               transformedCorners(selectionGesture->bounds, selectionGesture->transform) :
+                               transformedCorners(selectionGesture->bounds, selectionGesture->frameTransform) :
                                transformedCorners(handleBounds(*b));
         auto mid = [](Point a, Point b) { return Point{(a.x + b.x) / 2, (a.y + b.y) / 2}; };
         const auto right = mid(corners[1], corners[2]);
@@ -864,6 +872,7 @@ public:
             selected = std::move(selectionGesture->previousSelection);
             selectedTexts = std::move(selectionGesture->previousTextSelection);
             selectedImages = std::move(selectionGesture->previousImageSelection);
+            selectionFrame = std::move(selectionGesture->previousSelectionFrame);
             selectionGesture.reset();
         }
     }
@@ -874,6 +883,7 @@ public:
         selected.clear();
         selectedTexts.clear();
         selectedImages.clear();
+        selectionFrame.reset();
     }
 
     bool hasSelection() const { return !selected.empty() || !selectedTexts.empty() || !selectedImages.empty(); }
@@ -1000,6 +1010,9 @@ public:
         if (!hit || current || eraseGesture || selectionGesture || pinching) {
             return false;
         }
+        if (selectionFrame && !selectionFrameMatchesCurrentSelection()) {
+            selectionFrame.reset();
+        }
         SelectionGesture gesture;
         gesture.page = hit->page;
         gesture.targetPage = hit->page;
@@ -1007,6 +1020,9 @@ public:
         gesture.previousSelection = selected;
         gesture.previousTextSelection = selectedTexts;
         gesture.previousImageSelection = selectedImages;
+        gesture.previousSelectionFrame = selectionFrame;
+        gesture.baseRotation = selectionFrame ? selectionFrame->rotation : 0;
+        gesture.rotationTarget = gesture.baseRotation;
         gesture.multiLayer = selectionAcrossLayers;
         auto bounds = selectionBox();
         if (bounds && bounds->page == hit->page && !forceRectangle) {
@@ -1041,6 +1057,9 @@ public:
                 selected.clear();
                 selectedTexts.clear();
                 selectedImages.clear();
+                selectionFrame.reset();
+                gesture.baseRotation = 0;
+                gesture.rotationTarget = 0;
                 switch (pickedObject->kind) {
                     case SelectableObjectKind::Stroke:
                         selected = {pickedObject->index};
@@ -1066,6 +1085,7 @@ public:
             selected.clear();
             selectedTexts.clear();
             selectedImages.clear();
+            selectionFrame.reset();
             gesture.lasso = brush.tool == Tool::SelectLasso && !forceRectangle;
             gesture.boundary.push_back(hit->local);
             gesture.additive = forceRectangle && bounds && bounds->page == hit->page;
@@ -1086,7 +1106,9 @@ public:
         g.latest = pageLocalPoint(g.targetPage, x, y);
         if (g.moving) {
             const auto previous = g.transform;
+            const auto previousFrame = g.frameTransform;
             g.transform = {};
+            g.frameTransform = {};
             if (g.handle < 0) {
                 const double dx = g.latest.x - g.start.x;
                 const double dy = g.latest.y - g.start.y;
@@ -1094,15 +1116,17 @@ public:
                 const Point snapped = snapSelectionMove(g.targetPage, candidate, altHeld);
                 g.transform.x0 = snapped.x - g.snapAnchor.x;
                 g.transform.y0 = snapped.y - g.snapAnchor.y;
+                g.frameTransform = g.transform;
             } else if (g.handle == 8) {
                 const auto cx = (g.bounds.x0+g.bounds.x1)/2, cy = (g.bounds.y0+g.bounds.y1)/2;
-                auto angle = std::atan2(g.latest.y-cy, g.latest.x-cx) -
-                             std::atan2(g.start.y-cy, g.start.x-cx);
+                auto angle = std::atan2(g.latest.y - cy, g.latest.x - cx) -
+                             std::atan2(g.start.y - cy, g.start.x - cx);
                 if (!g.imageIndices.empty() && snapRotationEnabled != altHeld) {
                     angle = canvasImageRotationDelta(std::atan2(g.start.y - cy, g.start.x - cx),
                                                      std::atan2(g.latest.y - cy, g.latest.x - cx), true,
                                                      snapRotationTolerance);
                 }
+                g.rotationTarget = g.baseRotation + angle;
                 const auto cosine = std::cos(angle), sine = std::sin(angle);
                 g.transform = {cosine,sine,-sine,cosine,cx-cosine*cx+sine*cy,cy-sine*cx-cosine*cy,1};
             } else {
@@ -1119,42 +1143,60 @@ public:
                 const auto constrained = xs && ys ? std::min(width, height) : (xs ? width : height);
                 factor = std::copysign(std::max(std::abs(factor), (5 / zoom) / constrained), factor);
                 const auto rawFactor = factor;
-                const auto fx = xs ? factor : 1, fy = ys ? factor : 1;
-                g.transform = {fx,0,0,fy,ax*(1-fx),ay*(1-fy),std::sqrt(std::abs(fx*fy))};
+                auto fx = xs ? factor : 1;
+                auto fy = ys ? factor : 1;
+                g.frameTransform = {fx, 0, 0, fy, ax * (1 - fx), ay * (1 - fy),
+                                    std::sqrt(std::abs(fx * fy))};
 
-                const auto candidate = selectionBox();
-                if (candidate) {
-                    const auto candidateEdgeX = g.transform.xx * (xs < 0 ? g.bounds.x0 : g.bounds.x1) +
-                                                g.transform.x0;
-                    const auto candidateEdgeY = g.transform.yy * (ys < 0 ? g.bounds.y0 : g.bounds.y1) +
-                                                g.transform.y0;
-                    const auto snappedX = snapSelectionResizeAxis(g.targetPage, candidateEdgeX, true, altHeld);
-                    const auto snappedY = snapSelectionResizeAxis(g.targetPage, candidateEdgeY, false, altHeld);
-                    const auto dx = snappedX - candidateEdgeX;
-                    const auto dy = snappedY - candidateEdgeY;
-                    const auto currentWidth = (g.bounds.x1 - g.bounds.x0) * g.transform.xx;
-                    const auto currentHeight = (g.bounds.y1 - g.bounds.y0) * g.transform.yy;
-                    const auto snapFactorX = xs && std::abs(currentWidth) > 5 / zoom ?
-                                                     (currentWidth + dx * xs) / currentWidth : 1.0;
-                    const auto snapFactorY = ys && std::abs(currentHeight) > 5 / zoom ?
-                                                     (currentHeight + dy * ys) / currentHeight : 1.0;
-                    auto correction = (((std::abs(dx) < std::abs(dy)) && snapFactorX != 1) || snapFactorY == 1) ?
-                                              snapFactorX : snapFactorY;
-                    if (std::abs(currentWidth * correction) < 5 / zoom ||
-                        std::abs(currentHeight * correction) < 5 / zoom) {
-                        correction = 1;
-                    }
-                    const auto snappedFactor = rawFactor * correction;
-                    const auto snappedFx = xs ? snappedFactor : 1;
-                    const auto snappedFy = ys ? snappedFactor : 1;
-                    g.transform = {snappedFx, 0, 0, snappedFy, ax * (1 - snappedFx), ay * (1 - snappedFy),
-                                   std::sqrt(std::abs(snappedFx * snappedFy))};
+                const auto candidateEdgeX = g.frameTransform.xx * (xs < 0 ? g.bounds.x0 : g.bounds.x1) +
+                                            g.frameTransform.x0;
+                const auto candidateEdgeY = g.frameTransform.yy * (ys < 0 ? g.bounds.y0 : g.bounds.y1) +
+                                            g.frameTransform.y0;
+                const auto snappedX = snapSelectionResizeAxis(g.targetPage, candidateEdgeX, true, altHeld);
+                const auto snappedY = snapSelectionResizeAxis(g.targetPage, candidateEdgeY, false, altHeld);
+                const auto dx = snappedX - candidateEdgeX;
+                const auto dy = snappedY - candidateEdgeY;
+                const auto currentWidth = (g.bounds.x1 - g.bounds.x0) * g.frameTransform.xx;
+                const auto currentHeight = (g.bounds.y1 - g.bounds.y0) * g.frameTransform.yy;
+                const auto snapFactorX = xs && std::abs(currentWidth) > 5 / zoom ?
+                                                 (currentWidth + dx * xs) / currentWidth : 1.0;
+                const auto snapFactorY = ys && std::abs(currentHeight) > 5 / zoom ?
+                                                 (currentHeight + dy * ys) / currentHeight : 1.0;
+                auto correction = (((std::abs(dx) < std::abs(dy)) && snapFactorX != 1) || snapFactorY == 1) ?
+                                          snapFactorX : snapFactorY;
+                if (std::abs(currentWidth * correction) < 5 / zoom ||
+                    std::abs(currentHeight * correction) < 5 / zoom) {
+                    correction = 1;
                 }
+                factor = rawFactor * correction;
+                fx = xs ? factor : 1;
+                fy = ys ? factor : 1;
+                g.frameTransform = {fx, 0, 0, fy, ax * (1 - fx), ay * (1 - fy),
+                                    std::sqrt(std::abs(fx * fy))};
+
+                const auto cx = (g.bounds.x0 + g.bounds.x1) / 2;
+                const auto cy = (g.bounds.y0 + g.bounds.y1) / 2;
+                const auto cosine = std::cos(g.baseRotation);
+                const auto sine = std::sin(g.baseRotation);
+                const auto pivotX = cx + cosine * (ax - cx) - sine * (ay - cy);
+                const auto pivotY = cy + sine * (ax - cx) + cosine * (ay - cy);
+                const auto xx = cosine * cosine * fx + sine * sine * fy;
+                const auto xy = cosine * sine * (fx - fy);
+                const auto yx = xy;
+                const auto yy = sine * sine * fx + cosine * cosine * fy;
+                g.transform = {xx, yx, xy, yy, pivotX - xx * pivotX - xy * pivotY,
+                               pivotY - yx * pivotX - yy * pivotY, std::sqrt(std::abs(fx * fy))};
             }
             const auto& m = g.transform;
             if (!std::isfinite(m.xx) || !std::isfinite(m.xy) || !std::isfinite(m.yx) || !std::isfinite(m.yy) ||
                 !std::isfinite(m.x0) || !std::isfinite(m.y0) || !std::isfinite(m.widthScale) || m.widthScale <= 0)
                 g.transform = previous;
+            const auto& frame = g.frameTransform;
+            if (!std::isfinite(frame.xx) || !std::isfinite(frame.xy) || !std::isfinite(frame.yx) ||
+                !std::isfinite(frame.yy) || !std::isfinite(frame.x0) || !std::isfinite(frame.y0) ||
+                !std::isfinite(frame.widthScale) || frame.widthScale <= 0) {
+                g.frameTransform = previousFrame;
+            }
         } else if (g.lasso && g.boundary.size() < 1000000 &&
                    std::hypot(g.latest.x-g.boundary.back().x,g.latest.y-g.boundary.back().y) >= .3) {
             g.boundary.push_back(g.latest);
@@ -1325,11 +1367,30 @@ public:
                         edit.imageSelectionAfter->push_back(n);
                     }
                 }
+                if (selectionFrame || g.handle == 8 || std::abs(g.baseRotation) > 1e-12) {
+                    const auto corners = transformedCorners(g.bounds, g.frameTransform);
+                    SelectionFrameState nextFrame;
+                    nextFrame.bounds = {g.targetPage, corners[0].x, corners[0].y, corners[0].x, corners[0].y};
+                    for (const auto& point: corners) {
+                        nextFrame.bounds.x0 = std::min(nextFrame.bounds.x0, point.x);
+                        nextFrame.bounds.y0 = std::min(nextFrame.bounds.y0, point.y);
+                        nextFrame.bounds.x1 = std::max(nextFrame.bounds.x1, point.x);
+                        nextFrame.bounds.y1 = std::max(nextFrame.bounds.y1, point.y);
+                    }
+                    nextFrame.rotation = g.handle == 8 ? g.rotationTarget : g.baseRotation;
+                    nextFrame.inkIndices = edit.selectionAfter.value_or(selected);
+                    nextFrame.textIndices = edit.textSelectionAfter.value_or(selectedTexts);
+                    nextFrame.imageIndices = edit.imageSelectionAfter.value_or(selectedImages);
+                    edit.hasSelectionFrameState = true;
+                    edit.selectionFrameBefore = selectionFrame;
+                    edit.selectionFrameAfter = std::move(nextFrame);
+                }
                 apply(edit, true);
                 record(std::move(edit));
                 selectActivePage(g.targetPage);
             }
         } else {
+            selectionFrame.reset();
             const auto size = pageSize(g.page);
             const auto x0 = std::min(g.start.x, g.latest.x), x1 = std::max(g.start.x, g.latest.x);
             const auto y0 = std::min(g.start.y, g.latest.y), y1 = std::max(g.start.y, g.latest.y);
@@ -1449,6 +1510,8 @@ public:
         edit.textSelectionAfter = std::vector<size_t>{};
         edit.imageSelectionBefore = selectedImages;
         edit.imageSelectionAfter = std::vector<size_t>{};
+        edit.hasSelectionFrameState = true;
+        edit.selectionFrameBefore = selectionFrame;
         for (size_t n = 0; n < selected.size(); ++n) {
             const auto i = selected[n];
             edit.changes.push_back({i, {ink.at(i)}, i - n, {}});
@@ -1496,6 +1559,7 @@ public:
             }
         }
         const auto previousSelection = selected;
+        const auto previousSelectionFrame = selectionFrame;
         SelectionBox b{targetPage, pasted[0].points[0].x,pasted[0].points[0].y,pasted[0].points[0].x,pasted[0].points[0].y};
         for (const auto& stroke: pasted) for (const auto& p: stroke.points) {
             b.x0=std::min(b.x0,p.x);b.y0=std::min(b.y0,p.y);b.x1=std::max(b.x1,p.x);b.y1=std::max(b.y1,p.y);
@@ -1519,6 +1583,8 @@ public:
         edit.selectionBefore = previousSelection;
         edit.selectionAfter = std::vector<size_t>{};
         for (size_t i=0;i<edit.changes[0].after.size();++i) edit.selectionAfter->push_back(ink.size()+i);
+        edit.hasSelectionFrameState = true;
+        edit.selectionFrameBefore = previousSelectionFrame;
         apply(edit,true);record(std::move(edit));selectActivePage(targetPage);
         return true;
     }
@@ -2431,10 +2497,14 @@ public:
             selected.clear();
             selectedTexts.clear();
             selectedImages.clear();
+            selectionFrame.reset();
         }
         if (!object) {
             selectActivePage(pageIndex);
             return false;
+        }
+        if (additive) {
+            selectionFrame.reset();
         }
 
         auto addIndex = [](std::vector<size_t>& indices, size_t index) {
@@ -2717,6 +2787,14 @@ private:
         std::vector<IndexedObject<CanvasImage>> afterImages;
     };
 
+    struct SelectionFrameState {
+        SelectionBox bounds{};
+        double rotation = 0;
+        std::vector<size_t> inkIndices;
+        std::vector<size_t> textIndices;
+        std::vector<size_t> imageIndices;
+    };
+
     struct Edit {
         std::vector<Change> changes;
         std::vector<TextChange> textChanges;
@@ -2729,6 +2807,9 @@ private:
         std::optional<std::vector<size_t>> textSelectionAfter = std::nullopt;
         std::optional<std::vector<size_t>> imageSelectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> imageSelectionAfter = std::nullopt;
+        bool hasSelectionFrameState = false;
+        std::optional<SelectionFrameState> selectionFrameBefore;
+        std::optional<SelectionFrameState> selectionFrameAfter;
     };
 
     bool validTextPage(const TextItem& item) const {
@@ -2902,14 +2983,18 @@ private:
         bool multiLayer = false;
         int handle = -1, targetPage = 0;
         Point snapAnchor{};
+        double baseRotation = 0;
+        double rotationTarget = 0;
         std::vector<size_t> previousSelection;
         std::vector<size_t> previousTextSelection;
         std::vector<size_t> previousImageSelection;
+        std::optional<SelectionFrameState> previousSelectionFrame;
         std::vector<size_t> indices;
         std::vector<size_t> textIndices;
         std::vector<size_t> imageIndices;
         SelectionBox bounds{};
         SelectionTransform transform;
+        SelectionTransform frameTransform;
         std::vector<Point> boundary;
     };
 
@@ -3568,9 +3653,18 @@ private:
                            it->before.end());
             }
         }
+        const auto oldSelection = selected;
+        const auto oldTextSelection = selectedTexts;
+        const auto oldImageSelection = selectedImages;
         selected = (forward ? edit.selectionAfter : edit.selectionBefore).value_or(std::vector<size_t>{});
         selectedTexts = (forward ? edit.textSelectionAfter : edit.textSelectionBefore).value_or(std::vector<size_t>{});
         selectedImages = (forward ? edit.imageSelectionAfter : edit.imageSelectionBefore).value_or(std::vector<size_t>{});
+        if (edit.hasSelectionFrameState) {
+            selectionFrame = forward ? edit.selectionFrameAfter : edit.selectionFrameBefore;
+        } else if (selected != oldSelection || selectedTexts != oldTextSelection ||
+                   selectedImages != oldImageSelection) {
+            selectionFrame.reset();
+        }
     }
 
     Device owner = Device::Mouse;
@@ -3579,6 +3673,7 @@ private:
     std::vector<Edit> redoStates;
     std::optional<EraseGesture> eraseGesture;
     std::optional<SelectionGesture> selectionGesture;
+    std::optional<SelectionFrameState> selectionFrame;
     std::optional<VerticalSpacePreview> verticalSpace;
     std::optional<Device> laserOwner;
 };
