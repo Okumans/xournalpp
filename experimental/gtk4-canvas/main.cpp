@@ -2119,6 +2119,21 @@ private:
         gtk_widget_set_parent(GTK_WIDGET(pdfActionsPopover), canvasOverlay);
     }
 
+    void createLinkInfoPopover() {
+        linkInfoPopover = gtk_popover_new();
+        gtk_popover_set_autohide(GTK_POPOVER(linkInfoPopover), false);
+        linkInfoLabel = gtk_label_new("");
+        gtk_label_set_selectable(GTK_LABEL(linkInfoLabel), true);
+        gtk_label_set_wrap(GTK_LABEL(linkInfoLabel), true);
+        gtk_widget_set_margin_top(linkInfoLabel, 8);
+        gtk_widget_set_margin_bottom(linkInfoLabel, 8);
+        gtk_widget_set_margin_start(linkInfoLabel, 10);
+        gtk_widget_set_margin_end(linkInfoLabel, 10);
+        gtk_popover_set_child(GTK_POPOVER(linkInfoPopover), linkInfoLabel);
+        gtk_overlay_add_overlay(GTK_OVERLAY(canvasOverlay), linkInfoPopover);
+        gtk_widget_set_can_target(linkInfoPopover, false);
+    }
+
     guint selectionModeIndex(Tool tool) const {
         if (tool == Tool::VerticalSpace) {
             return 8;
@@ -2438,13 +2453,292 @@ private:
         size_t bestOrder = 0;
         for (size_t index = 0; index < state.texts.size(); ++index) {
             const auto& item = state.texts[index];
-            if (item.page == page && prototype::textContainsPoint(item, point.x, point.y) &&
+            if (!item.isLink && item.page == page && prototype::textContainsPoint(item, point.x, point.y) &&
                 (!best || item.layerOrder >= bestOrder)) {
                 best = index;
                 bestOrder = item.layerOrder;
             }
         }
         return best;
+    }
+
+    void closeLinkEditor() {
+        if (messageDialog) {
+            adw_dialog_close(ADW_DIALOG(messageDialog));
+        }
+        messageDialog = nullptr;
+        linkTextInput = nullptr;
+        linkUrlInput = nullptr;
+        linkPrefixDropdown = nullptr;
+        linkFontEntry = nullptr;
+        linkFontSize = nullptr;
+        linkAlignmentDropdown = nullptr;
+        editingLinkIndex.reset();
+        linkEditorPage = -1;
+    }
+
+    void openLinkEditor(int page, prototype::Point position, std::optional<size_t> index) {
+        if (busy || choosingFile || messageDialog) {
+            return;
+        }
+        if (!nativeSession) {
+            showError("Link editing requires an open document worker.");
+            return;
+        }
+        if (index && (*index >= state.texts.size() || !state.texts[*index].isLink)) {
+            return;
+        }
+        resetInput(true);
+        if (linkInfoPopover) {
+            gtk_popover_popdown(GTK_POPOVER(linkInfoPopover));
+        }
+
+        const auto* existing = index ? &state.texts[*index] : nullptr;
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(existing ? "Edit Link" : "Add Link",
+                                                              "Link text is shown underlined on the page."));
+        auto* grid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+        gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+        gtk_widget_set_margin_top(grid, 8);
+        gtk_widget_set_margin_bottom(grid, 8);
+        gtk_widget_set_margin_start(grid, 8);
+        gtk_widget_set_margin_end(grid, 8);
+
+        auto attachRow = [&](int row, const char* title, GtkWidget* control) {
+            auto* label = gtk_label_new(title);
+            gtk_widget_set_halign(label, GTK_ALIGN_START);
+            gtk_grid_attach(GTK_GRID(grid), label, 0, row, 1, 1);
+            gtk_widget_set_hexpand(control, true);
+            gtk_grid_attach(GTK_GRID(grid), control, 1, row, 1, 1);
+        };
+
+        auto* textView = gtk_text_view_new();
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(textView), GTK_WRAP_WORD_CHAR);
+        auto* textScroll = gtk_scrolled_window_new();
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(textScroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(textScroll), textView);
+        gtk_widget_set_size_request(textScroll, 340, 76);
+        attachRow(0, "Text", textScroll);
+        linkTextInput = GTK_TEXT_VIEW(textView);
+
+        const char* prefixOptions[] = {"https://", "http://", "mailto:", "file://", "Custom", nullptr};
+        linkPrefixDropdown = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(prefixOptions));
+        auto* urlBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_append(GTK_BOX(urlBox), GTK_WIDGET(linkPrefixDropdown));
+        linkUrlInput = GTK_ENTRY(gtk_entry_new());
+        gtk_widget_set_hexpand(GTK_WIDGET(linkUrlInput), true);
+        gtk_box_append(GTK_BOX(urlBox), GTK_WIDGET(linkUrlInput));
+        attachRow(1, "URL", urlBox);
+
+        linkFontEntry = GTK_ENTRY(gtk_entry_new());
+        gtk_editable_set_width_chars(GTK_EDITABLE(linkFontEntry), 18);
+        attachRow(2, "Font", GTK_WIDGET(linkFontEntry));
+        linkFontSize = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(1, 200, 0.5));
+        gtk_spin_button_set_digits(linkFontSize, 1);
+        attachRow(3, "Size", GTK_WIDGET(linkFontSize));
+        const char* alignmentOptions[] = {"Left", "Center", "Right", nullptr};
+        linkAlignmentDropdown = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(alignmentOptions));
+        attachRow(4, "Alignment", GTK_WIDGET(linkAlignmentDropdown));
+
+        if (existing) {
+            gtk_text_buffer_set_text(gtk_text_view_get_buffer(linkTextInput), existing->text.c_str(), -1);
+            std::string urlValue = existing->linkUrl;
+            guint prefix = 4;
+            const std::array<std::string, 4> prefixes{"https://", "http://", "mailto:", "file://"};
+            for (guint candidate = 0; candidate < prefixes.size(); ++candidate) {
+                if (urlValue.starts_with(prefixes[candidate])) {
+                    prefix = candidate;
+                    urlValue.erase(0, prefixes[candidate].size());
+                    break;
+                }
+            }
+            gtk_drop_down_set_selected(linkPrefixDropdown, prefix);
+            gtk_editable_set_text(GTK_EDITABLE(linkUrlInput), urlValue.c_str());
+            gtk_editable_set_text(GTK_EDITABLE(linkFontEntry), existing->fontName.c_str());
+            gtk_spin_button_set_value(linkFontSize, existing->fontSize);
+            gtk_drop_down_set_selected(linkAlignmentDropdown, static_cast<guint>(existing->alignment));
+        } else {
+            gtk_text_buffer_set_text(gtk_text_view_get_buffer(linkTextInput), "Link", -1);
+            gtk_editable_set_text(GTK_EDITABLE(linkUrlInput), "xournalpp.github.io");
+            gtk_editable_set_text(GTK_EDITABLE(linkFontEntry), state.textFontName.c_str());
+            gtk_spin_button_set_value(linkFontSize, state.textFontSize);
+            gtk_drop_down_set_selected(linkPrefixDropdown, 0);
+            gtk_drop_down_set_selected(linkAlignmentDropdown, 0);
+        }
+
+        adw_alert_dialog_set_extra_child(messageDialog, grid);
+        adw_alert_dialog_add_responses(messageDialog, "cancel", "Cancel", "save", existing ? "Save" : "Add", nullptr);
+        adw_alert_dialog_set_response_appearance(messageDialog, "save", ADW_RESPONSE_SUGGESTED);
+        adw_alert_dialog_set_close_response(messageDialog, "cancel");
+        adw_alert_dialog_set_default_response(messageDialog, "save");
+        editingLinkIndex = index;
+        linkEditorPage = page;
+        linkEditorPosition = position;
+        g_signal_connect(messageDialog, "response", G_CALLBACK((+[](AdwAlertDialog*, const char* response, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const bool save = response && std::string_view(response) == "save";
+                             std::optional<prototype::TextItem> edited;
+                             const auto oldIndex = self->editingLinkIndex;
+                             if (save && self->linkTextInput && self->linkUrlInput && self->linkPrefixDropdown &&
+                                 self->linkFontEntry && self->linkFontSize && self->linkAlignmentDropdown) {
+                                 GtkTextIter start, end;
+                                 auto* buffer = gtk_text_view_get_buffer(self->linkTextInput);
+                                 gtk_text_buffer_get_bounds(buffer, &start, &end);
+                                 gchar* rawText = gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
+                                 std::string text = rawText ? rawText : "";
+                                 g_free(rawText);
+                                 if (std::all_of(text.begin(), text.end(), [](unsigned char ch) { return g_ascii_isspace(ch); })) {
+                                     text = "Link";
+                                 }
+
+                                 static constexpr std::array<const char*, 4> prefixes{
+                                         "https://", "http://", "mailto:", "file://"};
+                                 const guint prefix = gtk_drop_down_get_selected(self->linkPrefixDropdown);
+                                 std::string url = gtk_editable_get_text(GTK_EDITABLE(self->linkUrlInput));
+                                 if (url.empty()) {
+                                     url = "xournalpp.github.io";
+                                 }
+                                 if (prefix < prefixes.size()) {
+                                     url.insert(0, prefixes[prefix]);
+                                 }
+                                 auto item = oldIndex && *oldIndex < self->state.texts.size() ?
+                                                     self->state.texts[*oldIndex] : prototype::TextItem{};
+                                 item.isLink = true;
+                                 item.linkUrl = std::move(url);
+                                 item.text = std::move(text);
+                                 const char* font = gtk_editable_get_text(GTK_EDITABLE(self->linkFontEntry));
+                                 item.fontName = font && *font ? font : "Sans";
+                                 item.fontSize = gtk_spin_button_get_value(self->linkFontSize);
+                                 item.alignment = std::min<int>(2, gtk_drop_down_get_selected(self->linkAlignmentDropdown));
+                                 item.justify = false;
+                                 item.wrapWidth = -1;
+                                 item.styleRuns.clear();
+                                 if (!oldIndex) {
+                                     item.page = self->linkEditorPage;
+                                     item.x = self->linkEditorPosition.x;
+                                     item.y = self->linkEditorPosition.y;
+                                     item.color = 0xffff00ffU;
+                                 }
+                                 const auto [width, height] = prototype::textNaturalSize(item);
+                                 item.layoutWidth = width;
+                                 item.layoutHeight = height;
+                                 edited = std::move(item);
+                             }
+                             self->messageDialog = nullptr;
+                             self->linkTextInput = nullptr;
+                             self->linkUrlInput = nullptr;
+                             self->linkPrefixDropdown = nullptr;
+                             self->linkFontEntry = nullptr;
+                             self->linkFontSize = nullptr;
+                             self->linkAlignmentDropdown = nullptr;
+                             self->editingLinkIndex.reset();
+                             self->linkEditorPage = -1;
+                             if (edited) {
+                                 const bool changed = oldIndex ? self->state.replaceText(*oldIndex, std::move(*edited)) :
+                                                                 self->state.insertText(std::move(*edited));
+                                 if (!changed) {
+                                     self->showError("The link could not be added to the active layer.");
+                                 } else {
+                                     self->thumbnails.clear();
+                                 }
+                             }
+                             if (self->canvas) {
+                                 gtk_widget_grab_focus(self->canvas);
+                                 self->update();
+                             }
+                         })), this);
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
+        gtk_widget_grab_focus(GTK_WIDGET(linkUrlInput));
+    }
+
+    void openLinkUrl(const std::string& url) {
+        if (!linkVerifyMode.empty()) {
+            openedLinkForTest = url;
+            return;
+        }
+        g_app_info_launch_default_for_uri_async(
+                url.c_str(), nullptr, nullptr,
+                +[](GObject*, GAsyncResult* result, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    GError* error = nullptr;
+                    if (!g_app_info_launch_default_for_uri_finish(result, &error)) {
+                        const std::string message = error ? error->message : "No application can open this link.";
+                        self->showAlert("Unable to open link", message);
+                    }
+                    g_clear_error(&error);
+                },
+                this);
+    }
+
+    void showLinkInfo(size_t index) {
+        if (!linkInfoPopover || index >= state.texts.size() || !state.texts[index].isLink) {
+            return;
+        }
+        linkInfoIndex = index;
+        const auto& item = state.texts[index];
+        const auto message = item.linkUrl + "\nCtrl-click to open · Double-click to edit";
+        gtk_label_set_text(GTK_LABEL(linkInfoLabel), message.c_str());
+
+        std::array<prototype::Point, 4> corners{{
+                {0, 0}, {item.layoutWidth, 0},
+                {item.layoutWidth, item.layoutHeight}, {0, item.layoutHeight}}};
+        for (auto& corner: corners) {
+            const auto local = prototype::Point{item.xx * corner.x + item.xy * corner.y,
+                                                item.yx * corner.x + item.yy * corner.y};
+            corner = state.pageScreenPoint(item.page, local.x + item.x, local.y + item.y);
+        }
+        double left = corners[0].x, right = corners[0].x, top = corners[0].y, bottom = corners[0].y;
+        for (const auto& corner: corners) {
+            left = std::min(left, corner.x);
+            right = std::max(right, corner.x);
+            top = std::min(top, corner.y);
+            bottom = std::max(bottom, corner.y);
+        }
+        GdkRectangle pointing{static_cast<int>(std::floor(left)), static_cast<int>(std::floor(top)),
+                              std::max(1, static_cast<int>(std::ceil(right - left))),
+                              std::max(1, static_cast<int>(std::ceil(bottom - top)))};
+        gtk_popover_set_pointing_to(GTK_POPOVER(linkInfoPopover), &pointing);
+        if (!gtk_widget_get_visible(linkInfoPopover)) {
+            gtk_popover_popup(GTK_POPOVER(linkInfoPopover));
+        }
+    }
+
+    void updateLinkHover(double x, double y) {
+        if (state.brush.tool != Tool::Link || !canvas) {
+            return;
+        }
+        const auto hit = state.hitPage(x, y);
+        const auto link = hit ? state.pickLink(hit->page, hit->local) : std::nullopt;
+        gtk_widget_set_cursor_from_name(canvas, link ? "pointer" : nullptr);
+        if (link) {
+            if (linkInfoIndex != link) {
+                showLinkInfo(*link);
+            }
+        } else {
+            linkInfoIndex.reset();
+            if (linkInfoPopover) {
+                gtk_popover_popdown(GTK_POPOVER(linkInfoPopover));
+            }
+        }
+    }
+
+    void handleLinkClick(double x, double y, int presses, bool controlDown) {
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            return;
+        }
+        state.selectActivePage(hit->page);
+        if (const auto index = state.pickLink(hit->page, hit->local)) {
+            if (controlDown) {
+                openLinkUrl(state.texts[*index].linkUrl);
+            } else if (presses >= 2) {
+                openLinkEditor(hit->page, {state.texts[*index].x, state.texts[*index].y}, index);
+            } else {
+                showLinkInfo(*index);
+            }
+        } else {
+            openLinkEditor(hit->page, hit->local, std::nullopt);
+        }
     }
 
     static uint32_t packTextColor(const std::array<double, 3>& color) {
@@ -2474,6 +2768,7 @@ private:
         const bool editingText = textEditor && textEditor->active();
         const bool textContext = state.brush.tool == Tool::Text || editingText;
         const bool regularColorContext = state.brush.tool != Tool::Eraser && state.brush.tool != Tool::Hand &&
+                                         state.brush.tool != Tool::Link &&
                                          state.brush.tool != Tool::VerticalSpace &&
                                          !prototype::isSelectionTool(state.brush.tool);
         if (textFontEntry) {
@@ -2502,6 +2797,9 @@ private:
 
         const auto hit = state.hitPage(x, y);
         if (!hit) {
+            return false;
+        }
+        if (state.pickLink(hit->page, hit->local)) {
             return false;
         }
 
@@ -2575,6 +2873,9 @@ private:
         }
         const auto hit = state.hitPage(x, y);
         if (!hit) {
+            return;
+        }
+        if (state.pickLink(hit->page, hit->local)) {
             return;
         }
         finishTextEditing();
@@ -2679,11 +2980,14 @@ private:
         if (textButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(textButton), tool == Tool::Text);
         }
+        if (linkButton) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(linkButton), tool == Tool::Link);
+        }
         if (prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
         } else if (tool == Tool::Hand) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[4]), true);
-        } else if (tool == Tool::Text) {
+        } else if (tool == Tool::Text || tool == Tool::Link) {
             for (auto* button: toolButtons) {
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
             }
@@ -2728,12 +3032,15 @@ private:
                                static_cast<float>(color[2]), 1};
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
-        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::Hand && tool != Tool::VerticalSpace &&
+        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::Hand && tool != Tool::Link &&
+                                                tool != Tool::VerticalSpace &&
                                                 !prototype::isSelectionTool(tool));
         gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
-                                                     tool != Tool::Hand && tool != Tool::VerticalSpace);
+                                                     tool != Tool::Hand && tool != Tool::VerticalSpace &&
+                                                     tool != Tool::Link);
         gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
-                                                    tool != Tool::Hand && tool != Tool::VerticalSpace);
+                                                    tool != Tool::Hand && tool != Tool::VerticalSpace &&
+                                                    tool != Tool::Link);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown,
                                prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace);
@@ -2767,8 +3074,12 @@ private:
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
+        if (tool != Tool::Link && linkInfoPopover) {
+            gtk_popover_popdown(GTK_POPOVER(linkInfoPopover));
+            linkInfoIndex.reset();
+        }
         if (canvas) {
-            gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" :
+            gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" : tool == Tool::Link ? "pointer" :
                                                    prototype::isPdfTextSelectionTool(tool) ? "text" : nullptr);
         }
         updateTextToolbarVisibility();
@@ -3459,6 +3770,19 @@ private:
                          }),
                          this);
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), textButton);
+        linkButton = gtk_toggle_button_new();
+        gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(linkButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
+        gtk_button_set_child(GTK_BUTTON(linkButton), gtk_image_new_from_icon_name("insert-link-symbolic"));
+        gtk_widget_set_tooltip_text(linkButton, "Add or edit a link (L)");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(linkButton), GTK_ACCESSIBLE_PROPERTY_LABEL, "Link tool", -1);
+        g_signal_connect(linkButton, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingTools &&
+                                 (gtk_toggle_button_get_active(button) || self->state.brush.tool == Tool::Link)) {
+                                 self->selectTool(Tool::Link);
+                             }
+                         }), this);
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), linkButton);
         imageButton = button("insert-image-symbolic", "Insert Image",
                              G_CALLBACK(+[](GtkButton*, gpointer data) {
                                  static_cast<Prototype*>(data)->chooseImage();
@@ -3829,6 +4153,7 @@ private:
         textEditor = std::make_unique<prototype::TextEditorOverlay>(GTK_OVERLAY(canvasOverlay));
         textEditor->setWrap(false);
         createPdfActionsPopover();
+        createLinkInfoPopover();
         gtk_drawing_area_set_draw_func(
                 GTK_DRAWING_AREA(canvas),
                 +[](GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
@@ -3973,6 +4298,10 @@ private:
                 verifyMode && *verifyMode) {
                 pdfTextSelectionVerifyMode = verifyMode;
                 pdfTextSelectionVerifyStep = 0;
+            }
+            if (const char* verifyMode = g_getenv("XOURNALPP_LINK_VERIFY_MODE"); verifyMode && *verifyMode) {
+                linkVerifyMode = verifyMode;
+                linkVerifyStep = 0;
             }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
@@ -4368,6 +4697,10 @@ private:
             update();
             return;
         }
+        if (state.brush.tool == Tool::Link) {
+            gtk_widget_grab_focus(canvas);
+            return;
+        }
         if (state.brush.tool == Tool::Text && device == Device::Stylus && !eraserEnd &&
             activeStylusAction == prototype::ButtonToolAction::None && !(textEditor && textEditor->active())) {
             pendingStylusTextTap = prototype::Point{x, y};
@@ -4433,6 +4766,10 @@ private:
 
     void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                 uint32_t timeMs = 0) {
+        if (state.brush.tool == Tool::Link) {
+            updateLinkHover(x, y);
+            return;
+        }
         if (state.verticalSpacePreview()) {
             state.moveVerticalSpace(x, y, input.controlHeld);
             update();
@@ -4475,6 +4812,11 @@ private:
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt,
                 std::optional<prototype::Point> releasePoint = std::nullopt) {
+        if (device == Device::Stylus && state.brush.tool == Tool::Link && releasePoint) {
+            handleLinkClick(releasePoint->x, releasePoint->y, 1, input.controlHeld);
+            update();
+            return;
+        }
         if (state.verticalSpacePreview()) {
             if (state.finishVerticalSpace()) {
                 thumbnails.clear();
@@ -4621,6 +4963,25 @@ private:
                                  return;
                              }
                              const auto tool = self->state.brush.tool;
+                             if (presses > 1 && tool != Tool::Link) {
+                                 const auto hit = self->state.hitPage(x, y);
+                                 if (hit) {
+                                     if (const auto index = self->state.pickLink(hit->page, hit->local)) {
+                                         self->openLinkEditor(hit->page,
+                                                              {self->state.texts[*index].x,
+                                                               self->state.texts[*index].y}, index);
+                                         self->update();
+                                         return;
+                                     }
+                                 }
+                             }
+                             if (tool == Tool::Link) {
+                                 const auto modifiers = gtk_event_controller_get_current_event_state(
+                                         GTK_EVENT_CONTROLLER(gesture));
+                                 self->handleLinkClick(x, y, presses, (modifiers & GDK_CONTROL_MASK) != 0);
+                                 self->update();
+                                 return;
+                             }
                              if (prototype::isPdfTextSelectionTool(tool) && (presses == 2 || presses == 3)) {
                                  self->selectPdfTextAtPoint(
                                          x, y, presses == 2 ? prototype::PdfTextSelectionStyle::Word :
@@ -4651,6 +5012,10 @@ private:
         g_signal_connect(pointerMotion, "motion", G_CALLBACK(+[](GtkEventControllerMotion* controller,
                                                                    double x, double y, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
+                             if (self->state.brush.tool == Tool::Link) {
+                                 self->updateLinkHover(x, y);
+                                 return;
+                             }
                              if (self->state.drawingMode != prototype::DrawingMode::Spline ||
                                  (self->state.brush.tool != Tool::Pen && self->state.brush.tool != Tool::Highlighter)) {
                                  return;
@@ -4663,6 +5028,16 @@ private:
                                  self->input.splineHover(x, y);
                              }
                              self->update();
+                         }), this);
+        g_signal_connect(pointerMotion, "leave", G_CALLBACK(+[](GtkEventControllerMotion*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->state.brush.tool == Tool::Link) {
+                                 self->linkInfoIndex.reset();
+                                 if (self->linkInfoPopover) {
+                                     gtk_popover_popdown(GTK_POPOVER(self->linkInfoPopover));
+                                 }
+                                 gtk_widget_set_cursor_from_name(self->canvas, "pointer");
+                             }
                          }), this);
         gtk_widget_add_controller(canvas, pointerMotion);
 
@@ -5092,9 +5467,13 @@ private:
                         return true;
                     } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
                                (key == GDK_KEY_p || key == GDK_KEY_h || key == GDK_KEY_e ||
-                                (key == GDK_KEY_t && self->nativeSession))) {
+                                ((key == GDK_KEY_t || key == GDK_KEY_l) && self->nativeSession))) {
                         if (key == GDK_KEY_t) {
                             self->selectTool(Tool::Text);
+                            return true;
+                        }
+                        if (key == GDK_KEY_l) {
+                            self->selectTool(Tool::Link);
                             return true;
                         }
                         const auto tool = key == GDK_KEY_p ? 0 : key == GDK_KEY_h ? 1 : 2;
@@ -6972,6 +7351,102 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    gboolean smokeLinks() {
+        switch (linkVerifyStep++) {
+            case 0: {
+                require(nativeSession && state.texts.size() >= 1 &&
+                                std::any_of(state.texts.begin(), state.texts.end(),
+                                            [](const prototype::TextItem& item) { return item.isLink; }),
+                        "Link verification requires an editable native link in the source document");
+                const auto original = std::find_if(state.texts.begin(), state.texts.end(),
+                                                   [](const prototype::TextItem& item) { return item.isLink; });
+                const size_t originalIndex = static_cast<size_t>(std::distance(state.texts.begin(), original));
+                const auto originalUrl = original->linkUrl;
+                const auto originalText = original->text;
+                const auto linkPoint = state.pageScreenPoint(original->page, original->x + 2, original->y + 2);
+
+                selectTool(Tool::Link);
+                updateLinkHover(linkPoint.x, linkPoint.y);
+                require(linkInfoPopover && gtk_widget_get_visible(linkInfoPopover),
+                        "Hovering an existing link did not show its URL popover");
+                handleLinkClick(linkPoint.x, linkPoint.y, 1, true);
+                require(openedLinkForTest == originalUrl,
+                        "Control-click did not activate the URL for the link under the pointer");
+                handleLinkClick(linkPoint.x, linkPoint.y, 2, false);
+                require(messageDialog && editingLinkIndex == originalIndex,
+                        "Double-clicking an existing link did not open its editor");
+                gtk_text_buffer_set_text(gtk_text_view_get_buffer(linkTextInput), "Edited GTK4 link", -1);
+                gtk_drop_down_set_selected(linkPrefixDropdown, 0);
+                gtk_editable_set_text(GTK_EDITABLE(linkUrlInput), "migration.example/phase29");
+                gtk_editable_set_text(GTK_EDITABLE(linkFontEntry), "Sans");
+                gtk_spin_button_set_value(linkFontSize, 15);
+                gtk_drop_down_set_selected(linkAlignmentDropdown, 1);
+                answerDialog("save");
+                require(state.texts[originalIndex].isLink && state.texts[originalIndex].text == "Edited GTK4 link" &&
+                                state.texts[originalIndex].linkUrl == "https://migration.example/phase29" &&
+                                state.texts[originalIndex].alignment == 1 && state.canUndo(),
+                        "Editing a native link did not preserve its type, save its fields and enter undo history");
+                const auto editedPoint = state.pageScreenPoint(state.texts[originalIndex].page,
+                                                               state.texts[originalIndex].x + 2,
+                                                               state.texts[originalIndex].y + 2);
+                openedLinkForTest.clear();
+                handleLinkClick(editedPoint.x, editedPoint.y, 1, true);
+                require(openedLinkForTest == "https://migration.example/phase29",
+                        "Control-click after editing did not use the saved URL");
+                state.undo();
+                require(state.texts[originalIndex].text == originalText &&
+                                state.texts[originalIndex].linkUrl == originalUrl,
+                        "Undo did not restore the original native link");
+                state.redo();
+                require(state.texts[originalIndex].text == "Edited GTK4 link" &&
+                                state.texts[originalIndex].linkUrl == "https://migration.example/phase29",
+                        "Redo did not restore the edited native link");
+                capture("link-edited");
+
+                const size_t beforeInsert = state.texts.size();
+                const auto newPosition = state.pageScreenPoint(state.page, 330, 280);
+                handleLinkClick(newPosition.x, newPosition.y, 1, false);
+                require(messageDialog && !editingLinkIndex, "Clicking empty page space did not open the Add Link form");
+                gtk_text_buffer_set_text(gtk_text_view_get_buffer(linkTextInput), "Contact", -1);
+                gtk_drop_down_set_selected(linkPrefixDropdown, 2);
+                gtk_editable_set_text(GTK_EDITABLE(linkUrlInput), "migration@example.org");
+                gtk_editable_set_text(GTK_EDITABLE(linkFontEntry), "Sans");
+                gtk_spin_button_set_value(linkFontSize, 12);
+                gtk_drop_down_set_selected(linkAlignmentDropdown, 0);
+                answerDialog("save");
+                require(state.texts.size() == beforeInsert + 1 && state.texts.back().isLink &&
+                                state.texts.back().text == "Contact" &&
+                                state.texts.back().linkUrl == "mailto:migration@example.org" && state.canUndo(),
+                        "Creating a link did not add a native, undoable link object");
+                const auto newIndex = state.texts.size() - 1;
+                state.undo();
+                require(state.texts.size() == beforeInsert, "Undo did not remove the newly created link");
+                state.redo();
+                require(state.texts.size() == beforeInsert + 1 && state.texts[newIndex].linkUrl ==
+                                "mailto:migration@example.org",
+                        "Redo did not restore the newly created link");
+                capture("link-created");
+
+                linkOutputPath = (std::filesystem::path(options.smokeDirectory) / "links-saved.xopp").string();
+                saveCopyTo(linkOutputPath, [this] { linkSaveComplete = true; });
+                require(busy, "Saving edited links did not start a document-worker operation");
+                break;
+            }
+            default: {
+                require(linkSaveComplete && std::filesystem::is_regular_file(linkOutputPath),
+                        "The native link save did not finish");
+                capture("link-saved");
+                std::cout << "PASS: GTK native links create, edit, activate, undo/redo and save\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+            }
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smoke() {
         if (busy || deferredAction) {
             require(++documentWaits < 120, "Document operation did not finish");
@@ -7006,6 +7481,9 @@ private:
         }
         if (!pdfTextSelectionVerifyMode.empty()) {
             return smokePdfTextSelection();
+        }
+        if (!linkVerifyMode.empty()) {
+            return smokeLinks();
         }
         if (!imageVerifyMode.empty()) {
             return smokeImages();
@@ -8224,6 +8702,11 @@ private:
     std::string selectionVerifyMode;
     int selectionVerifyStep = -1;
     std::string pdfTextSelectionVerifyMode;
+    std::string linkVerifyMode;
+    int linkVerifyStep = -1;
+    std::string openedLinkForTest;
+    std::string linkOutputPath;
+    bool linkSaveComplete = false;
     int pdfTextSelectionVerifyStep = -1;
     std::string pdfClipboardExpected;
     std::string pdfClipboardReadText;
@@ -8317,7 +8800,20 @@ private:
     GtkWidget* canvasOverlay = nullptr;
     std::unique_ptr<prototype::TextEditorOverlay> textEditor;
     GtkWidget* textButton = nullptr;
+    GtkWidget* linkButton = nullptr;
     GtkWidget* imageButton = nullptr;
+    GtkWidget* linkInfoPopover = nullptr;
+    GtkWidget* linkInfoLabel = nullptr;
+    std::optional<size_t> linkInfoIndex;
+    GtkTextView* linkTextInput = nullptr;
+    GtkEntry* linkUrlInput = nullptr;
+    GtkDropDown* linkPrefixDropdown = nullptr;
+    GtkEntry* linkFontEntry = nullptr;
+    GtkSpinButton* linkFontSize = nullptr;
+    GtkDropDown* linkAlignmentDropdown = nullptr;
+    std::optional<size_t> editingLinkIndex;
+    int linkEditorPage = -1;
+    prototype::Point linkEditorPosition{};
     GtkWidget* textFontEntry = nullptr;
     GtkWidget* textFontSize = nullptr;
     GtkWidget* textFormatBox = nullptr;

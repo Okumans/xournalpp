@@ -45,6 +45,7 @@ enum class Tool {
     SelectPdfTextLinear,
     SelectPdfTextRect,
     VerticalSpace,
+    Link,
 };
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
@@ -900,6 +901,36 @@ public:
             }
         }
         return best;
+    }
+
+    std::optional<size_t> pickLink(int pageIndex, Point point) const {
+        const size_t active = activeLayerId(pageIndex);
+        if (!layerVisible(pageIndex, active)) {
+            return std::nullopt;
+        }
+        std::optional<size_t> first;
+        size_t firstOrder = std::numeric_limits<size_t>::max();
+        for (size_t index = 0; index < texts.size(); ++index) {
+            const auto& item = texts[index];
+            if (!item.isLink || item.page != pageIndex || item.layerId != active || item.text.empty() ||
+                item.layerOrder >= firstOrder) {
+                continue;
+            }
+            const double determinant = item.xx * item.yy - item.xy * item.yx;
+            if (!std::isfinite(determinant) || std::abs(determinant) < 1e-12) {
+                continue;
+            }
+            const double dx = point.x - item.x;
+            const double dy = point.y - item.y;
+            const double localX = (item.yy * dx - item.xy * dy) / determinant;
+            const double localY = (-item.yx * dx + item.xx * dy) / determinant;
+            if (localX < 0 || localX > item.layoutWidth || localY < 0 || localY > item.layoutHeight) {
+                continue;
+            }
+            first = index;
+            firstOrder = item.layerOrder;
+        }
+        return first;
     }
 
     static void extendLassoAtPageEdges(std::vector<Point>& boundary, const PageSize& size) {

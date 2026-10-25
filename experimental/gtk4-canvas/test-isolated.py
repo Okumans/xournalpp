@@ -527,8 +527,68 @@ def verify_pdf_text_selection(args, evidence):
     return str(output)
 
 
+def verify_links(args, evidence):
+    directory = evidence / "link-tool"
+    output = directory / "run"
+    shutil.rmtree(directory, ignore_errors=True)
+    output.mkdir(parents=True, exist_ok=True)
+
+    source_hash = hashlib.sha256(args.fixture.read_bytes()).hexdigest()
+    root = ET.fromstring(gzip.decompress(args.fixture.read_bytes()))
+    for old_link in root.findall(".//link"):
+        parent = next((candidate for candidate in root.iter() if old_link in list(candidate)), None)
+        if parent is not None:
+            parent.remove(old_link)
+    page = root.find("page")
+    layer = page.findall("layer")[-1]
+    link = ET.SubElement(layer, "link", {
+        "align": "left", "font": "Sans", "size": "12", "matrix": "1 0 0 1 140 130",
+        "color": "#ff00ffff", "url": "https://source.example.org/"})
+    link.text = "Source link"
+    fixture = directory / "link-demo.xopp"
+    fixture.write_bytes(gzip.compress(ET.tostring(root, encoding="utf-8", xml_declaration=True)))
+
+    result = run(
+        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
+         "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_LINK_VERIFY_MODE="1"),
+    )
+    if "PASS: GTK native links create, edit, activate, undo/redo and save" not in result:
+        raise RuntimeError("GTK native Link tool verification did not finish")
+
+    for name in ("link-edited", "link-created", "link-saved"):
+        screenshot = output / f"{name}.png"
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing Link tool screenshot: {screenshot}")
+
+    saved = output / "links-saved.xopp"
+    saved_root = ET.fromstring(gzip.decompress(saved.read_bytes()))
+    links = saved_root.findall(".//link")
+    edited = next((item for item in links if item.text == "Edited GTK4 link"), None)
+    created = next((item for item in links if item.text == "Contact"), None)
+    if edited is None or edited.attrib.get("url") != "https://migration.example/phase29":
+        raise RuntimeError("Native save did not retain edits to the existing link text and URL")
+    if created is None or created.attrib.get("url") != "mailto:migration@example.org":
+        raise RuntimeError("Native save did not retain the newly created mail link")
+    if hashlib.sha256(args.fixture.read_bytes()).hexdigest() != source_hash:
+        raise RuntimeError("Link tool verification modified its source fixture")
+
+    report = {"saved_document": str(saved), "native_link_count": len(links),
+              "screenshots": [str(output / f"{name}.png") for name in
+                              ("link-edited", "link-created", "link-saved")],
+              "rendering": "Private headless Wayland via Cage"}
+    print("PASS: private GTK4 Link tool create/edit/activate and native save", flush=True)
+    return report
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.link_only:
+        link_evidence = verify_links(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"link-tool": link_evidence}, "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.preferences_only:
         preferences_evidence = verify_preferences(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -743,12 +803,15 @@ def main():
     parser.add_argument("--image-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdf-text-selection-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--link-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
     if args.pdf_text_selection_only and not args.worker:
         raise RuntimeError("PDF text annotation persistence checks require --worker")
+    if args.link_only and not args.worker:
+        raise RuntimeError("Native Link tool checks require --worker")
     if args.inside:
         inside(args)
         return
@@ -798,6 +861,8 @@ def main():
             command.append("--selection-only")
         if args.pdf_text_selection_only:
             command.append("--pdf-text-selection-only")
+        if args.link_only:
+            command.append("--link-only")
         if args.preferences_only:
             command.append("--preferences-only")
         output = run(command, env=env, private_group=True)

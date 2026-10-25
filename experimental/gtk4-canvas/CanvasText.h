@@ -30,6 +30,8 @@ struct TextItem {
     size_t originLayer = newLayerOrigin;
     std::string text;
     std::string fontName = "Sans";
+    std::string linkUrl;
+    bool isLink = false;
     double fontSize = 12;
     uint32_t color = 0xff000000U;
     double wrapWidth = -1;

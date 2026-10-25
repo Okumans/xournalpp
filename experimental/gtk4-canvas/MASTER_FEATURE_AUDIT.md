@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **52 task areas — 33 Partial, 19 Pending, 0 Covered, and 0
+Current ledger count: **52 task areas — 34 Partial, 18 Pending, 0 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -52,7 +52,7 @@ registration in `ToolHandler::initTools`.
 | `selectPdfTextRect` | Partial | Rectangular drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
 | `laserPointerPen` | Pending | Port timed laser-pen rendering and presentation behavior. |
 | `laserPointerHighlighter` | Pending | Port timed laser-highlighter rendering and presentation behavior. |
-| `link` | Pending | Create, edit, and activate links with production hit testing and persistence. |
+| `link` | Partial | The Link tool creates and edits native links, renders them underlined, hit-tests them on the active visible layer, opens them with Ctrl-click, and preserves URL/font/layout through save and undo/redo. Match the production editor and scheme choices, verify external launcher behavior, and test physical input routing. |
 | `latex` | Pending | Port LaTeX text creation, rendering, editing, and dependency/error behavior. |
 | `smartSelect` | Partial | Picks editable strokes, text, and images by layer order; opens text editing on ordinary text clicks. Add complete production hit geometry, snapping, and edge-pan behavior. |
 
@@ -74,7 +74,7 @@ it is not represented by a single `ToolType`.
 | Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Exact grid snapping, edge pan, persistent rotated handle frame, transform-following text editor placement, and device behavior remain. |
 | Text editing | Partial | Inline rich-text editing and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, and newly created or edited text remains selected. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
-| Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, and text; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
+| Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` stroke and single-image copy/cut/paste works. Images also offer PNG and accept PNG clipboard paste. Multi-image and mixed-object selection clipboard actions, remaining native types, text and SVG selection targets, and cross-process compatibility remain. |
 | PDF text selection and annotation | Partial | Linear and rectangular drag select PDF text; double/triple click selects words/lines. Copy, highlight, underline, and strikethrough work with color controls and marker opacity. The original PDF source is used for text extraction and retained in the native save path. Match GTK 3 floating-toolbox placement and dismissal/reopen behavior. |
 
@@ -108,7 +108,7 @@ it stays listed because it is part of the master plugin distribution.
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |
-| Native documents | Partial | Supported strokes, text, and image suffixes round-trip. PDF-backed text selection uses the original PDF source and page mapping. Make unsupported native object types editable without losing preservation. |
+| Native documents | Partial | Supported strokes, text, links, and image suffixes round-trip. PDF-backed text selection uses the original PDF source and page mapping. Make unsupported native object types editable without losing preservation. |
 | Accessibility and platform behavior | Pending | Port accessibility semantics and verify each supported platform and packaging path. |
 
 ## Explicit exclusions

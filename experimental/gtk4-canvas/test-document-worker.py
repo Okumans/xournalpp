@@ -244,6 +244,10 @@ def main():
             "font": "Sans", "size": "12", "x": "30", "y": "45", "color": "#000000ff",
             "styles": "0-4:U2FucyBCb2xk:16:4278190335:1;4-11:U2Fucw==:12:-:8"})
         rich_text.text = "Rich π text"
+        rich_link = ET.SubElement(rich_layer, "link", {
+            "align": "center", "font": "Sans", "size": "13", "matrix": "1 0 0 1 120 55",
+            "color": "#ff00ffff", "url": "https://xournalpp.github.io/"})
+        rich_link.text = "GTK4 link"
         ET.SubElement(rich_layer, "stroke", {"tool": "highlighter", "capStyle": "round", "color": "#ffff007f",
                                                "width": "8"}).text = "10 70 50 70"
         rich_native.write_bytes(gzip.compress(ET.tostring(rich_root, encoding="utf-8", xml_declaration=True)))
@@ -252,17 +256,23 @@ def main():
         rich_ink = temporary / "rich.ink"
         rich_transfer = temporary / "rich.text"
         run("open", rich_native, rich_snap, rich_pdf, rich_ink, rich_transfer)
-        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V3 1\n")
+        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V4 2\n")
         assert "Rich π text".encode() in rich_transfer.read_bytes()
+        assert b"https://xournalpp.github.io/" in rich_transfer.read_bytes()
         assert rich_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V4 2"
         rich_saved = temporary / "rich-saved.xopp"
         run("save-copy", rich_snap, rich_saved, rich_ink, rich_transfer)
         assert content(xml(rich_saved).find("page")) == content(xml(rich_native).find("page"))
         rich_layer_items = xml(rich_saved).findall("page/layer")[-1]
-        assert [item.tag for item in rich_layer_items] == ["stroke", "text", "stroke"]
+        assert [item.tag for item in rich_layer_items] == ["stroke", "text", "link", "stroke"]
         rich_text_roundtrip = rich_layer_items[1]
         assert rich_text_roundtrip.text == "Rich π text"
         assert rich_text_roundtrip.attrib["styles"] == rich_text.attrib["styles"]
+        rich_link_roundtrip = rich_layer_items[2]
+        assert rich_link_roundtrip.text == rich_link.text
+        assert rich_link_roundtrip.attrib["url"] == rich_link.attrib["url"]
+        assert rich_link_roundtrip.attrib["align"] == rich_link.attrib["align"]
+        assert rich_link_roundtrip.attrib["matrix"] == rich_link.attrib["matrix"]
 
         normal = temporary / "normal.xopp"
         normal_ink = temporary / "normal.ink"

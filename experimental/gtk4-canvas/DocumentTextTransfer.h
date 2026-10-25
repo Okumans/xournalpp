@@ -51,6 +51,10 @@ inline void validateTextItem(const TextItem& item) {
         item.fontName.size() > maxEditableFontBytes || !validUtf8(item.text) || !validUtf8(item.fontName)) {
         throw std::runtime_error("Invalid transferred text content or font");
     }
+    if (item.linkUrl.size() > maxEditableTextBytes || !validUtf8(item.linkUrl) ||
+        (!item.isLink && !item.linkUrl.empty())) {
+        throw std::runtime_error("Invalid transferred link URL");
+    }
     if (item.styleRuns.size() > maxEditableTextStyleRuns) {
         throw std::runtime_error("Transferred text has too many style runs");
     }
@@ -127,12 +131,13 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
     size_t count = 0;
     text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), magic, count);
     if ((magic != "XOURNALPP_GTK4_TEXT_V1" && magic != "XOURNALPP_GTK4_TEXT_V2" &&
-         magic != "XOURNALPP_GTK4_TEXT_V3") ||
+         magic != "XOURNALPP_GTK4_TEXT_V3" && magic != "XOURNALPP_GTK4_TEXT_V4") ||
         count > maxEditableTexts) {
         throw std::runtime_error("Invalid text-transfer header");
     }
     const bool hasLayerIdentity = magic != "XOURNALPP_GTK4_TEXT_V1";
-    const bool hasLayoutGeometry = magic == "XOURNALPP_GTK4_TEXT_V3";
+    const bool hasLayoutGeometry = magic == "XOURNALPP_GTK4_TEXT_V3" || magic == "XOURNALPP_GTK4_TEXT_V4";
+    const bool hasLinks = magic == "XOURNALPP_GTK4_TEXT_V4";
 
     std::vector<TextItem> items;
     items.reserve(count);
@@ -142,8 +147,16 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
         int justify = 0;
         size_t textBytes = 0;
         size_t fontBytes = 0;
+        size_t urlBytes = 0;
         size_t runCount = 0;
-        if (hasLayoutGeometry) {
+        int isLink = 0;
+        if (hasLinks) {
+            text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerId,
+                                            item.originLayer, item.layerOrder, item.xx, item.yx, item.xy, item.yy,
+                                            item.x, item.y, item.fontSize, item.color, item.wrapWidth,
+                                            item.layoutWidth, item.layoutHeight, item.alignment, justify, isLink,
+                                            textBytes, fontBytes, urlBytes, runCount);
+        } else if (hasLayoutGeometry) {
             text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerId,
                                             item.originLayer, item.layerOrder, item.xx, item.yx, item.xy, item.yy,
                                             item.x, item.y, item.fontSize, item.color, item.wrapWidth,
@@ -162,14 +175,19 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
             item.layerId = legacyTopLayer;
             item.originLayer = newLayerOrigin;
         }
-        if ((justify != 0 && justify != 1) || textBytes > maxEditableTextBytes || fontBytes == 0 ||
+        if ((justify != 0 && justify != 1) || (isLink != 0 && isLink != 1) ||
+            textBytes > maxEditableTextBytes || fontBytes == 0 ||
             fontBytes > maxEditableFontBytes || runCount > maxEditableTextStyleRuns ||
-            runCount > maxEditableTextStyleRuns - totalStyleRuns) {
+            runCount > maxEditableTextStyleRuns - totalStyleRuns || urlBytes > maxEditableTextBytes) {
             throw std::runtime_error("Transferred text exceeds its field limits");
         }
         item.justify = justify != 0;
+        item.isLink = isLink != 0;
         item.fontName = text_transfer_detail::readBytes(stream, fontBytes);
         item.text = text_transfer_detail::readBytes(stream, textBytes);
+        if (hasLinks) {
+            item.linkUrl = text_transfer_detail::readBytes(stream, urlBytes);
+        }
         item.styleRuns.reserve(runCount);
 
         for (size_t n = 0; n < runCount; ++n) {
@@ -213,7 +231,7 @@ inline void writeTextTransfer(const std::filesystem::path& path, const std::vect
             throw std::runtime_error("Text transfer contains too many style runs");
         }
         totalStyleRuns += item.styleRuns.size();
-        const size_t fixed = 256 + item.fontName.size() + item.text.size();
+        const size_t fixed = 256 + item.fontName.size() + item.text.size() + item.linkUrl.size();
         if (fixed > maxTextTransferFileBytes - estimatedBytes) {
             throw std::runtime_error("Text transfer file exceeds its size limit");
         }
@@ -233,17 +251,20 @@ inline void writeTextTransfer(const std::filesystem::path& path, const std::vect
     }
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_TEXT_V3 " << items.size() << '\n';
+    stream << "XOURNALPP_GTK4_TEXT_V4 " << items.size() << '\n';
     for (const auto& item: items) {
         stream << item.page << ' ' << item.layerId << ' ' << item.originLayer << ' ' << item.layerOrder << ' '
                << item.xx << ' ' << item.yx << ' ' << item.xy << ' ' << item.yy << ' ' << item.x << ' ' << item.y
                << ' ' << item.fontSize << ' ' << item.color << ' ' << item.wrapWidth << ' ' << item.layoutWidth
                << ' ' << item.layoutHeight << ' ' << item.alignment << ' '
-               << item.justify << ' ' << item.text.size() << ' ' << item.fontName.size() << ' '
+               << item.justify << ' ' << item.isLink << ' ' << item.text.size() << ' ' << item.fontName.size() << ' '
+               << item.linkUrl.size() << ' '
                << item.styleRuns.size() << '\n';
         stream.write(item.fontName.data(), static_cast<std::streamsize>(item.fontName.size()));
         stream.put('\n');
         stream.write(item.text.data(), static_cast<std::streamsize>(item.text.size()));
+        stream.put('\n');
+        stream.write(item.linkUrl.data(), static_cast<std::streamsize>(item.linkUrl.size()));
         stream.put('\n');
         for (const auto& run: item.styleRuns) {
             stream << run.start << ' ' << run.end << ' ' << run.fontSize << ' ' << run.color.has_value() << ' '

@@ -22,6 +22,7 @@
 #include "model/Document.h"
 #include "model/DocumentHandler.h"
 #include "model/Layer.h"
+#include "model/Link.h"
 #include "model/Image.h"
 #include "model/Point.h"
 #include "model/PageType.h"
@@ -118,6 +119,17 @@ void appendStroke(Layer& layer, const prototype::bridge::StrokePacket& packet) {
 }
 
 void appendText(Layer& layer, const prototype::TextItem& item) {
+    if (item.isLink) {
+        auto link = std::make_unique<Link>();
+        link->setText(item.text);
+        link->setUrl(item.linkUrl);
+        link->setFont(XojFont(item.fontName, item.fontSize));
+        link->setColor(Color{item.color});
+        link->setAlignment(TextAlignment(static_cast<TextAlignment::Value>(item.alignment)));
+        link->setTransformation({item.xx, item.yx, item.xy, item.yy, {item.x, item.y}});
+        layer.addElement(std::move(link));
+        return;
+    }
     auto text = std::make_unique<Text>();
     text->setText(item.text);
     text->setFont(XojFont(item.fontName, item.fontSize));
@@ -372,41 +384,64 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
 
 std::optional<prototype::TextItem> toEditableTextPacket(const Element& element, int pageIndex, size_t layerId,
                                                         size_t originLayer, size_t layerOrder) {
-    if (element.getType() != ELEMENT_TEXT) {
+    if (element.getType() != ELEMENT_TEXT && element.getType() != ELEMENT_LINK) {
         return std::nullopt;
     }
-    const auto* text = dynamic_cast<const Text*>(&element);
-    if (!text || !text->getAudioFilename().empty() || text->getText().empty()) {
-        return std::nullopt;
-    }
-
     prototype::TextItem item;
     item.page = pageIndex;
     item.layerId = layerId;
     item.originLayer = originLayer;
     item.layerOrder = layerOrder;
-    item.text = text->getText();
-    item.fontName = text->getFontName();
-    item.fontSize = text->getFontSize();
-    item.color = static_cast<uint32_t>(text->getColor());
-    item.wrapWidth = text->getWrap();
-    const auto& naturalSize = text->getNaturalSize();
-    item.layoutWidth = naturalSize.width;
-    item.layoutHeight = naturalSize.height;
-    item.alignment = static_cast<int>(static_cast<TextAlignment::Value>(text->getAlign()));
-    item.justify = text->getJustify();
-    const auto& matrix = text->getTransformation();
-    item.xx = matrix.xx;
-    item.yx = matrix.yx;
-    item.xy = matrix.xy;
-    item.yy = matrix.yy;
-    item.x = matrix.shift.x;
-    item.y = matrix.shift.y;
-    item.styleRuns.reserve(text->getStyleRuns().size());
-    for (const auto& run: text->getStyleRuns()) {
-        item.styleRuns.push_back({run.start, run.end, run.font.getName(), run.font.getSize(),
-                                  run.color ? std::optional<uint32_t>{static_cast<uint32_t>(*run.color)} : std::nullopt,
-                                  run.attributes});
+    if (element.getType() == ELEMENT_LINK) {
+        const auto* link = dynamic_cast<const Link*>(&element);
+        if (!link || link->getText().empty()) {
+            return std::nullopt;
+        }
+        item.isLink = true;
+        item.text = link->getText();
+        item.linkUrl = link->getUrl();
+        item.fontName = link->getFont().getName();
+        item.fontSize = link->getFont().getSize();
+        item.color = static_cast<uint32_t>(link->getColor());
+        item.alignment = static_cast<int>(static_cast<TextAlignment::Value>(link->getAlignment()));
+        const auto& naturalSize = link->getNaturalSize();
+        item.layoutWidth = naturalSize.width;
+        item.layoutHeight = naturalSize.height;
+        const auto& matrix = link->getTransformation();
+        item.xx = matrix.xx;
+        item.yx = matrix.yx;
+        item.xy = matrix.xy;
+        item.yy = matrix.yy;
+        item.x = matrix.shift.x;
+        item.y = matrix.shift.y;
+    } else {
+        const auto* text = dynamic_cast<const Text*>(&element);
+        if (!text || !text->getAudioFilename().empty() || text->getText().empty()) {
+            return std::nullopt;
+        }
+        item.text = text->getText();
+        item.fontName = text->getFontName();
+        item.fontSize = text->getFontSize();
+        item.color = static_cast<uint32_t>(text->getColor());
+        item.wrapWidth = text->getWrap();
+        const auto& naturalSize = text->getNaturalSize();
+        item.layoutWidth = naturalSize.width;
+        item.layoutHeight = naturalSize.height;
+        item.alignment = static_cast<int>(static_cast<TextAlignment::Value>(text->getAlign()));
+        item.justify = text->getJustify();
+        const auto& matrix = text->getTransformation();
+        item.xx = matrix.xx;
+        item.yx = matrix.yx;
+        item.xy = matrix.xy;
+        item.yy = matrix.yy;
+        item.x = matrix.shift.x;
+        item.y = matrix.shift.y;
+        item.styleRuns.reserve(text->getStyleRuns().size());
+        for (const auto& run: text->getStyleRuns()) {
+            item.styleRuns.push_back({run.start, run.end, run.font.getName(), run.font.getSize(),
+                                      run.color ? std::optional<uint32_t>{static_cast<uint32_t>(*run.color)} : std::nullopt,
+                                      run.attributes});
+        }
     }
     try {
         prototype::bridge::text_transfer_detail::validateTextItem(item);
