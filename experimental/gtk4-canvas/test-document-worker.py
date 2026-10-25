@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -582,6 +583,68 @@ def main():
         exported_before = digest(exported_pdf)
         run("export-pdf", ins_snap, pdf_link, empty, succeeds=False)
         assert pdf_link.is_symlink() and digest(exported_pdf) == exported_before
+
+        # The bundled Export plugin uses the same worker path for PDF, SVG, and
+        # PNG, carrying the live GTK edits and the master range/background/size options.
+        export_dir = temporary / "plugin-export"
+        export_dir.mkdir()
+        export_snapshot = export_dir / "snapshot.xopp"
+        export_preview = export_dir / "preview.pdf"
+        export_ink = export_dir / "initial.ink"
+        export_text = export_dir / "initial.text"
+        export_layers = export_dir / "layers.dat"
+        export_images = export_dir / "initial.images"
+        export_audio = export_dir / "audio"
+        export_audio_cache = export_dir / "audio-cache"
+        run("open", source, export_snapshot, export_preview, export_ink, export_text, export_layers,
+            export_images, export_audio, export_audio_cache)
+        live_ink = export_dir / "live.ink"
+        write_ink_v3(live_ink, [{"page": 0, "layer_id": 1, "origin": 0, "order": 999,
+                                 "tool": 0, "pressure": 0, "width": 8, "color": (1, 0, 0),
+                                 "points": [(120, 150, 1), (220, 150, 1)]}])
+        page_sizes = export_preview.parent / "page-sizes.dat"
+        selected_pdf = export_dir / "selected.pdf"
+        run("export-document", export_snapshot, selected_pdf, live_ink, export_text, export_layers,
+            export_images, page_sizes, "2", "", "none", "0", "cairo", "-1", "-1", "-1")
+        assert selected_pdf.read_bytes().startswith(b"%PDF-") and selected_pdf.stat().st_size > 1000
+        progressive_pdf = export_dir / "progressive.pdf"
+        run("export-document", export_snapshot, progressive_pdf, live_ink, export_text, export_layers,
+            export_images, page_sizes, "1", "1-2", "all", "1", "cairo", "-1", "-1", "-1")
+        assert progressive_pdf.read_bytes().startswith(b"%PDF-") and progressive_pdf.stat().st_size > 1000
+
+        selected_svg = export_dir / "selected.svg"
+        run("export-document", export_snapshot, selected_svg, live_ink, export_text, export_layers,
+            export_images, page_sizes, "1; 2", "1", "unruled", "0", "default", "-1", "-1", "-1")
+        svg_one = export_dir / "selected-1.svg"
+        svg_two = export_dir / "selected-2.svg"
+        assert svg_one.is_file() and svg_two.is_file() and not selected_svg.exists()
+        assert b"<svg" in svg_one.read_bytes() and b"<svg" in svg_two.read_bytes()
+
+        def export_png(name, dpi, width, height):
+            target = export_dir / name
+            run("export-document", export_snapshot, target, live_ink, export_text, export_layers,
+                export_images, page_sizes, "1", "1", "none", "0", "default",
+                str(dpi), str(width), str(height))
+            data = target.read_bytes()
+            assert data.startswith(b"\x89PNG\r\n\x1a\n")
+            return struct.unpack(">II", data[16:24])
+
+        assert export_png("width.png", -1, 320, -1)[0] == 320
+        assert export_png("height.png", -1, -1, 600)[1] == 600
+        dpi_width, _ = export_png("dpi-priority.png", 144, 320, 600)
+        assert dpi_width > 1000, "pngDpi must take priority over pngWidth and pngHeight"
+        png_link = export_dir / "png-link.png"
+        png_link.symlink_to(export_dir / "width.png")
+        width_before = digest(export_dir / "width.png")
+        run("export-document", export_snapshot, png_link, live_ink, export_text, export_layers,
+            export_images, page_sizes, "1", "", "all", "0", "default", "-1", "-1", "-1",
+            succeeds=False)
+        assert png_link.is_symlink() and digest(export_dir / "width.png") == width_before
+        invalid_range = export_dir / "invalid-range.png"
+        run("export-document", export_snapshot, invalid_range, live_ink, export_text, export_layers,
+            export_images, page_sizes, "99", "", "all", "0", "default", "-1", "-1", "-1",
+            succeeds=False)
+        assert not invalid_range.exists()
 
         del_dir = temporary / "deleted-rev"
         del_dir.mkdir()

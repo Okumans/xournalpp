@@ -17,6 +17,9 @@
 #include <glib.h>
 
 #include "control/pagetype/PageTypeHandler.h"
+#include "control/ExportHelper.h"
+#include "control/jobs/ImageExport.h"
+#include "control/jobs/ProgressListener.h"
 #include "control/xojfile/LoadHandler.h"
 #include "control/xojfile/SaveHandler.h"
 #include "model/AudioContent.h"
@@ -36,6 +39,7 @@
 #include "model/XojPage.h"
 #include "pdf/base/XojCairoPdfExport.h"
 #include "util/Matrix.h"
+#include "util/ElementRange.h"
 #include "util/Util.h"
 #include "util/raii/CairoWrappers.h"
 #include "util/serializing/BinObjectEncoding.h"
@@ -949,6 +953,142 @@ void exportPdfDocument(Document& document, const fs::path& output) {
     fs::rename(staged, output);
 }
 
+ExportBackgroundType parseExportBackground(const std::string& background) {
+    if (background == "none") {
+        return EXPORT_BACKGROUND_NONE;
+    }
+    if (background == "unruled") {
+        return EXPORT_BACKGROUND_UNRULED;
+    }
+    return EXPORT_BACKGROUND_ALL;
+}
+
+std::vector<fs::path> imageExportTargets(const fs::path& output, const Document& document,
+                                         const std::string& requestedRange) {
+    PageRangeVector range;
+    if (requestedRange.empty()) {
+        range.emplace_back(0, document.getPageCount() - 1);
+    } else {
+        range = ElementRange::parse(requestedRange, document.getPageCount());
+    }
+    if (range.empty()) {
+        throw std::runtime_error("Image export range contains no pages");
+    }
+
+    const bool singlePage = range.size() == 1 && range.front().first == range.front().last;
+    std::vector<fs::path> outputs;
+    std::vector<bool> selected(document.getPageCount(), false);
+    for (const auto& entry: range) {
+        for (size_t page = entry.first; page <= entry.last; ++page) {
+            selected[page] = true;
+        }
+    }
+    for (size_t page = 0; page < selected.size(); ++page) {
+        if (!selected[page]) {
+            continue;
+        }
+        if (singlePage) {
+            outputs.push_back(output);
+        } else {
+            auto numbered = output;
+            const auto extension = numbered.extension();
+            numbered.replace_extension();
+            numbered += "-" + std::to_string(page + 1);
+            numbered += extension.string();
+            outputs.push_back(std::move(numbered));
+        }
+    }
+    if (outputs.empty()) {
+        throw std::runtime_error("Image export range contains no pages");
+    }
+    return outputs;
+}
+
+void exportDocument(Document& document, const fs::path& output, const std::string& range,
+                    const std::string& layerRange, const std::string& background, bool progressiveMode,
+                    const std::string& backend, int pngDpi, int pngWidth, int pngHeight) {
+    const auto extension = output.extension().string();
+    const bool pdf = extension == ".pdf";
+    const bool svg = extension == ".svg";
+    const bool png = extension == ".png";
+    if (!pdf && !svg && !png) {
+        return;
+    }
+
+    if (pdf && !document.getPdfFilepath().empty() && fs::exists(document.getPdfFilepath()) &&
+        fs::weakly_canonical(output) == fs::weakly_canonical(document.getPdfFilepath())) {
+        throw std::runtime_error("Do not overwrite the background PDF! This will cause errors!");
+    }
+
+    std::vector<fs::path> outputs{output};
+    if (!pdf) {
+        outputs = imageExportTargets(output, document, range);
+    }
+    for (const auto& target: outputs) {
+        const auto status = fs::symlink_status(target);
+        if (fs::exists(status) && (fs::is_symlink(status) || !fs::is_regular_file(status))) {
+            throw std::runtime_error("Refusing to export over a symlink or non-regular file: " + target.string());
+        }
+    }
+
+    const auto parent = output.parent_path().empty() ? fs::current_path() : output.parent_path();
+    fs::create_directories(parent);
+    prototype::bridge::SaveStaging staging(parent);
+    const auto stagedOutput = staging.path / output.filename();
+    const auto exportBackground = parseExportBackground(background);
+
+    if (pdf) {
+        const auto pdfRange = range.empty() ? nullptr : range.c_str();
+        const auto selectedLayers = layerRange.empty() ? nullptr : layerRange.c_str();
+        ExportHelper::exportPdf(&document, stagedOutput, pdfRange, selectedLayers, exportBackground, progressiveMode,
+                                ExportBackend::fromString(backend));
+    } else {
+        const auto imageRange = range.empty() ? PageRangeVector{{0, document.getPageCount() - 1}} :
+                                               ElementRange::parse(range, document.getPageCount());
+        auto format = svg ? EXPORT_GRAPHICS_SVG : EXPORT_GRAPHICS_PNG;
+        ImageExport exporter(&document, stagedOutput, format, exportBackground, imageRange);
+        if (png) {
+            if (pngDpi > 0) {
+                exporter.setQualityParameter(EXPORT_QUALITY_DPI, pngDpi);
+            } else if (pngWidth > 0) {
+                exporter.setQualityParameter(EXPORT_QUALITY_WIDTH, pngWidth);
+            } else if (pngHeight > 0) {
+                exporter.setQualityParameter(EXPORT_QUALITY_HEIGHT, pngHeight);
+            }
+        }
+        exporter.setLayerRange(layerRange.empty() ? nullptr : layerRange.c_str());
+        DummyProgressListener progress;
+        exporter.exportGraphics(&progress);
+        if (!exporter.getLastErrorMsg().empty()) {
+            throw std::runtime_error(exporter.getLastErrorMsg());
+        }
+    }
+
+    for (const auto& target: outputs) {
+        const auto stagedFile = staging.path / target.filename();
+        if (!fs::is_regular_file(stagedFile) || fs::file_size(stagedFile) == 0) {
+            throw std::runtime_error("Exported file is missing or empty: " + stagedFile.string());
+        }
+        if (prototype::bridge::existsWithoutFollowing(target)) {
+            fs::permissions(stagedFile, fs::status(target).permissions());
+            fs::rename(stagedFile, target);
+        } else {
+            fs::create_hard_link(stagedFile, target);
+            fs::remove(stagedFile);
+        }
+    }
+}
+
+int parseExportInteger(const char* raw, const char* label) {
+    const std::string_view text(raw);
+    int value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+        throw std::runtime_error(std::string("Invalid export option: ") + label);
+    }
+    return value;
+}
+
 size_t parsePageIndex(std::string_view text, size_t limit, const char* label) {
     size_t parsed = 0;
     const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed);
@@ -1186,6 +1326,8 @@ int main(int argc, char** argv) {
         if (argc < 3) {
             throw std::runtime_error(
                     "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
+                    "export-document INPUT OUTPUT INK TEXT LAYERS IMAGES PAGE_SIZES RANGE LAYER_RANGE BACKGROUND "
+                    "PROGRESSIVE BACKEND PNG_DPI PNG_WIDTH PNG_HEIGHT | "
                     "export-pdf INPUT PDF INK [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | "
                     "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES [AUDIO_FOLDER "
                     "[AUDIO_CACHE]]]]]] | "
@@ -1292,6 +1434,23 @@ int main(int argc, char** argv) {
                 applyPageSizes(*document, fs::absolute(argv[8]));
             }
             exportPdfDocument(*document, output);
+        } else if (command == "export-document" && argc == 17) {
+            const auto output = fs::absolute(argv[3]);
+            const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[5]));
+            const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[6]));
+            const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[7]));
+            appendLayerAwareObjects(*document, prototype::bridge::readTransfer(fs::absolute(argv[4])), texts, images,
+                                    layers);
+            applyPageSizes(*document, fs::absolute(argv[8]));
+            const std::string range = argv[9];
+            const std::string layerRange = argv[10];
+            const bool progressiveMode = std::string_view(argv[12]) == "1";
+            if (!progressiveMode && std::string_view(argv[12]) != "0") {
+                throw std::runtime_error("Invalid export option: progressiveMode");
+            }
+            exportDocument(*document, output, range, layerRange, argv[11], progressiveMode, argv[13],
+                           parseExportInteger(argv[14], "pngDpi"), parseExportInteger(argv[15], "pngWidth"),
+                           parseExportInteger(argv[16], "pngHeight"));
         } else if (command == "insert-page" && (argc == 6 || argc == 7 || argc == 8 || argc == 9)) {
             const auto afterPage = parsePageIndex(argv[5], document->getPageCount(), "after-page index");
             const auto snapshot = fs::absolute(argv[3]);

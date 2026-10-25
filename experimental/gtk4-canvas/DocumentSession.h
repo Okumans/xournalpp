@@ -13,6 +13,7 @@
 
 #include "AudioTarget.h"
 #include "DocumentAutosave.h"
+#include "DocumentExport.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
@@ -207,6 +208,28 @@ public:
         writePageSizeTransfer(pageSizeTransfer, pageSizes);
         runWorker(worker, {"export-pdf", snapshotPath().string(), output, transfer.string(), textTransfer.string(),
                            layerTransfer.string(), imageTransfer.string(), pageSizeTransfer.string()});
+    }
+
+    void exportDocument(const std::string& worker, const DocumentExportOptions& options,
+                        const std::vector<StrokePacket>& packets, const std::vector<TextItem>& texts,
+                        const std::vector<ImagePacket>& images, const LayerDocument& layers,
+                        const std::vector<PageSizePacket>& pageSizes) const {
+        const auto transfer = path / "plugin-export.ink";
+        const auto textTransfer = path / "plugin-export.text";
+        const auto layerTransfer = path / "plugin-export.layers";
+        const auto imageTransfer = path / "plugin-export.images";
+        const auto pageSizeTransfer = path / "plugin-export.page-sizes";
+        writeTransfer(transfer, packets);
+        writeTextTransfer(textTransfer, texts);
+        writeLayerTransfer(layerTransfer, layers);
+        writeImageTransfer(imageTransfer, images);
+        writePageSizeTransfer(pageSizeTransfer, pageSizes);
+        runWorker(worker,
+                  {"export-document", snapshotPath().string(), options.outputFile, transfer.string(),
+                   textTransfer.string(), layerTransfer.string(), imageTransfer.string(), pageSizeTransfer.string(),
+                   options.range.value_or(""), options.layerRange.value_or(""), options.background,
+                   options.progressiveMode ? "1" : "0", options.backend, std::to_string(options.pngDpi),
+                   std::to_string(options.pngWidth), std::to_string(options.pngHeight)});
     }
 
     StagedRevision stageRevision(const std::string& worker, const std::vector<StrokePacket>& packets,
