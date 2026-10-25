@@ -1665,6 +1665,18 @@ public:
         return copied;
     }
 
+    std::vector<TextItem> copyTextSelection() const {
+        std::vector<TextItem> copied;
+        copied.reserve(selectedTexts.size());
+        for (const auto index: selectedTexts) {
+            copied.push_back(texts.at(index));
+        }
+        std::stable_sort(copied.begin(), copied.end(), [](const TextItem& a, const TextItem& b) {
+            return a.layerOrder < b.layerOrder;
+        });
+        return copied;
+    }
+
     bool pasteStrokes(std::vector<Ink> pasted, int targetPage, Point center) {
         if (pasted.empty() || targetPage < 0 || targetPage >= pageCount()) return false;
         if (!std::isfinite(center.x) || !std::isfinite(center.y)) return false;
@@ -1702,6 +1714,73 @@ public:
         edit.hasSelectionFrameState = true;
         edit.selectionFrameBefore = previousSelectionFrame;
         apply(edit,true);record(std::move(edit));selectActivePage(targetPage);
+        return true;
+    }
+
+    bool pasteTexts(std::vector<TextItem> pasted, int targetPage, Point center) {
+        if (pasted.empty() || pasted.size() > 100000 || targetPage < 0 || targetPage >= pageCount() || current ||
+            eraseGesture || selectionGesture || !std::isfinite(center.x) || !std::isfinite(center.y)) {
+            return false;
+        }
+
+        SelectionBox bounds{targetPage, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                            -std::numeric_limits<double>::infinity()};
+        for (const auto& item: pasted) {
+            if (item.text.empty() || item.fontName.empty() || !validTextPage(item)) {
+                return false;
+            }
+            for (const auto& point: textCorners(item)) {
+                if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+                    return false;
+                }
+                bounds.x0 = std::min(bounds.x0, point.x);
+                bounds.y0 = std::min(bounds.y0, point.y);
+                bounds.x1 = std::max(bounds.x1, point.x);
+                bounds.y1 = std::max(bounds.y1, point.y);
+            }
+        }
+        if (!std::isfinite(bounds.x1 - bounds.x0) || !std::isfinite(bounds.y1 - bounds.y0)) {
+            return false;
+        }
+
+        const double dx = center.x - (bounds.x0 / 2.0 + bounds.x1 / 2.0);
+        const double dy = center.y - (bounds.y0 / 2.0 + bounds.y1 / 2.0);
+        if (!std::isfinite(dx) || !std::isfinite(dy)) {
+            return false;
+        }
+
+        const auto layerId = activeLayerId(targetPage);
+        const auto originLayer = activeLayerOrigin(targetPage);
+        auto layerOrder = nextOriginOrder(targetPage, originLayer);
+        for (auto& item: pasted) {
+            item.page = targetPage;
+            item.layerId = layerId;
+            item.originLayer = originLayer;
+            item.layerOrder = layerOrder++;
+            item.x += dx;
+            item.y += dy;
+            if (!validTextPage(item) || !std::isfinite(item.x) || !std::isfinite(item.y)) {
+                return false;
+            }
+        }
+
+        Edit edit;
+        edit.textChanges.push_back({texts.size(), {}, texts.size(), std::move(pasted)});
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{};
+        for (size_t index = 0; index < edit.textChanges.front().after.size(); ++index) {
+            edit.textSelectionAfter->push_back(texts.size() + index);
+        }
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
+        edit.hasSelectionFrameState = true;
+        edit.selectionFrameBefore = selectionFrame;
+        apply(edit, true);
+        record(std::move(edit));
+        selectActivePage(targetPage);
         return true;
     }
 

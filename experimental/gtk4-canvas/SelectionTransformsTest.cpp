@@ -483,6 +483,95 @@ int main(int argc, char** argv) {
                       near(imagesCopy[1].transform.xx, 1.25) && near(imagesCopy[1].transform.x, 194) &&
                       near(imagesCopy[1].transform.y, 68),
               "Native multi-image clipboard round trip lost image order, data or relative transforms");
+        TextItem clipboardText;
+        clipboardText.page = 0;
+        clipboardText.layerOrder = 2;
+        clipboardText.layerId = 1;
+        clipboardText.originLayer = 0;
+        clipboardText.text = "bold 東京";
+        clipboardText.fontName = "Serif";
+        clipboardText.fontSize = 14;
+        clipboardText.color = 0xff123456U;
+        clipboardText.wrapWidth = 130;
+        clipboardText.alignment = 1;
+        clipboardText.justify = true;
+        clipboardText.xx = 0.866025403784;
+        clipboardText.yx = 0.5;
+        clipboardText.xy = -0.5;
+        clipboardText.yy = 0.866025403784;
+        clipboardText.x = 60;
+        clipboardText.y = 90;
+        clipboardText.layoutWidth = 125;
+        clipboardText.layoutHeight = 35;
+        clipboardText.styleRuns = {{0, 4, "Sans Bold", 17, 0xff00ab44U, 3}};
+        TextItem clipboardLink;
+        clipboardLink.page = 0;
+        clipboardLink.layerOrder = 3;
+        clipboardLink.layerId = 1;
+        clipboardLink.originLayer = 0;
+        clipboardLink.text = "Xournal++";
+        clipboardLink.fontName = "Sans";
+        clipboardLink.fontSize = 12;
+        clipboardLink.linkUrl = "https://example.org/xournal";
+        clipboardLink.isLink = true;
+        clipboardLink.x = 220;
+        clipboardLink.y = 145;
+        clipboardLink.layoutWidth = 80;
+        clipboardLink.layoutHeight = 18;
+        const SelectionBox textBounds{0, 50, 80, 305, 170};
+        const auto textBytes = clipboard::encodeTexts({clipboardText, clipboardLink}, textBounds);
+        const auto decodedTexts = clipboard::decodeTexts(textBytes);
+        const auto textPayload = clipboard::decodePayload(textBytes);
+        auto expectedClipboardText = clipboardText;
+        expectedClipboardText.layerOrder = 0;
+        expectedClipboardText.originLayer = newLayerOrigin;
+        auto expectedClipboardLink = clipboardLink;
+        expectedClipboardLink.layerOrder = 0;
+        expectedClipboardLink.originLayer = newLayerOrigin;
+        check(decodedTexts.size() == 2 && decodedTexts[0] == expectedClipboardText &&
+                      decodedTexts[1] == expectedClipboardLink &&
+                      textPayload.texts == decodedTexts && textPayload.strokes.empty() && textPayload.images.empty(),
+              "Native text clipboard round trip lost rich styles, transforms, Unicode or links");
+        bool rejectedTextTrailingData = false;
+        try {
+            clipboard::decodeTexts(textBytes + "trailing");
+        } catch (const std::exception&) {
+            rejectedTextTrailingData = true;
+        }
+        check(rejectedTextTrailingData, "Text clipboard accepted trailing bytes");
+        for (size_t length = 0; length < textBytes.size(); ++length) {
+            bool rejectedText = false;
+            try {
+                clipboard::decodeTexts(std::string_view(textBytes).substr(0, length));
+            } catch (const std::exception&) {
+                rejectedText = true;
+            }
+            check(rejectedText, "A truncated text clipboard was accepted");
+        }
+
+        state = fixture();
+        state.selected.clear();
+        state.texts = {clipboardText, clipboardLink};
+        state.selectedTexts = {0, 1};
+        const auto beforeTextPaste = state.texts;
+        const auto textCopies = state.copyTextSelection();
+        check(textCopies.size() == 2 && textCopies[0] == clipboardText && textCopies[1] == clipboardLink,
+              "Text selection copy changed selected object data or z-order");
+        check(state.pasteTexts(textCopies, 1, {120, 90}) && state.texts.size() == 4 &&
+                      state.texts[2].page == 1 && state.texts[3].page == 1 && state.selectedTexts ==
+                              std::vector<size_t>{2, 3} && state.texts[3].linkUrl == clipboardLink.linkUrl &&
+                      state.texts[2].styleRuns == beforeTextPaste[0].styleRuns,
+              "Pasting a text group lost its target page, styles or selection");
+        const auto pastedTextBounds = state.selectionBox();
+        check(pastedTextBounds && near((pastedTextBounds->x0 + pastedTextBounds->x1) / 2, 120) &&
+                      near((pastedTextBounds->y0 + pastedTextBounds->y1) / 2, 90),
+              "Pasting did not position the copied text group around the requested page point");
+        state.undo();
+        check(state.texts == beforeTextPaste && state.selectedTexts == std::vector<size_t>{0, 1},
+              "One undo did not remove the pasted text group and restore its source selection");
+        state.redo();
+        check(state.texts.size() == 4 && state.selectedTexts == std::vector<size_t>{2, 3},
+              "Redo did not restore the pasted text group and its selection");
         bool rejectedSingleDecode = false;
         try {
             clipboard::decodeImage(imagesBytes);
@@ -809,7 +898,7 @@ int main(int argc, char** argv) {
         check(std::isfinite(state.ink[0].brush.width) && state.ink[0].brush.width > 0,
               "Degenerate dot resize broke width");
         std::cout << "PASS: affine geometry/width, mirror, rotate, cross-page order/undo, Smart Select, resize snapping, "
-                     "edge-pan, lasso, Shift-add, bounded native stroke/image clipboard and paste undo\n";
+                     "edge-pan, lasso, Shift-add, bounded native stroke/image/text clipboard and paste undo\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
