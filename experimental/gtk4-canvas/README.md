@@ -1,8 +1,8 @@
 # GTK 4 canvas and input prototype
 
 This migration experiment is built as a separate executable with GTK 4,
-libadwaita, and Poppler. The normal Xournal++ build, executable, settings, and
-document format are unchanged. There is no installation target.
+libadwaita, Poppler, and Lua 5.4. The normal Xournal++ build, executable,
+settings, and document format are unchanged. There is no installation target.
 
 The prototype opens a PDF or native `.xopp` document in a continuous vertical
 multi-page viewport (`15 pt` inter-page gap, horizontal centering of narrower
@@ -32,6 +32,16 @@ selection button; Rectangle, Lasso, Object, visible-layer, and PDF-text modes
 remain in the selection-mode menu. Dark mode uses a dotted charcoal canvas
 surround while pages stay white. Sidebar visibility, color scheme, main rail
 order, and floating-toolbox rows remain configurable.
+
+The Plugins menu discovers bundled plugins plus folders supplied through
+`--plugin-dir` and the configuration directory. The plugin manager displays each
+manifest and persists enable/disable choices in `gtk4-canvas.ini`; changes take
+effect after restarting the prototype. Lua menu callbacks and canvas shortcuts
+work for the supported API subset. ColorCycle runs with its full color list and
+selection recoloring, and ToolShortcuts can select common tools including Smart
+Select. The full master Lua API, plugin toolbar actions, Search, and most
+bundled plugin behaviors remain unported; see
+[`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
 With a document worker, the header's Insert Image action opens a local image
 chooser. The image is placed at the center of the active page, scaled to fit
@@ -113,6 +123,10 @@ sidebar. Selection modes use `Ctrl+Shift+R` (rectangle), `Ctrl+Shift+G` (lasso),
 `Ctrl+Shift+S` opens Save As, `Ctrl+E` exports a PDF, `Ctrl+D` inserts a page
 after the active page, and `Ctrl+Shift+Delete` deletes the current page when at
 least two pages exist.
+When enabled, the bundled ToolShortcuts plugin adds `V` for Smart Select, `P`
+for Pen, `E` for Eraser, `H` for Highlighter, `I` for Text, and
+`Shift+J`/`Shift+K` for page navigation. Plugin shortcuts do not take keys from
+text editing.
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
@@ -306,6 +320,10 @@ python experimental/gtk4-canvas/test-isolated.py \
   --evidence build-gtk4-canvas/evidence
 ```
 
+Use `--plugins-only` for the focused GUI check. It enables ColorCycle and
+ToolShortcuts in a temporary config and checks their menu actions, Smart Select
+shortcut, selection recoloring/undo, manager, and saved plugin settings.
+
 The harness:
 
 1. Removes inherited display, compositor, and session-bus connections.
@@ -341,7 +359,7 @@ Transfer serialization, geometric drawing/recognition/spline/stabilizer checks,
 rich-text transfer/rendering, background task/main-context checks, read-only
 `settings.xml` and `.gpl` palette import/fallback checks, CLI rejection checks,
 filesystem backup/publication, PDF text extraction, and autosave/recovery checks
-bring the standalone CTest suite to thirty-one tests.
+bring the standalone CTest suite to thirty-four tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -391,7 +409,8 @@ Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. Unsupported native objects are not
 selectable or editable, and selection coverage remains partial. Signal-handler
-emergency dump, full document undo, plugins, and toolbar configuration import
+emergency dump, full document undo, the complete Lua plugin API, plugin toolbar
+actions, most bundled plugin behaviors, and full toolbar configuration import
 remain migration work. Its eraser edits session ink and supported native strokes
 on the active layer; it cannot erase flattened PDF content or unsupported native
 objects. Do not use its screenshots as evidence of full migration readiness or
@@ -458,7 +477,7 @@ mixed-object clipboard support; paired, horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
 parity; audio recording/device preferences and media lifecycle, vertical-space
 insertion, LaTeX, and the general floating toolbox; complete per-device settings and toolbar
-customization; and all 12 bundled plugins. Accessibility, physical input,
+customization; and the remaining bundled plugin actions. Accessibility, physical input,
 platform packaging, GPU rendering, and platform-specific validation are also
 still required before replacing the existing application.
 

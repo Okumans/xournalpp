@@ -1,3 +1,4 @@
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -12,33 +13,34 @@
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <adwaita.h>
 #include <poppler.h>
 
+#include "AudioPlayback.h"
+#include "AudioTarget.h"
 #include "BehaviorDefaults.h"
 #include "CanvasInput.h"
 #include "CanvasState.h"
-#include "AudioPlayback.h"
-#include "AudioTarget.h"
 #include "DocumentAutosave.h"
-#include "DocumentSession.h"
-#include "DocumentJob.h"
 #include "DocumentInk.h"
+#include "DocumentJob.h"
+#include "DocumentSession.h"
 #include "ImageRenderer.h"
 #include "InkRenderer.h"
-#include "PdfTextSelection.h"
-#include "TextRenderer.h"
+#include "LuaPluginRuntime.h"
 #include "PaletteImport.h"
-#include "SettingsImport.h"
+#include "PdfTextSelection.h"
 #include "PreferencesStore.h"
-#include "StylusSamples.h"
+#include "SettingsImport.h"
 #include "StrokeClipboard.h"
+#include "StylusSamples.h"
 #include "TextEditorOverlay.h"
+#include "TextRenderer.h"
 
 using prototype::CanvasState;
 using prototype::Device;
@@ -54,12 +56,14 @@ struct Options {
     std::string nativeDocument;
     std::string worker;
     std::string configDirectory;
+    std::string pluginDirectory;
     std::string smokeDirectory;
     int autosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
     std::optional<int> autosaveSecondsOverride;
     bool dark = false;
     bool explicitDark = false;
     bool disableAudio = false;
+    bool verifyPlugins = false;
     int width = 1100;
     int height = 820;
 };
@@ -284,6 +288,7 @@ public:
             state.setPages({{595, 842}});
             state.selectActivePage(0);
         }
+        initializePlugins();
     }
 
     ~Prototype() {
@@ -312,6 +317,10 @@ public:
         }
         if (closed) {
             cleanupActiveAutosave();
+        }
+        if (pluginManagerWindow) {
+            gtk_window_destroy(pluginManagerWindow);
+            g_clear_object(&pluginManagerWindow);
         }
         g_clear_object(&preferencesDialog);
         audioPlayback.reset();
@@ -859,6 +868,293 @@ private:
         update();
     }
 
+    void initializePlugins() {
+        std::vector<std::filesystem::path> searchPaths;
+        if (!options.pluginDirectory.empty()) {
+            searchPaths.emplace_back(options.pluginDirectory);
+        }
+#ifdef GTK4_CANVAS_BUNDLED_PLUGIN_DIR
+        searchPaths.emplace_back(GTK4_CANVAS_BUNDLED_PLUGIN_DIR);
+#endif
+        searchPaths.push_back(preferencesConfigDir / "plugins");
+
+        pluginRuntime = std::make_unique<prototype::LuaPluginRuntime>();
+        pluginRuntime->discover(searchPaths, importedConfig.settings.pluginsEnabled,
+                                importedConfig.settings.pluginsDisabled);
+
+        prototype::PluginRuntimeHost host;
+        host.changeToolColor = [this](const auto& tool, std::uint32_t color, bool selection, std::string& error) {
+            return changePluginToolColor(tool, color, selection, error);
+        };
+        host.changeActionState = [this](std::string_view action, const prototype::PluginActionValue& value,
+                                        std::string& error) { return changePluginActionState(action, value, error); };
+        host.activateAction = [this](std::string_view action, std::string& error) {
+            return activatePluginAction(action, error);
+        };
+        host.reportError = [this](std::string_view plugin, std::string_view message) {
+            if (window) {
+                showAlert("Plugin error", std::string(plugin) + ": " + std::string(message));
+            } else {
+                std::cerr << "xournalpp-gtk4-canvas: plugin " << plugin << ": " << message << '\n';
+            }
+        };
+        pluginRuntime->loadEnabled(std::move(host));
+    }
+
+    static std::optional<Tool> pluginToolFromName(std::string_view name) {
+        std::string normalized;
+        normalized.reserve(name.size());
+        for (const unsigned char character: name) {
+            if (character != '_' && character != '-') {
+                normalized += static_cast<char>(std::tolower(character));
+            }
+        }
+        if (normalized == "pen")
+            return Tool::Pen;
+        if (normalized == "highlighter")
+            return Tool::Highlighter;
+        if (normalized == "eraser")
+            return Tool::Eraser;
+        if (normalized == "text")
+            return Tool::Text;
+        if (normalized == "selectrect")
+            return Tool::SelectRectangle;
+        if (normalized == "selectregion")
+            return Tool::SelectLasso;
+        if (normalized == "selectobject")
+            return Tool::SelectObject;
+        if (normalized == "selectmultilayerrect")
+            return Tool::SelectRectangle;
+        if (normalized == "selectmultilayerregion")
+            return Tool::SelectLasso;
+        if (normalized == "selectpdftextlinear")
+            return Tool::SelectPdfTextLinear;
+        if (normalized == "selectpdftextrect")
+            return Tool::SelectPdfTextRect;
+        if (normalized == "smartselect")
+            return Tool::SmartSelect;
+        if (normalized == "hand")
+            return Tool::Hand;
+        if (normalized == "laserpointerpen")
+            return Tool::LaserPointerPen;
+        if (normalized == "laserpointerhighlighter")
+            return Tool::LaserPointerHighlighter;
+        if (normalized == "link")
+            return Tool::Link;
+        if (normalized == "playobject")
+            return Tool::PlayObject;
+        if (normalized == "verticalspace")
+            return Tool::VerticalSpace;
+        if (normalized == "showfloatingtoolbox")
+            return Tool::FloatingToolbox;
+        return std::nullopt;
+    }
+
+    bool changePluginToolColor(const std::optional<std::string>& toolName, std::uint32_t color, bool selection,
+                               std::string& error) {
+        auto tool = toolName ? pluginToolFromName(*toolName) : std::optional<Tool>{state.brush.tool};
+        if (!tool) {
+            error = "Unknown tool name";
+            return false;
+        }
+        if (*tool == Tool::Eraser || *tool == Tool::Hand || *tool == Tool::Link || *tool == Tool::PlayObject ||
+            *tool == Tool::VerticalSpace || *tool == Tool::FloatingToolbox) {
+            error = "The selected tool does not support color changes";
+            return false;
+        }
+
+        const std::array<double, 3> rgb{static_cast<double>((color >> 16U) & 0xffU) / 255.0,
+                                        static_cast<double>((color >> 8U) & 0xffU) / 255.0,
+                                        static_cast<double>(color & 0xffU) / 255.0};
+        Tool colorTool = *tool;
+        if (prototype::isSelectionTool(colorTool)) {
+            colorTool = prototype::isPdfTextSelectionTool(colorTool) ? Tool::Highlighter : Tool::Pen;
+        }
+
+        if (colorTool == Tool::Pen) {
+            penBrush.color = rgb;
+        } else if (colorTool == Tool::Highlighter) {
+            highlightBrush.color = rgb;
+        } else if (colorTool == Tool::LaserPointerPen) {
+            laserPenBrush.color = rgb;
+        } else if (colorTool == Tool::LaserPointerHighlighter) {
+            laserHighlighterBrush.color = rgb;
+        } else if (colorTool == Tool::Text) {
+            state.textColor = rgb;
+        } else {
+            error = "The selected tool does not support color changes";
+            return false;
+        }
+
+        if (state.brush.tool == *tool || state.brush.tool == colorTool ||
+            (prototype::isSelectionTool(state.brush.tool) &&
+             (state.brush.tool == *tool || colorTool == Tool::Pen || colorTool == Tool::Highlighter))) {
+            state.brush.color = rgb;
+        }
+        if (selection && state.hasSelection()) {
+            state.recolorSelection(rgb, packTextColor(rgb));
+            thumbnails.clear();
+        }
+        input.cancel();
+        if (colorButton && state.brush.tool != Tool::Eraser) {
+            syncingBrush = true;
+            const GdkRGBA rgba{static_cast<float>(state.brush.color[0]), static_cast<float>(state.brush.color[1]),
+                               static_cast<float>(state.brush.color[2]), 1};
+            gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
+            syncingBrush = false;
+        }
+        update();
+        return true;
+    }
+
+    bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
+                                 std::string& error) {
+        if (action == "grid-snapping") {
+            if (!std::holds_alternative<bool>(value)) {
+                error = "grid-snapping expects a boolean state";
+                return false;
+            }
+            state.snapGridEnabled = std::get<bool>(value);
+            importedConfig.settings.snapGrid = state.snapGridEnabled;
+            std::string saveError;
+            if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, saveError)) {
+                error = saveError;
+                return false;
+            }
+            update();
+            return true;
+        }
+        if (action != "select-tool" || !std::holds_alternative<std::int64_t>(value)) {
+            error = "Only select-tool (integer) and grid-snapping (boolean) action state changes are supported";
+            return false;
+        }
+
+        const auto selectionTool = [&](Tool selected, bool acrossLayers = false) {
+            activateSelection(selected, acrossLayers);
+        };
+        switch (std::get<std::int64_t>(value)) {
+            case 1:
+                selectTool(Tool::Pen);
+                break;
+            case 2:
+                selectTool(Tool::Eraser);
+                break;
+            case 3:
+                selectTool(Tool::Highlighter);
+                break;
+            case 4:
+                selectTool(Tool::Text);
+                break;
+            case 5:
+                if (imageButton)
+                    g_signal_emit_by_name(imageButton, "clicked");
+                break;
+            case 6:
+                selectionTool(Tool::SelectRectangle);
+                break;
+            case 7:
+                selectionTool(Tool::SelectLasso);
+                break;
+            case 8:
+                selectionTool(Tool::SelectRectangle, true);
+                break;
+            case 9:
+                selectionTool(Tool::SelectLasso, true);
+                break;
+            case 10:
+                selectionTool(Tool::SelectObject);
+                break;
+            case 11:
+                selectTool(Tool::PlayObject);
+                break;
+            case 12:
+                selectTool(Tool::VerticalSpace);
+                break;
+            case 13:
+                selectTool(Tool::Hand);
+                break;
+            case 14:
+                state.drawingMode = prototype::DrawingMode::Rectangle;
+                selectTool(Tool::Pen);
+                break;
+            case 15:
+                state.drawingMode = prototype::DrawingMode::Ellipse;
+                selectTool(Tool::Pen);
+                break;
+            case 16:
+                state.drawingMode = prototype::DrawingMode::Arrow;
+                selectTool(Tool::Pen);
+                break;
+            case 17:
+                state.drawingMode = prototype::DrawingMode::DoubleArrow;
+                selectTool(Tool::Pen);
+                break;
+            case 18:
+                state.drawingMode = prototype::DrawingMode::CoordinateSystem;
+                selectTool(Tool::Pen);
+                break;
+            case 19:
+                selectTool(Tool::FloatingToolbox);
+                break;
+            case 20:
+                state.drawingMode = prototype::DrawingMode::Spline;
+                selectTool(Tool::Pen);
+                break;
+            case 21:
+                selectionTool(Tool::SelectPdfTextLinear);
+                break;
+            case 22:
+                selectionTool(Tool::SelectPdfTextRect);
+                break;
+            case 23:
+                selectTool(Tool::LaserPointerPen);
+                break;
+            case 24:
+                selectTool(Tool::LaserPointerHighlighter);
+                break;
+            case 25:
+                selectTool(Tool::Link);
+                break;
+            case 27:
+                selectionTool(Tool::SmartSelect);
+                break;
+            default:
+                error = "This master tool is not available in the GTK 4 prototype yet";
+                return false;
+        }
+        if (drawingModeDropdown) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));
+        }
+        update();
+        return true;
+    }
+
+    bool activatePluginAction(std::string_view action, std::string& error) {
+        if (action == "goto-next") {
+            navigateToPage(state.page + 1);
+        } else if (action == "goto-previous") {
+            navigateToPage(state.page - 1);
+        } else if (action == "goto-page") {
+            openGotoPageDialog();
+        } else if (action == "undo") {
+            selectedImageIndex.reset();
+            input.cancel();
+            state.undo();
+            update();
+        } else if (action == "redo") {
+            selectedImageIndex.reset();
+            input.cancel();
+            state.redo();
+            update();
+        } else if (action == "select-default-tool") {
+            selectTool(Tool::Pen);
+        } else {
+            error = "This master action is not available in the GTK 4 prototype yet: " + std::string(action);
+            return false;
+        }
+        return true;
+    }
+
     void openPreferences() {
         if (preferencesDialog) {
             adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
@@ -1022,6 +1318,285 @@ private:
         adw_preferences_group_add(mainRailGroup, GTK_WIDGET(mainRailApplyRow));
         adw_preferences_page_add(toolbarPage, mainRailGroup);
         adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
+    }
+
+    void openPluginManager() {
+        if (!pluginRuntime) {
+            showAlert("Plugins unavailable", "The Lua plugin runtime did not initialize.");
+            return;
+        }
+        pluginRuntime->resetPendingStates();
+        if (!pluginManagerWindow) {
+            buildPluginManager();
+        }
+        rebuildPluginManagerRows();
+        gtk_window_present(pluginManagerWindow);
+    }
+
+    void buildPluginManager() {
+        pluginManagerWindow = GTK_WINDOW(g_object_ref_sink(gtk_window_new()));
+        gtk_window_set_title(pluginManagerWindow, "Manage Plugins");
+        gtk_window_set_default_size(pluginManagerWindow, 620, 640);
+        gtk_window_set_transient_for(pluginManagerWindow, GTK_WINDOW(window));
+        gtk_window_set_modal(pluginManagerWindow, true);
+        g_signal_connect(pluginManagerWindow, "close-request", G_CALLBACK(+[](GtkWindow* dialog, gpointer) -> gboolean {
+                             gtk_widget_set_visible(GTK_WIDGET(dialog), false);
+                             return true;
+                         }),
+                         nullptr);
+
+        auto* root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        auto* header = adw_header_bar_new();
+        auto* title = gtk_label_new("Plugins");
+        gtk_widget_add_css_class(title, "title");
+        adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), title);
+        gtk_window_set_titlebar(pluginManagerWindow, header);
+
+        auto* explanation =
+                gtk_label_new("Choose which plugins to load. Changes take effect the next time Xournal++ starts.");
+        gtk_label_set_wrap(GTK_LABEL(explanation), true);
+        gtk_widget_set_halign(explanation, GTK_ALIGN_START);
+        gtk_widget_set_margin_start(explanation, 18);
+        gtk_widget_set_margin_end(explanation, 18);
+        gtk_widget_set_margin_top(explanation, 12);
+        gtk_widget_set_margin_bottom(explanation, 12);
+        gtk_box_append(GTK_BOX(root), explanation);
+
+        auto* scroller = gtk_scrolled_window_new();
+        gtk_widget_set_vexpand(scroller, true);
+        pluginManagerList = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(pluginManagerList), GTK_SELECTION_NONE);
+        gtk_widget_add_css_class(pluginManagerList, "boxed-list");
+        gtk_widget_set_margin_start(pluginManagerList, 18);
+        gtk_widget_set_margin_end(pluginManagerList, 18);
+        gtk_widget_set_margin_bottom(pluginManagerList, 12);
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), pluginManagerList);
+        gtk_box_append(GTK_BOX(root), scroller);
+
+        auto* actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_halign(actions, GTK_ALIGN_END);
+        gtk_widget_set_margin_start(actions, 18);
+        gtk_widget_set_margin_end(actions, 18);
+        gtk_widget_set_margin_bottom(actions, 18);
+        auto* cancel = gtk_button_new_with_label("Cancel");
+        g_signal_connect(cancel, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             gtk_widget_set_visible(GTK_WIDGET(self->pluginManagerWindow), false);
+                         }),
+                         this);
+        auto* apply = gtk_button_new_with_label("Apply");
+        pluginManagerApplyButton = apply;
+        gtk_widget_add_css_class(apply, "suggested-action");
+        g_signal_connect(apply, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->applyPluginManagerChanges();
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(actions), cancel);
+        gtk_box_append(GTK_BOX(actions), apply);
+        gtk_box_append(GTK_BOX(root), actions);
+        gtk_window_set_child(pluginManagerWindow, root);
+    }
+
+    void rebuildPluginManagerRows() {
+        pluginManagerSwitches.clear();
+        while (auto* row = gtk_widget_get_first_child(pluginManagerList)) {
+            gtk_list_box_remove(GTK_LIST_BOX(pluginManagerList), row);
+        }
+        for (const auto& plugin: pluginRuntime->plugins()) {
+            auto* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+            gtk_widget_set_margin_start(row, 14);
+            gtk_widget_set_margin_end(row, 14);
+            gtk_widget_set_margin_top(row, 10);
+            gtk_widget_set_margin_bottom(row, 10);
+
+            auto* details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+            gtk_widget_set_hexpand(details, true);
+            auto* name = gtk_label_new(plugin.name.c_str());
+            gtk_label_set_xalign(GTK_LABEL(name), 0);
+            gtk_widget_add_css_class(name, "heading");
+            gtk_box_append(GTK_BOX(details), name);
+            std::string summary = plugin.description;
+            if (!plugin.author.empty()) {
+                if (!summary.empty())
+                    summary += " · ";
+                summary += plugin.author;
+            }
+            if (!plugin.version.empty() && plugin.version != "<xournalpp>") {
+                if (!summary.empty())
+                    summary += " · ";
+                summary += "v" + plugin.version;
+            }
+            if (!plugin.error.empty()) {
+                if (!summary.empty())
+                    summary += "\n";
+                summary += plugin.error;
+            }
+            auto* description = gtk_label_new(summary.c_str());
+            gtk_label_set_xalign(GTK_LABEL(description), 0);
+            gtk_label_set_wrap(GTK_LABEL(description), true);
+            gtk_widget_add_css_class(description, plugin.error.empty() ? "dim-label" : "error");
+            gtk_box_append(GTK_BOX(details), description);
+            gtk_box_append(GTK_BOX(row), details);
+
+            auto* toggle = gtk_switch_new();
+            gtk_widget_set_valign(toggle, GTK_ALIGN_CENTER);
+            gtk_widget_set_sensitive(toggle, plugin.valid);
+            gtk_accessible_update_property(GTK_ACCESSIBLE(toggle), GTK_ACCESSIBLE_PROPERTY_LABEL, plugin.name.c_str(),
+                                           -1);
+            gtk_switch_set_active(GTK_SWITCH(toggle), plugin.pendingEnabled);
+            g_object_set_data_full(G_OBJECT(toggle), "plugin-name", g_strdup(plugin.name.c_str()), g_free);
+            g_signal_connect(toggle, "notify::active", G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 const auto* name = static_cast<const char*>(g_object_get_data(object, "plugin-name"));
+                                 if (name && self->pluginRuntime) {
+                                     self->pluginRuntime->setPendingEnabled(name,
+                                                                            gtk_switch_get_active(GTK_SWITCH(object)));
+                                 }
+                             }),
+                             this);
+            pluginManagerSwitches.emplace(plugin.name, toggle);
+            gtk_box_append(GTK_BOX(row), toggle);
+            gtk_list_box_append(GTK_LIST_BOX(pluginManagerList), row);
+        }
+    }
+
+    void applyPluginManagerChanges() {
+        const auto [enabled, disabled] = pluginRuntime->pendingPluginPaths();
+        importedConfig.settings.pluginsEnabled = enabled;
+        importedConfig.settings.pluginsDisabled = disabled;
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            showAlert("Cannot save plugin settings", error);
+            return;
+        }
+        const bool changed = pluginRuntime->applyPendingStates();
+        gtk_widget_set_visible(GTK_WIDGET(pluginManagerWindow), false);
+        if (changed) {
+            showAlert("Restart required", "Plugin changes are saved. Restart Xournal++ to load the updated plugins.");
+        }
+    }
+
+    void captureTopLevel(const std::string& name, GtkWidget* topLevel) {
+        const auto deadline = g_get_monotonic_time() + 750000;
+        while (!gtk_widget_get_mapped(topLevel) && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        auto* frameClock = gtk_widget_get_frame_clock(topLevel);
+        require(frameClock != nullptr, "Plugin manager has no frame clock");
+        const auto previousFrame = gdk_frame_clock_get_frame_counter(frameClock);
+        gtk_widget_queue_draw(topLevel);
+        while (gdk_frame_clock_get_frame_counter(frameClock) <= previousFrame && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        auto* paintable = gtk_widget_paintable_new(topLevel);
+        auto* snapshot = gtk_snapshot_new();
+        gdk_paintable_snapshot(GDK_PAINTABLE(paintable), GDK_SNAPSHOT(snapshot), gtk_widget_get_width(topLevel),
+                               gtk_widget_get_height(topLevel));
+        auto* node = gtk_snapshot_free_to_node(snapshot);
+        if (!node) {
+            g_object_unref(paintable);
+            throw SnapshotPending{};
+        }
+        auto* renderer = gtk_native_get_renderer(GTK_NATIVE(topLevel));
+        auto* texture = gsk_renderer_render_texture(renderer, node, nullptr);
+        const auto path = options.smokeDirectory + "/" + name + ".png";
+        const bool saved = gdk_texture_save_to_png(texture, path.c_str());
+        g_object_unref(texture);
+        gsk_render_node_unref(node);
+        g_object_unref(paintable);
+        if (!saved) {
+            throw std::runtime_error("Cannot write plugin manager screenshot");
+        }
+    }
+
+    void verifyPluginIntegration() {
+        require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto plugins = pluginRuntime->plugins();
+        require(plugins.size() >= 12, "Bundled plugin discovery did not find the full master plugin set");
+        const auto colorCycle = pluginRuntime->findPlugin("ColorCycle");
+        require(colorCycle && colorCycle->valid && colorCycle->loaded && colorCycle->menuItems == 1,
+                "Enabled bundled ColorCycle did not load and register its menu action");
+        const auto toolShortcuts = pluginRuntime->findPlugin("ToolShortcuts");
+        require(toolShortcuts && toolShortcuts->loaded && toolShortcuts->menuItems == 14,
+                "Enabled bundled ToolShortcuts plugin did not register its complete menu set");
+        auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
+        require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
+                "Plugins menu is missing the enabled plugin group or manager action");
+        auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 2,
+                "Plugins menu did not include both enabled plugin groups");
+        g_object_unref(pluginSection);
+        require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
+                "Registered Lua menu action is missing from the application window");
+        gtk_menu_button_popup(GTK_MENU_BUTTON(pluginsMenuButton));
+        capture("plugins-menu");
+        gtk_menu_button_popdown(GTK_MENU_BUTTON(pluginsMenuButton));
+
+        require(pluginRuntime->handleKeyPress(GDK_KEY_v, GdkModifierType(0), false) &&
+                        state.brush.tool == Tool::SmartSelect,
+                "Bundled ToolShortcuts did not select Smart Select with its canvas shortcut");
+        require(!pluginRuntime->handleKeyPress(GDK_KEY_p, GdkModifierType(0), true) &&
+                        state.brush.tool == Tool::SmartSelect,
+                "Bundled ToolShortcuts stole a key from text editing");
+        require(pluginRuntime->handleKeyPress(GDK_KEY_p, GdkModifierType(0), false) && state.brush.tool == Tool::Pen,
+                "Bundled ToolShortcuts did not restore the Pen tool");
+
+        constexpr std::array<std::uint32_t, 11> expectedColors{
+                0x000000, 0x008000, 0x00c0ff, 0x00ff00, 0x3333cc, 0x808080,
+                0xff0000, 0xff00ff, 0xff8000, 0xffff00, 0xffffff,
+        };
+        for (const auto expected: expectedColors) {
+            g_action_group_activate_action(G_ACTION_GROUP(window), "gtk4-plugin-0", nullptr);
+            const std::array<double, 3> expectedRgb{
+                    static_cast<double>((expected >> 16U) & 0xffU) / 255.0,
+                    static_cast<double>((expected >> 8U) & 0xffU) / 255.0,
+                    static_cast<double>(expected & 0xffU) / 255.0,
+            };
+            require(penBrush.color == expectedRgb, "Bundled ColorCycle did not match its full legacy color sequence");
+        }
+        Ink selectedStroke;
+        selectedStroke.page = 0;
+        selectedStroke.layerId = 1;
+        selectedStroke.originLayer = 0;
+        selectedStroke.brush = {Tool::Pen, {1, 0, 0}, 2};
+        selectedStroke.points = {{40, 40, 1}, {50, 50, 1}};
+        state.ink.push_back(selectedStroke);
+        state.selected = {state.ink.size() - 1};
+        require(pluginRuntime->invokeMenu("ColorCycle", 0) &&
+                        state.ink.back().brush.color == std::array<double, 3>{0, 0, 0},
+                "ColorCycle did not recolor a selected stroke through the legacy selection API");
+        state.undo();
+        require(state.ink.back().brush.color == selectedStroke.brush.color,
+                "ColorCycle selection recoloring was not undoable");
+        state.clearSelection();
+        state.ink.pop_back();
+
+        openPluginManager();
+        require(pluginManagerWindow && gtk_widget_get_visible(GTK_WIDGET(pluginManagerWindow)),
+                "Manage Plugins action did not present the GTK manager window");
+        std::size_t rowCount = 0;
+        for (auto* row = gtk_widget_get_first_child(pluginManagerList); row; row = gtk_widget_get_next_sibling(row)) {
+            ++rowCount;
+        }
+        require(rowCount == plugins.size(), "Plugin manager did not show every discovered plugin");
+        const auto enabledAgain = pluginRuntime->findPlugin("ColorCycle");
+        require(enabledAgain && enabledAgain->pendingEnabled,
+                "Plugin manager did not preserve the current enabled state");
+        captureTopLevel("plugins-manager", GTK_WIDGET(pluginManagerWindow));
+
+        const auto exampleSwitch = pluginManagerSwitches.find("Example");
+        const auto example = pluginRuntime->findPlugin("Example");
+        require(exampleSwitch != pluginManagerSwitches.end() && example,
+                "Plugin manager is missing the bundled Example plugin control");
+        gtk_switch_set_active(GTK_SWITCH(exampleSwitch->second), true);
+        g_signal_emit_by_name(pluginManagerApplyButton, "clicked");
+        require(messageDialog &&
+                        importedConfig.settings.pluginsEnabled.find(example->path.string()) != std::string::npos,
+                "Applying plugin changes did not persist the enabled plugin path");
+        answerDialog("close");
+        std::cout << "PASS: private GTK4 ColorCycle, ToolShortcuts, Smart Select shortcut and plugin manager\n";
     }
 
     static guint settingsThemeIndex(prototype::ThemeVariant theme) {
@@ -4593,6 +5168,32 @@ private:
                                        static_cast<Prototype*>(data)->openPreferences();
                                    }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), preferencesButton);
+        auto* pluginsManagerAction = g_simple_action_new("plugins-manager", nullptr);
+        g_signal_connect(pluginsManagerAction, "activate", G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer data) {
+                             static_cast<Prototype*>(data)->openPluginManager();
+                         }),
+                         this);
+        g_action_map_add_action(G_ACTION_MAP(window), G_ACTION(pluginsManagerAction));
+        g_object_unref(pluginsManagerAction);
+
+        auto* pluginsMenu = g_menu_new();
+        auto* pluginSections = g_menu_new();
+        const auto pluginActions =
+                pluginRuntime ? pluginRuntime->appendMenuSections(pluginSections, G_ACTION_MAP(window), app) : 0;
+        if (pluginActions > 0) {
+            g_menu_append_section(pluginsMenu, nullptr, G_MENU_MODEL(pluginSections));
+        }
+        auto* managerSection = g_menu_new();
+        g_menu_append(managerSection, "Manage Plugins…", "win.plugins-manager");
+        g_menu_append_section(pluginsMenu, nullptr, G_MENU_MODEL(managerSection));
+        pluginsMenuButton = gtk_menu_button_new();
+        gtk_menu_button_set_label(GTK_MENU_BUTTON(pluginsMenuButton), "Plugins");
+        gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(pluginsMenuButton), G_MENU_MODEL(pluginsMenu));
+        gtk_widget_set_tooltip_text(pluginsMenuButton, "Plugin actions and plugin manager");
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), pluginsMenuButton);
+        g_object_unref(managerSection);
+        g_object_unref(pluginSections);
+        g_object_unref(pluginsMenu);
         openButton = button("document-open-symbolic", "Open (Ctrl+O)", G_CALLBACK(+[](GtkButton*, gpointer data) {
             auto* self = static_cast<Prototype*>(data);
             self->protectDocument([self] { self->chooseOpen(); });
@@ -5246,6 +5847,22 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
+        if (options.verifyPlugins) {
+            g_timeout_add(
+                    200,
+                    +[](gpointer data) -> gboolean {
+                        auto* self = static_cast<Prototype*>(data);
+                        try {
+                            self->verifyPluginIntegration();
+                        } catch (const std::exception& error) {
+                            std::cerr << "PLUGIN VERIFY FAILED: " << error.what() << '\n';
+                            self->failed = true;
+                        }
+                        g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(self->window))));
+                        return G_SOURCE_REMOVE;
+                    },
+                    this);
+        }
         if (const char* marker = g_getenv("XOURNALPP_CRASH_AFTER_AUTOSAVE_MARKER"); marker && *marker) {
             crashMarkerPath = marker;
             crashHelperSource = g_timeout_add(
@@ -5282,7 +5899,7 @@ private:
                     },
                     this);
         }
-        if (!options.smokeDirectory.empty()) {
+        if (!options.smokeDirectory.empty() && !options.verifyPlugins) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
@@ -6511,6 +7128,11 @@ private:
                             return false;
                         }
                     }
+                    if (!editingText && !GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window))) &&
+                        self->pluginRuntime && self->pluginRuntime->handleKeyPress(key, modifiers, false)) {
+                        self->update();
+                        return true;
+                    }
                     self->input.setModifiers((modifiers & GDK_SHIFT_MASK) || key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R,
                                              (modifiers & GDK_CONTROL_MASK) || key == GDK_KEY_Control_L || key == GDK_KEY_Control_R,
                                              (modifiers & GDK_ALT_MASK) || key == GDK_KEY_Alt_L || key == GDK_KEY_Alt_R);
@@ -7104,6 +7726,26 @@ private:
                 gtk_snapshot_save(snapshot);
                 gtk_snapshot_translate(snapshot, &offset);
                 gdk_paintable_snapshot(popPaintable, GDK_SNAPSHOT(snapshot), popW, popH);
+                gtk_snapshot_restore(snapshot);
+                g_object_unref(popPaintable);
+            }
+        }
+        if (!target && pluginsMenuButton) {
+            auto* popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(pluginsMenuButton));
+            const int popW = popover ? gtk_widget_get_width(GTK_WIDGET(popover)) : 0;
+            const int popH = popover ? gtk_widget_get_height(GTK_WIDGET(popover)) : 0;
+            graphene_rect_t anchorBounds;
+            if (popover && gtk_widget_get_visible(GTK_WIDGET(popover)) && popW > 0 && popH > 0 &&
+                gtk_widget_compute_bounds(pluginsMenuButton, window, &anchorBounds)) {
+                auto* popPaintable = gtk_widget_paintable_new(GTK_WIDGET(popover));
+                const float px =
+                        std::clamp(anchorBounds.origin.x + 0.5f * (anchorBounds.size.width - popW), 4.0f,
+                                   std::max(4.0f, static_cast<float>(gtk_widget_get_width(window) - popW - 4)));
+                const float py = anchorBounds.origin.y + anchorBounds.size.height + 2.0f;
+                const graphene_point_t offset{px, py};
+                gtk_snapshot_save(snapshot);
+                gtk_snapshot_translate(snapshot, &offset);
+                gdk_paintable_snapshot(GDK_PAINTABLE(popPaintable), GDK_SNAPSHOT(snapshot), popW, popH);
                 gtk_snapshot_restore(snapshot);
                 g_object_unref(popPaintable);
             }
@@ -10651,6 +11293,7 @@ private:
     }
 
     Options options;
+    std::unique_ptr<prototype::LuaPluginRuntime> pluginRuntime;
     std::filesystem::path preferencesConfigDir;
     prototype::SettingsImportResult importedConfig;
     int effectiveAutosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
@@ -10744,6 +11387,7 @@ private:
     GtkWidget* nextPageButton = nullptr;
     GtkWidget* pageButton = nullptr;
     GtkWidget* preferencesButton = nullptr;
+    GtkWidget* pluginsMenuButton = nullptr;
     GtkWidget* insertPageButton = nullptr;
     GtkWidget* deletePageButton = nullptr;
     int documentSmokeStep = -1;
@@ -10876,6 +11520,10 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
+    GtkWindow* pluginManagerWindow = nullptr;
+    GtkWidget* pluginManagerList = nullptr;
+    GtkWidget* pluginManagerApplyButton = nullptr;
+    std::map<std::string, GtkWidget*> pluginManagerSwitches;
     std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
@@ -10974,8 +11622,19 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("Configuration directory is missing or not a directory");
                 }
                 options.configDirectory = cfgPath.string();
+            } else if (argument == "--plugin-dir" && i + 1 < argc) {
+                const auto pluginPath = std::filesystem::absolute(argv[++i]);
+                std::error_code ec;
+                const auto st = std::filesystem::symlink_status(pluginPath, ec);
+                if (ec || st.type() != std::filesystem::file_type::directory) {
+                    throw std::runtime_error("Plugin directory is missing or not a directory");
+                }
+                options.pluginDirectory = pluginPath.string();
+            } else if (argument == "--verify-plugins") {
+                options.verifyPlugins = true;
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
-                        argument == "--smoke-dir") && i + 1 < argc) {
+                        argument == "--smoke-dir") &&
+                       i + 1 < argc) {
                 const auto path = std::filesystem::absolute(argv[++i]).string();
                 if (argument == "--pdf") {
                     options.pdf = path;
@@ -10990,7 +11649,7 @@ int main(int argc, char** argv) {
             } else {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
-                                         "[--disable-audio] "
+                                         "[--plugin-dir DIRECTORY] [--verify-plugins] [--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
             }
         }
@@ -10999,6 +11658,9 @@ int main(int argc, char** argv) {
         }
         if (!options.worker.empty() && !g_file_test(options.worker.c_str(), G_FILE_TEST_IS_EXECUTABLE)) {
             throw std::runtime_error("Document worker is missing or not executable");
+        }
+        if (options.verifyPlugins && options.smokeDirectory.empty()) {
+            throw std::runtime_error("Plugin verification requires --smoke-dir DIRECTORY");
         }
         Prototype app(std::move(options));
         return app.run();

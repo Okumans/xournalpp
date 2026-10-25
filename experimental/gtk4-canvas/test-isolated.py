@@ -364,6 +364,40 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
     return str(directory)
 
 
+def verify_plugins(args, evidence):
+    directory = evidence / "plugins"
+    shutil.rmtree(directory, ignore_errors=True)
+    config = directory / "config"
+    output = directory / "run"
+    config.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+    plugin_root = Path(__file__).resolve().parents[2] / "plugins"
+    color_cycle = plugin_root / "ColorCycle"
+    tool_shortcuts = plugin_root / "ToolShortcuts"
+    (config / "gtk4-canvas.ini").write_text(
+        f"[Plugins]\nenabled={color_cycle.resolve()},{tool_shortcuts.resolve()}\ndisabled=\n",
+        encoding="utf-8")
+    result = run(
+        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+         "--verify-plugins"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    expected = "PASS: private GTK4 ColorCycle, ToolShortcuts, Smart Select shortcut and plugin manager"
+    if expected not in result:
+        raise RuntimeError("GTK 4 bundled plugin integration did not complete")
+    for screenshot in ("plugins-menu", "plugins-manager"):
+        path = output / f"{screenshot}.png"
+        if not path.is_file() or path.stat().st_size < 1000:
+            raise RuntimeError(f"Missing plugin integration screenshot: {path}")
+    saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
+    for plugin in ("ColorCycle", "ToolShortcuts", "Example"):
+        plugin_path = (plugin_root / plugin).resolve()
+        if str(plugin_path) not in saved_settings:
+            raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")
+    print("PASS: private GTK4 plugin manager and bundled Lua callback integration", flush=True)
+    return str(directory)
+
+
 def make_png(path, width=32, height=24):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data +
@@ -713,6 +747,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.plugins_only:
+        plugin_evidence = verify_plugins(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"lua-plugins": plugin_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.play_object_only:
         play_evidence = verify_play_object(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -950,6 +991,7 @@ def main():
     parser.add_argument("--laser-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--play-object-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1018,6 +1060,8 @@ def main():
             command.append("--play-object-only")
         if args.preferences_only:
             command.append("--preferences-only")
+        if args.plugins_only:
+            command.append("--plugins-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

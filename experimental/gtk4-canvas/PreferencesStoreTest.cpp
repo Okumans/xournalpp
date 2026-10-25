@@ -61,6 +61,8 @@ int main() {
     saved.autosaveTimeoutMinutes = 11;
     saved.stylusButtonOne = prototype::ButtonToolAction::Eraser;
     saved.stylusButtonTwo = prototype::ButtonToolAction::FloatingToolbox;
+    saved.pluginsEnabled = "/plugins/ColorCycle";
+    saved.pluginsDisabled = "/plugins/Example";
     saved.mainToolRail = {prototype::MainToolAction::Pen, prototype::MainToolAction::SmartSelect,
                           prototype::MainToolAction::Text, prototype::MainToolAction::Hand};
     saved.floatingToolboxRows = {{{"SMART_SELECT", "PEN"}, {}, {"COLOR(8)", "DRAW_ARROW"}, {"UNDO"}}};
@@ -76,12 +78,11 @@ int main() {
                     near(loaded.pressureMultiplier, 1.75) && near(loaded.zoomStep, 0.22) &&
                     near(loaded.scrollZoomStep, 0.035) && near(loaded.edgePanSpeed, 31) &&
                     near(loaded.edgePanMaxMultiplier, 3.5) && !loaded.snapRotation &&
-                    near(loaded.snapRotationTolerance, 0.45) &&
-                    !loaded.snapGrid && near(loaded.snapGridSize, 23.5) &&
-                    near(loaded.snapGridTolerance, 0.35) &&
-                    loaded.autosaveTimeoutMinutes == 11 &&
+                    near(loaded.snapRotationTolerance, 0.45) && !loaded.snapGrid && near(loaded.snapGridSize, 23.5) &&
+                    near(loaded.snapGridTolerance, 0.35) && loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
                     loaded.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox &&
+                    loaded.pluginsEnabled == saved.pluginsEnabled && loaded.pluginsDisabled == saved.pluginsDisabled &&
                     loaded.mainToolRail == saved.mainToolRail &&
                     loaded.floatingToolboxRows == saved.floatingToolboxRows,
             "Saved GTK 4 preference values did not roundtrip");

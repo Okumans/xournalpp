@@ -79,6 +79,8 @@ struct ImportedSettings {
     int autosaveTimeoutMinutes = 3;
     std::filesystem::path colorPalettePath;
     std::filesystem::path audioFolder;
+    std::string pluginsEnabled;
+    std::string pluginsDisabled;
     unsigned int defaultSeekTimeSeconds = 5;
     bool disableAudio = false;
     ButtonToolAction stylusButtonOne = ButtonToolAction::None;
@@ -339,6 +341,10 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         if (!value.empty()) {
             out.colorPalettePath = std::filesystem::path(std::string(value));
         }
+    } else if (name == "pluginEnabled") {
+        out.pluginsEnabled = std::string(value);
+    } else if (name == "pluginDisabled") {
+        out.pluginsDisabled = std::string(value);
     }
 }
 
