@@ -170,6 +170,7 @@ struct PluginRuntimeHost {
     std::function<bool(std::string_view, std::string_view, std::string&)> changeCurrentPageBackground;
     std::function<bool(bool, std::string&)> addEmptyPages;
     std::function<bool(std::int64_t, std::string&)> transformSelectedImages;
+    std::function<int()> getDisplayDpi;
     std::function<double()> getZoom;
     std::function<bool(double, std::string&)> setZoom;
     std::function<bool(std::string_view, std::vector<PluginStroke>&, std::string&)> getStrokes;
@@ -244,6 +245,7 @@ public:
     static int luaChangeCurrentPageBackground(lua_State* state);
     static int luaAddEmptyPages(lua_State* state);
     static int luaTransformSelectedImages(lua_State* state);
+    static int luaGetDisplayDpi(lua_State* state);
     static int luaGetZoom(lua_State* state);
     static int luaSetZoom(lua_State* state);
     static int luaGetStrokes(lua_State* state);
@@ -279,6 +281,7 @@ private:
     bool changeCurrentPageBackground(std::string_view format, std::string_view config, std::string& error);
     bool addEmptyPages(bool force, std::string& error);
     bool transformSelectedImages(std::int64_t action, std::string& error);
+    bool getDisplayDpi(int& dpi, std::string& error) const;
     bool getZoom(double& zoom, std::string& error) const;
     bool setZoom(double zoom, std::string& error);
     bool getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error);

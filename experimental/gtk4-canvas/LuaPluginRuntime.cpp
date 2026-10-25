@@ -382,6 +382,7 @@ int luaOpenApp(lua_State* state) {
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
+            {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
             {"getZoom", LuaPluginRuntime::luaGetZoom},
             {"setZoom", LuaPluginRuntime::luaSetZoom},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
@@ -938,6 +939,19 @@ bool LuaPluginRuntime::transformSelectedImages(std::int64_t action, std::string&
     return host.transformSelectedImages(action, error);
 }
 
+bool LuaPluginRuntime::getDisplayDpi(int& dpi, std::string& error) const {
+    if (!host.getDisplayDpi) {
+        error = "Display DPI queries are unavailable in this GTK 4 host";
+        return false;
+    }
+    dpi = host.getDisplayDpi();
+    if (dpi <= 0) {
+        error = "The GTK 4 host returned an invalid display DPI value";
+        return false;
+    }
+    return true;
+}
+
 bool LuaPluginRuntime::getZoom(double& zoom, std::string& error) const {
     if (!host.getZoom) {
         error = "Zoom queries are unavailable in this GTK 4 host";
@@ -1401,6 +1415,20 @@ int LuaPluginRuntime::luaTransformSelectedImages(lua_State* state) {
         return luaL_error(state, "%s", error.empty() ? "Image action failed" : error.c_str());
     }
     return 0;
+}
+
+int LuaPluginRuntime::luaGetDisplayDpi(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    int dpi = 0;
+    std::string error;
+    if (!plugin->runtime->getDisplayDpi(dpi, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading display DPI failed" : error.c_str());
+    }
+    lua_pushinteger(state, dpi);
+    return 1;
 }
 
 int LuaPluginRuntime::luaGetZoom(lua_State* state) {
