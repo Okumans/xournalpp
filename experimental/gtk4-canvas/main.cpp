@@ -598,6 +598,23 @@ private:
 
     void showError(const std::string& message) { showAlert("Document operation failed", message); }
 
+    static GdkRGBA unpackArgbColor(std::uint32_t color) {
+        return {
+                static_cast<float>((color >> 16U) & 0xffU) / 255.0F,
+                static_cast<float>((color >> 8U) & 0xffU) / 255.0F,
+                static_cast<float>(color & 0xffU) / 255.0F,
+                static_cast<float>((color >> 24U) & 0xffU) / 255.0F,
+        };
+    }
+
+    static std::uint32_t packArgbColor(const GdkRGBA& color) {
+        const auto channel = [](float value) {
+            return static_cast<std::uint32_t>(std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
+        };
+        return (channel(color.alpha) << 24U) | (channel(color.red) << 16U) | (channel(color.green) << 8U) |
+               channel(color.blue);
+    }
+
     enum class PreferenceKey : guint {
         Theme = 1,
         Sidebar,
@@ -622,6 +639,11 @@ private:
         FloatingToolboxRow2,
         FloatingToolboxRow3,
         FloatingToolboxRow4,
+        PositionHighlight,
+        CursorHighlightColor,
+        CursorHighlightRadius,
+        CursorHighlightBorderColor,
+        CursorHighlightBorderWidth,
         Count,
     };
 
@@ -701,6 +723,33 @@ private:
         return GTK_WIDGET(spin);
     }
 
+    GtkWidget* preferenceColor(AdwPreferencesGroup* group, const char* title, const char* subtitle, std::uint32_t color,
+                               PreferenceKey key) {
+        auto* row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        adw_action_row_set_subtitle(row, subtitle);
+        auto* dialog = gtk_color_dialog_new();
+        gtk_color_dialog_set_with_alpha(dialog, true);
+        auto* button = gtk_color_dialog_button_new(dialog);
+        gtk_widget_set_size_request(button, 48, 36);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, title, -1);
+        const auto rgba = unpackArgbColor(color);
+        gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(button), &rgba);
+        adw_action_row_add_suffix(row, button);
+        adw_action_row_set_activatable_widget(row, button);
+        g_object_set_data(G_OBJECT(button), "gtk4-preference-key", GUINT_TO_POINTER(static_cast<guint>(key)));
+        g_signal_connect(button, "notify::rgba", G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto key = static_cast<PreferenceKey>(
+                                     GPOINTER_TO_UINT(g_object_get_data(object, "gtk4-preference-key")));
+                             self->changePreference(key, GTK_WIDGET(object));
+                         }),
+                         this);
+        preferenceControls[static_cast<size_t>(key)] = button;
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return GTK_WIDGET(button);
+    }
+
     GtkWidget* preferenceTextEntry(AdwPreferencesGroup* group, const char* title, const char* subtitle,
                                    const std::string& value, PreferenceKey key) {
         auto* row = ADW_ACTION_ROW(adw_action_row_new());
@@ -777,6 +826,9 @@ private:
     }
 
     void changePreference(PreferenceKey key, GtkWidget* control) {
+        if (syncingPreferenceControls) {
+            return;
+        }
         auto& settings = importedConfig.settings;
         switch (key) {
             case PreferenceKey::Theme:
@@ -797,6 +849,23 @@ private:
                 break;
             case PreferenceKey::PressureSensitivity:
                 settings.pressureSensitivity = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::PositionHighlight:
+                settings.highlightPosition = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::CursorHighlightColor:
+                settings.cursorHighlightColor =
+                        packArgbColor(*gtk_color_dialog_button_get_rgba(GTK_COLOR_DIALOG_BUTTON(control)));
+                break;
+            case PreferenceKey::CursorHighlightRadius:
+                settings.cursorHighlightRadius = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
+            case PreferenceKey::CursorHighlightBorderColor:
+                settings.cursorHighlightBorderColor =
+                        packArgbColor(*gtk_color_dialog_button_get_rgba(GTK_COLOR_DIALOG_BUTTON(control)));
+                break;
+            case PreferenceKey::CursorHighlightBorderWidth:
+                settings.cursorHighlightBorderWidth = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
             case PreferenceKey::MinimumPressure:
                 settings.minimumPressure = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
@@ -1175,6 +1244,28 @@ private:
 
     bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
                                  std::string& error) {
+        if (action == "position-highlighting") {
+            if (!std::holds_alternative<bool>(value)) {
+                error = "position-highlighting expects a boolean state";
+                return false;
+            }
+            const bool previous = importedConfig.settings.highlightPosition;
+            importedConfig.settings.highlightPosition = std::get<bool>(value);
+            std::string saveError;
+            if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, saveError)) {
+                importedConfig.settings.highlightPosition = previous;
+                error = saveError;
+                return false;
+            }
+            auto* control = preferenceControls[static_cast<size_t>(PreferenceKey::PositionHighlight)];
+            if (control) {
+                syncingPreferenceControls = true;
+                adw_switch_row_set_active(ADW_SWITCH_ROW(control), importedConfig.settings.highlightPosition);
+                syncingPreferenceControls = false;
+            }
+            update();
+            return true;
+        }
         if (action == "grid-snapping") {
             if (!std::holds_alternative<bool>(value)) {
                 error = "grid-snapping expects a boolean state";
@@ -1191,7 +1282,8 @@ private:
             return true;
         }
         if (action != "select-tool" || !std::holds_alternative<std::int64_t>(value)) {
-            error = "Only select-tool (integer) and grid-snapping (boolean) action state changes are supported";
+            error = "Only select-tool (integer), grid-snapping (boolean), and position-highlighting (boolean) "
+                    "action state changes are supported";
             return false;
         }
 
@@ -1371,6 +1463,22 @@ private:
         preferenceCombo(buttonsGroup, "Button 2", "Second side button", buttonActions,
                         static_cast<guint>(importedConfig.settings.stylusButtonTwo), PreferenceKey::StylusButtonTwo);
         adw_preferences_page_add(inputPage, buttonsGroup);
+        auto* highlightGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(highlightGroup, "Pointer position highlight");
+        preferenceSwitch(highlightGroup, "Highlight pointer position",
+                         "Show a translucent circle around the pointer; the HighlightPosition plugin can toggle it",
+                         importedConfig.settings.highlightPosition, PreferenceKey::PositionHighlight);
+        preferenceColor(highlightGroup, "Circle color", "Choose the fill color and opacity",
+                        importedConfig.settings.cursorHighlightColor, PreferenceKey::CursorHighlightColor);
+        preferenceSpin(highlightGroup, "Circle radius", "Set the pointer highlight radius",
+                       importedConfig.settings.cursorHighlightRadius, 0.0, 30.0, 1.0, 0, "px",
+                       PreferenceKey::CursorHighlightRadius);
+        preferenceColor(highlightGroup, "Border color", "Choose the outline color and opacity",
+                        importedConfig.settings.cursorHighlightBorderColor, PreferenceKey::CursorHighlightBorderColor);
+        preferenceSpin(highlightGroup, "Border width", "Set the pointer highlight outline width",
+                       importedConfig.settings.cursorHighlightBorderWidth, 0.0, 30.0, 1.0, 0, "px",
+                       PreferenceKey::CursorHighlightBorderWidth);
+        adw_preferences_page_add(inputPage, highlightGroup);
         adw_preferences_dialog_add(preferencesDialog, inputPage);
 
         auto* behavior = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
@@ -1693,11 +1801,14 @@ private:
         const auto toggleGrid = pluginRuntime->findPlugin("ToggleGrid");
         require(toggleGrid && toggleGrid->loaded && toggleGrid->menuItems == 1 && nativeSession,
                 "Enabled bundled ToggleGrid plugin did not load with a native document worker");
+        const auto highlightPosition = pluginRuntime->findPlugin("HighlightPosition");
+        require(highlightPosition && highlightPosition->loaded && highlightPosition->menuItems == 1,
+                "Enabled bundled HighlightPosition plugin did not register its menu action");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 4,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 5,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -1714,6 +1825,39 @@ private:
                 "Bundled ToolShortcuts stole a key from text editing");
         require(pluginRuntime->handleKeyPress(GDK_KEY_p, GdkModifierType(0), false) && state.brush.tool == Tool::Pen,
                 "Bundled ToolShortcuts did not restore the Pen tool");
+        auto* application = GTK_APPLICATION(gtk_window_get_application(GTK_WINDOW(window)));
+        std::optional<std::string> highlightAction;
+        for (guint index = 0; index < 64 && !highlightAction; ++index) {
+            const auto actionName = "gtk4-plugin-" + std::to_string(index);
+            const auto detailedActionName = "win." + actionName;
+            gchar** accelerators = gtk_application_get_accels_for_action(application, detailedActionName.c_str());
+            for (guint acceleratorIndex = 0; accelerators && accelerators[acceleratorIndex]; ++acceleratorIndex) {
+                if (g_str_equal(accelerators[acceleratorIndex], "<Alt>x")) {
+                    highlightAction = actionName;
+                    break;
+                }
+            }
+            g_strfreev(accelerators);
+        }
+        require(highlightAction.has_value(), "HighlightPosition did not register its Alt+X accelerator");
+        g_action_group_activate_action(G_ACTION_GROUP(window), highlightAction->c_str(), nullptr);
+        require(importedConfig.settings.highlightPosition,
+                "HighlightPosition's Alt+X action did not enable the pointer halo");
+        pointerPosition = prototype::Point{gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
+        update();
+        capture("position-highlight-on");
+        prototype::ImportedSettings reloadedHighlightSettings;
+        const auto highlightPreferences =
+                prototype::loadGtk4Preferences(preferencesConfigDir, reloadedHighlightSettings);
+        require(highlightPreferences.found && reloadedHighlightSettings.highlightPosition &&
+                        reloadedHighlightSettings.cursorHighlightColor ==
+                                importedConfig.settings.cursorHighlightColor &&
+                        std::abs(reloadedHighlightSettings.cursorHighlightRadius -
+                                 importedConfig.settings.cursorHighlightRadius) < 1e-8,
+                "Pointer highlight action or appearance settings did not persist");
+        g_action_group_activate_action(G_ACTION_GROUP(window), highlightAction->c_str(), nullptr);
+        require(!importedConfig.settings.highlightPosition,
+                "HighlightPosition did not disable the pointer halo on its second activation");
 
         constexpr std::array<std::uint32_t, 11> expectedColors{
                 0x000000, 0x008000, 0x00c0ff, 0x00ff00, 0x3333cc, 0x808080,
@@ -1802,8 +1946,8 @@ private:
                         !pluginRuntime->findPlugin("Example")->pendingEnabled,
                 "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
-        std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut and plugin "
-                     "manager, ToggleGrid paper changes, and background undo/redo\n";
+        std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
+                     "HighlightPosition, ToggleGrid paper changes, and background undo/redo\n";
     }
 
     void waitForPluginDocumentJob() {
@@ -6675,8 +6819,22 @@ private:
         }
     }
 
+    void trackPointerPosition(double x, double y) {
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+            return;
+        }
+        if (pointerPosition && pointerPosition->x == x && pointerPosition->y == y) {
+            return;
+        }
+        pointerPosition = prototype::Point{x, y};
+        if (importedConfig.settings.highlightPosition && canvas) {
+            gtk_widget_queue_draw(canvas);
+        }
+    }
+
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        trackPointerPosition(x, y);
         if (state.brush.tool == Tool::FloatingToolbox ||
             (device == Device::Stylus && !eraserEnd &&
              activeStylusAction == prototype::ButtonToolAction::FloatingToolbox)) {
@@ -6771,6 +6929,7 @@ private:
 
     void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                 uint32_t timeMs = 0) {
+        trackPointerPosition(x, y);
         if (state.brush.tool == Tool::Link) {
             updateLinkHover(x, y);
             return;
@@ -6831,6 +6990,9 @@ private:
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt,
                 std::optional<prototype::Point> releasePoint = std::nullopt) {
+        if (releasePoint) {
+            trackPointerPosition(releasePoint->x, releasePoint->y);
+        }
         if (smartSelectPdfGesture && smartSelectPdfGesture->owner == device) {
             if (releasePoint) {
                 smartSelectPdfGesture->latest = *releasePoint;
@@ -7056,6 +7218,7 @@ private:
         g_signal_connect(pointerMotion, "motion", G_CALLBACK(+[](GtkEventControllerMotion* controller,
                                                                    double x, double y, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
+                             self->trackPointerPosition(x, y);
                              if (self->state.brush.tool == Tool::Link) {
                                  self->updateLinkHover(x, y);
                                  return;
@@ -7075,6 +7238,11 @@ private:
                          }), this);
         g_signal_connect(pointerMotion, "leave", G_CALLBACK(+[](GtkEventControllerMotion*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
+                             const bool hadPointer = self->pointerPosition.has_value();
+                             self->pointerPosition.reset();
+                             if (hadPointer && self->importedConfig.settings.highlightPosition) {
+                                 gtk_widget_queue_draw(self->canvas);
+                             }
                              self->scheduleFloatingToolboxHide();
                              if (self->state.brush.tool == Tool::Link) {
                                  self->linkInfoIndex.reset();
@@ -7903,6 +8071,24 @@ private:
         }
         if (!drewAny) {
             ensurePageCache(state.page, deviceScale);
+        }
+        if (importedConfig.settings.highlightPosition && pointerPosition && pointerPosition->x >= 0 &&
+            pointerPosition->y >= 0 && pointerPosition->x < width && pointerPosition->y < height) {
+            const auto fill = unpackArgbColor(importedConfig.settings.cursorHighlightColor);
+            cairo_save(cr);
+            cairo_arc(cr, pointerPosition->x, pointerPosition->y, importedConfig.settings.cursorHighlightRadius, 0,
+                      2 * G_PI);
+            cairo_set_source_rgba(cr, fill.red, fill.green, fill.blue, fill.alpha);
+            cairo_fill_preserve(cr);
+            if (importedConfig.settings.cursorHighlightBorderWidth > 0) {
+                const auto border = unpackArgbColor(importedConfig.settings.cursorHighlightBorderColor);
+                cairo_set_source_rgba(cr, border.red, border.green, border.blue, border.alpha);
+                cairo_set_line_width(cr, importedConfig.settings.cursorHighlightBorderWidth);
+                cairo_stroke(cr);
+            } else {
+                cairo_new_path(cr);
+            }
+            cairo_restore(cr);
         }
         ++frames;
     }
@@ -9295,7 +9481,13 @@ private:
                     break;
                 case 1: {
                     require(control(PreferenceKey::Theme) && control(PreferenceKey::StylusButtonOne) &&
-                                    control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout) &&
+                                    control(PreferenceKey::StylusButtonTwo) &&
+                                    control(PreferenceKey::AutosaveTimeout) &&
+                                    control(PreferenceKey::PositionHighlight) &&
+                                    control(PreferenceKey::CursorHighlightColor) &&
+                                    control(PreferenceKey::CursorHighlightRadius) &&
+                                    control(PreferenceKey::CursorHighlightBorderColor) &&
+                                    control(PreferenceKey::CursorHighlightBorderWidth) &&
                                     control(PreferenceKey::RotationSnapTolerance) &&
                                     control(PreferenceKey::SnapRotation) && control(PreferenceKey::SnapGrid) &&
                                     control(PreferenceKey::SnapGridSize) && control(PreferenceKey::SnapGridTolerance) &&
@@ -9335,11 +9527,24 @@ private:
                 }
                 case 2:
                     capture("preferences-toolbar");
+                    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "input");
+                    require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "input",
+                            "Preferences dialog did not switch to the Input page");
+                    break;
+                case 3: {
+                    capture("preferences-input");
+                    adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::PositionHighlight)), true);
+                    const auto fill = unpackArgbColor(0x7f123456U);
+                    gtk_color_dialog_button_set_rgba(
+                            GTK_COLOR_DIALOG_BUTTON(control(PreferenceKey::CursorHighlightColor)), &fill);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::CursorHighlightRadius)), 17.0);
+                    const auto border = unpackArgbColor(0xc0abcdefU);
+                    gtk_color_dialog_button_set_rgba(
+                            GTK_COLOR_DIALOG_BUTTON(control(PreferenceKey::CursorHighlightBorderColor)), &border);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::CursorHighlightBorderWidth)), 2.0);
                     adw_preferences_dialog_set_visible_page_name(preferencesDialog, "behavior");
                     require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "behavior",
                             "Preferences dialog did not switch to the Behavior page");
-                    break;
-                case 3: {
                     capture("preferences-behavior");
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne)),
@@ -9424,6 +9629,11 @@ private:
                                     importedConfig.settings.stylusButtonTwo ==
                                             prototype::ButtonToolAction::FloatingToolbox &&
                                     !importedConfig.settings.pressureSensitivity &&
+                                    importedConfig.settings.highlightPosition &&
+                                    importedConfig.settings.cursorHighlightColor == 0x7f123456U &&
+                                    std::abs(importedConfig.settings.cursorHighlightRadius - 17.0) < 1e-8 &&
+                                    importedConfig.settings.cursorHighlightBorderColor == 0xc0abcdefU &&
+                                    std::abs(importedConfig.settings.cursorHighlightBorderWidth - 2.0) < 1e-8 &&
                                     !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
                                     !importedConfig.settings.snapGrid && !state.snapGridEnabled &&
                                     std::abs(state.snapGridSize - 24.0) < 1e-8 &&
@@ -9548,6 +9758,11 @@ private:
                                     importedConfig.settings.stylusButtonTwo ==
                                             prototype::ButtonToolAction::FloatingToolbox &&
                                     !importedConfig.settings.pressureSensitivity &&
+                                    importedConfig.settings.highlightPosition &&
+                                    importedConfig.settings.cursorHighlightColor == 0x7f123456U &&
+                                    std::abs(importedConfig.settings.cursorHighlightRadius - 17.0) < 1e-8 &&
+                                    importedConfig.settings.cursorHighlightBorderColor == 0xc0abcdefU &&
+                                    std::abs(importedConfig.settings.cursorHighlightBorderWidth - 2.0) < 1e-8 &&
                                     !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
                                     !importedConfig.settings.snapGrid && !state.snapGridEnabled &&
                                     std::abs(state.snapGridSize - 24.0) < 1e-8 &&
@@ -9568,11 +9783,25 @@ private:
                     break;
                 default:
                     require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme))) == 1 &&
-                    adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
+                                    adw_combo_row_get_selected(
+                                            ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Pen) &&
                                     !adw_switch_row_get_active(
-                                            ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity))),
+                                            ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity))) &&
+                                    adw_switch_row_get_active(
+                                            ADW_SWITCH_ROW(control(PreferenceKey::PositionHighlight))),
                             "Preferences dialog did not display restored values");
+                    require(Prototype::packArgbColor(*gtk_color_dialog_button_get_rgba(GTK_COLOR_DIALOG_BUTTON(
+                                    control(PreferenceKey::CursorHighlightColor)))) == 0x7f123456U &&
+                                    std::abs(gtk_spin_button_get_value(
+                                                     GTK_SPIN_BUTTON(control(PreferenceKey::CursorHighlightRadius))) -
+                                             17.0) < 1e-8 &&
+                                    Prototype::packArgbColor(*gtk_color_dialog_button_get_rgba(GTK_COLOR_DIALOG_BUTTON(
+                                            control(PreferenceKey::CursorHighlightBorderColor)))) == 0xc0abcdefU &&
+                                    std::abs(gtk_spin_button_get_value(GTK_SPIN_BUTTON(
+                                                     control(PreferenceKey::CursorHighlightBorderWidth))) -
+                                             2.0) < 1e-8,
+                            "Preferences dialog did not restore pointer highlight appearance settings");
                     require(!adw_switch_row_get_active(
                                     ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
                             "Preferences dialog did not restore the rotation snapping setting");
@@ -11626,6 +11855,7 @@ private:
     std::optional<ImageGesture> imageGesture;
     std::optional<Device> textSelectionOwner;
     std::optional<prototype::Point> selectionEdgePanPointer;
+    std::optional<prototype::Point> pointerPosition;
     std::optional<prototype::Point> pendingStylusTextTap;
     std::optional<SmartSelectPdfGesture> smartSelectPdfGesture;
     bool textDragHandled = false;
@@ -11782,6 +12012,7 @@ private:
             prototype::behavior::laserHighlighterWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
     bool syncingBrush = false;
     bool syncingTools = false;
+    bool syncingPreferenceControls = false;
     GtkGesture* mouse = nullptr;
     GtkGesture* stylus = nullptr;
     GtkEventController* pointerMotion = nullptr;

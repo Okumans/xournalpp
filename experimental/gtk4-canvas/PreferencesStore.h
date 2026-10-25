@@ -1,7 +1,10 @@
 #pragma once
 
-#include <filesystem>
+#include <array>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -48,6 +51,18 @@ inline void readInt(GKeyFile* keyFile, const char* group, const char* name, int&
     const auto candidate = g_key_file_get_integer(keyFile, group, name, &error);
     if (!error && candidate >= minimum && candidate <= maximum) {
         value = candidate;
+    }
+    g_clear_error(&error);
+}
+
+inline void readPackedColor(GKeyFile* keyFile, const char* name, std::uint32_t& value) {
+    if (!g_key_file_has_key(keyFile, "Pointer Highlight", name, nullptr)) {
+        return;
+    }
+    GError* error = nullptr;
+    const guint64 candidate = g_key_file_get_uint64(keyFile, "Pointer Highlight", name, &error);
+    if (!error && candidate <= std::numeric_limits<std::uint32_t>::max()) {
+        value = static_cast<std::uint32_t>(candidate);
     }
     g_clear_error(&error);
 }
@@ -158,6 +173,13 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     auto& detail = preferences_detail::readBool;
     detail(keyFile.get(), "General", "show-sidebar", settings.showSidebar);
     detail(keyFile.get(), "Input", "pressure-sensitivity", settings.pressureSensitivity);
+    detail(keyFile.get(), "Pointer Highlight", "enabled", settings.highlightPosition);
+    preferences_detail::readPackedColor(keyFile.get(), "fill-color", settings.cursorHighlightColor);
+    preferences_detail::readPackedColor(keyFile.get(), "border-color", settings.cursorHighlightBorderColor);
+    preferences_detail::readDouble(keyFile.get(), "Pointer Highlight", "radius", settings.cursorHighlightRadius, 0.0,
+                                   30.0);
+    preferences_detail::readDouble(keyFile.get(), "Pointer Highlight", "border-width",
+                                   settings.cursorHighlightBorderWidth, 0.0, 30.0);
     detail(keyFile.get(), "Editing", "autosave-enabled", settings.autosaveEnabled);
     preferences_detail::readInt(keyFile.get(), "Editing", "autosave-timeout-minutes", settings.autosaveTimeoutMinutes,
                                 0, 1440);
@@ -243,6 +265,11 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_string(keyFile.get(), "Appearance", "theme", preferences_detail::themeName(settings.themeVariant));
     g_key_file_set_boolean(keyFile.get(), "General", "show-sidebar", settings.showSidebar);
     g_key_file_set_boolean(keyFile.get(), "Input", "pressure-sensitivity", settings.pressureSensitivity);
+    g_key_file_set_boolean(keyFile.get(), "Pointer Highlight", "enabled", settings.highlightPosition);
+    g_key_file_set_uint64(keyFile.get(), "Pointer Highlight", "fill-color", settings.cursorHighlightColor);
+    g_key_file_set_double(keyFile.get(), "Pointer Highlight", "radius", settings.cursorHighlightRadius);
+    g_key_file_set_uint64(keyFile.get(), "Pointer Highlight", "border-color", settings.cursorHighlightBorderColor);
+    g_key_file_set_double(keyFile.get(), "Pointer Highlight", "border-width", settings.cursorHighlightBorderWidth);
     g_key_file_set_double(keyFile.get(), "Input", "minimum-pressure", settings.minimumPressure);
     g_key_file_set_double(keyFile.get(), "Input", "pressure-multiplier", settings.pressureMultiplier);
     g_key_file_set_double(keyFile.get(), "Navigation", "zoom-step", settings.zoomStep);

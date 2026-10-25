@@ -43,6 +43,11 @@ int main() {
   <property name="snapGrid" value="false"/>
   <property name="snapGridSize" value="28.5"/>
   <property name="snapGridTolerance" value="0.25"/>
+  <property name="highlightPosition" value="true"/>
+  <property name="cursorHighlightColor" value="2148606515"/>
+  <property name="cursorHighlightRadius" value="18.5"/>
+  <property name="cursorHighlightBorderColor" value="1075987558"/>
+  <property name="cursorHighlightBorderWidth" value="3"/>
   <property name="strokeRecognizerMinSize" value="32"/>
   <property name="stabilizerAveragingMethod" value="2"/>
   <property name="stabilizerPreprocessor" value="1"/>
@@ -129,6 +134,9 @@ int main() {
     require(!s.snapRotation, "Selection rotation snapping preference import mismatch");
     require(!s.snapGrid && near(s.snapGridSize, 28.5) && near(s.snapGridTolerance, 0.25),
             "Page-grid snapping preferences did not import");
+    require(s.highlightPosition && s.cursorHighlightColor == 0x80112233U && near(s.cursorHighlightRadius, 18.5) &&
+                    s.cursorHighlightBorderColor == 0x40224466U && near(s.cursorHighlightBorderWidth, 3),
+            "Pointer highlight settings did not import");
     require(near(s.shapeRecognizerMinSize, 32) &&
                     s.stabilizer.averaging == prototype::AveragingMethod::VelocityGaussian &&
                     s.stabilizer.preprocessor == prototype::StrokePreprocessor::Deadzone &&

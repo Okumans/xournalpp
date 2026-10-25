@@ -73,6 +73,12 @@ struct ImportedSettings {
     double snapGridTolerance = behavior::snapGridTolerance;
     StabilizerConfig stabilizer;
 
+    bool highlightPosition = false;
+    std::uint32_t cursorHighlightColor = 0x80ffff00U;
+    double cursorHighlightRadius = 30.0;
+    std::uint32_t cursorHighlightBorderColor = 0x800000ffU;
+    double cursorHighlightBorderWidth = 0.0;
+
     bool showSidebar = false;
     ThemeVariant themeVariant = ThemeVariant::ForceDark;
     bool autosaveEnabled = true;
@@ -266,6 +272,26 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
     } else if (name == "snapGridTolerance") {
         if (const auto v = parseAsciiDouble(value)) {
             out.snapGridTolerance = std::clamp(*v, 0.0, 1.0);
+        }
+    } else if (name == "highlightPosition") {
+        if (value == "true") {
+            out.highlightPosition = true;
+        } else if (value == "false") {
+            out.highlightPosition = false;
+        }
+    } else if (name == "cursorHighlightColor" || name == "cursorHighlightBorderColor") {
+        if (const auto v = parseAsciiInt(value);
+            v && *v >= 0 && static_cast<unsigned long long>(*v) <= std::numeric_limits<std::uint32_t>::max()) {
+            auto& color = name == "cursorHighlightColor" ? out.cursorHighlightColor : out.cursorHighlightBorderColor;
+            color = static_cast<std::uint32_t>(*v);
+        }
+    } else if (name == "cursorHighlightRadius") {
+        if (const auto v = parseAsciiDouble(value)) {
+            out.cursorHighlightRadius = std::clamp(*v, 0.0, 30.0);
+        }
+    } else if (name == "cursorHighlightBorderWidth") {
+        if (const auto v = parseAsciiDouble(value)) {
+            out.cursorHighlightBorderWidth = std::clamp(*v, 0.0, 30.0);
         }
     } else if (name == "strokeRecognizerMinSize") {
         if (const auto v = parseAsciiDouble(value); v && *v > 0) {
