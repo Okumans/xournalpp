@@ -1980,7 +1980,7 @@ private:
         if (textEditor && textEditor->active()) {
             finishTextEditing();
         }
-        if (tool != Tool::SmartSelect) {
+        if (tool != Tool::SmartSelect && tool != Tool::Hand) {
             selectedImageIndex.reset();
         }
         syncingTools = true;
@@ -1989,6 +1989,8 @@ private:
         }
         if (prototype::isSelectionTool(tool)) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+        } else if (tool == Tool::Hand) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[4]), true);
         } else if (tool == Tool::Text) {
             for (auto* button: toolButtons) {
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
@@ -2006,7 +2008,7 @@ private:
             state.eraserWidth = eraserBrush.width;
         }
         input.cancel();
-        if (!prototype::isSelectionTool(tool)) {
+        if (!prototype::isSelectionTool(tool) && tool != Tool::Hand) {
             state.clearSelection();
         }
         state.brush = tool == Tool::Highlighter ? highlightBrush : (tool == Tool::Eraser ? eraserBrush : penBrush);
@@ -2022,9 +2024,12 @@ private:
                                static_cast<float>(color[2]), 1};
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
-        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && !prototype::isSelectionTool(tool));
-        gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text);
-        gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text);
+        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::Hand &&
+                                                !prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
+                                                     tool != Tool::Hand);
+        gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
+                                                    tool != Tool::Hand);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionActions, prototype::isSelectionTool(tool));
@@ -2051,6 +2056,9 @@ private:
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
+        if (canvas) {
+            gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" : nullptr);
+        }
         gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), static_cast<guint>(state.eraserMode));
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));
         gtk_drop_down_set_selected(GTK_DROP_DOWN(averagingDropdown),
@@ -2694,9 +2702,16 @@ private:
         gtk_widget_set_halign(toolbar, GTK_ALIGN_CENTER);
         auto* toolGroup = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_widget_add_css_class(toolGroup, "linked");
-        const std::array names = {"Pen", "Highlight", "Eraser", "Select"};
+        const std::array names = {"Pen", "Highlight", "Eraser", "Select", "Hand"};
         for (size_t i = 0; i < toolButtons.size(); ++i) {
-            toolButtons[i] = gtk_toggle_button_new_with_label(names[i]);
+            if (i == 4) {
+                toolButtons[i] = gtk_toggle_button_new();
+                gtk_button_set_child(GTK_BUTTON(toolButtons[i]), gtk_image_new_from_icon_name("pan-down-symbolic"));
+                gtk_accessible_update_property(GTK_ACCESSIBLE(toolButtons[i]), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                               "Hand tool", -1);
+            } else {
+                toolButtons[i] = gtk_toggle_button_new_with_label(names[i]);
+            }
             if (i) {
                 gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(toolButtons[i]), GTK_TOGGLE_BUTTON(toolButtons[0]));
             }
@@ -2705,7 +2720,9 @@ private:
                                  auto* self = static_cast<Prototype*>(data);
                                  if (gtk_toggle_button_get_active(button) && !self->syncingTools) {
                                      const auto index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "tool"));
-                                     self->selectTool(index == 3 ? self->selectionTool : static_cast<Tool>(index));
+                                     const auto tool = index == 3 ? self->selectionTool :
+                                                       index == 4 ? Tool::Hand : static_cast<Tool>(index);
+                                     self->selectTool(tool);
                                  }
                              }),
                              this);
@@ -2713,6 +2730,7 @@ private:
         }
         gtk_widget_set_tooltip_text(toolButtons[3],
                                     "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S), Object");
+        gtk_widget_set_tooltip_text(toolButtons[4], "Drag anywhere on the canvas to pan; keep selections active");
         textButton = gtk_toggle_button_new();
         gtk_button_set_child(GTK_BUTTON(textButton), gtk_image_new_from_icon_name("format-text-symbolic"));
         gtk_widget_set_tooltip_text(textButton, "Text tool (T)");
@@ -3547,7 +3565,7 @@ private:
             static_cast<PanState*>(g_object_get_data(G_OBJECT(pan), "pan-state"))->enabled = false;
         }
         if (canvas) {
-            gtk_widget_set_cursor_from_name(canvas, nullptr);
+            gtk_widget_set_cursor_from_name(canvas, state.brush.tool == Tool::Hand ? "grab" : nullptr);
         }
     }
 
@@ -3558,7 +3576,13 @@ private:
             update();
             return;
         }
-        selectedImageIndex.reset();
+        const bool preserveSelection = state.brush.tool == Tool::Hand || input.spaceHeld ||
+                                       (device == Device::Stylus && !eraserEnd &&
+                                        activeStylusAction == prototype::ButtonToolAction::Hand) ||
+                                       !state.hitPage(x, y);
+        if (!preserveSelection) {
+            selectedImageIndex.reset();
+        }
         gtk_widget_grab_focus(canvas);
         const auto toolbarBrush = state.brush;
         const bool previousSpaceHeld = input.spaceHeld;
@@ -3585,6 +3609,8 @@ private:
         input.spaceHeld = previousSpaceHeld;
         if (input.panning()) {
             gtk_widget_set_cursor_from_name(canvas, "grabbing");
+        } else if (state.brush.tool == Tool::Hand || input.spaceHeld) {
+            gtk_widget_set_cursor_from_name(canvas, "grab");
         }
         update();
     }
@@ -3612,7 +3638,8 @@ private:
         }
         input.finish(device, releasePressure);
         if (!input.active()) {
-            gtk_widget_set_cursor_from_name(canvas, input.spaceHeld ? "grab" : nullptr);
+            gtk_widget_set_cursor_from_name(canvas,
+                                            input.spaceHeld || state.brush.tool == Tool::Hand ? "grab" : nullptr);
         }
         update();
     }
@@ -4189,7 +4216,9 @@ private:
                              if (key == GDK_KEY_space) {
                                  self->input.spaceHeld = false;
                                  gtk_widget_set_cursor_from_name(self->canvas,
-                                                                 self->input.panning() ? "grabbing" : nullptr);
+                                                                 self->input.panning() ? "grabbing" :
+                                                                 self->state.brush.tool == Tool::Hand ? "grab" :
+                                                                 nullptr);
                              }
                              self->update();
                          }),
@@ -4463,7 +4492,7 @@ private:
                 }
             }
             prototype::drawSelection(cr, state, i);
-            if (selectedImageIndex && *selectedImageIndex < state.images.size() &&
+            if (state.brush.tool != Tool::Hand && selectedImageIndex && *selectedImageIndex < state.images.size() &&
                 state.images[*selectedImageIndex].page == i &&
                 state.layerVisible(i, state.images[*selectedImageIndex].layerId)) {
                 prototype::drawCanvasImageHandles(cr, displayedImage(*selectedImageIndex), state.zoom);
@@ -5102,7 +5131,23 @@ private:
                 input.shiftHeld = false;
                 require(state.selected == std::vector<size_t>({firstStroke, secondStroke}),
                         "Shift-click Select Object did not add a second object");
-                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Select Object mode, hidden-layer fallback, remembered tool state, and shortcuts\n";
+                const auto handSelection = state.selected;
+                const auto handInkCount = state.ink.size();
+                const double handOffsetX = state.offsetX;
+                const double handOffsetY = state.offsetY;
+                selectTool(Tool::Hand);
+                require(state.brush.tool == Tool::Hand && state.selected == handSelection &&
+                                gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toolButtons[4])),
+                        "Selecting Hand should preserve the current object selection");
+                const auto panStart = state.pageScreenPoint(0, 240, 240);
+                g_signal_emit_by_name(mouse, "drag-begin", panStart.x, panStart.y);
+                g_signal_emit_by_name(mouse, "drag-update", 24.0, -18.0);
+                g_signal_emit_by_name(mouse, "drag-end", 24.0, -18.0);
+                require(state.ink.size() == handInkCount && state.selected == handSelection &&
+                                state.offsetX != handOffsetX && state.offsetY != handOffsetY && !input.active(),
+                        "Hand drag did not pan the canvas while retaining its selected objects");
+                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Select Object and Hand modes, "
+                             "selection-preserving pan, hidden-layer fallback, remembered tool state, and shortcuts\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -6895,7 +6940,7 @@ private:
     GtkWidget* drawingModeDropdown = nullptr;
     GtkWidget* averagingDropdown = nullptr;
     GtkWidget* preprocessorDropdown = nullptr;
-    std::array<GtkWidget*, 4> toolButtons{};
+    std::array<GtkWidget*, 5> toolButtons{};
     GtkWidget* selectionLabel = nullptr;
     GtkWidget* selectionModeDropdown = nullptr;
     GtkWidget* selectionActions = nullptr;

@@ -60,8 +60,9 @@ thresholds, stylus side-button actions, autosave cadence, and keyboard/wheel zoo
 steps save immediately to `gtk4-canvas.ini` in the selected configuration
 directory. These values take precedence over imported GTK 3 settings. Stylus
 side buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
-releasing a mapped button restores the toolbar tool. Middle-mouse panning remains
-available.
+releasing a mapped button restores the toolbar tool. The Hand toolbar button pans
+with a primary-button drag across the canvas and keeps the current selection.
+Space-drag, middle-mouse, and touch panning remain available.
 
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text (when a document worker
 is enabled), `Ctrl+Z` undo, `Ctrl+Shift+Z` or
@@ -104,9 +105,10 @@ transformed text. IME and accessibility behavior remain unverified.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
 Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,
-and 2% pointer-centered wheel zoom. Hold Space and drag, or start a drag in a page
-margin, to temporarily pan without changing the selected brush. A stylus eraser
-end temporarily erases session strokes; an entire eraser drag is one undo step.
+and 2% pointer-centered wheel zoom. The Hand tool drags to pan without clearing
+the current selection. Hold Space and drag, or start a drag in a page margin, to
+temporarily pan without changing the selected brush. A stylus eraser end
+temporarily erases session strokes; an entire eraser drag is one undo step.
 
 ## What this experiment establishes
 

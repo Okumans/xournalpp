@@ -85,6 +85,25 @@ static void eraserAndPan() {
     check(!input.active() && !input.spaceHeld && !state.current, "focus loss must release temporary input tools");
 }
 
+static void dedicatedHandPan() {
+    CanvasState state;
+    CanvasInput input(state);
+    input.begin(Device::Mouse, {40, 40, std::nullopt});
+    input.finish(Device::Mouse);
+    state.selected = {0};
+    const auto selectedPoints = state.ink.front().points;
+    state.brush.tool = Tool::Hand;
+
+    check(input.begin(Device::Mouse, {100, 100, std::nullopt}) && input.panning(),
+          "The dedicated Hand tool must pan when a drag begins over a page");
+    input.motion(Device::Mouse, {135, 120, std::nullopt});
+    input.finish(Device::Mouse);
+    check(state.offsetX == 35 && state.offsetY == 20 && state.ink.size() == 1 &&
+                  state.ink.front().points == selectedPoints && state.selected == std::vector<size_t>{0} &&
+                  state.hasSelection(),
+          "Hand panning must preserve document ink and the current selection");
+}
+
 static void backlog() {
     CanvasState state;
     CanvasInput input(state);
@@ -214,11 +233,13 @@ int main() {
     try {
         pressureAndRelease();
         eraserAndPan();
+        dedicatedHandPan();
         backlog();
         whiteoutAndPartialInput();
         interPageGapPanAndCrossPageInput();
         importedPressureOverrides();
-        std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary pan, backlog flags/order\n";
+        std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary and dedicated hand pan, "
+                     "backlog flags/order\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

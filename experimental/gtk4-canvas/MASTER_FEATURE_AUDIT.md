@@ -36,7 +36,7 @@ registration in `ToolHandler::initTools`.
 | `selectObject` | Partial | Select Object picks the closest editable stroke, text, or image on the active visible layer within the master 0.5 pt action radius; exact overlapping hits prefer the frontmost object, and Shift adds to the current selection. Unsupported native objects and their exact hit geometry remain. |
 | `playObject` | Pending | Select and play supported audio objects with production controls and lifecycle. |
 | `verticalSpace` | Pending | Insert vertical space with the same affected objects, undo behavior, and page boundaries. |
-| `hand` | Partial | Space and stylus mappings can pan temporarily; add the dedicated hand-tool behavior. |
+| `hand` | Partial | Dedicated Hand mode and Space/stylus temporary pan preserve the current selection. Physical device routing, touch gesture details, and kinetic scrolling remain. |
 | `drawRect` | Partial | Drag preview, constraints, and undo work as an editable stroke path; preserve native geometric objects. |
 | `drawEllipse` | Partial | Drag preview, constraints, and undo work as an editable stroke path; preserve native geometric objects. |
 | `drawArrow` | Partial | Arrow path drawing works; match native geometry and styling. |
