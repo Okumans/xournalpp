@@ -1559,6 +1559,19 @@ private:
         };
         host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
                                  std::string& error) { return getPluginStrokes(type, strokes, error); };
+        host.getTexts = [this](std::string_view type, std::vector<prototype::PluginText>& texts,
+                               std::string& error) { return getPluginTexts(type, texts, error); };
+        host.getLinks = [this](std::string_view type, std::vector<prototype::PluginLink>& links,
+                               std::string& error) { return getPluginLinks(type, links, error); };
+        host.getImages = [this](std::string_view type, std::vector<prototype::PluginImage>& images,
+                                std::string& error) { return getPluginImages(type, images, error); };
+        host.addToSelection = [this](const std::vector<std::uintptr_t>& references, std::string& error) {
+            return addPluginReferencesToSelection(references, error);
+        };
+        host.clearSelection = [this] {
+            state.clearSelection();
+            update();
+        };
         host.addStrokes = [this](const std::vector<prototype::PluginStrokeInput>& strokes,
                                  prototype::PluginStrokeUndoPolicy policy,
                                  std::vector<std::uintptr_t>& references, std::string& error) {
@@ -2313,7 +2326,10 @@ private:
         return true;
     }
 
-    bool getPluginStrokes(std::string_view type, std::vector<prototype::PluginStroke>& strokes, std::string& error) {
+    template <typename Object, typename Callback>
+    bool forEachPluginObject(std::string_view type, const std::vector<Object>& objects,
+                             const std::vector<size_t>& selectedIndices, Callback&& callback,
+                             std::string& error) {
         if (type != "selection" && type != "layer" && type != "page" && type != "all") {
             error = "Unknown argument (" + std::string(type) + ") for getting selection";
             return false;
@@ -2328,7 +2344,55 @@ private:
             update();
         }
 
-        const auto appendStroke = [this, &strokes](size_t index, bool includePage, bool includeLayer) {
+        state.ensurePluginReferences();
+        const auto appendLayer = [this, &objects, &callback](int pageIndex, size_t layerId, bool includePage,
+                                                             bool includeLayer) {
+            std::vector<size_t> indices;
+            for (size_t index = 0; index < objects.size(); ++index) {
+                const auto& object = objects[index];
+                if (object.page == pageIndex && object.layerId == layerId) {
+                    indices.push_back(index);
+                }
+            }
+            std::stable_sort(indices.begin(), indices.end(), [this, &objects](size_t lhs, size_t rhs) {
+                if (objects[lhs].layerOrder != objects[rhs].layerOrder) {
+                    return objects[lhs].layerOrder < objects[rhs].layerOrder;
+                }
+                return lhs < rhs;
+            });
+            for (const size_t index: indices) {
+                callback(index, includePage ? std::optional<size_t>(static_cast<size_t>(pageIndex + 1)) :
+                                              std::nullopt,
+                         includeLayer ? std::optional<size_t>(layerId) : std::nullopt);
+            }
+        };
+
+        if (type == "selection") {
+            for (const size_t index: selectedIndices) {
+                if (index < objects.size()) {
+                    callback(index, std::nullopt, std::nullopt);
+                }
+            }
+            return true;
+        }
+        if (type == "layer") {
+            appendLayer(state.page, state.activeLayerId(state.page), false, false);
+            return true;
+        }
+        const int firstPage = type == "all" ? 0 : state.page;
+        const int lastPage = type == "all" ? state.pageCount() : state.page + 1;
+        for (int pageIndex = firstPage; pageIndex < lastPage; ++pageIndex) {
+            const auto& layers = state.layersForPage(pageIndex).layers;
+            for (size_t layerId = 1; layerId <= layers.size(); ++layerId) {
+                appendLayer(pageIndex, layerId, type == "all", true);
+            }
+        }
+        return true;
+    }
+
+    bool getPluginStrokes(std::string_view type, std::vector<prototype::PluginStroke>& strokes,
+                          std::string& error) {
+        return forEachPluginObject(type, state.ink, state.selected, [&](size_t index, auto page, auto layer) {
             if (index >= state.ink.size()) {
                 return;
             }
@@ -2366,52 +2430,136 @@ private:
                            channel(ink.brush.color[2]);
             stroke.fill = ink.fill;
             stroke.lineStyle = "plain";
-            stroke.reference = reinterpret_cast<std::uintptr_t>(&ink);
-            if (includePage) {
-                stroke.page = static_cast<std::size_t>(ink.page + 1);
-            }
-            if (includeLayer) {
-                stroke.layer = ink.layerId;
-            }
+            stroke.reference = ink.pluginReference;
+            stroke.page = page;
+            stroke.layer = layer;
             strokes.push_back(std::move(stroke));
-        };
+        }, error);
+    }
 
-        if (type == "selection") {
-            for (const auto index: state.selected) {
-                appendStroke(index, false, false);
-            }
-            return true;
-        }
+    bool getPluginTexts(std::string_view type, std::vector<prototype::PluginText>& texts, std::string& error) {
+        return forEachPluginObject(type, state.texts, state.selectedTexts,
+                                   [&](size_t index, auto page, auto layer) {
+                                       if (index >= state.texts.size() || state.texts[index].isLink) {
+                                           return;
+                                       }
+                                       const auto& item = state.texts[index];
+                                       double x0 = std::numeric_limits<double>::infinity();
+                                       double y0 = std::numeric_limits<double>::infinity();
+                                       double x1 = -std::numeric_limits<double>::infinity();
+                                       double y1 = -std::numeric_limits<double>::infinity();
+                                       for (const prototype::Point point: {
+                                                    prototype::Point{0, 0},
+                                                    prototype::Point{item.layoutWidth, 0},
+                                                    prototype::Point{item.layoutWidth, item.layoutHeight},
+                                                    prototype::Point{0, item.layoutHeight},
+                                            }) {
+                                           const double x = item.xx * point.x + item.xy * point.y + item.x;
+                                           const double y = item.yx * point.x + item.yy * point.y + item.y;
+                                           x0 = std::min(x0, x);
+                                           y0 = std::min(y0, y);
+                                           x1 = std::max(x1, x);
+                                           y1 = std::max(y1, y);
+                                       }
+                                       const auto channelColor = item.color & 0x00ffffffU;
+                                       texts.push_back({item.text, item.fontName, item.fontSize, channelColor,
+                                                        item.x, item.y,
+                                                        item.wrapWidth >= 0 ?
+                                                                std::optional<double>(item.wrapWidth) :
+                                                                std::nullopt,
+                                                        std::max(0.0, x1 - x0), std::max(0.0, y1 - y0),
+                                                        item.pluginReference, page, layer});
+                                   },
+                                   error);
+    }
 
-        const auto appendLayer = [this, &appendStroke](int page, size_t layer, bool includePage,
-                                                       bool includeLayer) {
-            std::vector<size_t> indices;
-            for (size_t index = 0; index < state.ink.size(); ++index) {
-                const auto& ink = state.ink[index];
-                if (ink.page == page && ink.layerId == layer) {
-                    indices.push_back(index);
-                }
-            }
-            std::stable_sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
-                return state.ink[a].layerOrder < state.ink[b].layerOrder;
-            });
-            for (const auto index: indices) {
-                appendStroke(index, includePage, includeLayer);
-            }
-        };
+    bool getPluginLinks(std::string_view type, std::vector<prototype::PluginLink>& links, std::string& error) {
+        return forEachPluginObject(type, state.texts, state.selectedTexts,
+                                   [&](size_t index, auto page, auto layer) {
+                                       if (index >= state.texts.size() || !state.texts[index].isLink) {
+                                           return;
+                                       }
+                                       const auto& item = state.texts[index];
+                                       double x0 = std::numeric_limits<double>::infinity();
+                                       double y0 = std::numeric_limits<double>::infinity();
+                                       double x1 = -std::numeric_limits<double>::infinity();
+                                       double y1 = -std::numeric_limits<double>::infinity();
+                                       for (const prototype::Point point: {
+                                                    prototype::Point{0, 0},
+                                                    prototype::Point{item.layoutWidth, 0},
+                                                    prototype::Point{item.layoutWidth, item.layoutHeight},
+                                                    prototype::Point{0, item.layoutHeight},
+                                            }) {
+                                           const double x = item.xx * point.x + item.xy * point.y + item.x;
+                                           const double y = item.yx * point.x + item.yy * point.y + item.y;
+                                           x0 = std::min(x0, x);
+                                           y0 = std::min(y0, y);
+                                           x1 = std::max(x1, x);
+                                           y1 = std::max(y1, y);
+                                       }
+                                       links.push_back({item.text, item.linkUrl, item.alignment, item.fontName,
+                                                        item.fontSize, item.color & 0x00ffffffU, item.x, item.y,
+                                                        std::max(0.0, x1 - x0), std::max(0.0, y1 - y0),
+                                                        item.pluginReference, page, layer});
+                                   },
+                                   error);
+    }
 
-        if (type == "layer") {
-            appendLayer(state.page, state.activeLayerId(state.page), false, false);
-            return true;
+    bool getPluginImages(std::string_view type, std::vector<prototype::PluginImage>& images, std::string& error) {
+        return forEachPluginObject(type, state.images, state.selectedImages,
+                                   [&](size_t index, auto page, auto layer) {
+                                       if (index >= state.images.size()) {
+                                           return;
+                                       }
+                                       const auto& item = state.images[index];
+                                       const auto bounds = prototype::canvasImageBounds(item);
+                                       std::string format;
+                                       if (item.kind == prototype::CanvasImageKind::Latex) {
+                                           format = prototype::isCanvasTexPdf(item.encodedData) ? "pdf" : "png";
+                                       } else {
+                                           auto* loader = gdk_pixbuf_loader_new();
+                                           GError* loadError = nullptr;
+                                           const bool wrote = gdk_pixbuf_loader_write(
+                                                   loader,
+                                                   reinterpret_cast<const guchar*>(item.encodedData.data()),
+                                                   item.encodedData.size(), &loadError);
+                                           const bool closed = wrote && gdk_pixbuf_loader_close(loader, &loadError);
+                                           if (auto* pixbufFormat = closed ?
+                                                                                         gdk_pixbuf_loader_get_format(loader) :
+                                                                                         nullptr) {
+                                               gchar* formatName = gdk_pixbuf_format_get_name(pixbufFormat);
+                                               if (formatName) {
+                                                   format = formatName;
+                                                   g_free(formatName);
+                                               }
+                                           }
+                                           g_clear_error(&loadError);
+                                           g_object_unref(loader);
+                                       }
+                                       if (format.empty()) {
+                                           format = "unknown";
+                                       }
+                                       const int naturalWidth = item.kind == prototype::CanvasImageKind::Latex ?
+                                                                        static_cast<int>(std::lround(item.nativeWidth)) :
+                                                                        item.pixelWidth;
+                                       const int naturalHeight = item.kind == prototype::CanvasImageKind::Latex ?
+                                                                         static_cast<int>(std::lround(item.nativeHeight)) :
+                                                                         item.pixelHeight;
+                                       images.push_back({bounds.x0, bounds.y0, bounds.x1 - bounds.x0,
+                                                         bounds.y1 - bounds.y0, item.encodedData, std::move(format),
+                                                         naturalWidth, naturalHeight, item.pluginReference, page,
+                                                         layer});
+                                   },
+                                   error);
+    }
+
+    bool addPluginReferencesToSelection(const std::vector<std::uintptr_t>& references, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before changing the selection";
+            return false;
         }
-        const int firstPage = type == "all" ? 0 : state.page;
-        const int lastPage = type == "all" ? state.pageCount() : state.page + 1;
-        for (int page = firstPage; page < lastPage; ++page) {
-            const auto& layers = state.layersForPage(page).layers;
-            for (size_t layer = 1; layer <= layers.size(); ++layer) {
-                appendLayer(page, layer, type == "all", true);
-            }
-        }
+        state.addPluginReferencesToSelection(references);
+        update();
         return true;
     }
 
@@ -2476,10 +2624,11 @@ private:
             error = "The stroke batch could not be added to the current layer";
             return false;
         }
+        state.ensurePluginReferences();
         references.clear();
         references.reserve(inputs.size());
         for (size_t index = first; index < state.ink.size(); ++index) {
-            references.push_back(reinterpret_cast<std::uintptr_t>(&state.ink[index]));
+            references.push_back(state.ink[index].pluginReference);
         }
         update();
         return true;
@@ -3725,6 +3874,11 @@ private:
                     "app.getDocumentStructure lost page dimensions, PDF mapping, current layer, or layer stack");
         }
         const auto savedInkSize = state.ink.size();
+        const auto savedTextSize = state.texts.size();
+        const auto savedImageSize = state.images.size();
+        const auto savedRegularTextCount = static_cast<std::size_t>(std::count_if(
+                state.texts.begin(), state.texts.end(), [](const auto& item) { return !item.isLink; }));
+        const auto savedLinkCount = state.texts.size() - savedRegularTextCount;
         const auto savedSelection = state.selected;
         const auto savedTextSelection = state.selectedTexts;
         const auto savedImageSelection = state.selectedImages;
@@ -3736,6 +3890,64 @@ private:
         sample.layerId = state.activeLayerId(state.page);
         sample.layerOrder = 999999;
         state.ink.push_back(sample);
+
+        prototype::TextItem pluginText;
+        pluginText.page = state.page;
+        pluginText.layerId = state.activeLayerId(state.page);
+        pluginText.layerOrder = 999998;
+        pluginText.text = "Lua API note";
+        pluginText.fontName = "Sans";
+        pluginText.fontSize = 14;
+        pluginText.color = 0xff123456U;
+        pluginText.x = 21;
+        pluginText.y = 22;
+        pluginText.wrapWidth = 90;
+        pluginText.layoutWidth = 45;
+        pluginText.layoutHeight = 18;
+        state.texts.push_back(pluginText);
+
+        auto pluginLink = pluginText;
+        pluginLink.layerOrder = 1000000;
+        pluginLink.text = "Lua API link";
+        pluginLink.isLink = true;
+        pluginLink.linkUrl = "https://example.test";
+        pluginLink.alignment = 1;
+        pluginLink.fontName = "Serif";
+        pluginLink.fontSize = 12;
+        pluginLink.color = 0xffabcdefU;
+        pluginLink.layoutWidth = 60;
+        pluginLink.layoutHeight = 16;
+        state.texts.push_back(pluginLink);
+
+        GError* imageEncodeError = nullptr;
+        auto* pluginPixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, true, 8, 1, 1);
+        require(pluginPixbuf != nullptr, "Could not allocate the Lua image-query fixture");
+        gdk_pixbuf_fill(pluginPixbuf, 0x3877c4ffU);
+        gchar* pluginImageBuffer = nullptr;
+        gsize pluginImageLength = 0;
+        const bool imageEncoded = gdk_pixbuf_save_to_buffer(pluginPixbuf, &pluginImageBuffer, &pluginImageLength,
+                                                             "png", &imageEncodeError, nullptr);
+        g_object_unref(pluginPixbuf);
+        require(imageEncoded && pluginImageBuffer != nullptr,
+                imageEncodeError ? imageEncodeError->message : "Could not encode the Lua image-query fixture");
+        std::string pluginImageBytes(pluginImageBuffer, pluginImageLength);
+        g_free(pluginImageBuffer);
+        g_clear_error(&imageEncodeError);
+        prototype::CanvasImage pluginImage;
+        pluginImage.page = state.page;
+        pluginImage.layerId = state.activeLayerId(state.page);
+        pluginImage.layerOrder = 999997;
+        pluginImage.pixelWidth = 80;
+        pluginImage.pixelHeight = 60;
+        pluginImage.nativeWidth = 80;
+        pluginImage.nativeHeight = 60;
+        pluginImage.transform.xx = 0.5;
+        pluginImage.transform.yy = 0.5;
+        pluginImage.transform.x = 11;
+        pluginImage.transform.y = 12;
+        pluginImage.encodedData = std::move(pluginImageBytes);
+        state.images.push_back(std::move(pluginImage));
+
         const auto annotatedStructure = pluginDocumentStructure();
         require(annotatedStructure.pages.at(static_cast<std::size_t>(state.page)).isAnnotated &&
                         annotatedStructure.pages.at(static_cast<std::size_t>(state.page))
@@ -3748,7 +3960,7 @@ private:
         require(getPluginStrokes("all", allStrokes, strokeError) && allStrokes.size() == savedInkSize + 1,
                 "app.getStrokes('all') did not enumerate every editable stroke");
         const auto sampleOutput = std::find_if(allStrokes.begin(), allStrokes.end(), [&](const auto& stroke) {
-            return stroke.reference == reinterpret_cast<std::uintptr_t>(&state.ink.back());
+            return stroke.reference == state.ink.back().pluginReference;
         });
         require(sampleOutput != allStrokes.end() && sampleOutput->x == std::vector<double>({10, 12.5}) &&
                         sampleOutput->y == std::vector<double>({20, 24.5}) &&
@@ -3764,13 +3976,66 @@ private:
                             *stroke.layer <= state.layersForPage(static_cast<int>(*stroke.page - 1)).layers.size(),
                     "app.getStrokes('all') lost stroke geometry, references, or 1-based page/layer indices");
         }
+        const auto sampleStrokeReference = state.ink.back().pluginReference;
+        std::vector<prototype::PluginText> allTexts;
+        std::vector<prototype::PluginLink> allLinks;
+        std::vector<prototype::PluginImage> allImages;
+        require(getPluginTexts("all", allTexts, strokeError) && allTexts.size() == savedRegularTextCount + 1 &&
+                        getPluginLinks("all", allLinks, strokeError) && allLinks.size() == savedLinkCount + 1 &&
+                        getPluginImages("all", allImages, strokeError) && allImages.size() == savedImageSize + 1,
+                "Lua object queries did not enumerate editable text, links, and images");
+        const auto textOutput = std::find_if(allTexts.begin(), allTexts.end(), [](const auto& text) {
+            return text.text == "Lua API note";
+        });
+        const auto linkOutput = std::find_if(allLinks.begin(), allLinks.end(), [](const auto& link) {
+            return link.text == "Lua API link";
+        });
+        const auto imageOutput = std::find_if(allImages.begin(), allImages.end(), [&](const auto& image) {
+            return image.reference == state.images.back().pluginReference;
+        });
+        require(textOutput != allTexts.end() && textOutput->fontName == "Sans" && textOutput->fontSize == 14 &&
+                        textOutput->color == 0x123456 && textOutput->x == 21 && textOutput->y == 22 &&
+                        textOutput->wrap == std::optional<double>{90} && textOutput->width == 45 &&
+                        textOutput->height == 18 && textOutput->page == static_cast<size_t>(state.page + 1) &&
+                        textOutput->layer == state.activeLayerId(state.page) && textOutput->reference != 0,
+                "app.getTexts lost font, geometry, reference, or page/layer data");
+        require(linkOutput != allLinks.end() && linkOutput->url == "https://example.test" &&
+                        linkOutput->alignment == 1 && linkOutput->fontName == "Serif" &&
+                        linkOutput->fontSize == 12 && linkOutput->color == 0xabcdef && linkOutput->x == 21 &&
+                        linkOutput->y == 22 && linkOutput->width == 60 && linkOutput->height == 16 &&
+                        linkOutput->layer == state.activeLayerId(state.page) && linkOutput->reference != 0,
+                "app.getLinks lost URL, font, geometry, reference, or layer data");
+        require(imageOutput != allImages.end() && imageOutput->data.size() > 8 && imageOutput->x == 11 &&
+                        imageOutput->y == 12 && imageOutput->width == 40 && imageOutput->height == 30 &&
+                        imageOutput->imageWidth == 80 && imageOutput->imageHeight == 60 &&
+                        imageOutput->page == static_cast<size_t>(state.page + 1) &&
+                        imageOutput->layer == state.activeLayerId(state.page) && imageOutput->reference != 0,
+                "app.getImages lost image data, dimensions, reference, or page/layer metadata");
+
         state.selected = {state.ink.size() - 1};
-        state.selectedTexts.clear();
-        state.selectedImages.clear();
+        state.selectedTexts = {savedTextSize, savedTextSize + 1};
+        state.selectedImages = {savedImageSize};
         std::vector<prototype::PluginStroke> selectedStrokes;
         require(getPluginStrokes("selection", selectedStrokes, strokeError) && selectedStrokes.size() == 1 &&
                         !selectedStrokes.front().page && !selectedStrokes.front().layer,
                 "app.getStrokes('selection') did not return the selected stroke without page metadata");
+        std::vector<prototype::PluginText> selectedTexts;
+        std::vector<prototype::PluginLink> selectedLinks;
+        std::vector<prototype::PluginImage> selectedImages;
+        require(getPluginTexts("selection", selectedTexts, strokeError) && selectedTexts.size() == 1 &&
+                        selectedTexts.front().reference == textOutput->reference &&
+                        getPluginLinks("selection", selectedLinks, strokeError) && selectedLinks.size() == 1 &&
+                        selectedLinks.front().reference == linkOutput->reference &&
+                        getPluginImages("selection", selectedImages, strokeError) && selectedImages.size() == 1 &&
+                        selectedImages.front().reference == imageOutput->reference,
+                "Lua object queries did not filter selected editable objects by type");
+        state.clearSelection();
+        require(addPluginReferencesToSelection({sampleStrokeReference, textOutput->reference, linkOutput->reference,
+                                                imageOutput->reference}, strokeError) &&
+                        state.selected == std::vector<size_t>{state.ink.size() - 1} &&
+                        state.selectedTexts == std::vector<size_t>({savedTextSize, savedTextSize + 1}) &&
+                        state.selectedImages == std::vector<size_t>{savedImageSize},
+                "app.addToSelection did not resolve current-layer references for all editable object types");
         std::vector<prototype::PluginStroke> pageStrokes;
         require(getPluginStrokes("page", pageStrokes, strokeError) && !state.hasSelection(),
                 "app.getStrokes('page') did not clear the current selection");
@@ -3779,6 +4044,8 @@ private:
                 }),
                 "app.getStrokes('page') returned the wrong page/layer metadata");
         state.ink.resize(savedInkSize);
+        state.texts.resize(savedTextSize);
+        state.images.resize(savedImageSize);
         state.selected = savedSelection;
         state.selectedTexts = savedTextSelection;
         state.selectedImages = savedImageSelection;

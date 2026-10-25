@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -54,6 +55,7 @@ struct CanvasImage {
     std::string latexSource;
     std::shared_ptr<cairo_surface_t> surface;
     std::shared_ptr<PopplerDocument> pdfDocument;
+    std::uintptr_t pluginReference = 0;
 };
 
 struct CanvasImageBounds {

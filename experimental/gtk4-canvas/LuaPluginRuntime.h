@@ -78,6 +78,52 @@ struct PluginStrokeInput {
     std::optional<std::string> lineStyle;
 };
 
+struct PluginText {
+    std::string text;
+    std::string fontName;
+    double fontSize = 12;
+    std::uint32_t color = 0;
+    double x = 0;
+    double y = 0;
+    std::optional<double> wrap;
+    double width = 0;
+    double height = 0;
+    std::uintptr_t reference = 0;
+    std::optional<std::size_t> page;
+    std::optional<std::size_t> layer;
+};
+
+struct PluginLink {
+    std::string text;
+    std::string url;
+    int alignment = 0;
+    std::string fontName;
+    double fontSize = 12;
+    std::uint32_t color = 0;
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+    std::uintptr_t reference = 0;
+    std::optional<std::size_t> page;
+    std::optional<std::size_t> layer;
+};
+
+struct PluginImage {
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+    // The source image owns these bytes; Lua copies them before the query returns.
+    std::string_view data;
+    std::string format;
+    int imageWidth = 0;
+    int imageHeight = 0;
+    std::uintptr_t reference = 0;
+    std::optional<std::size_t> page;
+    std::optional<std::size_t> layer;
+};
+
 enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
 
 struct PluginRuntimeHost {
@@ -88,6 +134,11 @@ struct PluginRuntimeHost {
     std::function<bool(bool, std::string&)> addEmptyPages;
     std::function<bool(std::int64_t, std::string&)> transformSelectedImages;
     std::function<bool(std::string_view, std::vector<PluginStroke>&, std::string&)> getStrokes;
+    std::function<bool(std::string_view, std::vector<PluginText>&, std::string&)> getTexts;
+    std::function<bool(std::string_view, std::vector<PluginLink>&, std::string&)> getLinks;
+    std::function<bool(std::string_view, std::vector<PluginImage>&, std::string&)> getImages;
+    std::function<bool(const std::vector<std::uintptr_t>&, std::string&)> addToSelection;
+    std::function<void()> clearSelection;
     std::function<bool(const std::vector<PluginStrokeInput>&, PluginStrokeUndoPolicy,
                        std::vector<std::uintptr_t>&, std::string&)> addStrokes;
     std::function<bool(double, double, bool, std::string&)> setPageSize;
@@ -149,6 +200,11 @@ public:
     static int luaAddEmptyPages(lua_State* state);
     static int luaTransformSelectedImages(lua_State* state);
     static int luaGetStrokes(lua_State* state);
+    static int luaGetTexts(lua_State* state);
+    static int luaGetLinks(lua_State* state);
+    static int luaGetImages(lua_State* state);
+    static int luaAddToSelection(lua_State* state);
+    static int luaClearSelection(lua_State* state);
     static int luaAddStrokes(lua_State* state);
     static int luaSetPageSize(lua_State* state);
     static int luaSetLayerVisibility(lua_State* state);
@@ -173,6 +229,11 @@ private:
     bool addEmptyPages(bool force, std::string& error);
     bool transformSelectedImages(std::int64_t action, std::string& error);
     bool getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error);
+    bool getTexts(std::string_view type, std::vector<PluginText>& texts, std::string& error);
+    bool getLinks(std::string_view type, std::vector<PluginLink>& links, std::string& error);
+    bool getImages(std::string_view type, std::vector<PluginImage>& images, std::string& error);
+    bool addToSelection(const std::vector<std::uintptr_t>& references, std::string& error);
+    bool clearSelection(std::string& error);
     bool addStrokes(const std::vector<PluginStrokeInput>& strokes, PluginStrokeUndoPolicy undoPolicy,
                     std::vector<std::uintptr_t>& references, std::string& error);
     bool setPageSize(double width, double height, bool relative, std::string& error);
