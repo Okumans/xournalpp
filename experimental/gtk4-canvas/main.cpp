@@ -1562,6 +1562,13 @@ private:
             return getPluginPageLabel(pageNumber, label, error);
         };
         host.getColorPalette = [this] { return getPluginColorPalette(); };
+        host.getScrollPosition = [this] { return getPluginScrollPosition(); };
+        host.scrollToPage = [this](int page, bool relative, std::string& error) {
+            return scrollPluginToPage(page, relative, error);
+        };
+        host.scrollToPosition = [this](double x, double y, bool relative, std::string& error) {
+            return scrollPluginToPosition(x, y, relative, error);
+        };
         host.getZoom = [this] { return state.zoom; };
         host.setZoom = [this](double value, std::string& error) { return setPluginZoom(value, error); };
         host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
@@ -2921,6 +2928,19 @@ private:
         return palette;
     }
 
+    prototype::PluginScrollPosition getPluginScrollPosition() const {
+        const double width = canvas ? static_cast<double>(gtk_widget_get_width(canvas)) : 0.0;
+        const double height = canvas ? static_cast<double>(gtk_widget_get_height(canvas)) : 0.0;
+        const double originX = std::max(0.0, (width - state.layoutWidth() * state.zoom) / 2.0);
+        const double originY = std::max(0.0, (height - state.layoutHeight() * state.zoom) / 2.0);
+        return {
+                std::max(0.0, originX - state.offsetX),
+                std::max(0.0, originY - state.offsetY),
+                width,
+                height,
+        };
+    }
+
     bool setPluginZoom(double value, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
             error = "Wait for the current document operation or input gesture to finish before changing zoom";
@@ -2956,6 +2976,91 @@ private:
             selectedImageIndex.reset();
         }
         state.selectActivePage(static_cast<int>(targetPage));
+        update();
+        return true;
+    }
+
+    bool scrollPluginToPage(int pageNumber, bool relative, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
+            error = "Wait for the current document operation or input gesture to finish before scrolling to a page";
+            return false;
+        }
+        const int width = canvas ? gtk_widget_get_width(canvas) : 0;
+        const int height = canvas ? gtk_widget_get_height(canvas) : 0;
+        if (width <= 0 || height <= 0) {
+            error = "The canvas viewport is not ready for page scrolling";
+            return false;
+        }
+
+        const auto requestedPage = relative ? static_cast<std::int64_t>(state.page) + pageNumber :
+                                              static_cast<std::int64_t>(pageNumber) - 1;
+        const auto targetPage = static_cast<int>(std::clamp(requestedPage, std::int64_t{0},
+                                                            static_cast<std::int64_t>(state.pageCount() - 1)));
+        resetInput();
+        if (targetPage != state.page) {
+            selectedImageIndex.reset();
+        }
+        state.cancel();
+        const auto targetSize = state.pageSize(targetPage);
+        const double pageLeft = state.pageLeft(targetPage) * state.zoom;
+        const double pageTop = state.pageTop(targetPage) * state.zoom;
+        const double pageWidth = targetSize.width * state.zoom;
+        const double pageHeight = targetSize.height * state.zoom;
+        const auto keepAxisVisible = [](double pageStart, double pageExtent, double viewportExtent,
+                                        double leadingMargin, double trailingMargin, double& offset) {
+            const double visibleStart = offset + pageStart - leadingMargin;
+            const double visibleEnd = offset + pageStart + pageExtent + trailingMargin;
+            if (visibleStart < 0) {
+                offset -= visibleStart;
+            } else if (visibleEnd > viewportExtent) {
+                offset -= visibleEnd - viewportExtent;
+            }
+        };
+        keepAxisVisible(pageLeft, pageWidth, width, 5, 10, state.offsetX);
+        keepAxisVisible(pageTop, pageHeight, height, 5, 10, state.offsetY);
+        state.selectActivePage(targetPage);
+        fitMode = false;
+        fitted = false;
+        update();
+        return true;
+    }
+
+    bool scrollPluginToPosition(double x, double y, bool relative, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
+            error = "Wait for the current document operation or input gesture to finish before scrolling";
+            return false;
+        }
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+            error = "Scroll positions must be finite numbers";
+            return false;
+        }
+        const int width = canvas ? gtk_widget_get_width(canvas) : 0;
+        const int height = canvas ? gtk_widget_get_height(canvas) : 0;
+        if (width <= 0 || height <= 0) {
+            error = "The canvas viewport is not ready for scrolling";
+            return false;
+        }
+
+        resetInput();
+        const int previousPage = state.page;
+        const auto currentScrollPosition = getPluginScrollPosition();
+        const double originX = std::max(0.0, (width - state.layoutWidth() * state.zoom) / 2.0);
+        const double originY = std::max(0.0, (height - state.layoutHeight() * state.zoom) / 2.0);
+        const double targetX = std::max(0.0, relative ? currentScrollPosition.x + x : x);
+        const double targetY = std::max(0.0, relative ? currentScrollPosition.y + y : y);
+        if (relative) {
+            state.offsetX += currentScrollPosition.x - targetX;
+            state.offsetY += currentScrollPosition.y - targetY;
+        } else {
+            state.offsetX = originX - targetX;
+            state.offsetY = originY - targetY;
+        }
+        state.syncActivePage(width, height);
+        if (state.page != previousPage) {
+            selectedImageIndex.reset();
+        }
+        fitMode = false;
+        fitted = false;
         update();
         return true;
     }
@@ -4283,6 +4388,85 @@ private:
                 pageError.empty() ? "app.setCurrentPage did not clamp to the final page without scrolling" :
                                    pageError.c_str());
         state.selectActivePage(originalPage);
+        selectedImageIndex = originalImageSelection;
+        update();
+
+        const auto originalScrollPosition = getPluginScrollPosition();
+        const auto originalScrollRevision = state.revision();
+        const bool originalCanUndoScrollState = state.canUndo();
+        const bool originalCanRedoScrollState = state.canRedo();
+        const auto scrollHistoryRemainsUnchanged = [&] {
+            return state.revision() == originalScrollRevision && state.canUndo() == originalCanUndoScrollState &&
+                   state.canRedo() == originalCanRedoScrollState;
+        };
+        const double scrollOriginX = std::max(
+                0.0, (originalScrollPosition.width - state.layoutWidth() * state.zoom) / 2.0);
+        const double scrollOriginY = std::max(
+                0.0, (originalScrollPosition.height - state.layoutHeight() * state.zoom) / 2.0);
+        require(originalScrollPosition.width > 0 && originalScrollPosition.height > 0 &&
+                        std::abs(originalScrollPosition.x - std::max(0.0, scrollOriginX - savedOffsetX)) < 1e-9 &&
+                        std::abs(originalScrollPosition.y - std::max(0.0, scrollOriginY - savedOffsetY)) < 1e-9,
+                "app.getScrollPos did not report the current canvas position and viewport size");
+
+        std::string scrollError;
+        require(scrollPluginToPosition(20.5, 10.25, true, scrollError) &&
+                        std::abs(state.offsetX - savedOffsetX + 20.5) < 1e-9 &&
+                        std::abs(state.offsetY - savedOffsetY + 10.25) < 1e-9 && scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPos did not apply relative pixel scrolling" : scrollError.c_str());
+        require(scrollPluginToPosition(200.25, 50.5, false, scrollError) &&
+                        std::abs(getPluginScrollPosition().x - 200.25) < 1e-9 &&
+                        std::abs(getPluginScrollPosition().y - 50.5) < 1e-9 &&
+                        scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPos did not set absolute canvas coordinates" : scrollError.c_str());
+        require(scrollPluginToPosition(-20, -10, false, scrollError) &&
+                        getPluginScrollPosition().x == 0 && getPluginScrollPosition().y == 0 &&
+                        scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPos did not clamp absolute positions to the layout origin" :
+                                      scrollError.c_str());
+
+        state.selectActivePage(originalPage);
+        state.zoom = 0.1;
+        const auto visiblePageSize = state.pageSize(originalPage);
+        state.offsetX = (originalScrollPosition.width - state.layoutWidth() * state.zoom) / 2.0;
+        state.offsetY = (originalScrollPosition.height - visiblePageSize.height * state.zoom) / 2.0 -
+                        state.pageTop(originalPage) * state.zoom;
+        const double visiblePageOffsetX = state.offsetX;
+        const double visiblePageOffsetY = state.offsetY;
+        require(scrollPluginToPage(originalPage + 1, false, scrollError) && state.page == originalPage &&
+                        std::abs(state.offsetX - visiblePageOffsetX) < 1e-9 &&
+                        std::abs(state.offsetY - visiblePageOffsetY) < 1e-9 && scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPage moved a page that was already visible" : scrollError.c_str());
+        state.zoom = savedZoom;
+        state.offsetX = savedOffsetX;
+        state.offsetY = savedOffsetY;
+        fitMode = savedFitMode;
+        fitted = savedFitted;
+        state.selectActivePage(originalPage);
+
+        require(scrollPluginToPage(availablePages + 10, false, scrollError) && state.page == availablePages - 1 &&
+                        scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPage did not clamp to the final page" : scrollError.c_str());
+        require(scrollPluginToPage(1, true, scrollError) && state.page == availablePages - 1 &&
+                        scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPage did not clamp a relative page offset" : scrollError.c_str());
+        require(scrollPluginToPage(1, false, scrollError) && state.page == 0 &&
+                        scrollPluginToPage(1, true, scrollError) &&
+                        state.page == std::min(1, availablePages - 1) && scrollHistoryRemainsUnchanged(),
+                scrollError.empty() ? "app.scrollToPage did not navigate absolute and relative page numbers" :
+                                      scrollError.c_str());
+
+        const auto positionBeforeInvalidScroll = getPluginScrollPosition();
+        require(!scrollPluginToPosition(std::numeric_limits<double>::infinity(), 0, true, scrollError) &&
+                        scrollError == "Scroll positions must be finite numbers" &&
+                        getPluginScrollPosition().x == positionBeforeInvalidScroll.x &&
+                        getPluginScrollPosition().y == positionBeforeInvalidScroll.y && scrollHistoryRemainsUnchanged(),
+                "app.scrollToPos accepted a nonfinite coordinate or changed state before reporting the error");
+
+        state.selectActivePage(originalPage);
+        state.offsetX = savedOffsetX;
+        state.offsetY = savedOffsetY;
+        fitMode = savedFitMode;
+        fitted = savedFitted;
         selectedImageIndex = originalImageSelection;
         update();
 

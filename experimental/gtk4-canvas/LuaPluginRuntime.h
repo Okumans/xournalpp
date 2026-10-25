@@ -166,6 +166,13 @@ struct PluginPaletteColor {
     std::uint32_t color = 0;
 };
 
+struct PluginScrollPosition {
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+};
+
 enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
 
 struct PluginRuntimeHost {
@@ -178,6 +185,9 @@ struct PluginRuntimeHost {
     std::function<int()> getDisplayDpi;
     std::function<bool(std::size_t, std::string&, std::string&)> getPageLabel;
     std::function<std::vector<PluginPaletteColor>()> getColorPalette;
+    std::function<PluginScrollPosition()> getScrollPosition;
+    std::function<bool(int, bool, std::string&)> scrollToPage;
+    std::function<bool(double, double, bool, std::string&)> scrollToPosition;
     std::function<double()> getZoom;
     std::function<bool(double, std::string&)> setZoom;
     std::function<bool(std::string_view, std::vector<PluginStroke>&, std::string&)> getStrokes;
@@ -258,6 +268,9 @@ public:
     static int luaGetDisplayDpi(lua_State* state);
     static int luaGetPageLabel(lua_State* state);
     static int luaGetColorPalette(lua_State* state);
+    static int luaGetScrollPos(lua_State* state);
+    static int luaScrollToPage(lua_State* state);
+    static int luaScrollToPos(lua_State* state);
     static int luaGetZoom(lua_State* state);
     static int luaSetZoom(lua_State* state);
     static int luaGetStrokes(lua_State* state);
@@ -298,6 +311,9 @@ private:
     bool getDisplayDpi(int& dpi, std::string& error) const;
     bool getPageLabel(std::size_t pageNumber, std::string& label, std::string& error) const;
     bool getColorPalette(std::vector<PluginPaletteColor>& palette, std::string& error) const;
+    bool getScrollPosition(PluginScrollPosition& position, std::string& error) const;
+    bool scrollToPage(int page, bool relative, std::string& error);
+    bool scrollToPosition(double x, double y, bool relative, std::string& error);
     bool getZoom(double& zoom, std::string& error) const;
     bool setZoom(double zoom, std::string& error);
     bool getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error);

@@ -84,7 +84,11 @@ persistent config, data, or state directory under the XDG user roots.
 without scrolling. `app.setCurrentLayer()` selects a foreground layer and clears
 the current selection; its optional visibility flag shows layers through the
 selected layer and hides higher layers without changing background visibility or
-adding an undo step. `app.getPageLabel()` returns a one-based PDF page label, or
+adding an undo step. `app.getScrollPos()` reports canvas scroll coordinates and
+viewport dimensions in logical pixels. `app.scrollToPage()` clamps one-based page
+numbers and supports relative offsets; `app.scrollToPos()` accepts absolute
+coordinates or relative pixel offsets (relative by default). `app.getPageLabel()`
+returns a one-based PDF page label, or
 `nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. Lua plugins can also query editable strokes, text, links, and
 images by selection, layer, page, or
 document; returned element references remain valid across vector growth and

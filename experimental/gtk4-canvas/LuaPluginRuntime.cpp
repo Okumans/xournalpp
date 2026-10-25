@@ -386,6 +386,9 @@ int luaOpenApp(lua_State* state) {
             {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
             {"getPageLabel", LuaPluginRuntime::luaGetPageLabel},
             {"getColorPalette", LuaPluginRuntime::luaGetColorPalette},
+            {"getScrollPos", LuaPluginRuntime::luaGetScrollPos},
+            {"scrollToPage", LuaPluginRuntime::luaScrollToPage},
+            {"scrollToPos", LuaPluginRuntime::luaScrollToPos},
             {"getZoom", LuaPluginRuntime::luaGetZoom},
             {"setZoom", LuaPluginRuntime::luaSetZoom},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
@@ -972,6 +975,41 @@ bool LuaPluginRuntime::getColorPalette(std::vector<PluginPaletteColor>& palette,
     }
     palette = host.getColorPalette();
     return true;
+}
+
+bool LuaPluginRuntime::getScrollPosition(PluginScrollPosition& position, std::string& error) const {
+    if (!host.getScrollPosition) {
+        error = "Scroll position queries are unavailable in this GTK 4 host";
+        return false;
+    }
+    position = host.getScrollPosition();
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.width) ||
+        !std::isfinite(position.height) || position.x < 0 || position.y < 0 || position.width < 0 ||
+        position.height < 0) {
+        error = "The GTK 4 host returned an invalid scroll position";
+        return false;
+    }
+    return true;
+}
+
+bool LuaPluginRuntime::scrollToPage(int page, bool relative, std::string& error) {
+    if (!host.scrollToPage) {
+        error = "Page scrolling is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.scrollToPage(page, relative, error);
+}
+
+bool LuaPluginRuntime::scrollToPosition(double x, double y, bool relative, std::string& error) {
+    if (!host.scrollToPosition) {
+        error = "Canvas scrolling is unavailable in this GTK 4 host";
+        return false;
+    }
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        error = "Scroll positions must be finite numbers";
+        return false;
+    }
+    return host.scrollToPosition(x, y, relative, error);
 }
 
 bool LuaPluginRuntime::getZoom(double& zoom, std::string& error) const {
@@ -1581,6 +1619,57 @@ int LuaPluginRuntime::luaGetZoom(lua_State* state) {
     }
     lua_pushnumber(state, zoom);
     return 1;
+}
+
+int LuaPluginRuntime::luaGetScrollPos(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    PluginScrollPosition position;
+    std::string error;
+    if (!plugin->runtime->getScrollPosition(position, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading scroll position failed" : error.c_str());
+    }
+    lua_createtable(state, 0, 4);
+    lua_pushnumber(state, position.x);
+    lua_setfield(state, -2, "x");
+    lua_pushnumber(state, position.y);
+    lua_setfield(state, -2, "y");
+    lua_pushnumber(state, position.width);
+    lua_setfield(state, -2, "width");
+    lua_pushnumber(state, position.height);
+    lua_setfield(state, -2, "height");
+    return 1;
+}
+
+int LuaPluginRuntime::luaScrollToPage(lua_State* state) {
+    const int page = static_cast<int>(luaL_checkinteger(state, 1));
+    const bool relative = lua_isboolean(state, 2) && lua_toboolean(state, 2);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->scrollToPage(page, relative, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Scrolling to page failed" : error.c_str());
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaScrollToPos(lua_State* state) {
+    const double x = luaL_checknumber(state, 1);
+    const double y = luaL_checknumber(state, 2);
+    const bool relative = !lua_isboolean(state, 3) || lua_toboolean(state, 3);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->scrollToPosition(x, y, relative, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Scrolling to position failed" : error.c_str());
+    }
+    return 0;
 }
 
 int LuaPluginRuntime::luaSetZoom(lua_State* state) {

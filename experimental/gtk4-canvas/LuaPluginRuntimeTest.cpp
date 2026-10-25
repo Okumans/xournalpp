@@ -421,6 +421,32 @@ int main() {
                 "function negativeLayer() app.setCurrentLayer(-1) end\n"
                 "function fractionalLayer() app.setCurrentLayer(1.5) end\n"
                 "function ignoreVisibility() app.setCurrentLayer(3, 'true') end\n");
+    const auto scrollApiPlugin = root / "ScrollApiPlugin";
+    writePlugin(scrollApiPlugin,
+                "[about]\ndescription=Read and change canvas scrolling\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read scroll position', callback='readPosition'})\n"
+                "  app.registerUi({menu='Scroll to last page', callback='lastPage'})\n"
+                "  app.registerUi({menu='Scroll to first page', callback='firstPage'})\n"
+                "  app.registerUi({menu='Scroll to next page', callback='nextPage'})\n"
+                "  app.registerUi({menu='Scroll by position', callback='relativePosition'})\n"
+                "  app.registerUi({menu='Scroll to position', callback='absolutePosition'})\n"
+                "  app.registerUi({menu='Default relative position', callback='defaultRelative'})\n"
+                "  app.registerUi({menu='Reject fractional page', callback='fractionalPage'})\n"
+                "end\n"
+                "function readPosition()\n"
+                "  local position = app.getScrollPos()\n"
+                "  assert(position.x == 12 and position.y == 24)\n"
+                "  assert(position.width == 640 and position.height == 480)\n"
+                "end\n"
+                "function lastPage() app.scrollToPage(9) end\n"
+                "function firstPage() app.scrollToPage(-8) end\n"
+                "function nextPage() app.scrollToPage(1, true) end\n"
+                "function relativePosition() app.scrollToPos(20.5, -10.25) end\n"
+                "function absolutePosition() app.scrollToPos(200.25, 50.5, false) end\n"
+                "function defaultRelative() app.scrollToPos(5, 7, 'false') end\n"
+                "function fractionalPage() app.scrollToPage(1.5) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -434,9 +460,10 @@ int main() {
                                      imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
                                      zoomApiPlugin.string() + "," + folderApiPlugin.string() + "," +
                                      currentPageApiPlugin.string() + "," + pageLabelApiPlugin.string() + "," +
-                                     colorPaletteApiPlugin.string() + "," + currentLayerApiPlugin.string(), {});
+                                     colorPaletteApiPlugin.string() + "," + currentLayerApiPlugin.string() + "," +
+                                     scrollApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 23, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 24, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -493,6 +520,8 @@ int main() {
     std::size_t currentLayerNumber = 1;
     constexpr std::size_t testLayerCount = 3;
     std::vector<bool> testLayerVisibility{true, false, true};
+    prototype::PluginScrollPosition scrollPosition{12, 24, 640, 480};
+    std::size_t currentScrollPageNumber = 2;
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -560,6 +589,25 @@ int main() {
             {"Rosewater", 0xdc8a78U},
     };
     host.getColorPalette = [&] { return testPalette; };
+    host.getScrollPosition = [&] { return scrollPosition; };
+    host.scrollToPage = [&](int pageNumber, bool relative, std::string&) {
+        const auto requestedPage = relative ? static_cast<std::int64_t>(currentScrollPageNumber - 1) + pageNumber :
+                                             static_cast<std::int64_t>(pageNumber) - 1;
+        const auto targetPage = std::clamp(requestedPage, std::int64_t{0},
+                                           static_cast<std::int64_t>(testPageCount - 1));
+        currentScrollPageNumber = static_cast<std::size_t>(targetPage + 1);
+        return true;
+    };
+    host.scrollToPosition = [&](double x, double y, bool relative, std::string&) {
+        if (relative) {
+            scrollPosition.x += x;
+            scrollPosition.y += y;
+        } else {
+            scrollPosition.x = x;
+            scrollPosition.y = y;
+        }
+        return true;
+    };
     host.setCurrentPage = [&](std::size_t pageNumber, std::string&) {
         currentPageNumber = std::clamp(pageNumber, std::size_t{1}, testPageCount);
         return true;
@@ -778,6 +826,9 @@ int main() {
     require(loadedCurrentLayerApiPlugin && loadedCurrentLayerApiPlugin->loaded &&
                     loadedCurrentLayerApiPlugin->menuItems == 7,
             "Plugin using current-layer selection did not load its callbacks");
+    const auto loadedScrollApiPlugin = runtime.findPlugin("ScrollApiPlugin");
+    require(loadedScrollApiPlugin && loadedScrollApiPlugin->loaded && loadedScrollApiPlugin->menuItems == 8,
+            "Plugin using canvas scrolling did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -876,6 +927,23 @@ int main() {
     require(runtime.invokeMenu("CurrentLayerApiPlugin", 6) && currentLayerNumber == 3 &&
                     testLayerVisibility == std::vector<bool>({false, false, false}),
             "app.setCurrentLayer did not ignore a nonboolean visibility option");
+    require(runtime.invokeMenu("ScrollApiPlugin", 0), "app.getScrollPos did not return the scroll viewport fields");
+    require(runtime.invokeMenu("ScrollApiPlugin", 1) && currentScrollPageNumber == testPageCount,
+            "app.scrollToPage did not clamp an absolute page number to the last page");
+    require(runtime.invokeMenu("ScrollApiPlugin", 2) && currentScrollPageNumber == 1,
+            "app.scrollToPage did not clamp an absolute page number to the first page");
+    require(runtime.invokeMenu("ScrollApiPlugin", 3) && currentScrollPageNumber == 2,
+            "app.scrollToPage did not apply a relative page offset");
+    require(runtime.invokeMenu("ScrollApiPlugin", 4) && scrollPosition.x == 32.5 && scrollPosition.y == 13.75,
+            "app.scrollToPos did not use relative scrolling by default");
+    require(runtime.invokeMenu("ScrollApiPlugin", 5) && scrollPosition.x == 200.25 && scrollPosition.y == 50.5,
+            "app.scrollToPos did not support absolute coordinates");
+    require(runtime.invokeMenu("ScrollApiPlugin", 6) && scrollPosition.x == 205.25 && scrollPosition.y == 57.5,
+            "app.scrollToPos did not ignore a nonboolean mode argument and retain its relative default");
+    require(!runtime.invokeMenu("ScrollApiPlugin", 7) &&
+                    runtime.findPlugin("ScrollApiPlugin")->error.find("number has no integer representation") !=
+                            std::string::npos,
+            "app.scrollToPage accepted a fractional page number");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1084,8 +1152,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 66 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 20,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 74 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 21,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
