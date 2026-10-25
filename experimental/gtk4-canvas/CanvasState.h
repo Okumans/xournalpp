@@ -874,6 +874,10 @@ public:
 
     size_t selectionCount() const { return selected.size() + selectedTexts.size() + selectedImages.size(); }
 
+    std::optional<SelectableObject> pickSmartSelectObject(int pageIndex, Point point) const {
+        return pickSelectableObject(pageIndex, point);
+    }
+
     std::optional<size_t> pickStroke(int pageIndex, Point point) const {
         const size_t active = activeLayerId(pageIndex);
         if (!layerVisible(pageIndex, active)) {
@@ -1026,34 +1030,21 @@ public:
             return true;
         }
         if (!gesture.moving && brush.tool == Tool::SmartSelect && !forceRectangle) {
-            const auto pickedStroke = pickStroke(hit->page, hit->local);
-            const auto pickedText = pickText(hit->page, hit->local);
-            const auto pickedImage = pickImage(hit->page, hit->local);
-            enum class PickedObject { None, Stroke, Text, Image };
-            PickedObject pickedObject = PickedObject::None;
-            size_t bestOrder = 0;
-            if (pickedStroke) {
-                pickedObject = PickedObject::Stroke;
-                bestOrder = ink[*pickedStroke].layerOrder;
-            }
-            if (pickedText && (pickedObject == PickedObject::None || texts[*pickedText].layerOrder >= bestOrder)) {
-                pickedObject = PickedObject::Text;
-                bestOrder = texts[*pickedText].layerOrder;
-            }
-            if (pickedImage && (pickedObject == PickedObject::None || images[*pickedImage].layerOrder >= bestOrder)) {
-                pickedObject = PickedObject::Image;
-            }
-
-            if (pickedObject != PickedObject::None) {
+            const auto pickedObject = pickSmartSelectObject(hit->page, hit->local);
+            if (pickedObject) {
                 selected.clear();
                 selectedTexts.clear();
                 selectedImages.clear();
-                if (pickedObject == PickedObject::Stroke) {
-                    selected = {*pickedStroke};
-                } else if (pickedObject == PickedObject::Text) {
-                    selectedTexts = {*pickedText};
-                } else {
-                    selectedImages = {*pickedImage};
+                switch (pickedObject->kind) {
+                    case SelectableObjectKind::Stroke:
+                        selected = {pickedObject->index};
+                        break;
+                    case SelectableObjectKind::Text:
+                        selectedTexts = {pickedObject->index};
+                        break;
+                    case SelectableObjectKind::Image:
+                        selectedImages = {pickedObject->index};
+                        break;
                 }
                 bounds = selectionBox();
                 gesture.moving = true;
@@ -1064,6 +1055,7 @@ public:
             gesture.textIndices = selectedTexts;
             gesture.imageIndices = selectedImages;
             gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds) : *bounds;
+            gesture.snapAnchor = closestSelectionCorner(*bounds, gesture.start);
         } else {
             selected.clear();
             selectedTexts.clear();
@@ -1090,8 +1082,12 @@ public:
             const auto previous = g.transform;
             g.transform = {};
             if (g.handle < 0) {
-                g.transform.x0 = g.latest.x - g.start.x;
-                g.transform.y0 = g.latest.y - g.start.y;
+                const double dx = g.latest.x - g.start.x;
+                const double dy = g.latest.y - g.start.y;
+                const Point candidate{g.snapAnchor.x + dx, g.snapAnchor.y + dy};
+                const Point snapped = snapSelectionMove(g.targetPage, candidate, altHeld);
+                g.transform.x0 = snapped.x - g.snapAnchor.x;
+                g.transform.y0 = snapped.y - g.snapAnchor.y;
             } else if (g.handle == 8) {
                 const auto cx = (g.bounds.x0+g.bounds.x1)/2, cy = (g.bounds.y0+g.bounds.y1)/2;
                 auto angle = std::atan2(g.latest.y-cy, g.latest.x-cx) -
@@ -2801,6 +2797,7 @@ private:
         bool lasso = false, additive = false;
         bool multiLayer = false;
         int handle = -1, targetPage = 0;
+        Point snapAnchor{};
         std::vector<size_t> previousSelection;
         std::vector<size_t> previousTextSelection;
         std::vector<size_t> previousImageSelection;
@@ -2864,6 +2861,32 @@ private:
         return std::abs(snapped - y) < snapGridTolerance * snapGridSize / 2.0 ? snapped : y;
     }
 
+    static Point closestSelectionCorner(const SelectionBox& bounds, Point point) {
+        const std::array<Point, 4> corners{{{bounds.x0, bounds.y0}, {bounds.x1, bounds.y0},
+                                            {bounds.x1, bounds.y1}, {bounds.x0, bounds.y1}}};
+        return *std::min_element(corners.begin(), corners.end(), [&](const Point& a, const Point& b) {
+            return std::hypot(a.x - point.x, a.y - point.y) < std::hypot(b.x - point.x, b.y - point.y);
+        });
+    }
+
+    Point snapSelectionMove(int pageIndex, Point point, bool altHeld) const {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(snapGridSize) ||
+            !std::isfinite(snapGridTolerance) || snapGridSize <= 0 || snapGridTolerance <= 0 ||
+            altHeld == snapGridEnabled) {
+            return point;
+        }
+        const auto& pageGrid = layersForPage(pageIndex);
+        const double stepX = pageGrid.gridXStep > 0 ? pageGrid.gridXStep : snapGridSize;
+        const double stepY = pageGrid.gridYStep > 0 ? pageGrid.gridYStep : snapGridSize;
+        if (!std::isfinite(stepX) || !std::isfinite(stepY) || stepX <= 0 || stepY <= 0) {
+            return point;
+        }
+        const Point snapped{point.x - std::remainder(point.x - pageGrid.gridXOffset, stepX),
+                            point.y - std::remainder(point.y - pageGrid.gridYOffset, stepY), point.pressure};
+        const double threshold = 0.5 * std::hypot(stepX, stepY) * snapGridTolerance;
+        return std::hypot(snapped.x - point.x, snapped.y - point.y) < threshold ? snapped : point;
+    }
+
     void collectVerticalSpaceObjects(VerticalSpacePreview& preview) const {
         preview.inkIndices.clear();
         preview.textIndices.clear();
@@ -2908,33 +2931,71 @@ private:
     }
 
     static double strokeDistance(const Ink& stroke, Point point) {
-        if (stroke.points.empty() || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0) {
+        if (stroke.points.size() < 2 || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0 ||
+            stroke.capStyle < 0 || stroke.capStyle > 2 || !std::isfinite(point.x) || !std::isfinite(point.y)) {
             return std::numeric_limits<double>::infinity();
         }
-        const auto radiusAt = [&](const Point& sample) {
-            const double pressure = stroke.pressureSensitive ? std::max(0.0, sample.pressure) : 1.0;
-            return stroke.brush.width * pressure / 2;
-        };
-        if (stroke.points.size() == 1) {
-            const auto& sample = stroke.points.front();
-            return std::max(std::hypot(point.x - sample.x, point.y - sample.y) - radiusAt(sample), 0.0);
+        size_t first = 0;
+        size_t last = stroke.points.size() - 1;
+        const auto& points = stroke.points;
+        while (first < last && points[first].x == points[first + 1].x && points[first].y == points[first + 1].y) {
+            ++first;
+        }
+        while (last > first && points[last].x == points[last - 1].x && points[last].y == points[last - 1].y) {
+            --last;
         }
 
-        double distance = std::numeric_limits<double>::infinity();
+        double distance = std::numeric_limits<double>::max();
         for (size_t i = 1; i < stroke.points.size(); ++i) {
-            const auto& start = stroke.points[i - 1];
-            const auto& end = stroke.points[i];
+            const auto& start = points[i - 1];
+            const auto& end = points[i];
             const double dx = end.x - start.x;
             const double dy = end.y - start.y;
-            const double lengthSquared = dx * dx + dy * dy;
-            const double factor = lengthSquared > 0 ?
-                                          std::clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) /
-                                                             lengthSquared,
-                                                     0.0, 1.0) :
-                                          0.0;
-            const double distanceToCenter = std::hypot(point.x - (start.x + factor * dx),
-                                                       point.y - (start.y + factor * dy));
-            distance = std::min(distance, std::max(distanceToCenter - radiusAt(start), 0.0));
+            const double length = std::hypot(dx, dy);
+            if (!std::isfinite(length) || !std::isfinite(start.x) || !std::isfinite(start.y) ||
+                !std::isfinite(end.x) || !std::isfinite(end.y) || !std::isfinite(start.pressure)) {
+                return std::numeric_limits<double>::infinity();
+            }
+            if (length == 0) {
+                if (stroke.pressureSensitive || stroke.capStyle == 0) {
+                    const double width = stroke.brush.width *
+                                         (stroke.pressureSensitive ? std::max(0.0, start.pressure) : 1.0);
+                    distance = std::min(distance,
+                                        std::max(std::hypot(point.x - start.x, point.y - start.y) - width / 2.0, 0.0));
+                }
+                continue;
+            }
+
+            const double along = ((point.x - start.x) * dx + (point.y - start.y) * dy) / length;
+            if (!stroke.pressureSensitive && stroke.capStyle != 0) {
+                const double halfWidth = stroke.brush.width / 2.0;
+                const bool atStart = i - 1 == first;
+                const bool atEnd = i == last;
+                const bool square = stroke.capStyle == 2;
+                const double capStart = atStart && square ? -halfWidth : 0.0;
+                const double capEnd = length + (atEnd && square ? halfWidth : 0.0);
+                const double across = std::abs((point.x - start.x) * dy - (point.y - start.y) * dx) / length;
+                double current = std::hypot(std::max({capStart - along, along - capEnd, 0.0}),
+                                            std::max(across - halfWidth, 0.0));
+                if (!atStart) {
+                    current = std::min(current,
+                                       std::max(std::hypot(point.x - start.x, point.y - start.y) - halfWidth, 0.0));
+                }
+                if (!atEnd) {
+                    current = std::min(current,
+                                       std::max(std::hypot(point.x - end.x, point.y - end.y) - halfWidth, 0.0));
+                }
+                distance = std::min(distance, current);
+                continue;
+            }
+
+            const double factor = std::clamp(along / length, 0.0, 1.0);
+            const double width = stroke.brush.width *
+                                 (stroke.pressureSensitive ? std::max(0.0, start.pressure) : 1.0);
+            const double projectedX = start.x + factor * dx;
+            const double projectedY = start.y + factor * dy;
+            distance = std::clamp(std::hypot(point.x - projectedX, point.y - projectedY) - width / 2.0, 0.0,
+                                  distance);
         }
         return distance;
     }

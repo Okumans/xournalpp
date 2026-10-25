@@ -18,6 +18,7 @@ static bool near(double a, double b) { return std::abs(a - b) < 1e-8; }
 static CanvasState fixture() {
     CanvasState state;
     state.setPages({{400, 300}, {300, 200}});
+    state.snapGridEnabled = false;
     state.ink = {{0, {{100, 100, .25}, {180, 160, .75}}, {Tool::Pen, {1, 0, 0}, 4}, true},
                  {0, {{240, 110}, {280, 170}}, {Tool::Highlighter, {1, 1, 0}, 14}},
                  {1, {{40, 50}, {100, 70}}, {Tool::Eraser, {1, 1, 1}, 5}}};
@@ -457,6 +458,116 @@ int main(int argc, char** argv) {
         state.ink[1].points = {{50, 100.2}, {150, 100.2}};
         check(state.selectObjectAt(0, {100, 100.3}) && state.selected == std::vector<size_t>{1},
               "Select Object must choose the frontmost object when multiple hits contain the pointer");
+
+        state = fixture();
+        state.clearSelection();
+        state.brush.tool = Tool::SmartSelect;
+        state.ink = {{0, {{100, 100}, {100, 100}, {120, 100}, {120, 100}},
+                      {Tool::Pen, {0, 0, 0}, 4}, false, 0, 1, 0}};
+        state.ink[0].capStyle = 2;
+        const auto squareCapHit = state.pickSmartSelectObject(0, {98.2, 102.1});
+        check(squareCapHit && squareCapHit->kind == SelectableObjectKind::Stroke && squareCapHit->index == 0,
+              "Smart Select missed the exact square-cap corner within its 0.5 point action radius");
+        check(!state.pickSmartSelectObject(0, {97.4, 102.1}),
+              "Smart Select expanded a square-cap corner beyond the native action radius");
+        state.ink[0].capStyle = 1;
+        check(state.pickSmartSelectObject(0, {99.6, 100}) &&
+                      !state.pickSmartSelectObject(0, {99.4, 100}),
+              "Smart Select did not respect the butt-cap hit edge and native action radius");
+        state.ink[0].capStyle = 0;
+        check(!state.pickSmartSelectObject(0, {98.2, 102.1}),
+              "Smart Select treated a round cap as a square-cap corner");
+
+        state.ink[0] = {0, {{100, 100, 0.25}, {120, 100, 0.75}}, {Tool::Pen, {0, 0, 0}, 4}, true, 0, 1, 0};
+        check(!state.pickSmartSelectObject(0, {110, 101.2}),
+              "Smart Select did not use the native segment-start width for pressure-sensitive hit testing");
+
+        TextItem edgeText;
+        edgeText.page = 0;
+        edgeText.layerId = 1;
+        edgeText.originLayer = 0;
+        edgeText.text = "edge hit";
+        edgeText.layoutWidth = 10;
+        edgeText.layoutHeight = 10;
+        edgeText.x = 100;
+        edgeText.y = 100;
+        state.ink.clear();
+        state.texts = {edgeText};
+        const auto textEdgeHit = state.pickSmartSelectObject(0, {110.25, 105});
+        check(textEdgeHit && textEdgeHit->kind == SelectableObjectKind::Text &&
+                      textEdgeHit->index == 0 && !state.pickSmartSelectObject(0, {110.6, 105}),
+              "Smart Select rectangular hit testing did not use the native 0.5 point action radius");
+        auto smartSelectStart = state.pageScreenPoint(0, 110.25, 105);
+        check(state.beginSelection(smartSelectStart.x, smartSelectStart.y),
+              "Smart Select edge hit did not begin an object gesture");
+        state.finishSelection();
+        check(state.selectedTexts == std::vector<size_t>{0},
+              "Smart Select did not select text from the native edge action radius");
+
+        state = fixture();
+        state.clearSelection();
+        state.ink.clear();
+        TextItem snappedText;
+        snappedText.page = 0;
+        snappedText.layerId = 1;
+        snappedText.originLayer = 0;
+        snappedText.text = "snap anchor";
+        snappedText.layoutWidth = 100;
+        snappedText.layoutHeight = 100;
+        snappedText.x = 50;
+        snappedText.y = 50;
+        state.texts = {snappedText};
+        state.selectedTexts = {0};
+        state.snapGridEnabled = true;
+        state.snapGridSize = 20;
+        state.snapGridTolerance = 0.5;
+        state.pageLayers[0].gridXOffset = 5;
+        state.pageLayers[0].gridYOffset = 7;
+        state.pageLayers[0].gridXStep = 10;
+        state.pageLayers[0].gridYStep = 5;
+        const auto snapStart = state.pageScreenPoint(0, 140, 140);
+        const auto snapEnd = state.pageScreenPoint(0, 154, 153);
+        check(state.beginSelection(snapStart.x, snapStart.y), "Grid-snapped selection move did not begin");
+        state.moveSelectionPointer(snapEnd.x, snapEnd.y);
+        state.finishSelection();
+        check(near(state.texts[0].x, 65) && near(state.texts[0].y, 62),
+              "Selection movement did not snap the nearest selection corner to the page grid");
+
+        state = fixture();
+        state.clearSelection();
+        state.ink.clear();
+        state.texts = {snappedText};
+        state.selectedTexts = {0};
+        state.snapGridEnabled = true;
+        state.snapGridSize = 20;
+        state.snapGridTolerance = 0.5;
+        state.pageLayers[0].gridXOffset = 5;
+        state.pageLayers[0].gridYOffset = 7;
+        state.pageLayers[0].gridXStep = 10;
+        state.pageLayers[0].gridYStep = 5;
+        check(state.beginSelection(snapStart.x, snapStart.y), "Alt selection move did not begin");
+        state.moveSelectionPointer(snapEnd.x, snapEnd.y, true);
+        state.finishSelection();
+        check(near(state.texts[0].x, 64) && near(state.texts[0].y, 63),
+              "Alt did not temporarily disable configured selection grid snapping");
+
+        state = fixture();
+        state.clearSelection();
+        state.ink.clear();
+        state.texts = {snappedText};
+        state.selectedTexts = {0};
+        state.snapGridEnabled = false;
+        state.snapGridSize = 20;
+        state.snapGridTolerance = 0.5;
+        state.pageLayers[0].gridXOffset = 5;
+        state.pageLayers[0].gridYOffset = 7;
+        state.pageLayers[0].gridXStep = 10;
+        state.pageLayers[0].gridYStep = 5;
+        check(state.beginSelection(snapStart.x, snapStart.y), "Alt-enabled grid selection move did not begin");
+        state.moveSelectionPointer(snapEnd.x, snapEnd.y, true);
+        state.finishSelection();
+        check(near(state.texts[0].x, 65) && near(state.texts[0].y, 62),
+              "Alt did not temporarily enable selection grid snapping when the preference is off");
 
         TextItem selectableText;
         selectableText.page = 0;

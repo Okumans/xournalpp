@@ -14,6 +14,7 @@ static void check(bool value, const char* message) {
 static CanvasState fixture() {
     CanvasState state;
     state.setPages({{400, 300}, {300, 200}});
+    state.snapGridEnabled = false;
     state.ink = {{0, {{20, 30, .25}, {60, 50, .75}}, {Tool::Pen, {1, 0, 0}, 4}, true},
                  {0, {{0, 40}, {100, 40}}, {Tool::Highlighter, {1, 1, 0}, 14}},
                  {0, {{30, 60}, {50, 60}}, {Tool::Eraser, {1, 1, 1}, 5}},
@@ -33,6 +34,7 @@ static void rectangle(CanvasState& state, int page, double x0, double y0, double
 static CanvasState multiLayerFixture() {
     CanvasState state;
     state.setPages({{300, 240}});
+    state.snapGridEnabled = false;
     state.pageLayers[0].layers = {{"Lower", true, {0}}, {"Upper", true, {1}}, {"Hidden", false, {2}}};
     state.pageLayers[0].selectedLayer = 1;
     state.ink = {{0, {{50, 70}, {110, 70}}, {Tool::Pen, {0, 0, 0}, 2}, false, 0, 1, 0},

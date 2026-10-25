@@ -622,10 +622,17 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
             const BackgroundConfig config(background.config);
             config.loadValue(CFG_RASTER, triangleSize);
             if (std::isfinite(triangleSize) && triangleSize > 0) {
-                const double step = triangleSize / 2.0;
+                constexpr double isoMarginFactor = 1.0;
+                const double xStep = std::sqrt(3.0) / 2.0 * triangleSize;
+                const double yStep = triangleSize / 2.0;
                 const auto pageHeight = page->getHeight();
-                const auto rows = std::max(0.0, std::floor((pageHeight - 2.0 * triangleSize) / step));
-                pageInfo.gridYOffset = (pageHeight - rows * step) / 2.0;
+                const auto pageWidth = page->getWidth();
+                const auto cols = std::max(0.0, std::floor((pageWidth - 2.0 * isoMarginFactor * triangleSize) / xStep));
+                const auto rows = std::max(0.0, std::floor((pageHeight - 2.0 * isoMarginFactor * triangleSize) / yStep));
+                pageInfo.gridXOffset = (pageWidth - cols * xStep) / 2.0;
+                pageInfo.gridYOffset = (pageHeight - rows * yStep) / 2.0;
+                pageInfo.gridXStep = xStep;
+                pageInfo.gridYStep = yStep;
             }
         }
         pageInfo.layers.clear();

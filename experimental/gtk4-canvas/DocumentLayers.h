@@ -78,7 +78,9 @@ inline void validate(const LayerDocument& pages) {
     for (const auto& page: pages) {
         if (page.initialLayerCount == 0 || page.initialLayerCount > maxLayersPerPage || page.layers.empty() ||
             page.layers.size() > maxLayersPerPage || page.selectedLayer == 0 ||
-            page.selectedLayer > page.layers.size() || !std::isfinite(page.gridYOffset)) {
+            page.selectedLayer > page.layers.size() || !std::isfinite(page.gridXOffset) ||
+            !std::isfinite(page.gridYOffset) || !std::isfinite(page.gridXStep) || !std::isfinite(page.gridYStep) ||
+            page.gridXStep < 0 || page.gridYStep < 0 || ((page.gridXStep == 0) != (page.gridYStep == 0))) {
             throw std::runtime_error("Invalid page layer metadata");
         }
         if (page.backgroundName &&
@@ -127,7 +129,8 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
     const bool version1 = magic == "XOURNALPP_GTK4_LAYERS_V1";
     const bool version2 = magic == "XOURNALPP_GTK4_LAYERS_V2";
     const bool version3 = magic == "XOURNALPP_GTK4_LAYERS_V3";
-    if ((!version1 && !version2 && !version3) || count > maxLayerPages) {
+    const bool version4 = magic == "XOURNALPP_GTK4_LAYERS_V4";
+    if ((!version1 && !version2 && !version3 && !version4) || count > maxLayerPages) {
         throw std::runtime_error("Invalid layer-transfer header");
     }
 
@@ -138,7 +141,11 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
         PageLayerInfo page;
         int backgroundVisible = 0;
         size_t layerCount = 0;
-        if (version3) {
+        if (version4) {
+            layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), page.initialLayerCount,
+                                            page.selectedLayer, backgroundVisible, page.gridXOffset,
+                                            page.gridYOffset, page.gridXStep, page.gridYStep, layerCount);
+        } else if (version3) {
             layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), page.initialLayerCount,
                                             page.selectedLayer, backgroundVisible, page.gridYOffset, layerCount);
         } else {
@@ -149,7 +156,7 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
             throw std::runtime_error("Invalid page layer-transfer header");
         }
         page.backgroundVisible = backgroundVisible != 0;
-        if (version2 || version3) {
+        if (version2 || version3 || version4) {
             int hasBackgroundName = 0;
             size_t nameBytes = 0;
             layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), hasBackgroundName, nameBytes);
@@ -207,10 +214,11 @@ inline void writeLayerTransfer(const std::filesystem::path& path, const LayerDoc
     }
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_LAYERS_V3 " << pages.size() << '\n';
+    stream << "XOURNALPP_GTK4_LAYERS_V4 " << pages.size() << '\n';
     for (const auto& page: pages) {
         stream << page.initialLayerCount << ' ' << page.selectedLayer << ' ' << page.backgroundVisible << ' '
-               << page.gridYOffset << ' ' << page.layers.size() << '\n';
+               << page.gridXOffset << ' ' << page.gridYOffset << ' ' << page.gridXStep << ' ' << page.gridYStep << ' '
+               << page.layers.size() << '\n';
         const size_t backgroundNameBytes = page.backgroundName ? page.backgroundName->size() : 0;
         stream << page.backgroundName.has_value() << ' ' << backgroundNameBytes << '\n';
         if (page.backgroundName) {

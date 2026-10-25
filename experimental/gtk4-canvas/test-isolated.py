@@ -456,14 +456,16 @@ def verify_selection_modes(args, evidence):
          "--smoke-dir", str(output)],
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_SELECTION_VERIFY_MODE="visible-layers"),
     )
-    if ("PASS: GTK visible-layer rectangle/lasso selection, Text-tool mouse/stylus move/resize "
+    if ("PASS: GTK visible-layer rectangle/lasso selection, Smart Select edge hit and grid snap, "
+            "Text-tool mouse/stylus move/resize "
             "and formatting, vertical-space direction/preview/undo, "
             "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
             "remembered tool state, and shortcuts"
             not in result):
         raise RuntimeError("GTK visible-layer selection mode verification did not finish")
     for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",
-                 "selection-hidden-layer-fallback", "selection-text-object", "selection-text-moved",
+                 "selection-hidden-layer-fallback", "smart-select-edge-hit", "smart-select-grid-snapped",
+                 "selection-text-object", "selection-text-moved",
                  "text-tool-edited", "text-tool-moved", "text-tool-resized", "text-tool-stylus-moved",
                  "vertical-space-preview", "vertical-space-applied"):
         screenshot = output / f"{name}.png"

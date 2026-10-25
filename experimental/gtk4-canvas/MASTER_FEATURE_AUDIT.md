@@ -21,6 +21,16 @@ No user-facing master feature is classified obsolete yet. `TOOL_NONE` is an
 internal sentinel, not a user feature. Keep every other behavior in scope until
 its status changes with source and test evidence.
 
+## Default UI target
+
+Ship a compact, canvas-first default inspired by the established Xournal++
+workspace: keep frequently used tools visible in a slim toolbar and side rail,
+give the page most of the window, and keep infrequent actions in menus or
+secondary tool sections. Smart Select must stay easy to find and retain native
+text, PDF, object, and modifier behavior. This is a starting layout, not a
+restriction: keep user-configurable toolbar contents and placement, and do not
+remove existing customization paths when refining the visual design.
+
 ## Master tools
 
 The tool names below come from `src/core/control/ToolEnums.h` and the handler
@@ -37,7 +47,7 @@ registration in `ToolHandler::initTools`.
 | `selectRegion` | Partial | Lasso-selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |
 | `selectMultiLayerRect` | Partial | Selects editable strokes, text, and images from the topmost visible foreground layer with matches; unsupported native objects are not included. |
 | `selectMultiLayerRegion` | Partial | Lasso-selects editable strokes, text, and images from the topmost visible foreground layer with matches; unsupported native objects are not included. |
-| `selectObject` | Partial | Select Object picks the closest editable stroke, text, or image on the active visible layer within the master 0.5 pt action radius; exact overlapping hits prefer the frontmost object, and Shift adds to the current selection. Unsupported native objects and their exact hit geometry remain. |
+| `selectObject` | Partial | Select Object picks the closest editable stroke, text, or image on the active visible layer within the master 0.5 pt action radius, using native stroke caps/joins and transformed text/image bounds; exact overlapping hits prefer the frontmost object, and Shift adds to the current selection. Unsupported native object types remain. |
 | `playObject` | Partial | Audio-linked strokes and rectangular objects can be played on the active layer within the native 15 pt action radius. Playback controls, the non-audio faded preview, and read-only `audioFolder`, `defaultSeekTime`, and `disableAudio` imports are implemented. Port audio recording and device preferences, verify physical input, and complete media persistence/reopen behavior across session boundaries. |
 | `verticalSpace` | Partial | The selection-menu mode previews and shifts editable strokes, text, and images wholly above or below a dragged boundary on the active layer; Control switches sides, page-grid snapping applies, and the movement is one undoable edit. Unsupported native objects are not editable, and physical device behavior remains unverified. |
 | `hand` | Partial | Dedicated Hand mode and Space/stylus temporary pan preserve the current selection. Physical device routing, touch gesture details, and kinetic scrolling remain. |
@@ -54,7 +64,7 @@ registration in `ToolHandler::initTools`.
 | `laserPointerHighlighter` | Partial | Transient pressure-independent highlighter trails use the master presets and imported fade delay; completed marks share the per-page trail and fade lifecycle without entering save or undo history. Physical stylus routing and exact raster-mask behavior across zoom/visibility changes remain unverified. |
 | `link` | Partial | The Link tool creates and edits native links, renders them underlined, hit-tests them on the active visible layer, opens them with Ctrl-click, and preserves URL/font/layout through save and undo/redo. Match the production editor and scheme choices, verify external launcher behavior, and test physical input routing. |
 | `latex` | Pending | Port LaTeX text creation, rendering, editing, and dependency/error behavior. |
-| `smartSelect` | Partial | Picks editable strokes, text, and images by layer order; text clicks open the editor, PDF-text drags delegate to linear PDF selection after the native 10 px threshold, Alt-drag forces that route, and Shift-drag starts rectangle selection. Add complete production hit geometry, grid snapping, edge-pan behavior, and unsupported native object support. |
+| `smartSelect` | Partial | Picks editable strokes, text, and images within the native 0.5-point action radius using stroke caps/joins and transformed rectangular bounds; text clicks open the editor, PDF-text drags delegate to linear PDF selection after the native 10 px threshold, Alt-drag forces that route, Shift-drag starts rectangle selection, and selection moves snap the nearest bounds corner to the page grid with the Alt override. Add resize snapping, edge-pan behavior, and unsupported native object support. |
 
 `DrawingType` also includes `default`, `line`, `rectangle`, `ellipse`,
 `arrow`, `doubleArrow`, `drawCoordinateSystem`, `strokeRecognizer`, and
@@ -71,7 +81,7 @@ it is not represented by a single `ToolType`.
 | Behavior | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
 | Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes, text, and images. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching object from the first visible layer with matches; unsupported native objects remain outside general selection. Rectangular objects require all four transformed corners inside the selector, matching master behavior. |
-| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Exact grid snapping, edge pan, persistent rotated handle frame, transform-following text editor placement, and device behavior remain. |
+| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Resize snapping, edge pan, persistent rotated handle frame, transform-following text editor placement, and device behavior remain. |
 | Text editing | Partial | Inline rich-text editing and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, and newly created or edited text remains selected. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
