@@ -160,6 +160,7 @@ def verify_settings_import(args, evidence, copy):
   <property name="pressureSensitivity" value="true"/>
   <property name="minimumPressure" value="0.15"/>
   <property name="pressureMultiplier" value="1.2"/>
+  <property name="snapRotationTolerance" value="0.55"/>
   <property name="zoomStep" value="25.00000000"/>
   <property name="zoomStepScroll" value="5.00000000"/>
   <property name="themeVariant" value="{theme_variant}"/>
@@ -342,7 +343,7 @@ def verify_preferences(args, evidence):
             raise RuntimeError(f"Missing GTK 4 Preferences screenshot: {path}")
     stored = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
     for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
-                     "button-one=1", "button-two=4"):
+                     "rotation-snap-tolerance=0.45", "button-one=1", "button-two=4"):
         if expected not in stored:
             raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
     print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)
@@ -385,9 +386,9 @@ def verify_images(args, evidence):
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_IMAGE_VERIFY_MODE="insert-resize-save-reopen",
                  XOURNALPP_IMAGE_VERIFY_SOURCE=str(image)),
     )
-    if "PASS: GTK image insertion, resize, move, native save/reopen and PDF export" not in result:
+    if "PASS: GTK image insertion, resize, move, rotate, native save/reopen and PDF export" not in result:
         raise RuntimeError("GTK image insertion verification did not finish")
-    for name in ("image-inserted", "image-resized", "image-reopened"):
+    for name in ("image-inserted", "image-resized", "image-rotated", "image-reopened"):
         screenshot = output / f"{name}.png"
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty image insertion screenshot: {screenshot}")
@@ -398,13 +399,16 @@ def verify_images(args, evidence):
     stored = saved.find(".//image")
     if stored is None or not stored.text or len(stored.text.strip()) < 16:
         raise RuntimeError("Native image save lost its encoded image data")
+    matrix = list(map(float, stored.attrib.get("matrix", "").split()))
+    if len(matrix) != 6 or abs(matrix[1]) < 0.1 or abs(matrix[2]) < 0.1:
+        raise RuntimeError("Native image save lost its rotated affine transform")
     exported = output / "image-exported.pdf"
     if not exported.is_file() or not exported.read_bytes().startswith(b"%PDF-"):
         raise RuntimeError("Image PDF export is missing or invalid")
     image_list = run(["pdfimages", "-list", str(exported)])
     if not any(re.match(r"^\s*\d+\s+\d+\s+image\s", line) for line in image_list.splitlines()):
         raise RuntimeError("Exported PDF does not contain the inserted image")
-    print("PASS: private GTK4 image insertion, resize, move, native persistence and PDF export", flush=True)
+    print("PASS: private GTK4 image insertion, resize, move, rotate, native persistence and PDF export", flush=True)
     return str(output)
 
 
