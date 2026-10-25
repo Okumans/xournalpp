@@ -398,6 +398,7 @@ int luaOpenApp(lua_State* state) {
             {"addLinks", LuaPluginRuntime::luaAddLinks},
             {"addImages", LuaPluginRuntime::luaAddImages},
             {"setPageSize", LuaPluginRuntime::luaSetPageSize},
+            {"setCurrentPage", LuaPluginRuntime::luaSetCurrentPage},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
             {"export", LuaPluginRuntime::luaExport},
@@ -1069,6 +1070,14 @@ bool LuaPluginRuntime::setPageSize(double width, double height, bool relative, s
         return false;
     }
     return host.setPageSize(width, height, relative, error);
+}
+
+bool LuaPluginRuntime::setCurrentPage(std::size_t pageNumber, std::string& error) {
+    if (!host.setCurrentPage) {
+        error = "Page selection is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.setCurrentPage(pageNumber, error);
 }
 
 bool LuaPluginRuntime::setLayerVisibility(bool visible, std::string& error) {
@@ -2612,6 +2621,19 @@ int LuaPluginRuntime::luaSetPageSize(lua_State* state) {
     if (error[0] != '\0') {
         lua_pushstring(state, error);
         return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaSetCurrentPage(lua_State* state) {
+    const auto pageNumber = static_cast<std::size_t>(luaL_checkinteger(state, 1));
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->setCurrentPage(pageNumber, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Changing the current page failed" : error.c_str());
     }
     return 0;
 }
