@@ -188,6 +188,7 @@ struct PluginRuntimeHost {
     std::function<bool(const std::vector<PluginImageInput>&, PluginStrokeUndoPolicy,
                        std::vector<PluginImageResult>&, std::string&)> addImages;
     std::function<bool(double, double, bool, std::string&)> setPageSize;
+    std::function<bool(std::size_t, std::string&)> setCurrentPage;
     std::function<bool(bool, std::string&)> setLayerVisibility;
     std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
     std::function<bool(const DocumentExportOptions&, std::string&)> exportDocument;
@@ -261,6 +262,7 @@ public:
     static int luaAddLinks(lua_State* state);
     static int luaAddImages(lua_State* state);
     static int luaSetPageSize(lua_State* state);
+    static int luaSetCurrentPage(lua_State* state);
     static int luaSetLayerVisibility(lua_State* state);
     static int luaSetCurrentLayerName(lua_State* state);
     static int luaExport(lua_State* state);
@@ -300,6 +302,7 @@ private:
     bool addImages(const std::vector<PluginImageInput>& images, PluginStrokeUndoPolicy undoPolicy,
                    std::vector<PluginImageResult>& results, std::string& error);
     bool setPageSize(double width, double height, bool relative, std::string& error);
+    bool setCurrentPage(std::size_t pageNumber, std::string& error);
     bool setLayerVisibility(bool visible, std::string& error);
     bool setCurrentLayerName(std::string_view name, std::string& error);
     bool exportDocument(const DocumentExportOptions& options, std::string& error);

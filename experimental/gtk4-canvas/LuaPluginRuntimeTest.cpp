@@ -339,6 +339,22 @@ int main() {
                 "      app.getFolder('data') .. '\\n' .. app.getFolder('state'))\n"
                 "end\n"
                 "function badType() app.getFolder('cache') end\n");
+    const auto currentPageApiPlugin = root / "CurrentPageApiPlugin";
+    writePlugin(currentPageApiPlugin,
+                "[about]\ndescription=Set the current page without scrolling\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Set current page', callback='setPage'})\n"
+                "  app.registerUi({menu='Clamp to first page', callback='firstPage'})\n"
+                "  app.registerUi({menu='Clamp to last page', callback='lastPage'})\n"
+                "  app.registerUi({menu='Clamp negative page', callback='negativePage'})\n"
+                "  app.registerUi({menu='Reject fractional page', callback='fractionalPage'})\n"
+                "end\n"
+                "function setPage() app.setCurrentPage(3) end\n"
+                "function firstPage() app.setCurrentPage(0) end\n"
+                "function lastPage() app.setCurrentPage(9) end\n"
+                "function negativePage() app.setCurrentPage(-2) end\n"
+                "function fractionalPage() app.setCurrentPage(1.5) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -350,9 +366,10 @@ int main() {
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
                                      quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
                                      imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
-                                     zoomApiPlugin.string() + "," + folderApiPlugin.string(), {});
+                                     zoomApiPlugin.string() + "," + folderApiPlugin.string() + "," +
+                                     currentPageApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 19, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 20, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -402,6 +419,8 @@ int main() {
     std::string pluginFolderPaths;
     std::vector<std::string> activatedActions;
     double zoomValue = 1.25;
+    std::size_t currentPageNumber = 2;
+    constexpr std::size_t testPageCount = 5;
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -440,6 +459,10 @@ int main() {
         return true;
     };
     host.getDisplayDpi = [] { return 144; };
+    host.setCurrentPage = [&](std::size_t pageNumber, std::string&) {
+        currentPageNumber = std::clamp(pageNumber, std::size_t{1}, testPageCount);
+        return true;
+    };
     host.getStrokes = [](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
                          std::string& error) {
         if (type == "selection") {
@@ -625,6 +648,10 @@ int main() {
     const auto loadedFolderApiPlugin = runtime.findPlugin("FolderApiPlugin");
     require(loadedFolderApiPlugin && loadedFolderApiPlugin->loaded && loadedFolderApiPlugin->menuItems == 2,
             "Plugin using persistent plugin folders did not load its callbacks");
+    const auto loadedCurrentPageApiPlugin = runtime.findPlugin("CurrentPageApiPlugin");
+    require(loadedCurrentPageApiPlugin && loadedCurrentPageApiPlugin->loaded &&
+                    loadedCurrentPageApiPlugin->menuItems == 5,
+            "Plugin using current-page selection did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -674,6 +701,17 @@ int main() {
                     runtime.findPlugin("FolderApiPlugin")->error.find("Unsupported folder type 'cache'") !=
                             std::string::npos,
             "app.getFolder accepted an unsupported folder type");
+    require(runtime.invokeMenu("CurrentPageApiPlugin", 0) && currentPageNumber == 3,
+            "app.setCurrentPage did not forward the one-based page number");
+    require(runtime.invokeMenu("CurrentPageApiPlugin", 1) && currentPageNumber == 1,
+            "app.setCurrentPage did not clamp page zero to the first page");
+    require(runtime.invokeMenu("CurrentPageApiPlugin", 2) && currentPageNumber == testPageCount,
+            "app.setCurrentPage did not clamp an oversized page to the last page");
+    require(runtime.invokeMenu("CurrentPageApiPlugin", 3) && currentPageNumber == testPageCount,
+            "app.setCurrentPage did not preserve upstream behavior for negative page numbers");
+    require(!runtime.invokeMenu("CurrentPageApiPlugin", 4) &&
+                    runtime.findPlugin("CurrentPageApiPlugin")->error.find("integer") != std::string::npos,
+            "app.setCurrentPage accepted a fractional page number");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -882,8 +920,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 49 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 16,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 54 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 17,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

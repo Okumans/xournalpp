@@ -1598,6 +1598,9 @@ private:
         host.setPageSize = [this](double width, double height, bool relative, std::string& error) {
             return setPluginPageSize(width, height, relative, error);
         };
+        host.setCurrentPage = [this](std::size_t pageNumber, std::string& error) {
+            return setPluginCurrentPage(pageNumber, error);
+        };
         host.setLayerVisibility = [this](bool visible, std::string& error) {
             return setPluginLayerVisibility(visible, error);
         };
@@ -2906,6 +2909,26 @@ private:
         return true;
     }
 
+    bool setPluginCurrentPage(std::size_t pageNumber, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "Wait for the current document operation to finish before selecting a page";
+            return false;
+        }
+        const auto pageCount = state.pageCount();
+        if (pageCount < 1) {
+            error = "There are no pages to select";
+            return false;
+        }
+        const auto targetPage = std::clamp(pageNumber, std::size_t{1}, static_cast<std::size_t>(pageCount)) - 1;
+        resetInput();
+        if (static_cast<int>(targetPage) != state.page) {
+            selectedImageIndex.reset();
+        }
+        state.selectActivePage(static_cast<int>(targetPage));
+        update();
+        return true;
+    }
+
     bool setPluginPageSize(double width, double height, bool relative, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving) {
             error = "Wait for the current document operation to finish before changing page size";
@@ -4154,6 +4177,24 @@ private:
         state.offsetY = savedOffsetY;
         fitMode = savedFitMode;
         fitted = savedFitted;
+        update();
+
+        const int originalPage = state.page;
+        const auto originalImageSelection = selectedImageIndex;
+        const int availablePages = state.pageCount();
+        std::string pageError;
+        require(setPluginCurrentPage(0, pageError) && state.page == 0 && state.offsetX == savedOffsetX &&
+                        state.offsetY == savedOffsetY && state.zoom == savedZoom && fitMode == savedFitMode &&
+                        fitted == savedFitted,
+                pageError.empty() ? "app.setCurrentPage did not clamp to the first page without scrolling" :
+                                   pageError.c_str());
+        require(setPluginCurrentPage(static_cast<std::size_t>(availablePages) + 10, pageError) &&
+                        state.page == availablePages - 1 && state.offsetX == savedOffsetX &&
+                        state.offsetY == savedOffsetY,
+                pageError.empty() ? "app.setCurrentPage did not clamp to the final page without scrolling" :
+                                   pageError.c_str());
+        state.selectActivePage(originalPage);
+        selectedImageIndex = originalImageSelection;
         update();
 
         const auto documentStructure = pluginDocumentStructure();
