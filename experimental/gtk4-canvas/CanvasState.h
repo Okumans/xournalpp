@@ -54,6 +54,7 @@ enum class Tool {
     LaserPointerHighlighter,
     PlayObject,
     FloatingToolbox,
+    Latex,
 };
 inline bool isLaserPointerTool(Tool tool) {
     return tool == Tool::LaserPointerPen || tool == Tool::LaserPointerHighlighter;
@@ -2506,6 +2507,40 @@ public:
         return true;
     }
 
+    bool replaceTextWithImage(size_t index, CanvasImage image) {
+        if (index >= texts.size() || !validCanvasImage(image) || current || eraseGesture || selectionGesture ||
+            image.page != texts[index].page) {
+            return false;
+        }
+
+        const auto& source = texts[index];
+        image.layerOrder = source.layerOrder;
+        image.layerId = source.layerId;
+        image.originLayer = source.originLayer;
+
+        Edit edit;
+        edit.textChanges.push_back({index, {source}, index, {}});
+        edit.imageChanges.push_back({images.size(), {}, images.size(), {std::move(image)}});
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = selectedTexts;
+        auto remainingTexts = selectedTexts;
+        std::erase(remainingTexts, index);
+        for (auto& selectedIndex: remainingTexts) {
+            if (selectedIndex > index) {
+                --selectedIndex;
+            }
+        }
+        edit.textSelectionAfter = std::move(remainingTexts);
+        edit.imageSelectionBefore = selectedImages;
+        auto selectedAfter = selectedImages;
+        selectedAfter.push_back(images.size());
+        edit.imageSelectionAfter = std::move(selectedAfter);
+
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
     template <typename Update>
     bool updateSelectedTexts(Update&& update) {
         if (selectedTexts.empty() || current || eraseGesture || selectionGesture) {
@@ -2746,7 +2781,9 @@ public:
         const auto sameImage = [](const CanvasImage& lhs, const CanvasImage& rhs) {
             return lhs.page == rhs.page && lhs.layerOrder == rhs.layerOrder && lhs.layerId == rhs.layerId &&
                    lhs.originLayer == rhs.originLayer && lhs.pixelWidth == rhs.pixelWidth &&
-                   lhs.pixelHeight == rhs.pixelHeight && lhs.encodedData == rhs.encodedData &&
+                   lhs.pixelHeight == rhs.pixelHeight && lhs.kind == rhs.kind &&
+                   lhs.nativeWidth == rhs.nativeWidth && lhs.nativeHeight == rhs.nativeHeight &&
+                   lhs.encodedData == rhs.encodedData && lhs.latexSource == rhs.latexSource &&
                    lhs.transform.xx == rhs.transform.xx && lhs.transform.yx == rhs.transform.yx &&
                    lhs.transform.xy == rhs.transform.xy && lhs.transform.yy == rhs.transform.yy &&
                    lhs.transform.x == rhs.transform.x && lhs.transform.y == rhs.transform.y;
@@ -2855,7 +2892,8 @@ public:
             const double localX = (m.yy * dx - m.xy * dy) / determinant;
             const double localY = (-m.yx * dx + m.xx * dy) / determinant;
             if (point.x < bounds.x0 || point.x > bounds.x1 || point.y < bounds.y0 || point.y > bounds.y1 ||
-                localX < 0 || localX > image.pixelWidth || localY < 0 || localY > image.pixelHeight) {
+                localX < 0 || localX > canvasImageWidth(image) || localY < 0 ||
+                localY > canvasImageHeight(image)) {
                 continue;
             }
             if (!best || image.layerOrder >= bestOrder) {

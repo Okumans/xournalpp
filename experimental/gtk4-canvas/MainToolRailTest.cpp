@@ -23,4 +23,7 @@ int main() {
     check(!parseMainToolRail("SMART_SELECT,UNKNOWN"), "Tool rail must reject unknown actions");
     check(!parseMainToolRail("SMART_SELECT,,HAND"), "Tool rail must reject empty entries");
     check(!parseMainToolRail(""), "Tool rail must reject an empty layout");
+    const auto latex = parseMainToolRail("SMART_SELECT,LATEX");
+    check(latex && latex->size() == 2 && latex->back() == MainToolAction::Latex,
+          "Tool rail should accept the LaTeX editor action");
 }

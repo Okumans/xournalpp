@@ -18,11 +18,12 @@ endif()
 
 get_filename_component(XOURNALPP_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
-add_executable(xournalpp-gtk4-canvas main.cpp LuaPluginRuntime.cpp CanvasImageActions.cpp)
+add_executable(xournalpp-gtk4-canvas main.cpp LuaPluginRuntime.cpp CanvasImageActions.cpp LatexEditor.cpp)
 target_compile_features(xournalpp-gtk4-canvas PRIVATE cxx_std_20)
 target_compile_options(xournalpp-gtk4-canvas PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(xournalpp-gtk4-canvas PRIVATE
-                           GTK4_CANVAS_BUNDLED_PLUGIN_DIR="${XOURNALPP_REPO_ROOT}/plugins")
+                           GTK4_CANVAS_BUNDLED_PLUGIN_DIR="${XOURNALPP_REPO_ROOT}/plugins"
+                           GTK4_CANVAS_RESOURCE_DIR="${XOURNALPP_REPO_ROOT}/resources")
 target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::UI PkgConfig::GSTREAMER PkgConfig::LUA)
 if(GTK4_CANVAS_HAVE_VIPS)
     target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::VIPS)

@@ -23,6 +23,7 @@ enum class MainToolAction {
     LaserPointerHighlighter,
     PlayObject,
     FloatingToolbox,
+    Latex,
 };
 
 inline constexpr std::array<MainToolAction, 6> defaultMainToolRail{
@@ -34,7 +35,7 @@ inline constexpr std::array<MainToolAction, 6> defaultMainToolRail{
         MainToolAction::Hand,
 };
 
-inline constexpr std::array<std::pair<MainToolAction, std::string_view>, 11> mainToolRailNames{{
+inline constexpr std::array<std::pair<MainToolAction, std::string_view>, 12> mainToolRailNames{{
         {MainToolAction::SmartSelect, "SMART_SELECT"},
         {MainToolAction::Pen, "PEN"},
         {MainToolAction::Highlighter, "HIGHLIGHTER"},
@@ -46,6 +47,7 @@ inline constexpr std::array<std::pair<MainToolAction, std::string_view>, 11> mai
         {MainToolAction::LaserPointerHighlighter, "LASER_POINTER_HIGHLIGHTER"},
         {MainToolAction::PlayObject, "PLAY_OBJECT"},
         {MainToolAction::FloatingToolbox, "FLOATING_TOOLBOX"},
+        {MainToolAction::Latex, "LATEX"},
 }};
 
 inline std::string_view mainToolRailToken(MainToolAction action) {
