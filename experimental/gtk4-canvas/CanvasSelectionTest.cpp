@@ -39,7 +39,7 @@ static CanvasState multiLayerFixture() {
                  {0, {{55, 78}, {115, 78}}, {Tool::Pen, {1, 0, 0}, 2}, false, 0, 2, 1},
                  {0, {{60, 88}, {120, 88}}, {Tool::Pen, {0, 0, 1}, 2}, false, 0, 2, 1},
                  {0, {{65, 96}, {125, 96}}, {Tool::Pen, {0, 1, 0}, 2}, false, 0, 3, 2}};
-    state.texts.push_back({0, 3, 2, 1, "upper layer", "Sans", 12, 0xff000000U, -1, 0, false,
+    state.texts.push_back({0, 3, 2, 1, "upper layer", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
                            1, 0, 0, 1, 70, 70, 45, 18, {}});
     state.brush.tool = Tool::SelectRectangle;
     return state;

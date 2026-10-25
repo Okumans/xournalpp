@@ -73,6 +73,9 @@ struct ImportedSettings {
     bool autosaveEnabled = true;
     int autosaveTimeoutMinutes = 3;
     std::filesystem::path colorPalettePath;
+    std::filesystem::path audioFolder;
+    unsigned int defaultSeekTimeSeconds = 5;
+    bool disableAudio = false;
     ButtonToolAction stylusButtonOne = ButtonToolAction::None;
     ButtonToolAction stylusButtonTwo = ButtonToolAction::None;
 
@@ -303,6 +306,19 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
             static_cast<unsigned long long>(*milliseconds) <= std::numeric_limits<unsigned int>::max()) {
             out.laserPointerFadeOutTimeMs = static_cast<unsigned int>(*milliseconds);
         }
+    } else if (name == "audioFolder") {
+        out.audioFolder = std::filesystem::path(std::string(value));
+    } else if (name == "defaultSeekTime") {
+        if (const auto seconds = parseAsciiDouble(value); seconds && *seconds >= 0 &&
+            *seconds <= static_cast<double>(std::numeric_limits<unsigned int>::max())) {
+            out.defaultSeekTimeSeconds = static_cast<unsigned int>(*seconds);
+        }
+    } else if (name == "disableAudio") {
+        if (value == "true") {
+            out.disableAudio = true;
+        } else if (value == "false") {
+            out.disableAudio = false;
+        }
     } else if (name == "colorPalette") {
         if (!value.empty()) {
             out.colorPalettePath = std::filesystem::path(std::string(value));
@@ -331,6 +347,8 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.activeTool = Tool::LaserPointerPen;
             } else if (value == "laserPointerHighlighter") {
                 out.activeTool = Tool::LaserPointerHighlighter;
+            } else if (value == "playObject") {
+                out.activeTool = Tool::PlayObject;
             }
         }
         return;

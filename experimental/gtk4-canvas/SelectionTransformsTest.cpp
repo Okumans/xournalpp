@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
         check(state.selected == std::vector<size_t>({0, 1}), "Shift rectangle must add selection even in lasso tool");
 
         state = fixture();
-        state.texts.push_back({0, 0, 1, 0, "selected text", "Sans", 12, 0xff000000U, -1, 0, false,
+        state.texts.push_back({0, 0, 1, 0, "selected text", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
                                1, 0, 0, 1, 120, 130, 70, 20, {}});
         state.images.push_back(imageAt(0, 195, 130, 2));
         state.brush.tool = Tool::SelectRectangle;
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
         state = fixture();
         state.clearSelection();
         state.images.push_back(imageAt(0, 100, 100, 3));
-        state.texts.push_back({0, 0, 1, 0, "topmost", "Sans", 12, 0xff000000U, -1, 0, false,
+        state.texts.push_back({0, 0, 1, 0, "topmost", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
                                1, 0, 0, 1, 100, 100, 20, 20, {}});
         state.texts[0].layerOrder = 4;
         const auto overlap = state.pageScreenPoint(0, 110, 110);
@@ -339,7 +339,7 @@ int main(int argc, char** argv) {
               "Smart Select did not choose the higher ordered overlapping image");
 
         state = fixture();
-        state.texts.push_back({0, 0, 1, 0, "cross page", "Sans", 12, 0xff000000U, -1, 0, false,
+        state.texts.push_back({0, 0, 1, 0, "cross page", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
                                1, 0, 0, 1, 210, 110, 65, 20, {}});
         state.selected.clear();
         state.selectedTexts = {0};
@@ -355,7 +355,7 @@ int main(int argc, char** argv) {
               "Cross-page text undo did not restore its page and selection");
 
         state = fixture();
-        state.texts.push_back({0, 0, 1, 0, "resize text", "Sans", 12, 0xff000000U, -1, 0, false,
+        state.texts.push_back({0, 0, 1, 0, "resize text", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
                                1, 0, 0, 1, 200, 80, 60, 20, {}});
         state.selected.clear();
         state.selectedTexts = {0};
@@ -370,7 +370,7 @@ int main(int argc, char** argv) {
               "Text resize undo failed");
 
         state = fixture();
-        state.texts.push_back({0, 0, 1, 0, "rotate text", "Sans", 12, 0xff000000U, -1, 0, false,
+        state.texts.push_back({0, 0, 1, 0, "rotate text", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
                                1, 0, 0, 1, 200, 80, 60, 20, {}});
         state.selected.clear();
         state.selectedTexts = {0};

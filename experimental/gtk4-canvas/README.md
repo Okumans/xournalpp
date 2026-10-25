@@ -64,6 +64,15 @@ releasing a mapped button restores the toolbar tool. The Hand toolbar button pan
 with a primary-button drag across the canvas and keeps the current selection.
 Space-drag, middle-mouse, and touch panning remain available.
 
+The **Play Object** toolbar mode plays audio-linked strokes and rectangular
+objects on the active layer when the pointer is within 15 document points.
+Playback has seek-back, pause/resume, seek-forward, and stop controls. It reads
+`audioFolder`, `defaultSeekTime`, and `disableAudio` from `settings.xml` without
+editing that file. Play Object mode fades non-audio objects using the native
+renderer. Audio recording controls and device preferences are not ported yet;
+reopening saved audio after its temporary media file expires also needs a
+separate check.
+
 Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text (when a document worker
 is enabled), `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 `Ctrl+Y` redo, `Page Up`/`Page Down` or `Shift+K`/`Shift+J` previous/next page,
@@ -161,6 +170,7 @@ variables. Preferences edits are stored in `gtk4-canvas.ini` only after a value
 changes. Explicit `--dark` and `--autosave-seconds` CLI flags override imported
 values. A worker can also accompany `--pdf`, or be used alone to
 create a blank A4 notebook. Without an input it displays a blank page.
+The `--disable-audio` option disables playback for the current run.
 
 To open native documents, build the optional worker using the normal application's
 GTK 3 dependencies. It has no installation target and is disabled by default:
@@ -332,6 +342,13 @@ timer, and verifies that the trail disappears without changing saved or undoable
 document state. The trails render per page above document content and restart at
 full alpha when another laser stroke begins.
 
+The focused `--play-object-only` GUI check uses a packaged audio-linked native
+document and a private GStreamer `fakesink`. It verifies the 15 pt hit path,
+playback controls, the faded/normal preview, and native save metadata plus the
+recording file during the test session. The private renderer, screenshots, and
+JSON report stay outside Git. This check does not verify audio-device output or
+reopening after the temporary recording file expires.
+
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. Unsupported native objects are not
@@ -401,8 +418,8 @@ The remaining work is tracked exhaustively in
 are unsupported native object editing and full renderer fidelity; text and
 mixed/multi-image clipboard support; paired, horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
-parity; audio playback, vertical-space insertion, LaTeX, and the general
-floating toolbox; complete per-device settings and toolbar
+parity; audio recording/device preferences and media lifecycle, vertical-space
+insertion, LaTeX, and the general floating toolbox; complete per-device settings and toolbar
 customization; and all 12 bundled plugins. Accessibility, physical input,
 platform packaging, GPU rendering, and platform-specific validation are also
 still required before replacing the existing application.

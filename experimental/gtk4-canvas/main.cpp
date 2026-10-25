@@ -21,6 +21,8 @@
 #include "BehaviorDefaults.h"
 #include "CanvasInput.h"
 #include "CanvasState.h"
+#include "AudioPlayback.h"
+#include "AudioTarget.h"
 #include "DocumentAutosave.h"
 #include "DocumentSession.h"
 #include "DocumentJob.h"
@@ -55,6 +57,7 @@ struct Options {
     std::optional<int> autosaveSecondsOverride;
     bool dark = false;
     bool explicitDark = false;
+    bool disableAudio = false;
     int width = 1100;
     int height = 820;
 };
@@ -73,6 +76,7 @@ struct PageCacheEntry {
     int pageIndex = -1;
     size_t originLayer = prototype::newLayerOrigin;
     double scale = 0;
+    bool audioMode = false;
     uint64_t stamp = 0;
     std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface;
 };
@@ -253,6 +257,7 @@ public:
             cleanupActiveAutosave();
         }
         g_clear_object(&preferencesDialog);
+        audioPlayback.reset();
         if (paintClock) {
             g_signal_handlers_disconnect_by_data(paintClock, this);
             g_clear_object(&paintClock);
@@ -263,6 +268,7 @@ public:
         }
         g_clear_object(&pdfTextDocument);
         releaseLayerPreviewPdfs(layerDocuments);
+        releaseLayerPreviewPdfs(audioLayerDocuments);
     }
 
     int run() {
@@ -340,6 +346,11 @@ private:
             throw;
         }
         return documents;
+    }
+
+    static std::vector<PopplerDocument*> openAudioLayerPreviewPdfs(
+            const std::vector<std::filesystem::path>& paths, int expectedPageCount) {
+        return openLayerPreviewPdfs(paths, expectedPageCount);
     }
 
     static void releaseLayerPreviewPdfs(std::vector<PopplerDocument*>& documents) {
@@ -843,9 +854,11 @@ private:
         auto [candidate, pageSizes] = openPreviewPdf(session->previewPath().string());
         const int count = static_cast<int>(pageSizes.size());
         std::vector<PopplerDocument*> candidateLayers;
+        std::vector<PopplerDocument*> candidateAudioLayers;
         auto [hydratedInk, hydratedImages] = [&] {
             try {
                 candidateLayers = openLayerPreviewPdfs(session->layerPreviewPaths, count);
+                candidateAudioLayers = openAudioLayerPreviewPdfs(session->audioLayerPreviewPaths, count);
                 auto ink = prototype::bridge::sessionInk(session->initialInk);
                 std::vector<prototype::CanvasImage> images;
                 images.reserve(session->initialImages.size());
@@ -863,6 +876,7 @@ private:
             } catch (...) {
                 g_object_unref(candidate);
                 releaseLayerPreviewPdfs(candidateLayers);
+                releaseLayerPreviewPdfs(candidateAudioLayers);
                 throw;
             }
         }();
@@ -899,6 +913,9 @@ private:
         document = candidate;
         releaseLayerPreviewPdfs(layerDocuments);
         layerDocuments = std::move(candidateLayers);
+        releaseLayerPreviewPdfs(audioLayerDocuments);
+        audioLayerDocuments = std::move(candidateAudioLayers);
+        audioTargets = session->initialAudioTargets;
         pageCount = count;
         nativeSession = session;
         sourcePath = source;
@@ -924,10 +941,11 @@ private:
         }
         auto loaded = std::make_shared<std::shared_ptr<prototype::bridge::DocumentSession>>();
         const auto worker = options.worker;
+        const auto audioFolder = importedConfig.settings.audioFolder;
         runDocumentJob(
                 "Opening document…",
-                [loaded, worker, path] {
-                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, path);
+                [loaded, worker, path, audioFolder] {
+                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, path, audioFolder);
                 },
                 [this, loaded, path, initial] {
                     replaceDocument(*loaded, path);
@@ -944,10 +962,11 @@ private:
         auto targetSave = std::make_shared<std::string>();
         auto targetVersion = std::make_shared<std::string>();
         const auto worker = options.worker;
+        const auto audioFolder = importedConfig.settings.audioFolder;
         runDocumentJob(
                 "Recovering autosave…",
-                [loaded, targetSave, targetVersion, worker, path, sidecar] {
-                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, sidecar);
+                [loaded, targetSave, targetVersion, worker, path, sidecar, audioFolder] {
+                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, sidecar, audioFolder);
                     std::error_code statusError;
                     if (g_ascii_strcasecmp(std::filesystem::path(path).extension().string().c_str(), ".xopp") == 0 &&
                         std::filesystem::is_regular_file(std::filesystem::symlink_status(path, statusError)) &&
@@ -1005,10 +1024,11 @@ private:
         const auto adopted =
                 prototype::bridge::autosavePathForTarget({}, cacheRoot(), static_cast<long long>(::getpid())).string();
         const auto worker = options.worker;
+        const auto audioFolder = importedConfig.settings.audioFolder;
         runDocumentJob(
                 "Restoring recovery file…",
-                [loaded, worker, recoveryPath, adopted] {
-                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath);
+                [loaded, worker, recoveryPath, adopted, audioFolder] {
+                    *loaded = std::make_shared<prototype::bridge::DocumentSession>(worker, recoveryPath, audioFolder);
                     (*loaded)->autosave(worker, adopted, (*loaded)->initialInk, (*loaded)->initialTexts,
                                         (*loaded)->initialImages, (*loaded)->initialLayers);
                     if (adopted != recoveryPath) {
@@ -1530,15 +1550,19 @@ private:
                 [this, session, afterPage, staged] {
                     PopplerDocument* candidate = nullptr;
                     std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
                     std::vector<prototype::PageSize> sizes;
                     try {
                         std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
                         candidateLayers = openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                          static_cast<int>(sizes.size()));
                     } catch (...) {
                         if (candidate) {
                             g_object_unref(candidate);
                         }
                         releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
                         prototype::bridge::DocumentSession::discardRevision(*staged);
                         throw;
                     }
@@ -1547,6 +1571,9 @@ private:
                     document = candidate;
                     releaseLayerPreviewPdfs(layerDocuments);
                     layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
                     pageCount = static_cast<int>(sizes.size());
                     state.insertPageAfter(afterPage, sizes.at(static_cast<size_t>(afterPage + 1)));
                     state.setPages(std::move(sizes));
@@ -1586,15 +1613,19 @@ private:
                 [this, session, removeIndex, staged] {
                     PopplerDocument* candidate = nullptr;
                     std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
                     std::vector<prototype::PageSize> sizes;
                     try {
                         std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
                         candidateLayers = openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                          static_cast<int>(sizes.size()));
                     } catch (...) {
                         if (candidate) {
                             g_object_unref(candidate);
                         }
                         releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
                         prototype::bridge::DocumentSession::discardRevision(*staged);
                         throw;
                     }
@@ -1603,6 +1634,9 @@ private:
                     document = candidate;
                     releaseLayerPreviewPdfs(layerDocuments);
                     layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
                     pageCount = static_cast<int>(sizes.size());
                     state.deletePageAt(removeIndex);
                     state.setPages(std::move(sizes));
@@ -2994,6 +3028,9 @@ private:
         if (linkButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(linkButton), tool == Tool::Link);
         }
+        if (playObjectButton) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(playObjectButton), tool == Tool::PlayObject);
+        }
         if (laserButtons[0]) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(laserButtons[0]), tool == Tool::LaserPointerPen);
         }
@@ -3005,7 +3042,7 @@ private:
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
         } else if (tool == Tool::Hand) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[4]), true);
-        } else if (tool == Tool::Text || tool == Tool::Link) {
+        } else if (tool == Tool::Text || tool == Tool::Link || tool == Tool::PlayObject) {
             for (auto* button: toolButtons) {
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
             }
@@ -3060,14 +3097,15 @@ private:
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
         gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::Hand && tool != Tool::Link &&
+                                                tool != Tool::PlayObject &&
                                                 tool != Tool::VerticalSpace &&
                                                 !prototype::isSelectionTool(tool));
         gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
                                                      tool != Tool::Hand && tool != Tool::VerticalSpace &&
-                                                     tool != Tool::Link);
+                                                     tool != Tool::Link && tool != Tool::PlayObject);
         gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
                                                     tool != Tool::Hand && tool != Tool::VerticalSpace &&
-                                                    tool != Tool::Link);
+                                                    tool != Tool::Link && tool != Tool::PlayObject);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown,
                                prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace);
@@ -3098,8 +3136,8 @@ private:
         } else if (tool == Tool::VerticalSpace) {
             gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 8);
         }
-        gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
-        gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
+        gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser && tool != Tool::PlayObject);
+        gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser && tool != Tool::PlayObject);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
         if (tool != Tool::Link && linkInfoPopover) {
             gtk_popover_popdown(GTK_POPOVER(linkInfoPopover));
@@ -3694,6 +3732,15 @@ private:
         window = adw_application_window_new(app);
         gtk_window_set_title(GTK_WINDOW(window), "Xournal++ · GTK 4 canvas prototype");
         gtk_window_set_default_size(GTK_WINDOW(window), options.width, options.height);
+        audioPlayback = std::make_unique<prototype::AudioPlayback>(
+                options.disableAudio || importedConfig.settings.disableAudio,
+                [this](const std::string& message) { showAlert("Unable to play audio recording", message); },
+                [this] {
+                    if (audioControls) {
+                        syncAudioControls();
+                        update();
+                    }
+                });
 
         auto* view = adw_toolbar_view_new();
         contentView = view;
@@ -3832,12 +3879,70 @@ private:
                              }), this);
             gtk_box_append(GTK_BOX(toolGroup), laserButtons[i]);
         }
+        playObjectButton = gtk_toggle_button_new();
+        gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(playObjectButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
+        gtk_button_set_child(GTK_BUTTON(playObjectButton), gtk_image_new_from_icon_name("audio-x-generic-symbolic"));
+        gtk_widget_set_tooltip_text(playObjectButton, "Play Object: click an audio-linked stroke or text object");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(playObjectButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "Play Object tool", -1);
+        g_signal_connect(playObjectButton, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (gtk_toggle_button_get_active(button) && !self->syncingTools) {
+                                 self->selectTool(Tool::PlayObject);
+                             }
+                         }), this);
+        gtk_box_append(GTK_BOX(toolGroup), playObjectButton);
         imageButton = button("insert-image-symbolic", "Insert Image",
                              G_CALLBACK(+[](GtkButton*, gpointer data) {
                                  static_cast<Prototype*>(data)->chooseImage();
                              }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), imageButton);
         gtk_box_append(GTK_BOX(toolbar), toolGroup);
+
+        audioControls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(audioControls, "linked");
+        audioBackButton = button("media-seek-backward-symbolic", "Seek backward",
+                                 G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                     auto* self = static_cast<Prototype*>(data);
+                                     if (self->audioPlayback) {
+                                         const auto seconds = std::min(self->importedConfig.settings.defaultSeekTimeSeconds,
+                                                                       86400u);
+                                         self->audioPlayback->seekBySeconds(-static_cast<int>(seconds));
+                                     }
+                                 }));
+        audioPauseButton = button("media-playback-pause-symbolic", "Pause audio playback",
+                                  G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                      auto* self = static_cast<Prototype*>(data);
+                                      if (!self->audioPlayback) {
+                                          return;
+                                      }
+                                      if (self->audioPlayback->isPaused()) {
+                                          self->audioPlayback->resume();
+                                      } else {
+                                          self->audioPlayback->pause();
+                                      }
+                                  }));
+        audioForwardButton = button("media-seek-forward-symbolic", "Seek forward",
+                                    G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                        auto* self = static_cast<Prototype*>(data);
+                                        if (self->audioPlayback) {
+                                            const auto seconds = std::min(
+                                                    self->importedConfig.settings.defaultSeekTimeSeconds, 86400u);
+                                            self->audioPlayback->seekBySeconds(static_cast<int>(seconds));
+                                        }
+                                    }));
+        audioStopButton = button("media-playback-stop-symbolic", "Stop audio playback",
+                                 G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                     auto* self = static_cast<Prototype*>(data);
+                                     if (self->audioPlayback) {
+                                         self->audioPlayback->stop();
+                                     }
+                                 }));
+        for (auto* control: {audioBackButton, audioPauseButton, audioForwardButton, audioStopButton}) {
+            gtk_box_append(GTK_BOX(audioControls), control);
+        }
+        gtk_box_append(GTK_BOX(toolbar), audioControls);
+        gtk_widget_set_visible(audioControls, false);
 
         textFontEntry = gtk_entry_new();
         gtk_entry_set_placeholder_text(GTK_ENTRY(textFontEntry), "Font");
@@ -4356,6 +4461,10 @@ private:
                 laserVerifyMode = verifyMode;
                 laserVerifyStep = 0;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_PLAY_OBJECT_VERIFY_MODE"); verifyMode && *verifyMode) {
+                playObjectVerifyMode = verifyMode;
+                playObjectVerifyStep = 0;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -4386,6 +4495,8 @@ private:
                                     --self->pdfTextSelectionVerifyStep;
                                 } else if (!self->laserVerifyMode.empty()) {
                                     --self->laserVerifyStep;
+                                } else if (!self->playObjectVerifyMode.empty()) {
+                                    --self->playObjectVerifyStep;
                                 } else if (self->documentSmokeStep >= 0) {
                                     --self->documentSmokeStep;
                                 } else {
@@ -4442,6 +4553,7 @@ private:
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
         gtk_widget_set_sensitive(exportPdfButton, bool(nativeSession));
         gtk_widget_set_sensitive(textButton, bool(nativeSession));
+        gtk_widget_set_sensitive(playObjectButton, bool(nativeSession));
         gtk_widget_set_sensitive(imageButton, bool(nativeSession));
         gtk_widget_set_sensitive(prevPageButton, state.page > 0);
         gtk_widget_set_sensitive(nextPageButton, state.page + 1 < pageCount);
@@ -4463,6 +4575,7 @@ private:
             }
         }
         gtk_widget_queue_draw(canvas);
+        syncAudioControls();
         ensureLaserFadeTimer();
     }
 
@@ -4768,8 +4881,70 @@ private:
         }
     }
 
+    void playObjectAt(double screenX, double screenY) {
+        constexpr double actionRadius = 15.0;
+        const auto hit = state.hitPage(screenX, screenY);
+        if (!hit) {
+            return;
+        }
+        state.selectActivePage(hit->page);
+        const auto& pageLayers = state.layersForPage(hit->page);
+        if (pageLayers.selectedLayer == 0 || pageLayers.selectedLayer > pageLayers.layers.size()) {
+            return;
+        }
+
+        const auto& activeOrigins = pageLayers.layers[pageLayers.selectedLayer - 1].origins;
+        std::optional<std::string> playbackError;
+        for (size_t origin: activeOrigins) {
+            for (const auto& target: audioTargets) {
+                if (target.page != hit->page || target.originLayer != origin ||
+                    !prototype::audioTargetIntersectsArea(target, hit->local.x - actionRadius,
+                                                          hit->local.y - actionRadius,
+                                                          2 * actionRadius, 2 * actionRadius) ||
+                    prototype::audioTargetDistance(target, hit->local.x, hit->local.y) >= actionRadius) {
+                    continue;
+                }
+                std::string error;
+                const auto filename = target.playbackFilename.empty() ? target.filename : target.playbackFilename;
+                if (!audioPlayback || !audioPlayback->start(filename, target.timestampMs, error)) {
+                    playbackError = error.empty() ? "Audio playback is unavailable" : std::move(error);
+                } else {
+                    playbackError.reset();
+                }
+            }
+        }
+        if (playbackError) {
+            showAlert("Unable to play audio recording", *playbackError);
+        }
+        update();
+    }
+
+    void syncAudioControls() {
+        if (!audioControls || !audioPlayback) {
+            return;
+        }
+        const bool active = audioPlayback->isActive();
+        gtk_widget_set_visible(audioControls, active);
+        if (audioPauseButton) {
+            const bool paused = audioPlayback->isPaused();
+            gtk_button_set_icon_name(GTK_BUTTON(audioPauseButton),
+                                     paused ? "media-playback-start-symbolic" : "media-playback-pause-symbolic");
+            gtk_widget_set_tooltip_text(audioPauseButton, paused ? "Resume audio playback" : "Pause audio playback");
+        }
+        for (auto* control: {audioBackButton, audioPauseButton, audioForwardButton, audioStopButton}) {
+            if (control) {
+                gtk_widget_set_sensitive(control, active);
+            }
+        }
+    }
+
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        if (state.brush.tool == Tool::PlayObject) {
+            gtk_widget_grab_focus(canvas);
+            playObjectAt(x, y);
+            return;
+        }
         if (state.brush.tool == Tool::VerticalSpace &&
             !(device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
             state.beginVerticalSpace(x, y, input.controlHeld);
@@ -5678,9 +5853,10 @@ private:
     const PageCacheEntry& ensureLayerPageCache(int pageIndex, size_t originLayer, int deviceScale) {
         const auto sz = state.pageSize(pageIndex);
         const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
+        const bool audioMode = state.brush.tool == Tool::PlayObject;
         for (auto& entry: layerPageCache) {
             if (entry.pageIndex == pageIndex && entry.originLayer == originLayer &&
-                std::abs(entry.scale - scale) < 0.0001) {
+                entry.audioMode == audioMode && std::abs(entry.scale - scale) < 0.0001) {
                 entry.stamp = ++cacheClock;
                 return entry;
             }
@@ -5697,8 +5873,9 @@ private:
         cairo_paint(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
         cairo_scale(cr, scale, scale);
-        if (originLayer < layerDocuments.size() && pageIndex >= 0 && pageIndex < pageCount) {
-            if (auto* pdfPage = poppler_document_get_page(layerDocuments[originLayer], pageIndex)) {
+        const auto& documents = audioMode ? audioLayerDocuments : layerDocuments;
+        if (originLayer < documents.size() && pageIndex >= 0 && pageIndex < pageCount) {
+            if (auto* pdfPage = poppler_document_get_page(documents[originLayer], pageIndex)) {
                 poppler_page_render(pdfPage, cr);
                 g_object_unref(pdfPage);
             }
@@ -5707,7 +5884,7 @@ private:
         ++rasterizations;
         PageCacheEntry* slot = nullptr;
         for (auto& entry: layerPageCache) {
-            if (entry.pageIndex == pageIndex && entry.originLayer == originLayer) {
+            if (entry.pageIndex == pageIndex && entry.originLayer == originLayer && entry.audioMode == audioMode) {
                 slot = &entry;
                 break;
             }
@@ -5727,6 +5904,7 @@ private:
         slot->pageIndex = pageIndex;
         slot->originLayer = originLayer;
         slot->scale = scale;
+        slot->audioMode = audioMode;
         slot->stamp = ++cacheClock;
         slot->surface = std::move(surface);
         return *slot;
@@ -5804,6 +5982,17 @@ private:
                 EditableKind kind;
                 size_t index;
             };
+            const bool fadeEditableObjects = state.brush.tool == Tool::PlayObject;
+            const auto drawEditableObject = [&](auto&& drawObject) {
+                if (!fadeEditableObjects) {
+                    drawObject();
+                    return;
+                }
+                cairo_push_group(cr);
+                drawObject();
+                cairo_pop_group_to_source(cr);
+                cairo_paint_with_alpha(cr, 0.3);
+            };
             for (size_t layerIndex = 0; layerIndex < state.layersForPage(i).layers.size(); ++layerIndex) {
                 const size_t layerId = layerIndex + 1;
                 const auto& layer = state.layersForPage(i).layers[layerIndex];
@@ -5851,11 +6040,11 @@ private:
                     for (const auto& item: layerItems) {
                         if (item.kind == EditableKind::Text) {
                             const auto text = state.displayText(item.index);
-                            prototype::drawText(cr, text);
+                            drawEditableObject([&] { prototype::drawText(cr, text); });
                         } else if (item.kind == EditableKind::Image) {
-                            prototype::drawCanvasImage(cr, displayedImage(item.index));
+                            drawEditableObject([&] { prototype::drawCanvasImage(cr, displayedImage(item.index)); });
                         } else {
-                            prototype::drawInkPreview(cr, state, item.index);
+                            drawEditableObject([&] { prototype::drawInkPreview(cr, state, item.index); });
                         }
                     }
                     if (state.current && state.current->page == i && state.current->layerId == layerId &&
@@ -7541,6 +7730,72 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    gboolean smokePlayObject() {
+        switch (playObjectVerifyStep++) {
+            case 0: {
+                require(nativeSession && !audioTargets.empty() && !audioLayerDocuments.empty(),
+                        "Play Object verification requires native audio-target and faded-layer previews");
+                require(bool(audioPlayback), "Play Object verification has no audio playback controller");
+                const auto& target = audioTargets.front();
+                double localX = 0;
+                double localY = 0;
+                if (target.shape == prototype::AudioTargetShape::Stroke) {
+                    const auto& point = target.points[target.points.size() / 2];
+                    localX = point.x;
+                    localY = point.y;
+                } else {
+                    localX = target.xx * target.naturalWidth / 2.0 + target.xy * target.naturalHeight / 2.0 +
+                             target.x;
+                    localY = target.yx * target.naturalWidth / 2.0 + target.yy * target.naturalHeight / 2.0 +
+                             target.y;
+                }
+                selectTool(Tool::PlayObject);
+                waitForNextPaint();
+                capture("play-object-faded");
+                const auto click = state.pageScreenPoint(target.page, localX, localY);
+                begin(Device::Mouse, click.x, click.y);
+                require(audioPlayback->isActive() && gtk_widget_get_visible(audioControls),
+                        "Clicking an audio-linked object did not start playback and show its controls");
+                g_signal_emit_by_name(audioPauseButton, "clicked");
+                require(audioPlayback->isPaused(), "Play Object playback did not pause");
+                g_signal_emit_by_name(audioBackButton, "clicked");
+                g_signal_emit_by_name(audioForwardButton, "clicked");
+                g_signal_emit_by_name(audioPauseButton, "clicked");
+                require(!audioPlayback->isPaused(), "Play Object playback did not resume");
+                audioPlayback->stop();
+                require(!audioPlayback->isActive() && !gtk_widget_get_visible(audioControls),
+                        "Stopping audio did not hide the playback controls");
+                selectTool(Tool::Pen);
+                waitForNextPaint();
+                capture("play-object-normal");
+                selectTool(Tool::PlayObject);
+                waitForNextPaint();
+                capture("play-object-faded-again");
+                break;
+            }
+            case 1: {
+                const auto outside = state.pageScreenPoint(state.page, 25, 700);
+                begin(Device::Mouse, outside.x, outside.y);
+                require(!audioPlayback->isActive(), "Clicking away from audio-linked objects started playback");
+                playObjectSaveOutput =
+                        (std::filesystem::path(options.smokeDirectory) / "play-object-saved.xopp").string();
+                saveCopyTo(playObjectSaveOutput, [this] { playObjectSaveComplete = true; });
+                require(busy, "Saving the audio-linked native document did not start");
+                break;
+            }
+            default:
+                require(playObjectSaveComplete && std::filesystem::is_regular_file(playObjectSaveOutput),
+                        "The native document save after Play Object verification did not finish");
+                std::cout << "PASS: GTK Play Object hit testing, playback controls, fading, and native save\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokeLinks() {
         switch (linkVerifyStep++) {
             case 0: {
@@ -7677,6 +7932,9 @@ private:
         }
         if (!laserVerifyMode.empty()) {
             return smokeLaserPointers();
+        }
+        if (!playObjectVerifyMode.empty()) {
+            return smokePlayObject();
         }
         if (!imageVerifyMode.empty()) {
             return smokeImages();
@@ -8907,6 +9165,10 @@ private:
     bool laserInitialUndo = false;
     std::string laserOutputPath;
     bool laserSaveComplete = false;
+    std::string playObjectVerifyMode;
+    int playObjectVerifyStep = -1;
+    std::string playObjectSaveOutput;
+    bool playObjectSaveComplete = false;
     int pdfTextSelectionVerifyStep = -1;
     std::string pdfClipboardExpected;
     std::string pdfClipboardReadText;
@@ -8988,6 +9250,8 @@ private:
     PopplerDocument* pdfTextDocument = nullptr;
     std::string pdfTextDocumentPath;
     std::vector<PopplerDocument*> layerDocuments;
+    std::vector<PopplerDocument*> audioLayerDocuments;
+    std::vector<prototype::AudioTarget> audioTargets;
     int pageCount = 1;
     bool syncingPage = false;
     GtkWidget* window = nullptr;
@@ -9002,7 +9266,14 @@ private:
     std::unique_ptr<prototype::TextEditorOverlay> textEditor;
     GtkWidget* textButton = nullptr;
     GtkWidget* linkButton = nullptr;
+    GtkWidget* playObjectButton = nullptr;
     std::array<GtkWidget*, 2> laserButtons{};
+    GtkWidget* audioControls = nullptr;
+    GtkWidget* audioBackButton = nullptr;
+    GtkWidget* audioPauseButton = nullptr;
+    GtkWidget* audioForwardButton = nullptr;
+    GtkWidget* audioStopButton = nullptr;
+    std::unique_ptr<prototype::AudioPlayback> audioPlayback;
     GtkWidget* imageButton = nullptr;
     GtkWidget* linkInfoPopover = nullptr;
     GtkWidget* linkInfoLabel = nullptr;
@@ -9153,6 +9424,8 @@ int main(int argc, char** argv) {
                 }
                 options.autosaveSeconds = parsed;
                 options.autosaveSecondsOverride = parsed;
+            } else if (argument == "--disable-audio") {
+                options.disableAudio = true;
             } else if (argument == "--config-dir" && i + 1 < argc) {
                 const auto cfgPath = std::filesystem::absolute(argv[++i]);
                 std::error_code ec;
@@ -9177,6 +9450,7 @@ int main(int argc, char** argv) {
             } else {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
+                                         "[--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
             }
         }
