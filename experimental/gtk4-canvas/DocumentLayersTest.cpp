@@ -41,6 +41,8 @@ int main() {
         original[0].selectedLayer = 2;
         original[0].backgroundVisible = false;
         original[0].backgroundName = "Paper";
+        original[0].backgroundFormat = "graph";
+        original[0].backgroundConfig = "r1=14.17\nf1=cccccc";
         original[0].gridXOffset = 3;
         original[0].gridYOffset = 80;
         original[0].gridXStep = 12.27;
@@ -115,6 +117,15 @@ int main() {
                       version3Decoded[0].gridXStep == 0 && version3Decoded[0].gridYStep == 0 &&
                       version3Decoded[0].layers[0].name == "L",
               "Version 3 layer-transfer metadata must retain its vertical offset and default new grid fields");
+
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_LAYERS_V4 1\n1 1 1 0 80 0 0 1\n1 1\nP\n1 1 1\n0\nL\n";
+        }
+        const auto version4Decoded = readLayerTransfer(path);
+        check(version4Decoded.size() == 1 && version4Decoded[0].backgroundName == "P" &&
+                      version4Decoded[0].backgroundFormat.empty() && version4Decoded[0].layers[0].name == "L",
+              "Version 4 layer-transfer metadata must remain readable without background type metadata");
 
         {
             std::ofstream truncated(path, std::ios::binary);

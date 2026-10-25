@@ -149,6 +149,7 @@ int luaOpenApp(lua_State* state) {
             {"changeToolColor", LuaPluginRuntime::luaChangeToolColor},
             {"changeActionState", LuaPluginRuntime::luaChangeActionState},
             {"activateAction", LuaPluginRuntime::luaActivateAction},
+            {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
@@ -655,6 +656,15 @@ bool LuaPluginRuntime::activateAction(std::string_view action, std::string& erro
     return host.activateAction(action, error);
 }
 
+bool LuaPluginRuntime::changeCurrentPageBackground(std::string_view format, std::string_view config,
+                                                   std::string& error) {
+    if (!host.changeCurrentPageBackground) {
+        error = "Page background changes are unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.changeCurrentPageBackground(format, config, error);
+}
+
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
                                   const std::vector<PluginDialogButton>& buttons, bool isError,
                                   std::string_view callback, std::string& error) {
@@ -893,6 +903,30 @@ int LuaPluginRuntime::luaActivateAction(lua_State* state) {
         }
     }
     if (!activated) {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaChangeCurrentPageBackground(lua_State* state) {
+    const char* format = luaL_checkstring(state, 1);
+    const char* config = luaL_optstring(state, 2, "");
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    bool changed = false;
+    char error[512]{};
+    {
+        std::string hostError;
+        changed = plugin->runtime->changeCurrentPageBackground(format, config, hostError);
+        if (!changed) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Page background change is unavailable" : hostError.c_str());
+        }
+    }
+    if (!changed) {
         lua_pushstring(state, error);
         return lua_error(state);
     }

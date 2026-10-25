@@ -40,8 +40,11 @@ effect after restarting the prototype. Lua menu callbacks and canvas shortcuts
 work for the supported API subset. ColorCycle runs with its full color list and
 selection recoloring, Example can open an asynchronous dialog and receive the
 selected button response, and ToolShortcuts can select common tools including
-Smart Select. The full master Lua API, plugin toolbar actions, Search, and most
-bundled plugin behaviors remain unported; see
+Smart Select. ToggleGrid changes the active page between plain and graph paper
+while updating grid snapping. Page background changes use the native document
+worker, persist in the `.xopp` save path, and participate in undo/redo. The full
+master Lua API, plugin toolbar actions, Search, and most bundled plugin
+behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
 With a document worker, the header's Insert Image action opens a local image
@@ -321,9 +324,11 @@ python experimental/gtk4-canvas/test-isolated.py \
   --evidence build-gtk4-canvas/evidence
 ```
 
-Use `--plugins-only` for the focused GUI check. It enables ColorCycle and
-ToolShortcuts in a temporary config and checks their menu actions, Smart Select
-shortcut, selection recoloring/undo, manager, and saved plugin settings.
+Use `--plugins-only` with `--worker` for the focused GUI check. It enables
+ColorCycle, Example, ToolShortcuts, and ToggleGrid in a temporary config and
+checks their menu actions, Smart Select shortcut, selection recoloring/undo,
+plain/graph paper changes, background undo/redo and save/reopen, manager, and
+saved plugin settings.
 
 The harness:
 

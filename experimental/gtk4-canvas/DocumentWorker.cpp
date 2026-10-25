@@ -1,10 +1,10 @@
 #include <algorithm>
 #include <charconv>
-#include <cmath>
 #include <clocale>
+#include <cmath>
 #include <filesystem>
-#include <iomanip>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -13,46 +13,47 @@
 #include <string_view>
 #include <tuple>
 
-#include <glib.h>
 #include <cairo-pdf.h>
+#include <glib.h>
 
+#include "control/pagetype/PageTypeHandler.h"
 #include "control/xojfile/LoadHandler.h"
 #include "control/xojfile/SaveHandler.h"
-#include "model/BackgroundConfig.h"
 #include "model/AudioContent.h"
+#include "model/BackgroundConfig.h"
 #include "model/Document.h"
 #include "model/DocumentHandler.h"
+#include "model/Font.h"
+#include "model/Image.h"
 #include "model/Layer.h"
 #include "model/Link.h"
-#include "model/Image.h"
-#include "model/Point.h"
 #include "model/PageType.h"
-#include "model/Stroke.h"
+#include "model/Point.h"
 #include "model/RectangularElement.h"
+#include "model/Stroke.h"
 #include "model/Text.h"
 #include "model/TextAlignment.h"
-#include "model/Font.h"
 #include "model/XojPage.h"
 #include "pdf/base/XojCairoPdfExport.h"
+#include "util/Matrix.h"
+#include "util/Util.h"
 #include "util/raii/CairoWrappers.h"
+#include "util/serializing/BinObjectEncoding.h"
+#include "util/serializing/ObjectInputStream.h"
+#include "util/serializing/ObjectOutputStream.h"
 #include "view/DocumentView.h"
 #include "view/LayerView.h"
 #include "view/View.h"
 
-#include "DocumentAutosave.h"
 #include "AudioTarget.h"
+#include "DocumentAutosave.h"
+#include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
-#include "DocumentTextTransfer.h"
-#include "DocumentImageTransfer.h"
 #include "DocumentPublish.h"
+#include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "StrokeClipboard.h"
-#include "util/serializing/ObjectInputStream.h"
-#include "util/serializing/ObjectOutputStream.h"
-#include "util/serializing/BinObjectEncoding.h"
-#include "util/Matrix.h"
-#include "util/Util.h"
 
 class GTK4DocumentLayerAccess {
 public:
@@ -301,6 +302,12 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
         page->setSelectedLayerId(pageInfo.selectedLayer);
         if (pageInfo.backgroundName) {
             page->setBackgroundName(*pageInfo.backgroundName);
+        }
+        if (!pageInfo.backgroundFormat.empty()) {
+            PageType background;
+            background.format = PageTypeHandler::getPageTypeFormatForString(pageInfo.backgroundFormat);
+            background.config = pageInfo.backgroundConfig;
+            page->setBackgroundType(background);
         }
         GTK4DocumentLayerAccess::setBackgroundVisible(*page, pageInfo.backgroundVisible);
     }
@@ -614,6 +621,8 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
             pageInfo.backgroundName = page->getBackgroundName();
         }
         const auto background = page->getBackgroundType();
+        pageInfo.backgroundFormat = PageTypeHandler::getStringForPageTypeFormat(background.format);
+        pageInfo.backgroundConfig = background.config;
         if (background.format == PageTypeFormat::Lined || background.format == PageTypeFormat::Ruled) {
             pageInfo.gridYOffset = 80.0;
         } else if (background.format == PageTypeFormat::IsoDotted ||
@@ -1010,9 +1019,11 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                     "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
                     "export-pdf INPUT PDF INK [TEXT [LAYERS [IMAGES]]] | "
-                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES [AUDIO_FOLDER [AUDIO_CACHE]]]]]] | "
+                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES [AUDIO_FOLDER "
+                    "[AUDIO_CACHE]]]]]] | "
                     "insert-page INPUT SNAPSHOT PDF AFTER_PAGE [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "delete-page INPUT SNAPSHOT PDF PAGE_INDEX [AUDIO_FOLDER [AUDIO_CACHE]] | "
+                    "revision INPUT SNAPSHOT PDF INK TEXT LAYERS IMAGES [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
                     "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES]]] | "
                     "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS [IMAGES]]] | version PATH");
@@ -1102,6 +1113,21 @@ int main(int argc, char** argv) {
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 argc == 8 ? fs::path(argv[6]) : fs::path{},
                                 argc == 8 ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "revision" && (argc == 9 || argc == 11)) {
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            const auto strokes = prototype::bridge::readTransfer(fs::absolute(argv[5]));
+            const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[6]));
+            const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[7]));
+            const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[8]));
+            appendLayerAwareObjects(*document, strokes, texts, images, layers);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
+                                argc == 11 ? fs::path(argv[9]) : fs::path{},
+                                argc == 11 ? fs::path(argv[10]) : fs::path{});
         } else if (command == "open" && (argc >= 5 && argc <= 11)) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&

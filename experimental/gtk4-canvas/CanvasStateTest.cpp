@@ -773,6 +773,33 @@ static void layerRenameDuplicateReorderAndVisibility() {
     check(state.layersForPage(1) == source, "layer actions should not modify other pages");
 }
 
+static void pageBackgroundHistory() {
+    CanvasState state;
+    state.setPages({{595, 842}});
+    PageLayers page;
+    page.backgroundFormat = "plain";
+    state.setLayerDocument({page});
+    int notifiedPage = -1;
+    int notifications = 0;
+    state.backgroundChangedCallback = [&](int changedPage) {
+        notifiedPage = changedPage;
+        ++notifications;
+    };
+
+    check(state.changePageBackground(0, "graph", "r1=14.17") && state.revision() == 1 &&
+                  state.layersForPage(0).backgroundFormat == "graph" &&
+                  state.layersForPage(0).backgroundConfig == "r1=14.17" && notifications == 1 && notifiedPage == 0,
+          "page background changes should be undoable and notify the native preview host");
+    check(!state.changePageBackground(0, "graph", "r1=14.17") && notifications == 1,
+          "setting the current page background to its existing value should not add an edit");
+    state.undo();
+    check(state.layersForPage(0).backgroundFormat == "plain" && state.canRedo() && notifications == 2,
+          "undo should restore the previous page background and refresh its preview");
+    state.redo();
+    check(state.layersForPage(0).backgroundFormat == "graph" && notifications == 3,
+          "redo should restore the new page background and refresh its preview");
+}
+
 static void pdfAnnotationInkHistory() {
     CanvasState state;
     state.setPages({{300, 200}});
@@ -813,6 +840,7 @@ int main() {
         continuousMultiPageLayout();
         layerManagement();
         layerRenameDuplicateReorderAndVisibility();
+        pageBackgroundHistory();
         pdfAnnotationInkHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");

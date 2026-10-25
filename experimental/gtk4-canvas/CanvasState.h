@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -17,10 +18,10 @@
 #include <vector>
 
 #include "BehaviorDefaults.h"
-#include "CanvasText.h"
-#include "CanvasLayers.h"
 #include "CanvasDrawing.h"
 #include "CanvasImage.h"
+#include "CanvasLayers.h"
+#include "CanvasText.h"
 
 namespace prototype {
 
@@ -306,6 +307,27 @@ public:
         clearSelection();
         return true;
     }
+
+    bool changePageBackground(int pageIndex, const std::string& format, const std::string& config = {}) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size() || format.empty()) {
+            return false;
+        }
+        auto& pageState = pageLayers[static_cast<size_t>(pageIndex)];
+        if (pageState.backgroundFormat == format && pageState.backgroundConfig == config) {
+            return false;
+        }
+        auto before = captureLayerMutation(pageIndex);
+        pageState.backgroundFormat = format;
+        pageState.backgroundConfig = config;
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        if (backgroundChangedCallback) {
+            backgroundChangedCallback(pageIndex);
+        }
+        return true;
+    }
+
+    std::function<void(int)> backgroundChangedCallback;
 
     bool setAllLayersVisible(int pageIndex, bool visible) {
         if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
@@ -3742,10 +3764,15 @@ private:
     }
 
     void apply(const Edit& edit, bool forward) {
+        std::optional<int> changedBackgroundPage;
         if (edit.layerMutation) {
             const auto& mutation = *edit.layerMutation;
             const auto& layers = forward ? mutation.afterLayers : mutation.beforeLayers;
             auto& pageState = pageLayers.at(static_cast<size_t>(mutation.page));
+            if (pageState.backgroundFormat != layers.backgroundFormat ||
+                pageState.backgroundConfig != layers.backgroundConfig) {
+                changedBackgroundPage = mutation.page;
+            }
             pageState = layers;
             restoreIndexedObjects(ink, mutation.page, forward ? mutation.afterInk : mutation.beforeInk);
             restoreIndexedObjects(texts, mutation.page, forward ? mutation.afterTexts : mutation.beforeTexts);
@@ -3801,6 +3828,9 @@ private:
         } else if (selected != oldSelection || selectedTexts != oldTextSelection ||
                    selectedImages != oldImageSelection) {
             selectionFrame.reset();
+        }
+        if (changedBackgroundPage && backgroundChangedCallback) {
+            backgroundChangedCallback(*changedBackgroundPage);
         }
     }
 
