@@ -27,7 +27,8 @@ bool same(const prototype::TextItem& a, const prototype::TextItem& b) {
         a.layerOrder != b.layerOrder || a.text != b.text || a.fontName != b.fontName ||
         a.fontSize != b.fontSize || a.color != b.color || a.wrapWidth != b.wrapWidth || a.alignment != b.alignment ||
         a.justify != b.justify || a.xx != b.xx || a.yx != b.yx || a.xy != b.xy || a.yy != b.yy || a.x != b.x ||
-        a.y != b.y || a.styleRuns.size() != b.styleRuns.size()) {
+        a.y != b.y || a.layoutWidth != b.layoutWidth || a.layoutHeight != b.layoutHeight ||
+        a.styleRuns.size() != b.styleRuns.size()) {
         return false;
     }
     for (size_t i = 0; i < a.styleRuns.size(); ++i) {
@@ -77,6 +78,8 @@ int main() {
         first.yy = 1.1;
         first.x = 45.75;
         first.y = 99.125;
+        first.layoutWidth = 148.5;
+        first.layoutHeight = 61.25;
         first.styleRuns = {{0, 4, "Liberation Sans Bold", 17.25, 0xff0055aaU, 1U},
                            {7, 14, "Noto Sans Italic", 13.5, std::nullopt, 2U | 8U}};
 
@@ -92,7 +95,7 @@ int main() {
             std::ifstream header(path);
             std::string magic;
             header >> magic;
-            check(magic == "XOURNALPP_GTK4_TEXT_V2", "Layer-aware text transfers should use version 2");
+            check(magic == "XOURNALPP_GTK4_TEXT_V3", "Text transfers should carry selection layout geometry");
         }
         const auto decoded = prototype::bridge::readTextTransfer(path);
         check(decoded.size() == 2 && same(decoded[0], first) && same(decoded[1], second),
@@ -112,6 +115,18 @@ int main() {
                       legacyDecoded[0].layerId == prototype::legacyTopLayer &&
                       legacyDecoded[0].originLayer == prototype::newLayerOrigin && legacyDecoded[0].layerOrder == 4,
               "Legacy V1 text transfer should retain its historical top-layer destination");
+
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_TEXT_V2 1\n"
+                      "0 1 0 2 1 0 0 1 10 20 12 4278190080 -1 0 0 3 4 0\n"
+                      "Sans\nabc\n";
+        }
+        const auto legacyV2Decoded = prototype::bridge::readTextTransfer(path);
+        check(legacyV2Decoded.size() == 1 && legacyV2Decoded[0].text == "abc" &&
+                      legacyV2Decoded[0].layerId == 1 && legacyV2Decoded[0].layerOrder == 2 &&
+                      legacyV2Decoded[0].layoutWidth == 0 && legacyV2Decoded[0].layoutHeight == 0,
+              "Legacy V2 text transfers should retain layer identity with empty layout geometry");
 
         auto invalidBoundary = first;
         invalidBoundary.styleRuns = {{5, 6, "Sans", 12, std::nullopt, 1U}};

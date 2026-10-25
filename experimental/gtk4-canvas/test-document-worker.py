@@ -235,7 +235,7 @@ def main():
         rich_ink = temporary / "rich.ink"
         rich_transfer = temporary / "rich.text"
         run("open", rich_native, rich_snap, rich_pdf, rich_ink, rich_transfer)
-        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V2 1\n")
+        assert rich_transfer.read_bytes().startswith(b"XOURNALPP_GTK4_TEXT_V3 1\n")
         assert "Rich π text".encode() in rich_transfer.read_bytes()
         assert rich_ink.read_text().splitlines()[0] == "XOURNALPP_GTK4_INK_V3 2"
         rich_saved = temporary / "rich-saved.xopp"

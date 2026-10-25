@@ -129,4 +129,21 @@ inline std::pair<int, int> measureText(const TextItem& item) {
     return {width, height};
 }
 
+inline std::pair<double, double> textNaturalSize(const TextItem& item) {
+    auto* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    auto* cr = cairo_create(surface);
+    auto* layout = createTextLayout(cr, item);
+    PangoRectangle logical{};
+    pango_layout_get_extents(layout, nullptr, &logical);
+    const double offsetX = static_cast<double>(logical.x) / PANGO_SCALE;
+    const double offsetY = static_cast<double>(logical.y) / PANGO_SCALE;
+    const double width = item.wrapWidth < 0 ? static_cast<double>(logical.width) / PANGO_SCALE + offsetX :
+                                              item.wrapWidth;
+    const double height = static_cast<double>(logical.height) / PANGO_SCALE + offsetY;
+    g_object_unref(layout);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+    return {width, height};
+}
+
 }  // namespace prototype

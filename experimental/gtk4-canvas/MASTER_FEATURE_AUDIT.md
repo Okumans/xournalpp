@@ -27,12 +27,12 @@ registration in `ToolHandler::initTools`.
 | `pen` | Partial | Match the full renderer: caps, fills, dashes, blend modes, and all native stroke styles. Physical tablet behavior is not verified. |
 | `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work; reproduce all production hit geometry and renderer interactions. |
 | `highlighter` | Partial | Core opacity and native serialization work; reproduce production stroke geometry and blend behavior. |
-| `text` | Partial | Rich editing and round-trip work. Add text object selection, move/resize/rotate, transform-following editor placement, IME, and accessibility. |
+| `text` | Partial | Rich editing, rectangle/lasso selection, undoable move/resize/rotate, and cross-page transfer work. Add text clipboard targets, transform-following editor placement, IME, and accessibility. |
 | `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Standard PNG clipboard images can be pasted. Integrate images into general multi-object selection. |
-| `selectRect` | Partial | Selects editable strokes on the active visible foreground layer; extend to the full production object and layer rules. |
-| `selectRegion` | Partial | Lasso-selects editable strokes on the active visible foreground layer; extend to the full production object and layer rules. |
-| `selectMultiLayerRect` | Partial | Selects editable strokes from the topmost visible foreground layer with matches; native text, images, and other objects are not included. |
-| `selectMultiLayerRegion` | Partial | Lasso-selects editable strokes from the topmost visible foreground layer with matches; native text, images, and other objects are not included. |
+| `selectRect` | Partial | Selects editable strokes and text on the active visible foreground layer; images and unsupported native objects are not included. |
+| `selectRegion` | Partial | Lasso-selects editable strokes and text on the active visible foreground layer; images and unsupported native objects are not included. |
+| `selectMultiLayerRect` | Partial | Selects editable strokes and text from the topmost visible foreground layer with matches; images and unsupported native objects are not included. |
+| `selectMultiLayerRegion` | Partial | Lasso-selects editable strokes and text from the topmost visible foreground layer with matches; images and unsupported native objects are not included. |
 | `selectObject` | Pending | Port the master object-selection behavior as a distinct tool. |
 | `playObject` | Pending | Select and play supported audio objects with production controls and lifecycle. |
 | `verticalSpace` | Pending | Insert vertical space with the same affected objects, undo behavior, and page boundaries. |
@@ -66,11 +66,11 @@ it is not represented by a single `ToolType`.
 
 | Behavior | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| Stroke rectangle/lasso selection | Partial | Active-layer and visible-layer modes select editable strokes. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching stroke from the first visible layer with matches; native text and images remain outside general selection. |
-| Stroke move, resize, mirror, rotate | Partial | Undoable transforms work; exact grid snapping, edge pan, persistent rotated handle frame, and device behavior remain. |
+| Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes and text. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching stroke/text object from the first visible layer with matches; images and unsupported native objects remain outside general selection. |
+| Stroke/text move, resize, mirror, rotate | Partial | Undoable transforms work for ink and text, including cross-page transfer. Exact grid snapping, edge pan, persistent rotated handle frame, transform-following text editor placement, and device behavior remain. |
 | Image move, resize, rotate | Partial | Undoable affine transforms and master angle snapping work; add general multi-object selection. |
-| Text editing | Partial | Inline rich-text editing works; text is not an object-selection transform target. |
-| Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke selection work. The master model has no layer-lock action; general text/image selection is still pending. |
+| Text editing | Partial | Inline rich-text editing works; selected text can move, resize, rotate, and transfer across pages. The editor overlay does not follow transforms. |
+| Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text selection work. The master model has no layer-lock action; general image selection is still pending. |
 | Native object picking | Partial | Editable strokes, images, and text have separate picking paths; unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` stroke and image copy/cut/paste works. Images also offer PNG and accept PNG clipboard paste. Add remaining native types, text and SVG selection targets, and verify cross-process compatibility. |
 

@@ -117,6 +117,7 @@ public:
     bool currentControl = false;
     bool currentAlt = false;
     std::vector<size_t> selected;
+    std::vector<size_t> selectedTexts;
     bool selectionAcrossLayers = false;
     bool pinching = false;
     long long scrollBlockedUntil = 0;
@@ -504,6 +505,21 @@ public:
                 }
             }
         }
+        for (auto index: selectedTexts) {
+            if (index >= texts.size()) {
+                continue;
+            }
+            for (const auto& point: textCorners(texts[index])) {
+                if (!box) {
+                    box = SelectionBox{texts[index].page, point.x, point.y, point.x, point.y};
+                } else {
+                    box->x0 = std::min(box->x0, point.x);
+                    box->y0 = std::min(box->y0, point.y);
+                    box->x1 = std::max(box->x1, point.x);
+                    box->y1 = std::max(box->y1, point.y);
+                }
+            }
+        }
         return box;
     }
 
@@ -529,6 +545,29 @@ public:
         }
         return ink.at(index).page;
     }
+
+    TextItem displayText(size_t index) const {
+        auto item = texts.at(index);
+        if (!selectionGesture || !selectionGesture->moving ||
+            !std::binary_search(selectionGesture->textIndices.begin(), selectionGesture->textIndices.end(), index)) {
+            return item;
+        }
+
+        item = transformText(item, selectionGesture->transform);
+        if (selectionGesture->targetPage != selectionGesture->page) {
+            item.page = selectionGesture->targetPage;
+            item.layerId = activeLayerId(item.page);
+            item.originLayer = activeLayerOrigin(item.page);
+            item.layerOrder = nextOriginOrder(item.page, item.originLayer);
+        }
+        return item;
+    }
+
+    int displayTextPage(size_t index) const { return displayText(index).page; }
+
+    size_t displayTextLayerId(size_t index) const { return displayText(index).layerId; }
+
+    size_t displayTextLayerOrigin(size_t index) const { return displayText(index).originLayer; }
 
     size_t displayLayerId(size_t index) const {
         if (selectionGesture && selectionGesture->moving &&
@@ -593,6 +632,7 @@ public:
     void cancelSelection() {
         if (selectionGesture) {
             selected = std::move(selectionGesture->previousSelection);
+            selectedTexts = std::move(selectionGesture->previousTextSelection);
             selectionGesture.reset();
         }
     }
@@ -600,7 +640,12 @@ public:
     void clearSelection() {
         cancelSelection();
         selected.clear();
+        selectedTexts.clear();
     }
+
+    bool hasSelection() const { return !selected.empty() || !selectedTexts.empty(); }
+
+    size_t selectionCount() const { return selected.size() + selectedTexts.size(); }
 
     std::optional<size_t> pickStroke(int pageIndex, Point point) const {
         const size_t active = activeLayerId(pageIndex);
@@ -621,6 +666,37 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    std::optional<size_t> pickText(int pageIndex, Point point) const {
+        const size_t active = activeLayerId(pageIndex);
+        if (!layerVisible(pageIndex, active)) {
+            return std::nullopt;
+        }
+        std::optional<size_t> best;
+        size_t bestOrder = 0;
+        for (size_t index = 0; index < texts.size(); ++index) {
+            const auto& item = texts[index];
+            if (item.page != pageIndex || item.layerId != active || item.text.empty()) {
+                continue;
+            }
+            const double determinant = item.xx * item.yy - item.xy * item.yx;
+            if (!std::isfinite(determinant) || std::abs(determinant) < 1e-12) {
+                continue;
+            }
+            const double dx = point.x - item.x;
+            const double dy = point.y - item.y;
+            const double localX = (item.yy * dx - item.xy * dy) / determinant;
+            const double localY = (-item.yx * dx + item.xx * dy) / determinant;
+            if (localX < 0 || localX > item.layoutWidth || localY < 0 || localY > item.layoutHeight) {
+                continue;
+            }
+            if (!best || item.layerOrder >= bestOrder) {
+                best = index;
+                bestOrder = item.layerOrder;
+            }
+        }
+        return best;
     }
 
     static void extendLassoAtPageEdges(std::vector<Point>& boundary, const PageSize& size) {
@@ -662,6 +738,7 @@ public:
         gesture.targetPage = hit->page;
         gesture.start = gesture.latest = hit->local;
         gesture.previousSelection = selected;
+        gesture.previousTextSelection = selectedTexts;
         gesture.multiLayer = selectionAcrossLayers;
         auto bounds = selectionBox();
         if (bounds && bounds->page == hit->page && !forceRectangle) {
@@ -678,17 +755,27 @@ public:
                          hit->local.x <= bounds->x1 + padding && hit->local.y >= bounds->y0 - padding &&
                          hit->local.y <= bounds->y1 + padding));
         if (!gesture.moving && brush.tool == Tool::SmartSelect && !forceRectangle) {
-            if (auto picked = pickStroke(hit->page, hit->local)) {
-                selected = {*picked};
+            const auto pickedStroke = pickStroke(hit->page, hit->local);
+            const auto pickedText = pickText(hit->page, hit->local);
+            if (pickedText && (!pickedStroke || texts[*pickedText].layerOrder >= ink[*pickedStroke].layerOrder)) {
+                selected.clear();
+                selectedTexts = {*pickedText};
+                bounds = selectionBox();
+                gesture.moving = true;
+            } else if (pickedStroke) {
+                selected = {*pickedStroke};
+                selectedTexts.clear();
                 bounds = selectionBox();
                 gesture.moving = true;
             }
         }
         if (gesture.moving) {
             gesture.indices = selected;
+            gesture.textIndices = selectedTexts;
             gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds) : *bounds;
         } else {
             selected.clear();
+            selectedTexts.clear();
             gesture.lasso = brush.tool == Tool::SelectLasso && !forceRectangle;
             gesture.boundary.push_back(hit->local);
             gesture.additive = forceRectangle && bounds && bounds->page == hit->page;
@@ -777,12 +864,40 @@ public:
                     }
                 }
                 if (!transferred.empty()) edit.changes.push_back({ink.size(), {}, ink.size()-transferred.size(), std::move(transferred)});
+
+                std::vector<TextItem> transferredTexts;
+                for (auto index: g.textIndices) {
+                    auto moved = transformText(texts.at(index), g.transform);
+                    if (!validTextPage(moved)) {
+                        return;
+                    }
+                    moved.page = g.targetPage;
+                    if (g.targetPage == g.page) {
+                        edit.textChanges.push_back({index, {texts[index]}, index, {std::move(moved)}});
+                    } else {
+                        moved.layerId = activeLayerId(g.targetPage);
+                        moved.originLayer = activeLayerOrigin(g.targetPage);
+                        moved.layerOrder = nextOriginOrder(g.targetPage, moved.originLayer) + transferredTexts.size();
+                        const auto removed = transferredTexts.size();
+                        edit.textChanges.push_back({index, {texts[index]}, index - removed, {}});
+                        transferredTexts.push_back(std::move(moved));
+                    }
+                }
+                if (!transferredTexts.empty()) {
+                    edit.textChanges.push_back({texts.size(), {}, texts.size() - transferredTexts.size(),
+                                                std::move(transferredTexts)});
+                }
             }
-            if (!edit.changes.empty()) {
+            if (!edit.changes.empty() || !edit.textChanges.empty() || !edit.imageChanges.empty()) {
                 edit.selectionBefore = edit.selectionAfter = selected;
+                edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
                 if (g.targetPage != g.page) {
                     edit.selectionAfter = std::vector<size_t>{};
                     for (size_t n = ink.size()-selected.size(); n < ink.size(); ++n) edit.selectionAfter->push_back(n);
+                    edit.textSelectionAfter = std::vector<size_t>{};
+                    for (size_t n = texts.size() - selectedTexts.size(); n < texts.size(); ++n) {
+                        edit.textSelectionAfter->push_back(n);
+                    }
                 }
                 apply(edit, true);
                 record(std::move(edit));
@@ -793,6 +908,7 @@ public:
             const auto x0 = std::min(g.start.x, g.latest.x), x1 = std::max(g.start.x, g.latest.x);
             const auto y0 = std::min(g.start.y, g.latest.y), y1 = std::max(g.start.y, g.latest.y);
             if (g.additive) selected = g.previousSelection;
+            if (g.additive) selectedTexts = g.previousTextSelection;
             if (g.lasso) extendLassoAtPageEdges(g.boundary, size);
             // RectangularSelector extends at page edges (1 pt). Stroke selection
             // tests every point, rather than accepting a crossing segment.
@@ -810,7 +926,28 @@ public:
                     }
                 }
                 selected.insert(selected.end(), layerSelection.begin(), layerSelection.end());
-                return !layerSelection.empty();
+
+                std::vector<size_t> textLayerSelection;
+                for (size_t i = 0; i < texts.size(); ++i) {
+                    const auto& text = texts[i];
+                    if (text.page != g.page || text.layerId != layerId || text.text.empty() ||
+                        !layerVisible(g.page, text.layerId)) {
+                        continue;
+                    }
+                    const auto corners = textCorners(text);
+                    const bool contained = std::all_of(corners.begin(), corners.end(), [&](const Point& point) {
+                        if (g.lasso) {
+                            return polygonContains(g.boundary, point);
+                        }
+                        return (x0 <= 1 || point.x >= x0) && (x1 >= size.width - 1 || point.x <= x1) &&
+                               (y0 <= 1 || point.y >= y0) && (y1 >= size.height - 1 || point.y <= y1);
+                    });
+                    if (contained) {
+                        textLayerSelection.push_back(i);
+                    }
+                }
+                selectedTexts.insert(selectedTexts.end(), textLayerSelection.begin(), textLayerSelection.end());
+                return !layerSelection.empty() || !textLayerSelection.empty();
             };
             if (g.multiLayer) {
                 const auto& layers = layersForPage(g.page).layers;
@@ -824,6 +961,8 @@ public:
             }
             std::sort(selected.begin(),selected.end());
             selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
+            std::sort(selectedTexts.begin(), selectedTexts.end());
+            selectedTexts.erase(std::unique(selectedTexts.begin(), selectedTexts.end()), selectedTexts.end());
         }
     }
 
@@ -835,19 +974,31 @@ public:
                 selected.push_back(i);
             }
         }
+        for (size_t i = 0; i < texts.size(); ++i) {
+            if (texts[i].page == page && texts[i].layerId == activeLayerId(page) &&
+                layerVisible(page, texts[i].layerId) && !texts[i].text.empty()) {
+                selectedTexts.push_back(i);
+            }
+        }
     }
 
     void deleteSelection() {
         cancelSelection();
-        if (selected.empty()) {
+        if (!hasSelection()) {
             return;
         }
         Edit edit;
         edit.selectionBefore = selected;
         edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{};
         for (size_t n = 0; n < selected.size(); ++n) {
             const auto i = selected[n];
             edit.changes.push_back({i, {ink.at(i)}, i - n, {}});
+        }
+        for (size_t n = 0; n < selectedTexts.size(); ++n) {
+            const auto i = selectedTexts[n];
+            edit.textChanges.push_back({i, {texts.at(i)}, i - n, {}});
         }
         apply(edit, true);
         record(std::move(edit));
@@ -1723,13 +1874,16 @@ private:
         size_t revision = 0;
         std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
+        std::optional<std::vector<size_t>> textSelectionBefore = std::nullopt;
+        std::optional<std::vector<size_t>> textSelectionAfter = std::nullopt;
     };
 
     bool validTextPage(const TextItem& item) const {
         return item.page >= 0 && item.page < pageCount() && std::isfinite(item.fontSize) && item.fontSize > 0 &&
                std::isfinite(item.wrapWidth) && std::isfinite(item.xx) && std::isfinite(item.yx) &&
                std::isfinite(item.xy) && std::isfinite(item.yy) && std::isfinite(item.x) &&
-               std::isfinite(item.y);
+               std::isfinite(item.y) && std::isfinite(item.layoutWidth) && item.layoutWidth >= 0 &&
+               std::isfinite(item.layoutHeight) && item.layoutHeight >= 0;
     }
 
     size_t nextOriginOrder(int pageIndex, size_t origin) const {
@@ -1895,7 +2049,9 @@ private:
         bool multiLayer = false;
         int handle = -1, targetPage = 0;
         std::vector<size_t> previousSelection;
+        std::vector<size_t> previousTextSelection;
         std::vector<size_t> indices;
+        std::vector<size_t> textIndices;
         SelectionBox bounds{};
         SelectionTransform transform;
         std::vector<Point> boundary;
@@ -1908,6 +2064,30 @@ private:
 
     static Point lerpPoint(const Point& a, const Point& b, double t) {
         return {a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.pressure + t * (b.pressure - a.pressure)};
+    }
+
+    static std::array<Point, 4> textCorners(const TextItem& item) {
+        const auto transform = [&](double x, double y) {
+            return Point{item.xx * x + item.xy * y + item.x, item.yx * x + item.yy * y + item.y};
+        };
+        return {transform(0, 0), transform(item.layoutWidth, 0),
+                transform(item.layoutWidth, item.layoutHeight), transform(0, item.layoutHeight)};
+    }
+
+    static TextItem transformText(TextItem item, const SelectionTransform& transform) {
+        const double xx = transform.xx * item.xx + transform.xy * item.yx;
+        const double yx = transform.yx * item.xx + transform.yy * item.yx;
+        const double xy = transform.xx * item.xy + transform.xy * item.yy;
+        const double yy = transform.yx * item.xy + transform.yy * item.yy;
+        const double x = transform.xx * item.x + transform.xy * item.y + transform.x0;
+        const double y = transform.yx * item.x + transform.yy * item.y + transform.y0;
+        item.xx = xx;
+        item.yx = yx;
+        item.xy = xy;
+        item.yy = yy;
+        item.x = x;
+        item.y = y;
+        return item;
     }
 
     static Point pointAt(const Ink& stroke, PathParam param) {
@@ -2314,6 +2494,7 @@ private:
             }
         }
         selected = (forward ? edit.selectionAfter : edit.selectionBefore).value_or(std::vector<size_t>{});
+        selectedTexts = (forward ? edit.textSelectionAfter : edit.textSelectionBefore).value_or(std::vector<size_t>{});
     }
 
     Device owner = Device::Mouse;
