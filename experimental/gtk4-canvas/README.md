@@ -78,8 +78,11 @@ layer names/annotation state, and document/PDF filenames. Lua plugins can also
 query editable strokes, text, links, and images by selection, layer, page, or
 document; returned element references remain valid across vector growth and
 value-semantic edits. `app.addToSelection()` and `app.clearSelection()` support
-reference-based selection workflows. Other master Lua APIs and editable-object
-creation actions remain migration work; see the feature audit.
+reference-based selection workflows. `app.addTexts()` and `app.addLinks()` create
+editable text and URL links on the current layer, use configured font/color
+defaults, return stable references, and support grouped, individual, and
+non-undoable history policies. Image/spline creation and other master Lua APIs
+remain migration work; see the feature audit.
 
 The bundled ImageActions plugin registers all ten legacy image operations.
 When libvips is available at build time, the GTK 4 host performs invert,

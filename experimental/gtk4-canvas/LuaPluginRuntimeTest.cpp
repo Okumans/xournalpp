@@ -197,6 +197,45 @@ int main() {
                 "  app.changeActionState('object-count', #images * 100 + #texts * 10 + #links)\n"
                 "end\n"
                 "function malformed() app.addToSelection({'not a reference'}) end\n");
+    const auto textLinkCreationPlugin = root / "TextLinkCreationPlugin";
+    writePlugin(textLinkCreationPlugin,
+                "[about]\ndescription=Create editable text and links\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Create text', callback='createText'})\n"
+                "  app.registerUi({menu='Create link', callback='createLink'})\n"
+                "  app.registerUi({menu='Create individual text', callback='individualText'})\n"
+                "  app.registerUi({menu='Create no-undo link', callback='noUndoLink'})\n"
+                "  app.registerUi({menu='Reject bad text', callback='badText'})\n"
+                "  app.registerUi({menu='Reject bad alignment', callback='badAlignment'})\n"
+                "  app.registerUi({menu='Reject bad undo policy', callback='badUndoPolicy'})\n"
+                "end\n"
+                "function createText()\n"
+                "  local refs = app.addTexts({texts={\n"
+                "    {text='hello', font={name='Noto Sans', size=9.5}, color=0x1259b9, x=10, y=20, wrap=80},\n"
+                "    {text='default font', x=30, y=40}\n"
+                "  }, allowUndoRedoAction='grouped'})\n"
+                "  assert(#refs == 2 and refs[1] ~= nil and refs[2] ~= nil)\n"
+                "end\n"
+                "function createLink()\n"
+                "  local refs = app.addLinks({links={{text='site', url='https://example.test', "
+                "alignment=app.C.Alignment_center, font={name='Serif', size=12}, color=0xabcdef, x=50, y=60}}})\n"
+                "  assert(#refs == 1 and refs[1] ~= nil)\n"
+                "end\n"
+                "function individualText()\n"
+                "  local refs = app.addTexts({texts={{text='one undo each', x=5, y=6}}, "
+                "allowUndoRedoAction='individual'})\n"
+                "  assert(#refs == 1 and refs[1] ~= nil)\n"
+                "end\n"
+                "function noUndoLink()\n"
+                "  local refs = app.addLinks({links={{text='no undo', url='https://example.test', x=7, y=8}}, "
+                "allowUndoRedoAction='none'})\n"
+                "  assert(#refs == 1 and refs[1] ~= nil)\n"
+                "end\n"
+                "function badText() app.addTexts({texts={{text='invalid', x=1, y=2, color=0x1000000}}}) end\n"
+                "function badAlignment() app.addLinks({links={{text='bad', url='https://example.test', "
+                "alignment=4, x=1, y=2}}}) end\n"
+                "function badUndoPolicy() app.addTexts({texts={}, allowUndoRedoAction='batched'}) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -206,9 +245,9 @@ int main() {
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
-                                     quickScreenshotPlugin.string(), {});
+                                     quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 14, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 15, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -228,6 +267,10 @@ int main() {
     std::int64_t pluginObjectCount = -1;
     std::vector<prototype::PluginStrokeInput> addedStrokes;
     prototype::PluginStrokeUndoPolicy addedStrokePolicy = prototype::PluginStrokeUndoPolicy::Grouped;
+    std::vector<prototype::PluginTextInput> addedTexts;
+    std::vector<prototype::PluginLinkInput> addedLinks;
+    prototype::PluginStrokeUndoPolicy addedTextPolicy = prototype::PluginStrokeUndoPolicy::Individual;
+    prototype::PluginStrokeUndoPolicy addedLinkPolicy = prototype::PluginStrokeUndoPolicy::Individual;
     double pageWidthChange = 0;
     double pageHeightChange = 0;
     bool pageSizeRelative = false;
@@ -297,6 +340,28 @@ int main() {
         addedStrokes = strokes;
         addedStrokePolicy = policy;
         references = {0x51, 0x52};
+        return true;
+    };
+    host.addTexts = [&](const std::vector<prototype::PluginTextInput>& texts,
+                        prototype::PluginStrokeUndoPolicy policy, std::vector<std::uintptr_t>& references,
+                        std::string&) {
+        addedTexts = texts;
+        addedTextPolicy = policy;
+        references.clear();
+        for (std::size_t index = 0; index < texts.size(); ++index) {
+            references.push_back(0x71 + index);
+        }
+        return true;
+    };
+    host.addLinks = [&](const std::vector<prototype::PluginLinkInput>& links,
+                        prototype::PluginStrokeUndoPolicy policy, std::vector<std::uintptr_t>& references,
+                        std::string&) {
+        addedLinks = links;
+        addedLinkPolicy = policy;
+        references.clear();
+        for (std::size_t index = 0; index < links.size(); ++index) {
+            references.push_back(0x73 + index);
+        }
         return true;
     };
     host.getImages = [&](std::string_view type, std::vector<prototype::PluginImage>& images, std::string&) {
@@ -402,6 +467,10 @@ int main() {
     const auto loadedObjectQueryPlugin = runtime.findPlugin("ObjectQueryPlugin");
     require(loadedObjectQueryPlugin && loadedObjectQueryPlugin->loaded && loadedObjectQueryPlugin->menuItems == 2,
             "Plugin using editable object queries and selection references did not load");
+    const auto loadedTextLinkCreationPlugin = runtime.findPlugin("TextLinkCreationPlugin");
+    require(loadedTextLinkCreationPlugin && loadedTextLinkCreationPlugin->loaded &&
+                    loadedTextLinkCreationPlugin->menuItems == 7,
+            "Plugin using text and link creation did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -436,6 +505,47 @@ int main() {
                     runtime.findPlugin("ObjectQueryPlugin")->error.find("array of element references") !=
                             std::string::npos,
             "app.addToSelection accepted a non-reference value");
+    require(runtime.invokeMenu("TextLinkCreationPlugin", 0) && addedTexts.size() == 2 &&
+                    addedTextPolicy == prototype::PluginStrokeUndoPolicy::Grouped &&
+                    addedTexts[0].text == "hello" &&
+                    addedTexts[0].fontName == std::optional<std::string>("Noto Sans") &&
+                    addedTexts[0].fontSize == std::optional<double>(9.5) &&
+                    addedTexts[0].color == std::optional<std::uint32_t>(0x1259b9) &&
+                    addedTexts[0].x == 10 && addedTexts[0].y == 20 && addedTexts[0].wrap == 80 &&
+                    addedTexts[1].text == "default font" && !addedTexts[1].fontName &&
+                    !addedTexts[1].fontSize && !addedTexts[1].color && !addedTexts[1].wrap,
+            "app.addTexts lost its optional fields, defaults, undo policy, or returned references");
+    require(runtime.invokeMenu("TextLinkCreationPlugin", 1) && addedLinks.size() == 1 &&
+                    addedLinkPolicy == prototype::PluginStrokeUndoPolicy::Grouped &&
+                    addedLinks[0].text == "site" && addedLinks[0].url == "https://example.test" &&
+                    addedLinks[0].alignment == std::optional<int>(1) &&
+                    addedLinks[0].fontName == std::optional<std::string>("Serif") &&
+                    addedLinks[0].fontSize == std::optional<double>(12) &&
+                    addedLinks[0].color == std::optional<std::uint32_t>(0xabcdef) &&
+                    addedLinks[0].x == 50 && addedLinks[0].y == 60,
+            "app.addLinks lost URL, alignment, style, coordinates, defaults, or returned references");
+    require(runtime.invokeMenu("TextLinkCreationPlugin", 2) && addedTexts.size() == 1 &&
+                    addedTextPolicy == prototype::PluginStrokeUndoPolicy::Individual &&
+                    !addedTexts[0].fontName && !addedTexts[0].fontSize && !addedTexts[0].color &&
+                    addedTexts[0].x == 5 && addedTexts[0].y == 6,
+            "app.addTexts did not preserve individual undo policy or optional defaults");
+    require(runtime.invokeMenu("TextLinkCreationPlugin", 3) && addedLinks.size() == 1 &&
+                    addedLinkPolicy == prototype::PluginStrokeUndoPolicy::None &&
+                    !addedLinks[0].alignment && !addedLinks[0].fontName && !addedLinks[0].fontSize &&
+                    !addedLinks[0].color && addedLinks[0].x == 7 && addedLinks[0].y == 8,
+            "app.addLinks did not preserve no-undo policy or default alignment/style");
+    require(!runtime.invokeMenu("TextLinkCreationPlugin", 4) &&
+                    runtime.findPlugin("TextLinkCreationPlugin")->error.find("0x000000..0xFFFFFF") !=
+                            std::string::npos,
+            "app.addTexts accepted an out-of-range color");
+    require(!runtime.invokeMenu("TextLinkCreationPlugin", 5) &&
+                    runtime.findPlugin("TextLinkCreationPlugin")->error.find("alignment must be 0, 1, or 2") !=
+                            std::string::npos,
+            "app.addLinks accepted an invalid alignment");
+    require(!runtime.invokeMenu("TextLinkCreationPlugin", 6) &&
+                    runtime.findPlugin("TextLinkCreationPlugin")->error.find("Unrecognized undo option") !=
+                            std::string::npos,
+            "app.addTexts accepted an unknown undo policy");
     require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
                     runtime.findPlugin("StrokeApiPlugin")->error.find("There is no selection") != std::string::npos,
             "app.getStrokes selection errors were not reported to the plugin");
@@ -512,8 +622,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 21 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 11,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 28 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 12,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

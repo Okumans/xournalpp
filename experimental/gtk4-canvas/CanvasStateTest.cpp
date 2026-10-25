@@ -953,6 +953,82 @@ static void pluginStrokeAndPageSizeHistory() {
           "undo after an irreversible plugin edit must return to its dirty revision boundary");
 }
 
+static void pluginTextBatchHistory() {
+    CanvasState state;
+    state.setPages({{595, 842}});
+    state.ink.push_back(Ink{0, {{1, 1}, {2, 2}}, {Tool::Pen, {0, 0, 0}, 1}});
+    state.selected = {0};
+
+    TextItem note;
+    note.text = "generated note";
+    note.fontName = "Noto Sans";
+    note.fontSize = 9.5;
+    note.color = 0xff1259b9U;
+    note.x = 10;
+    note.y = 20;
+    note.wrapWidth = 80;
+    note.layoutWidth = 80;
+    note.layoutHeight = 24;
+
+    TextItem link;
+    link.text = "site";
+    link.linkUrl = "https://example.test";
+    link.isLink = true;
+    link.alignment = 1;
+    link.x = 50;
+    link.y = 60;
+    link.layoutWidth = 34;
+    link.layoutHeight = 16;
+
+    check(state.addPluginTexts({note, link}, 0) && state.texts.size() == 2 &&
+                  state.texts[0].layerId == state.activeLayerId(0) && state.texts[0].layerOrder == 0 &&
+                  state.texts[1].layerOrder == 1 && state.texts[0].pluginReference != 0 &&
+                  state.texts[1].pluginReference != 0 &&
+                  state.texts[0].pluginReference != state.texts[1].pluginReference &&
+                  state.selected == std::vector<size_t>{0},
+          "grouped plugin text and link insertion must target the current layer and preserve selection");
+    const auto noteReference = state.texts[0].pluginReference;
+    const auto linkReference = state.texts[1].pluginReference;
+    state.undo();
+    check(state.texts.empty() && state.selected == std::vector<size_t>{0},
+          "grouped plugin text and links must undo in one step without changing prior selection");
+    state.redo();
+    check(state.texts.size() == 2 && state.texts[0].text == "generated note" && state.texts[1].linkUrl ==
+                  "https://example.test" && state.texts[0].pluginReference == noteReference &&
+                  state.texts[1].pluginReference == linkReference,
+          "grouped plugin text redo must preserve content, link behavior, and opaque references");
+
+    TextItem first;
+    first.text = "first";
+    TextItem second;
+    second.text = "second";
+    check(state.addPluginTexts({first, second}, 1) && state.texts.size() == 4,
+          "individual plugin text insertion did not add its full batch");
+    state.undo();
+    check(state.texts.size() == 3 && state.texts.back().text == "first",
+          "individual plugin text insertion must undo one object at a time");
+    state.redo();
+    check(state.texts.size() == 4 && state.texts.back().text == "second",
+          "individual plugin text redo did not restore the final object");
+
+    TextItem invalid;
+    invalid.text = "invalid alignment";
+    invalid.alignment = 4;
+    check(!state.addPluginTexts({invalid}, 0) && state.texts.size() == 4,
+          "plugin text insertion accepted an unsupported alignment or partially changed the document");
+
+    const auto previousRevision = state.revision();
+    TextItem irreversible;
+    irreversible.text = "irreversible";
+    check(state.addPluginTexts({irreversible}, 2), "non-undoable plugin text insertion failed");
+    const auto irreversibleRevision = state.revision();
+    check(state.texts.size() == 5 && irreversibleRevision != previousRevision && !state.canUndo() && !state.canRedo(),
+          "non-undoable plugin text must mark the document dirty and establish an undo boundary");
+    state.undo();
+    check(state.texts.size() == 5 && state.revision() == irreversibleRevision,
+          "undo must not remove non-undoable plugin text or mark its change clean");
+}
+
 static void pluginElementReferences() {
     CanvasState state;
     state.setPages({{300, 400}});
@@ -1166,6 +1242,7 @@ int main() {
         layerRenameDuplicateReorderAndVisibility();
         pageBackgroundHistory();
         pluginStrokeAndPageSizeHistory();
+        pluginTextBatchHistory();
         pluginElementReferences();
         pdfAnnotationInkHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -112,6 +113,134 @@ bool matchesShortcut(guint shortcutKey, GdkModifierType shortcutModifiers, guint
            (shortcutModifiers & ~shift) == normalized && gdk_keyval_to_lower(keyval) != keyval;
 }
 
+bool readLuaStringField(lua_State* state, int tableIndex, const char* field, std::optional<std::string>& value,
+                        bool required, char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, field);
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        if (required) {
+            std::snprintf(error, errorSize, "Missing '%s' string", field);
+            return false;
+        }
+        return true;
+    }
+    if (!lua_isstring(state, -1)) {
+        std::snprintf(error, errorSize, "Field '%s' must be a string", field);
+        lua_pop(state, 1);
+        return false;
+    }
+    std::size_t length = 0;
+    const char* bytes = lua_tolstring(state, -1, &length);
+    value = std::string(bytes, length);
+    lua_pop(state, 1);
+    return true;
+}
+
+bool readLuaNumberField(lua_State* state, int tableIndex, const char* field, std::optional<double>& value,
+                        bool required, char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, field);
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        if (required) {
+            std::snprintf(error, errorSize, "Missing numeric '%s' field", field);
+            return false;
+        }
+        return true;
+    }
+    if (!lua_isnumber(state, -1)) {
+        std::snprintf(error, errorSize, "Field '%s' must be a number", field);
+        lua_pop(state, 1);
+        return false;
+    }
+    const double number = lua_tonumber(state, -1);
+    lua_pop(state, 1);
+    if (!std::isfinite(number)) {
+        std::snprintf(error, errorSize, "Field '%s' must be finite", field);
+        return false;
+    }
+    value = number;
+    return true;
+}
+
+bool readLuaFont(lua_State* state, int tableIndex, std::optional<std::string>& fontName,
+                 std::optional<double>& fontSize, char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, "font");
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        return true;
+    }
+    if (!lua_istable(state, -1)) {
+        std::snprintf(error, errorSize, "'font' value must be a table");
+        lua_pop(state, 1);
+        return false;
+    }
+
+    const int fontIndex = lua_absindex(state, -1);
+    const bool valid = readLuaStringField(state, fontIndex, "name", fontName, false, error, errorSize) &&
+                       readLuaNumberField(state, fontIndex, "size", fontSize, false, error, errorSize);
+    lua_pop(state, 1);
+    if (valid && fontSize && *fontSize <= 0) {
+        std::snprintf(error, errorSize, "Font size must be positive");
+        return false;
+    }
+    return valid;
+}
+
+bool readLuaColor(lua_State* state, int tableIndex, std::optional<std::uint32_t>& color,
+                  char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, "color");
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        return true;
+    }
+    if (!lua_isinteger(state, -1)) {
+        std::snprintf(error, errorSize, "'color' must be an integer RGB hex code or unset");
+        lua_pop(state, 1);
+        return false;
+    }
+    const lua_Integer value = lua_tointeger(state, -1);
+    lua_pop(state, 1);
+    if (value < 0 || value > 0xffffff) {
+        std::snprintf(error, errorSize, "Color must be in the range 0x000000..0xFFFFFF");
+        return false;
+    }
+    color = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+bool readLuaUndoPolicy(lua_State* state, int tableIndex, PluginStrokeUndoPolicy& policy,
+                       char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, "allowUndoRedoAction");
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        policy = PluginStrokeUndoPolicy::Grouped;
+        return true;
+    }
+    if (lua_type(state, -1) != LUA_TSTRING) {
+        std::snprintf(error, errorSize, "Undo policy must be 'grouped', 'individual', or 'none'");
+        lua_pop(state, 1);
+        return false;
+    }
+    const std::string_view value = lua_tostring(state, -1);
+    lua_pop(state, 1);
+    if (value == "grouped") {
+        policy = PluginStrokeUndoPolicy::Grouped;
+    } else if (value == "individual") {
+        policy = PluginStrokeUndoPolicy::Individual;
+    } else if (value == "none") {
+        policy = PluginStrokeUndoPolicy::None;
+    } else {
+        std::snprintf(error, errorSize, "Unrecognized undo option: %.*s", static_cast<int>(value.size()), value.data());
+        return false;
+    }
+    return true;
+}
+
 constexpr std::array<std::string_view, 28> toolNames{
         "none",
         "pen",
@@ -159,6 +288,8 @@ int luaOpenApp(lua_State* state) {
             {"addToSelection", LuaPluginRuntime::luaAddToSelection},
             {"clearSelection", LuaPluginRuntime::luaClearSelection},
             {"addStrokes", LuaPluginRuntime::luaAddStrokes},
+            {"addTexts", LuaPluginRuntime::luaAddTexts},
+            {"addLinks", LuaPluginRuntime::luaAddLinks},
             {"setPageSize", LuaPluginRuntime::luaSetPageSize},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
@@ -176,6 +307,12 @@ int luaOpenApp(lua_State* state) {
         lua_pushinteger(state, static_cast<lua_Integer>(index));
         lua_setfield(state, -2, key.c_str());
     }
+    lua_pushinteger(state, 0);
+    lua_setfield(state, -2, "Alignment_left");
+    lua_pushinteger(state, 1);
+    lua_setfield(state, -2, "Alignment_center");
+    lua_pushinteger(state, 2);
+    lua_setfield(state, -2, "Alignment_right");
     lua_setfield(state, -2, "C");
     return 1;
 }
@@ -752,6 +889,24 @@ bool LuaPluginRuntime::addStrokes(const std::vector<PluginStrokeInput>& strokes,
         return false;
     }
     return host.addStrokes(strokes, undoPolicy, references, error);
+}
+
+bool LuaPluginRuntime::addTexts(const std::vector<PluginTextInput>& texts, PluginStrokeUndoPolicy undoPolicy,
+                                std::vector<std::uintptr_t>& references, std::string& error) {
+    if (!host.addTexts) {
+        error = "Adding text is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.addTexts(texts, undoPolicy, references, error);
+}
+
+bool LuaPluginRuntime::addLinks(const std::vector<PluginLinkInput>& links, PluginStrokeUndoPolicy undoPolicy,
+                                std::vector<std::uintptr_t>& references, std::string& error) {
+    if (!host.addLinks) {
+        error = "Adding links is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.addLinks(links, undoPolicy, references, error);
 }
 
 bool LuaPluginRuntime::setPageSize(double width, double height, bool relative, std::string& error) {
@@ -1627,6 +1782,229 @@ int LuaPluginRuntime::luaAddStrokes(lua_State* state) {
             if (!plugin->runtime->addStrokes(strokes, undoPolicy, references, hostError)) {
                 std::snprintf(error, sizeof(error), "%s",
                               hostError.empty() ? "Adding strokes failed" : hostError.c_str());
+            }
+        }
+        if (error[0] == '\0') {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(references.size(),
+                                                                          std::numeric_limits<int>::max())),
+                            0);
+            lua_Integer referenceIndex = 0;
+            for (const auto reference: references) {
+                lua_pushlightuserdata(state, reinterpret_cast<void*>(reference));
+                lua_rawseti(state, -2, ++referenceIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaAddTexts(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginTextInput> texts;
+        std::vector<std::uintptr_t> references;
+        PluginStrokeUndoPolicy undoPolicy = PluginStrokeUndoPolicy::Grouped;
+        constexpr std::size_t maxTextCount = 100000;
+        constexpr std::size_t maxTextBytes = 16 * 1024 * 1024;
+        std::size_t totalTextBytes = 0;
+
+        lua_settop(state, 1);
+        if (!lua_istable(state, 1)) {
+            std::snprintf(error, sizeof(error), "addTexts expects an options table");
+        }
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "texts");
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Missing text table!");
+            }
+        }
+
+        const int textsIndex = error[0] == '\0' ? lua_absindex(state, -1) : 0;
+        const std::size_t textCount = textsIndex ? lua_rawlen(state, textsIndex) : 0;
+        if (error[0] == '\0' && textCount > maxTextCount) {
+            std::snprintf(error, sizeof(error), "Text batch exceeds the supported text count");
+        }
+
+        for (std::size_t index = 1; error[0] == '\0' && index <= textCount; ++index) {
+            lua_rawgeti(state, textsIndex, static_cast<lua_Integer>(index));
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Text entry %zu must be a table", index);
+                lua_pop(state, 1);
+                break;
+            }
+            const int textIndex = lua_absindex(state, -1);
+            PluginTextInput input;
+            std::optional<std::string> text;
+            std::optional<double> x;
+            std::optional<double> y;
+            if (!readLuaStringField(state, textIndex, "text", text, true, error, sizeof(error)) ||
+                !readLuaFont(state, textIndex, input.fontName, input.fontSize, error, sizeof(error)) ||
+                !readLuaColor(state, textIndex, input.color, error, sizeof(error)) ||
+                !readLuaNumberField(state, textIndex, "x", x, true, error, sizeof(error)) ||
+                !readLuaNumberField(state, textIndex, "y", y, true, error, sizeof(error)) ||
+                !readLuaNumberField(state, textIndex, "wrap", input.wrap, false, error, sizeof(error))) {
+                lua_pop(state, 1);
+                break;
+            }
+            if (!g_utf8_validate(text->data(), static_cast<gssize>(text->size()), nullptr)) {
+                std::snprintf(error, sizeof(error), "Text entry %zu is not valid UTF-8", index);
+                lua_pop(state, 1);
+                break;
+            }
+            if (text->size() > maxTextBytes - totalTextBytes) {
+                std::snprintf(error, sizeof(error), "Text batch exceeds the supported text size");
+                lua_pop(state, 1);
+                break;
+            }
+            totalTextBytes += text->size();
+            input.text = std::move(*text);
+            input.x = *x;
+            input.y = *y;
+            texts.push_back(std::move(input));
+            lua_pop(state, 1);
+        }
+
+        if (error[0] == '\0' && !readLuaUndoPolicy(state, 1, undoPolicy, error, sizeof(error))) {
+            // The policy parser has already described the invalid value.
+        }
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->addTexts(texts, undoPolicy, references, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Adding text failed" : hostError.c_str());
+            } else if (references.size() != texts.size()) {
+                std::snprintf(error, sizeof(error), "The GTK 4 host returned incomplete text references");
+            }
+        }
+        if (error[0] == '\0') {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(references.size(),
+                                                                          std::numeric_limits<int>::max())),
+                            0);
+            lua_Integer referenceIndex = 0;
+            for (const auto reference: references) {
+                lua_pushlightuserdata(state, reinterpret_cast<void*>(reference));
+                lua_rawseti(state, -2, ++referenceIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaAddLinks(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginLinkInput> links;
+        std::vector<std::uintptr_t> references;
+        PluginStrokeUndoPolicy undoPolicy = PluginStrokeUndoPolicy::Grouped;
+        constexpr std::size_t maxLinkCount = 100000;
+        constexpr std::size_t maxLinkTextBytes = 16 * 1024 * 1024;
+        std::size_t totalTextBytes = 0;
+
+        lua_settop(state, 1);
+        if (!lua_istable(state, 1)) {
+            std::snprintf(error, sizeof(error), "addLinks expects an options table");
+        }
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "links");
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Missing link table!");
+            }
+        }
+
+        const int linksIndex = error[0] == '\0' ? lua_absindex(state, -1) : 0;
+        const std::size_t linkCount = linksIndex ? lua_rawlen(state, linksIndex) : 0;
+        if (error[0] == '\0' && linkCount > maxLinkCount) {
+            std::snprintf(error, sizeof(error), "Link batch exceeds the supported link count");
+        }
+
+        for (std::size_t index = 1; error[0] == '\0' && index <= linkCount; ++index) {
+            lua_rawgeti(state, linksIndex, static_cast<lua_Integer>(index));
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Link entry %zu must be a table", index);
+                lua_pop(state, 1);
+                break;
+            }
+            const int linkIndex = lua_absindex(state, -1);
+            PluginLinkInput input;
+            std::optional<std::string> text;
+            std::optional<std::string> url;
+            std::optional<double> x;
+            std::optional<double> y;
+            if (!readLuaStringField(state, linkIndex, "text", text, true, error, sizeof(error)) ||
+                !readLuaStringField(state, linkIndex, "url", url, true, error, sizeof(error)) ||
+                !readLuaFont(state, linkIndex, input.fontName, input.fontSize, error, sizeof(error)) ||
+                !readLuaColor(state, linkIndex, input.color, error, sizeof(error)) ||
+                !readLuaNumberField(state, linkIndex, "x", x, true, error, sizeof(error)) ||
+                !readLuaNumberField(state, linkIndex, "y", y, true, error, sizeof(error))) {
+                lua_pop(state, 1);
+                break;
+            }
+            lua_getfield(state, linkIndex, "alignment");
+            if (!lua_isnil(state, -1)) {
+                int isInteger = 0;
+                const lua_Integer alignment = lua_tointegerx(state, -1, &isInteger);
+                if (!isInteger) {
+                    std::snprintf(error, sizeof(error), "Link field 'alignment' must be an integer");
+                } else {
+                    if (alignment < 0 || alignment > 2) {
+                        std::snprintf(error, sizeof(error), "Link alignment must be 0, 1, or 2");
+                    } else {
+                        input.alignment = static_cast<int>(alignment);
+                    }
+                }
+            }
+            lua_pop(state, 1);
+            if (error[0] != '\0') {
+                lua_pop(state, 1);
+                break;
+            }
+            if (!g_utf8_validate(text->data(), static_cast<gssize>(text->size()), nullptr)) {
+                std::snprintf(error, sizeof(error), "Link entry %zu text is not valid UTF-8", index);
+                lua_pop(state, 1);
+                break;
+            }
+            if (text->size() > maxLinkTextBytes - totalTextBytes) {
+                std::snprintf(error, sizeof(error), "Link batch exceeds the supported text size");
+                lua_pop(state, 1);
+                break;
+            }
+            totalTextBytes += text->size();
+            input.text = std::move(*text);
+            input.url = std::move(*url);
+            input.x = *x;
+            input.y = *y;
+            links.push_back(std::move(input));
+            lua_pop(state, 1);
+        }
+
+        if (error[0] == '\0' && !readLuaUndoPolicy(state, 1, undoPolicy, error, sizeof(error))) {
+            // The policy parser has already described the invalid value.
+        }
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->addLinks(links, undoPolicy, references, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Adding links failed" : hostError.c_str());
+            } else if (references.size() != links.size()) {
+                std::snprintf(error, sizeof(error), "The GTK 4 host returned incomplete link references");
             }
         }
         if (error[0] == '\0') {
