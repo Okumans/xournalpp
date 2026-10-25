@@ -1006,6 +1006,10 @@ private:
         host.setCurrentLayerName = [this](std::string_view name, std::string& error) {
             return setPluginCurrentLayerName(name, error);
         };
+        host.exportDocument = [this](const prototype::DocumentExportOptions& exportOptions, std::string& error) {
+            return exportDocumentFromPlugin(exportOptions, error);
+        };
+        host.documentFilename = [this] { return saveTarget; };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -2644,11 +2648,14 @@ private:
         const auto fitToContent = pluginRuntime->findPlugin("FitToContent");
         require(fitToContent && fitToContent->loaded && fitToContent->menuItems == 2,
                 "Enabled bundled FitToContent plugin did not register both page-fitting actions");
+        const auto exportPlugin = pluginRuntime->findPlugin("Export");
+        require(exportPlugin && exportPlugin->loaded && exportPlugin->menuItems == 3,
+                "Enabled bundled Export plugin did not register PDF, SVG, and PNG actions");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 8,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 9,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -2656,6 +2663,7 @@ private:
         gtk_menu_button_popup(GTK_MENU_BUTTON(pluginsMenuButton));
         capture("plugins-menu");
         gtk_menu_button_popdown(GTK_MENU_BUTTON(pluginsMenuButton));
+        verifyExportPlugin();
 
         require(pluginRuntime->handleKeyPress(GDK_KEY_v, GdkModifierType(0), false) &&
                         state.brush.tool == Tool::SmartSelect,
@@ -2833,8 +2841,80 @@ private:
         answerDialog("close");
         verifyFitToContentPlugin();
         std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-                     "HighlightPosition, ImageActions, FitToContent page resizing, SpaceForNotes page insertion, "
+                     "HighlightPosition, Export PDF/SVG/PNG, ImageActions, FitToContent page resizing, "
+                     "SpaceForNotes page insertion, "
                      "ToggleGrid paper changes, and background undo/redo\n";
+    }
+
+    void verifyExportPlugin() {
+        const int pageCountBefore = pageCount;
+        require(nativeSession && pageCountBefore == 2,
+                "Export plugin verification expects the original two-page document fixture");
+        const auto source = std::filesystem::path(options.smokeDirectory) / "export-plugin-source.xopp";
+        const auto oldSaveTarget = saveTarget;
+        saveTarget = source.string();
+
+        prototype::Ink sample;
+        sample.page = 0;
+        sample.layerId = state.activeLayerId(0);
+        sample.originLayer = state.activeLayerOrigin(0);
+        sample.layerOrder = 0;
+        sample.brush = {Tool::Pen, {1, 0, 0}, 8};
+        sample.points = {{120, 150, 1}, {220, 150, 1}};
+        state.ink.push_back(sample);
+
+        for (size_t action = 0; action < 3; ++action) {
+            require(pluginRuntime->invokeMenu("Export", action),
+                    "Bundled Export menu action did not dispatch through the GTK 4 Lua host");
+            waitForPluginDocumentJob();
+        }
+
+        const auto stem = source.parent_path() / source.stem();
+        auto pdfPath = stem;
+        pdfPath += "_export.pdf";
+        auto [exportedPdf, sizes] = openPreviewPdf(pdfPath.string());
+        require(sizes.size() == 2 && std::filesystem::file_size(pdfPath) > 1000,
+                "Export plugin did not produce the expected two-page PDF");
+        g_object_unref(exportedPdf);
+
+        for (int page = 1; page <= 2; ++page) {
+            auto svgPath = stem;
+            svgPath += "_export-" + std::to_string(page) + ".svg";
+            require(std::filesystem::is_regular_file(svgPath) && std::filesystem::file_size(svgPath) > 500,
+                    "Export plugin did not produce one SVG file per page");
+
+            auto pngPath = stem;
+            pngPath += "_export-" + std::to_string(page) + ".png";
+            auto* surface = cairo_image_surface_create_from_png(pngPath.c_str());
+            require(cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS,
+                    "Export plugin did not produce a readable PNG page");
+            const int width = cairo_image_surface_get_width(surface);
+            const int height = cairo_image_surface_get_height(surface);
+            require(width > 1000 && height > 1000,
+                    "Default PNG export did not use the master 300-DPI output size");
+            if (page == 1) {
+                cairo_surface_flush(surface);
+                const auto* pixels = cairo_image_surface_get_data(surface);
+                const int stride = cairo_image_surface_get_stride(surface);
+                size_t redPixels = 0;
+                const int x0 = static_cast<int>(120.0 * 300.0 / 72.0);
+                const int x1 = static_cast<int>(220.0 * 300.0 / 72.0);
+                const int y = static_cast<int>(150.0 * 300.0 / 72.0);
+                for (int x = x0; x < x1; ++x) {
+                    const auto* pixel = pixels + y * stride + x * 4;
+                    if (pixel[2] > 180 && pixel[1] < 100 && pixel[0] < 100) {
+                        ++redPixels;
+                    }
+                }
+                require(redPixels > 20,
+                        "Export plugin did not include unsaved GTK 4 ink in its PNG output");
+            }
+            cairo_surface_destroy(surface);
+        }
+
+        state.ink.pop_back();
+        saveTarget = oldSaveTarget;
+        update();
     }
 
     void verifyFitToContentPlugin() {
@@ -3920,6 +4000,69 @@ private:
                            session->exportPdf(worker, path, packets, texts, images, layers, pageSizes);
                        },
                        [this, path] { exportedPdfPath = path; });
+    }
+
+    void startPluginExport(prototype::DocumentExportOptions exportOptions) {
+        if (!nativeSession || busy) {
+            return;
+        }
+        const auto path = exportOptions.outputFile;
+        finishTextEditing();
+        if (autosaving) {
+            waitForAutosave([this, exportOptions = std::move(exportOptions)]() mutable {
+                startPluginExport(std::move(exportOptions));
+            });
+            return;
+        }
+        resetInput(true);
+        const auto packets = prototype::bridge::transferInk(state.ink);
+        const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
+        const auto layers = state.pageLayers;
+        const auto pageSizes = currentPageSizes(state);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto extension = std::filesystem::path(path).extension().string();
+        const auto status = extension == ".pdf" ? "Exporting PDF…" :
+                            extension == ".svg" ? "Exporting SVG…" : "Exporting PNG…";
+        runDocumentJob(status,
+                       [session, worker, exportOptions = std::move(exportOptions), packets, texts, images, layers,
+                        pageSizes] {
+                           session->exportDocument(worker, exportOptions, packets, texts, images, layers, pageSizes);
+                       },
+                       [this, path, extension] {
+                           if (extension == ".pdf") {
+                               exportedPdfPath = path;
+                           }
+                       });
+    }
+
+    bool exportDocumentFromPlugin(const prototype::DocumentExportOptions& exportOptions, std::string& error) {
+        if (exportOptions.outputFile.empty()) {
+            error = "Missing output file!";
+            return false;
+        }
+        if (!nativeSession || options.worker.empty()) {
+            error = "Document export requires the GTK 4 document worker";
+            return false;
+        }
+        if (closed || choosingFile || messageDialog || busy) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+
+        const auto extension = std::filesystem::path(exportOptions.outputFile).extension().string();
+        if (extension != ".pdf" && extension != ".svg" && extension != ".png") {
+            return true;
+        }
+
+        finishTextEditing();
+        if (autosaving) {
+            waitForAutosave([this, exportOptions] { startPluginExport(exportOptions); });
+        } else {
+            startPluginExport(exportOptions);
+        }
+        return true;
     }
 
     void chooseExportPdf() {

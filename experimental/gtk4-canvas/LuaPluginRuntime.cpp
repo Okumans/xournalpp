@@ -157,6 +157,8 @@ int luaOpenApp(lua_State* state) {
             {"setPageSize", LuaPluginRuntime::luaSetPageSize},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
+            {"export", LuaPluginRuntime::luaExport},
+            {"getDocumentStructure", LuaPluginRuntime::luaGetDocumentStructure},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
@@ -727,6 +729,18 @@ bool LuaPluginRuntime::setCurrentLayerName(std::string_view name, std::string& e
         return false;
     }
     return host.setCurrentLayerName(name, error);
+}
+
+bool LuaPluginRuntime::exportDocument(const DocumentExportOptions& options, std::string& error) {
+    if (!host.exportDocument) {
+        error = "Document export is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.exportDocument(options, error);
+}
+
+std::string LuaPluginRuntime::documentFilename() const {
+    return host.documentFilename ? host.documentFilename() : std::string{};
 }
 
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
@@ -1408,6 +1422,138 @@ int LuaPluginRuntime::luaSetCurrentLayerName(lua_State* state) {
         return lua_error(state);
     }
     return 0;
+}
+
+int LuaPluginRuntime::luaExport(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        DocumentExportOptions options;
+        if (!lua_istable(state, 1)) {
+            std::snprintf(error, sizeof(error), "export expects an options table");
+        }
+
+        const auto readString = [state, &error](const char* field, std::string& value, bool required,
+                                                const char* fallback = "") {
+            if (error[0] != '\0') {
+                return;
+            }
+            lua_getfield(state, 1, field);
+            if (lua_isnil(state, -1)) {
+                if (required) {
+                    std::snprintf(error, sizeof(error), "Missing %s!", field);
+                } else {
+                    value = fallback;
+                }
+                lua_pop(state, 1);
+                return;
+            }
+            if (!lua_isstring(state, -1)) {
+                std::snprintf(error, sizeof(error), "Export option '%s' must be a string", field);
+                lua_pop(state, 1);
+                return;
+            }
+            const char* text = lua_tostring(state, -1);
+            value = text ? text : "";
+            lua_pop(state, 1);
+        };
+        const auto readOptionalString = [state, &error](const char* field,
+                                                        std::optional<std::string>& value) {
+            if (error[0] != '\0') {
+                return;
+            }
+            lua_getfield(state, 1, field);
+            if (lua_isnil(state, -1)) {
+                value.reset();
+            } else if (!lua_isstring(state, -1)) {
+                std::snprintf(error, sizeof(error), "Export option '%s' must be a string", field);
+            } else {
+                const char* text = lua_tostring(state, -1);
+                value = text ? text : "";
+            }
+            lua_pop(state, 1);
+        };
+        const auto readInteger = [state, &error](const char* field, int& value, int fallback) {
+            if (error[0] != '\0') {
+                return;
+            }
+            lua_getfield(state, 1, field);
+            if (lua_isnil(state, -1)) {
+                value = fallback;
+            } else {
+                int isInteger = 0;
+                const auto integer = lua_tointegerx(state, -1, &isInteger);
+                if (!isInteger) {
+                    std::snprintf(error, sizeof(error), "Export option '%s' must be an integer", field);
+                } else if (integer < std::numeric_limits<int>::min() ||
+                           integer > std::numeric_limits<int>::max()) {
+                    std::snprintf(error, sizeof(error), "Export option '%s' is out of range", field);
+                } else {
+                    value = static_cast<int>(integer);
+                }
+            }
+            lua_pop(state, 1);
+        };
+
+        readString("outputFile", options.outputFile, true);
+        readOptionalString("range", options.range);
+        readOptionalString("layerRange", options.layerRange);
+        readString("background", options.background, false, "all");
+        readString("backend", options.backend, false, "default");
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "progressiveMode");
+            options.progressiveMode = lua_toboolean(state, -1);
+            lua_pop(state, 1);
+            readInteger("pngDpi", options.pngDpi, -1);
+            readInteger("pngWidth", options.pngWidth, -1);
+            // The GTK 3 implementation reads the legacy misspelling "dpiHeight";
+            // accept the documented name as well, preferring it when both are present.
+            lua_getfield(state, 1, "pngHeight");
+            const bool hasPngHeight = !lua_isnil(state, -1);
+            lua_pop(state, 1);
+            if (hasPngHeight) {
+                readInteger("pngHeight", options.pngHeight, -1);
+            } else {
+                readInteger("dpiHeight", options.pngHeight, -1);
+            }
+        }
+
+        if (error[0] == '\0' &&
+            (options.outputFile.size() > 64 * 1024 || (options.range && options.range->size() > 64 * 1024) ||
+             (options.layerRange && options.layerRange->size() > 64 * 1024))) {
+            std::snprintf(error, sizeof(error), "Export options exceed the supported size limit");
+        }
+
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->exportDocument(options, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Document export failed" : hostError.c_str());
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaGetDocumentStructure(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    const auto filename = plugin->runtime->documentFilename();
+    lua_createtable(state, 0, 1);
+    lua_pushlstring(state, filename.data(), filename.size());
+    lua_setfield(state, -2, "xoppFilename");
+    return 1;
 }
 
 int LuaPluginRuntime::luaOpenDialog(lua_State* state) {

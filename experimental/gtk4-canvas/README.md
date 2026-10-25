@@ -53,6 +53,14 @@ full master Lua API, plugin toolbar actions, Search, and most bundled plugin
 behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
+The bundled Export plugin registers PDF, SVG, and PNG actions with their master
+accelerators. It exports the current unsaved canvas state through the document
+worker and supports page/layer ranges, background selection, progressive PDF
+layers, PDF backend selection, and PNG DPI/width/height. Its original filename
+logic reads `xoppFilename` from `app.getDocumentStructure()`; the GTK 4 host
+currently supplies that field while the remaining structure fields are still
+being ported.
+
 The bundled ImageActions plugin registers all ten legacy image operations.
 When libvips is available at build time, the GTK 4 host performs invert,
 half-resolution downscale, horizontal/vertical flip, 90-degree rotation,
