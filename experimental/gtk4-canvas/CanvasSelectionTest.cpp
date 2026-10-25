@@ -30,8 +30,63 @@ static void rectangle(CanvasState& state, int page, double x0, double y0, double
     state.finishSelection();
 }
 
+static CanvasState multiLayerFixture() {
+    CanvasState state;
+    state.setPages({{300, 240}});
+    state.pageLayers[0].layers = {{"Lower", true, {0}}, {"Upper", true, {1}}, {"Hidden", false, {2}}};
+    state.pageLayers[0].selectedLayer = 1;
+    state.ink = {{0, {{50, 70}, {110, 70}}, {Tool::Pen, {0, 0, 0}, 2}, false, 0, 1, 0},
+                 {0, {{55, 78}, {115, 78}}, {Tool::Pen, {1, 0, 0}, 2}, false, 0, 2, 1},
+                 {0, {{60, 88}, {120, 88}}, {Tool::Pen, {0, 0, 1}, 2}, false, 0, 2, 1},
+                 {0, {{65, 96}, {125, 96}}, {Tool::Pen, {0, 1, 0}, 2}, false, 0, 3, 2}};
+    state.brush.tool = Tool::SelectRectangle;
+    return state;
+}
+
+static void selectLayerArea(CanvasState& state, bool lasso) {
+    const auto start = state.pageScreenPoint(0, 30, 55);
+    check(state.beginSelection(start.x, start.y), "Multilayer selection did not start");
+    if (lasso) {
+        for (const Point p: {Point{135, 55}, Point{135, 102}, Point{30, 102}, Point{30, 55}}) {
+            const auto screen = state.pageScreenPoint(0, p.x, p.y);
+            state.moveSelectionPointer(screen.x, screen.y);
+        }
+    } else {
+        const auto end = state.pageScreenPoint(0, 135, 102);
+        state.moveSelectionPointer(end.x, end.y);
+    }
+    state.finishSelection();
+}
+
+static void visibleLayerSelection() {
+    auto state = multiLayerFixture();
+    selectLayerArea(state, false);
+    check(state.selected == std::vector<size_t>{0},
+          "Single-layer rectangle selection should stay on the active layer");
+
+    state.clearSelection();
+    state.selectionAcrossLayers = true;
+    selectLayerArea(state, false);
+    check(state.selected == std::vector<size_t>({1, 2}),
+          "Multilayer rectangle should choose the topmost visible layer with matching strokes");
+
+    state.clearSelection();
+    state.brush.tool = Tool::SelectLasso;
+    selectLayerArea(state, true);
+    check(state.selected == std::vector<size_t>({1, 2}),
+          "Multilayer lasso should use the same topmost visible layer rule");
+
+    state.clearSelection();
+    state.pageLayers[0].layers[1].visible = false;
+    state.brush.tool = Tool::SelectRectangle;
+    selectLayerArea(state, false);
+    check(state.selected == std::vector<size_t>{0},
+          "Multilayer selection should skip hidden layers and continue to the next visible match");
+}
+
 int main() {
     try {
+        visibleLayerSelection();
         auto state = fixture();
         state.zoom = 1.8;
         state.offsetX = -15;
@@ -105,8 +160,8 @@ int main() {
         rectangle(state, 0, .8, 20, 30, 50);
         check(state.selected == std::vector<size_t>({0}),
               "Page-edge selection must extend at the source's 1 pt threshold");
-        std::cout << "PASS: rectangle containment, move/delete delta undo, pressure/style/order, cancellation, "
-                     "autosave snapshot, pages\n";
+        std::cout << "PASS: rectangle containment, visible-layer rectangle/lasso selection, move/delete delta undo, "
+                     "pressure/style/order, cancellation, autosave snapshot, pages\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

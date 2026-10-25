@@ -117,6 +117,7 @@ public:
     bool currentControl = false;
     bool currentAlt = false;
     std::vector<size_t> selected;
+    bool selectionAcrossLayers = false;
     bool pinching = false;
     long long scrollBlockedUntil = 0;
 
@@ -661,6 +662,7 @@ public:
         gesture.targetPage = hit->page;
         gesture.start = gesture.latest = hit->local;
         gesture.previousSelection = selected;
+        gesture.multiLayer = selectionAcrossLayers;
         auto bounds = selectionBox();
         if (bounds && bounds->page == hit->page && !forceRectangle) {
             const auto handles = selectionHandles();
@@ -794,16 +796,31 @@ public:
             if (g.lasso) extendLassoAtPageEdges(g.boundary, size);
             // RectangularSelector extends at page edges (1 pt). Stroke selection
             // tests every point, rather than accepting a crossing segment.
-            for (size_t i = 0; i < ink.size(); ++i) {
-                if (ink[i].page == g.page && ink[i].layerId == activeLayerId(g.page) &&
-                    layerVisible(g.page, ink[i].layerId) && !ink[i].points.empty() &&
-                    std::all_of(ink[i].points.begin(), ink[i].points.end(), [&](const Point& p) {
-                        if (g.lasso) return polygonContains(g.boundary, p);
-                        return (x0 <= 1 || p.x >= x0) && (x1 >= size.width - 1 || p.x <= x1) &&
-                               (y0 <= 1 || p.y >= y0) && (y1 >= size.height - 1 || p.y <= y1);
-                    })) {
-                    selected.push_back(i);
+            const auto collectLayer = [&](size_t layerId) {
+                std::vector<size_t> layerSelection;
+                for (size_t i = 0; i < ink.size(); ++i) {
+                    if (ink[i].page == g.page && ink[i].layerId == layerId &&
+                        layerVisible(g.page, ink[i].layerId) && !ink[i].points.empty() &&
+                        std::all_of(ink[i].points.begin(), ink[i].points.end(), [&](const Point& p) {
+                            if (g.lasso) return polygonContains(g.boundary, p);
+                            return (x0 <= 1 || p.x >= x0) && (x1 >= size.width - 1 || p.x <= x1) &&
+                                   (y0 <= 1 || p.y >= y0) && (y1 >= size.height - 1 || p.y <= y1);
+                        })) {
+                        layerSelection.push_back(i);
+                    }
                 }
+                selected.insert(selected.end(), layerSelection.begin(), layerSelection.end());
+                return !layerSelection.empty();
+            };
+            if (g.multiLayer) {
+                const auto& layers = layersForPage(g.page).layers;
+                for (size_t layer = layers.size(); layer > 0; --layer) {
+                    if (layers[layer - 1].visible && collectLayer(layer)) {
+                        break;
+                    }
+                }
+            } else {
+                collectLayer(activeLayerId(g.page));
             }
             std::sort(selected.begin(),selected.end());
             selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
@@ -1875,6 +1892,7 @@ private:
         Point start{}, latest{};
         bool moving = false;
         bool lasso = false, additive = false;
+        bool multiLayer = false;
         int handle = -1, targetPage = 0;
         std::vector<size_t> previousSelection;
         std::vector<size_t> indices;
