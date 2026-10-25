@@ -534,6 +534,85 @@ int main(int argc, char** argv) {
               "Selection movement did not snap the nearest selection corner to the page grid");
 
         state = fixture();
+        state.ink.clear();
+        state.selected.clear();
+        TextItem resizeText;
+        resizeText.page = 0;
+        resizeText.layerId = 1;
+        resizeText.originLayer = 0;
+        resizeText.text = "resize snap";
+        resizeText.layoutWidth = 100;
+        resizeText.layoutHeight = 100;
+        resizeText.x = 50;
+        resizeText.y = 50;
+        state.texts = {resizeText};
+        state.selectedTexts = {0};
+        state.snapGridEnabled = true;
+        state.snapGridSize = 20;
+        state.snapGridTolerance = 0.5;
+        state.pageLayers[0].gridXOffset = 5;
+        state.pageLayers[0].gridYOffset = 7;
+        const auto resizeStart = state.pageScreenPoint(0, 150, 150);
+        const auto resizeEnd = state.pageScreenPoint(0, 164, 164);
+        check(state.beginSelection(resizeStart.x, resizeStart.y), "Snapped selection resize did not begin");
+        state.moveSelectionPointer(resizeEnd.x, resizeEnd.y);
+        const auto snappedResizePreview = state.selectionBox();
+        check(snappedResizePreview && near(snappedResizePreview->x1 - snappedResizePreview->x0, 115) &&
+                      near(snappedResizePreview->y1 - snappedResizePreview->y0, 115),
+              "Selection corner resize did not snap the moved axis edges while preserving aspect ratio");
+        state.finishSelection();
+        check(near(state.texts[0].xx, 1.15) && near(state.texts[0].yy, 1.15),
+              "Grid-snapped text resize did not commit the snapped geometry");
+
+        state = fixture();
+        state.ink.clear();
+        state.selected.clear();
+        state.texts = {resizeText};
+        state.selectedTexts = {0};
+        state.snapGridEnabled = true;
+        state.snapGridSize = 20;
+        state.snapGridTolerance = 0.5;
+        state.pageLayers[0].gridXOffset = 5;
+        state.pageLayers[0].gridYOffset = 7;
+        check(state.beginSelection(resizeStart.x, resizeStart.y), "Alt selection resize did not begin");
+        state.moveSelectionPointer(resizeEnd.x, resizeEnd.y, true);
+        const auto unsnappedResizePreview = state.selectionBox();
+        check(unsnappedResizePreview && near(unsnappedResizePreview->x1 - unsnappedResizePreview->x0, 114) &&
+                      near(unsnappedResizePreview->y1 - unsnappedResizePreview->y0, 114),
+              "Alt did not temporarily disable selection resize snapping");
+
+        state = fixture();
+        state.ink.clear();
+        state.selected.clear();
+        auto edgePanText = resizeText;
+        edgePanText.layoutWidth = 50;
+        edgePanText.layoutHeight = 50;
+        edgePanText.x = 180;
+        edgePanText.y = 100;
+        state.texts = {edgePanText};
+        state.selectedTexts = {0};
+        state.snapGridEnabled = false;
+        const auto edgePanStart = state.pageScreenPoint(0, 190, 125);
+        check(state.beginSelection(edgePanStart.x, edgePanStart.y), "Edge-pan selection move did not begin");
+        const auto edgePanPointer = state.pageScreenPoint(0, 230, 125);
+        state.moveSelectionPointer(edgePanPointer.x, edgePanPointer.y);
+        check(state.selectionCanEdgePan(), "A Smart Select move did not enable edge panning");
+        check(state.edgePanSelectionAtPointer(edgePanPointer.x, edgePanPointer.y, 200, 200),
+              "Dragging a selection past the viewport edge did not pan");
+        check(state.offsetX < 0 && near(state.offsetX, -200.0 * 20.0 / 100.0 / 30.0 * 5.0),
+              "Selection edge-pan did not use the configured legacy speed and multiplier");
+        check(near(state.offsetX + state.selectionBox()->x0, 220),
+              "Selection did not remain under the pointer while edge-pan scrolled the viewport");
+        for (int tick = 0; tick < 100; ++tick) {
+            state.edgePanSelectionAtPointer(edgePanPointer.x, edgePanPointer.y, 200, 200);
+        }
+        check(state.offsetX >= -200 && near(state.offsetX, -200),
+              "Selection edge-pan scrolled beyond the page layout boundary");
+        check(!state.edgePanSelectionAtPointer(edgePanPointer.x, edgePanPointer.y, 200, 200),
+              "Selection edge-pan continued after reaching the layout boundary");
+        state.cancelSelection();
+
+        state = fixture();
         state.clearSelection();
         state.ink.clear();
         state.texts = {snappedText};
@@ -636,8 +715,8 @@ int main(int argc, char** argv) {
         state.finishSelection();
         check(std::isfinite(state.ink[0].brush.width) && state.ink[0].brush.width > 0,
               "Degenerate dot resize broke width");
-        std::cout << "PASS: affine geometry/width, mirror, rotate, cross-page order/undo, Smart Select, lasso, "
-                     "Shift-add, bounded native stroke/image clipboard and paste undo\n";
+        std::cout << "PASS: affine geometry/width, mirror, rotate, cross-page order/undo, Smart Select, resize snapping, "
+                     "edge-pan, lasso, Shift-add, bounded native stroke/image clipboard and paste undo\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
