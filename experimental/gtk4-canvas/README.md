@@ -46,9 +46,11 @@ launches. ToggleGrid changes the active page between plain and graph paper while
 updating grid snapping. SpaceForNotes supports both PDF-gap and force modes and
 persists the inserted pages through the native document worker; page insertions
 are not undoable yet. Page background changes use the native document worker,
-persist in the `.xopp` save path, and participate in undo/redo. The full master
-Lua API, plugin toolbar actions, Search, and most bundled plugin behaviors
-remain unported; see
+persist in the `.xopp` save path, and participate in undo/redo. BeamerPresentation
+steps through repeated-label PDF animations, moves between slides at label
+boundaries, and removes animation pages through the native document worker. The
+full master Lua API, plugin toolbar actions, Search, and most bundled plugin
+behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
 The bundled ImageActions plugin registers all ten legacy image operations.
@@ -343,6 +345,10 @@ ColorCycle, Example, ToolShortcuts, and ToggleGrid in a temporary config and
 checks their menu actions, Smart Select shortcut, selection recoloring/undo,
 plain/graph paper changes, background undo/redo and save/reopen, manager, and
 saved plugin settings.
+
+Use `--beamer-only` with `--worker` for the Beamer check. It creates a private
+two-page PDF with repeated page labels, then verifies animation advance,
+reverse, cleanup, native save/reopen, and screenshots inside the Cage renderer.
 
 The harness:
 

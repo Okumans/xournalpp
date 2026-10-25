@@ -23,6 +23,7 @@
 
 #include "AudioPlayback.h"
 #include "AudioTarget.h"
+#include "BeamerPresentation.h"
 #include "BehaviorDefaults.h"
 #include "CanvasImageActions.h"
 #include "CanvasInput.h"
@@ -65,6 +66,7 @@ struct Options {
     bool explicitDark = false;
     bool disableAudio = false;
     bool verifyPlugins = false;
+    bool verifyBeamer = false;
     int width = 1100;
     int height = 820;
 };
@@ -1438,6 +1440,202 @@ private:
         return true;
     }
 
+    bool changePdfBackgroundPageFromPlugin(int pdfPage, std::string& error) {
+        if (!nativeSession || options.worker.empty()) {
+            error = "Beamer animation navigation requires a native document and document worker";
+            return false;
+        }
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            waitForAutosave([this, pdfPage] {
+                std::string deferredError;
+                if (!changePdfBackgroundPageFromPlugin(pdfPage, deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+        if (pdfPage < 0 || static_cast<size_t>(pdfPage) >= nativeSession->pdfPageLabels.size()) {
+            error = "The requested Beamer PDF page is unavailable";
+            return false;
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const int documentPage = state.page;
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto packets = prototype::bridge::transferInk(state.committedInk());
+        const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
+        const auto layers = state.pageLayers;
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Advancing Beamer animation…",
+                [session, worker, documentPage, pdfPage, packets, texts, images, layers, staged] {
+                    *staged = session->stageSetPdfPageBackground(worker, documentPage, pdfPage, packets, texts, images,
+                                                                 layers);
+                },
+                [this, session, documentPage, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
+                    std::vector<prototype::PageSize> sizes;
+                    prototype::bridge::LayerDocument layerState;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers =
+                                openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                         static_cast<int>(sizes.size()));
+                        layerState = prototype::bridge::readLayerTransfer(staged->layerStatePath());
+                    } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
+                    state.setPages(std::move(sizes));
+                    state.selectActivePage(documentPage);
+                    state.setLayerDocument(layerState);
+                    savedRevision.reset();
+                    savedNormally = false;
+                    savedCopyPath.clear();
+                    g_clear_object(&pdfTextDocument);
+                    pdfTextDocumentPath.clear();
+                    pageCache.clear();
+                    layerPageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    navigateToPage(documentPage);
+                    updateTitle();
+                });
+        return true;
+    }
+
+    bool stepBeamerPresentation(int delta, std::string& error) {
+        if (!nativeSession) {
+            error = "Beamer navigation requires an open document";
+            return false;
+        }
+        const auto action =
+                prototype::beamer::step(state.page, delta, nativeSession->pdfPageMap, nativeSession->pdfPageLabels);
+        if (!action) {
+            return true;
+        }
+        if (action->kind == prototype::beamer::Step::Kind::ChangePdfBackground) {
+            return changePdfBackgroundPageFromPlugin(action->target, error);
+        }
+        navigateToPage(action->target);
+        return true;
+    }
+
+    bool cleanBeamerAnimations(std::string& error) {
+        if (!nativeSession || options.worker.empty()) {
+            error = "Cleaning Beamer animation pages requires a native document and document worker";
+            return false;
+        }
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            waitForAutosave([this] {
+                std::string deferredError;
+                if (!cleanBeamerAnimations(deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+
+        const auto pageIndices =
+                prototype::beamer::animationPagesToRemove(nativeSession->pdfPageMap, nativeSession->pdfPageLabels);
+        if (pageIndices.empty()) {
+            return true;
+        }
+        if (pageIndices.size() >= static_cast<size_t>(pageCount)) {
+            error = "Beamer cleanup cannot remove every page in a document";
+            return false;
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Removing Beamer animation pages…",
+                [session, worker, pageIndices, staged] { *staged = session->stageDeletePagesAt(worker, pageIndices); },
+                [this, session, pageIndices, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
+                    std::vector<prototype::PageSize> sizes;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers =
+                                openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                         static_cast<int>(sizes.size()));
+                    } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
+                    for (const int pageIndex: pageIndices) {
+                        state.deletePageAt(pageIndex);
+                    }
+                    pageCount = static_cast<int>(sizes.size());
+                    state.setPages(std::move(sizes));
+                    state.selectActivePage(std::min(pageIndices.back(), pageCount - 1));
+                    savedRevision.reset();
+                    savedNormally = false;
+                    savedCopyPath.clear();
+                    g_clear_object(&pdfTextDocument);
+                    pdfTextDocumentPath.clear();
+                    pageCache.clear();
+                    layerPageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    navigateToPage(state.page);
+                    updateTitle();
+                });
+        return true;
+    }
+
     bool activatePluginAction(std::string_view action, std::string& error) {
         if (action == "goto-next") {
             navigateToPage(state.page + 1);
@@ -1457,6 +1655,12 @@ private:
             update();
         } else if (action == "select-default-tool") {
             selectTool(Tool::Pen);
+        } else if (action == "beamer-next") {
+            return stepBeamerPresentation(1, error);
+        } else if (action == "beamer-previous") {
+            return stepBeamerPresentation(-1, error);
+        } else if (action == "beamer-clean") {
+            return cleanBeamerAnimations(error);
         } else {
             error = "This master action is not available in the GTK 4 prototype yet: " + std::string(action);
             return false;
@@ -2051,6 +2255,49 @@ private:
                      "background undo/redo\n";
     }
 
+    void verifyBeamerIntegration() {
+        require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto beamer = pluginRuntime->findPlugin("BeamerPresentation");
+        require(beamer && beamer->loaded && beamer->menuItems == 3,
+                "Enabled BeamerPresentation did not register its three menu actions");
+        require(nativeSession && pageCount == 2 && nativeSession->pdfPageMap == std::vector<int>({0, 1}),
+                "Beamer integration expects a two-page animation PDF");
+        require(nativeSession->pdfPageLabels.size() >= 2 &&
+                        nativeSession->pdfPageLabels[0] == nativeSession->pdfPageLabels[1],
+                "Beamer fixture must use repeated PDF page labels");
+
+        capture("beamer-animation-start");
+        require(pluginRuntime->invokeMenu("BeamerPresentation", 0),
+                "Beamer +1 did not dispatch its next-animation action");
+        waitForPluginDocumentJob();
+        require(pageCount == 2 && state.page == 0 && nativeSession->pdfPageMap == std::vector<int>({1, 1}),
+                "Beamer +1 did not advance only the current PDF background during an animation");
+        capture("beamer-animation-forward");
+
+        require(pluginRuntime->invokeMenu("BeamerPresentation", 1),
+                "Beamer -1 did not dispatch its previous-animation action");
+        waitForPluginDocumentJob();
+        require(pageCount == 2 && state.page == 0 && nativeSession->pdfPageMap == std::vector<int>({0, 1}),
+                "Beamer -1 did not restore the previous PDF animation background");
+
+        require(pluginRuntime->invokeMenu("BeamerPresentation", 2),
+                "Beamer clean did not dispatch its animation cleanup action");
+        waitForPluginDocumentJob();
+        require(pageCount == 1 && nativeSession->pdfPageMap == std::vector<int>({0}),
+                "Beamer clean did not remove the duplicate-label animation page");
+        capture("beamer-animation-cleaned");
+
+        const auto roundTripPath = std::filesystem::path(options.smokeDirectory) / "beamer-cleaned.xopp";
+        nativeSession->saveCopy(options.worker, roundTripPath.string(),
+                                prototype::bridge::transferInk(state.committedInk()), state.texts,
+                                prototype::bridge::transferImages(state.images), state.pageLayers);
+        const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath.string());
+        require(reopened.pdfPageMap == std::vector<int>({0}) && reopened.pdfPageLabels.size() >= 2 &&
+                        reopened.pdfPageLabels[0] == reopened.pdfPageLabels[1],
+                "Saving and reopening the cleaned Beamer document lost its page or attached-PDF labels");
+        std::cout << "PASS: private GTK4 Beamer animation advance, reverse, cleanup, and native reopen\n";
+    }
+
     void verifyImageActionsPlugin() {
         require(state.images.empty(), "ImageActions verification expects a clean editable image layer");
         const auto fixture = std::filesystem::path(options.smokeDirectory) / "image-actions-input.png";
@@ -2120,6 +2367,7 @@ private:
             g_usleep(1000);
         }
         require(!busy, "ToggleGrid native page-background revision did not finish within 20 seconds");
+        waitForNextWindowFrame();
     }
 
     static guint settingsThemeIndex(prototype::ThemeVariant theme) {
@@ -6487,7 +6735,7 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins) {
+        if (options.verifyPlugins || options.verifyBeamer) {
             g_timeout_add(
                     200,
                     +[](gpointer data) -> gboolean {
@@ -6496,7 +6744,11 @@ private:
                             return G_SOURCE_CONTINUE;
                         }
                         try {
-                            self->verifyPluginIntegration();
+                            if (self->options.verifyPlugins) {
+                                self->verifyPluginIntegration();
+                            } else {
+                                self->verifyBeamerIntegration();
+                            }
                         } catch (const std::exception& error) {
                             std::cerr << "PLUGIN VERIFY FAILED: " << error.what() << '\n';
                             self->failed = true;
@@ -12362,6 +12614,8 @@ int main(int argc, char** argv) {
                 options.pluginDirectory = pluginPath.string();
             } else if (argument == "--verify-plugins") {
                 options.verifyPlugins = true;
+            } else if (argument == "--verify-beamer") {
+                options.verifyBeamer = true;
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
                         argument == "--smoke-dir") &&
                        i + 1 < argc) {
@@ -12379,7 +12633,8 @@ int main(int argc, char** argv) {
             } else {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
-                                         "[--plugin-dir DIRECTORY] [--verify-plugins] [--disable-audio] "
+                                         "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-beamer] "
+                                         "[--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
             }
         }
@@ -12391,6 +12646,9 @@ int main(int argc, char** argv) {
         }
         if (options.verifyPlugins && options.smokeDirectory.empty()) {
             throw std::runtime_error("Plugin verification requires --smoke-dir DIRECTORY");
+        }
+        if (options.verifyBeamer && options.smokeDirectory.empty()) {
+            throw std::runtime_error("Beamer verification requires --smoke-dir DIRECTORY");
         }
         Prototype app(std::move(options));
         return app.run();

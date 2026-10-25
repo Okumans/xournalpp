@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **53 task areas — 41 Partial, 7 Pending, 5 Covered, and 0
+Current ledger count: **53 task areas — 41 Partial, 6 Pending, 6 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -102,7 +102,7 @@ it is part of the master plugin distribution.
 
 | Plugin | Observable behavior | GTK 4 status |
 | --- | --- | --- |
-| `BeamerPresentation` | Navigate animated Beamer PDFs and remove animation pages. | Pending |
+| `BeamerPresentation` | Navigate animated Beamer PDFs and remove animation pages. | Covered — next/previous advance the PDF background when adjacent PDF page labels match and navigate between document pages at slide boundaries; cleanup removes repeated-label pages. The actions persist through native save/reopen. |
 | `ColorCycle` | Cycle through a configured color list. | Covered |
 | `Example` | Demonstrate the plugin API. | Covered — manifest loading, menu registration, `app.openDialog`, and its asynchronous button-response callback work and are regression-tested. |
 | `Export` | Export documents to PDF, SVG, and PNG. | Pending |

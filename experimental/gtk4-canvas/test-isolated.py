@@ -424,6 +424,61 @@ def verify_plugins(args, evidence):
     return str(directory)
 
 
+def write_beamer_pdf(path):
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R /PageLabels 7 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> /Contents 5 0 R >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> /Contents 6 0 R >>",
+        b"<< /Length 0 >>\nstream\n\nendstream",
+        b"<< /Length 0 >>\nstream\n\nendstream",
+        b"<< /Nums [0 << /P (animation) >> 1 << /P (animation) >>] >>",
+    ]
+    data = bytearray(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(data))
+        data.extend(f"{number} 0 obj\n".encode("ascii"))
+        data.extend(body)
+        data.extend(b"\nendobj\n")
+    xref = len(data)
+    data.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    data.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        data.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    data.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n".encode("ascii"))
+    data.extend(f"startxref\n{xref}\n%%EOF\n".encode("ascii"))
+    path.write_bytes(data)
+
+
+def verify_beamer(args, evidence):
+    directory = evidence / "beamer"
+    shutil.rmtree(directory, ignore_errors=True)
+    config = directory / "config"
+    output = directory / "run"
+    config.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+    plugin = Path(__file__).resolve().parents[2] / "plugins/BeamerPresentation"
+    pdf = directory / "animation.pdf"
+    write_beamer_pdf(pdf)
+    (config / "gtk4-canvas.ini").write_text(
+        f"[Plugins]\nenabled={plugin.resolve()}\ndisabled=\n", encoding="utf-8")
+    if not args.worker:
+        raise RuntimeError("Beamer animation checks require --worker")
+    result = run(
+        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+         "--worker", str(args.worker.resolve()), "--pdf", str(pdf), "--verify-beamer"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    if "PASS: private GTK4 Beamer animation advance, reverse, cleanup, and native reopen" not in result:
+        raise RuntimeError("GTK4 Beamer animation integration did not complete")
+    for screenshot in ("beamer-animation-start", "beamer-animation-forward", "beamer-animation-cleaned"):
+        path = output / f"{screenshot}.png"
+        if not path.is_file() or path.stat().st_size < 1000:
+            raise RuntimeError(f"Missing Beamer integration screenshot: {path}")
+    return str(directory)
+
+
 def make_png(path, width=32, height=24):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data +
@@ -794,6 +849,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.beamer_only:
+        beamer_evidence = verify_beamer(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"beamer-presentation": beamer_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.plugins_only:
         plugin_evidence = verify_plugins(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1039,6 +1101,7 @@ def main():
     parser.add_argument("--play-object-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1109,6 +1172,8 @@ def main():
             command.append("--preferences-only")
         if args.plugins_only:
             command.append("--plugins-only")
+        if args.beamer_only:
+            command.append("--beamer-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 
