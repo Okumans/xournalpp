@@ -5,10 +5,12 @@
 #include <cmath>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -30,10 +32,18 @@ struct PageHit {
     Point local{};
 };
 
-enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect, Text };
+enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect, Text, SelectObject };
 inline bool isSelectionTool(Tool tool) {
-    return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect;
+    return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
+           tool == Tool::SelectObject;
 }
+
+enum class SelectableObjectKind { Stroke, Text, Image };
+
+struct SelectableObject {
+    SelectableObjectKind kind;
+    size_t index;
+};
 enum class EraserMode { Standard, Whiteout, DeleteStroke };
 
 inline constexpr const std::array<double, 5>& widthsForTool(Tool tool) {
@@ -793,6 +803,19 @@ public:
         gesture.moving = !forceRectangle && (gesture.handle >= 0 || (bounds && bounds->page == hit->page && hit->local.x >= bounds->x0 - padding &&
                          hit->local.x <= bounds->x1 + padding && hit->local.y >= bounds->y0 - padding &&
                          hit->local.y <= bounds->y1 + padding));
+        if (brush.tool == Tool::SelectObject) {
+            if (gesture.moving) {
+                gesture.indices = selected;
+                gesture.textIndices = selectedTexts;
+                gesture.imageIndices = selectedImages;
+                gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds) : *bounds;
+                selectionGesture = std::move(gesture);
+            } else {
+                selectObjectAt(hit->page, hit->local, forceRectangle);
+            }
+            selectActivePage(hit->page);
+            return true;
+        }
         if (!gesture.moving && brush.tool == Tool::SmartSelect && !forceRectangle) {
             const auto pickedStroke = pickStroke(hit->page, hit->local);
             const auto pickedText = pickText(hit->page, hit->local);
@@ -1828,6 +1851,117 @@ public:
         return best;
     }
 
+    bool selectObjectAt(int pageIndex, Point point, bool additive = false) {
+        if (pageIndex < 0 || pageIndex >= pageCount() || !std::isfinite(point.x) || !std::isfinite(point.y)) {
+            return false;
+        }
+        if (additive) {
+            const auto bounds = selectionBox();
+            if (bounds && bounds->page != pageIndex) {
+                return false;
+            }
+        }
+
+        const auto object = pickSelectableObject(pageIndex, point);
+        if (!additive) {
+            selected.clear();
+            selectedTexts.clear();
+            selectedImages.clear();
+        }
+        if (!object) {
+            selectActivePage(pageIndex);
+            return false;
+        }
+
+        auto addIndex = [](std::vector<size_t>& indices, size_t index) {
+            const auto position = std::lower_bound(indices.begin(), indices.end(), index);
+            if (position == indices.end() || *position != index) {
+                indices.insert(position, index);
+            }
+        };
+        switch (object->kind) {
+            case SelectableObjectKind::Stroke:
+                addIndex(selected, object->index);
+                break;
+            case SelectableObjectKind::Text:
+                addIndex(selectedTexts, object->index);
+                break;
+            case SelectableObjectKind::Image:
+                addIndex(selectedImages, object->index);
+                break;
+        }
+        selectActivePage(pageIndex);
+        return true;
+    }
+
+    std::optional<SelectableObject> pickSelectableObject(int pageIndex, Point point) const {
+        const size_t layerId = activeLayerId(pageIndex);
+        if (!layerVisible(pageIndex, layerId) || layerId == 0) {
+            return std::nullopt;
+        }
+
+        const auto& layer = layersForPage(pageIndex).layers.at(layerId - 1);
+        struct OrderedObject {
+            size_t originOrder;
+            size_t layerOrder;
+            SelectableObject object;
+        };
+        std::vector<OrderedObject> objects;
+        const auto addObject = [&](size_t origin, size_t order, SelectableObject object) {
+            const auto it = std::find(layer.origins.begin(), layer.origins.end(), origin);
+            const auto originOrder = it == layer.origins.end() ? layer.origins.size() :
+                                                                  static_cast<size_t>(it - layer.origins.begin());
+            objects.push_back({originOrder, order, object});
+        };
+        for (size_t i = 0; i < ink.size(); ++i) {
+            const auto& stroke = ink[i];
+            if (stroke.page == pageIndex && stroke.layerId == layerId && !stroke.points.empty()) {
+                addObject(stroke.originLayer, stroke.layerOrder, {SelectableObjectKind::Stroke, i});
+            }
+        }
+        for (size_t i = 0; i < texts.size(); ++i) {
+            const auto& text = texts[i];
+            if (text.page == pageIndex && text.layerId == layerId && !text.text.empty() && validTextPage(text)) {
+                addObject(text.originLayer, text.layerOrder, {SelectableObjectKind::Text, i});
+            }
+        }
+        for (size_t i = 0; i < images.size(); ++i) {
+            const auto& image = images[i];
+            if (image.page == pageIndex && image.layerId == layerId && validCanvasImage(image)) {
+                addObject(image.originLayer, image.layerOrder, {SelectableObjectKind::Image, i});
+            }
+        }
+        std::stable_sort(objects.begin(), objects.end(), [](const OrderedObject& a, const OrderedObject& b) {
+            return std::tie(a.originOrder, a.layerOrder) < std::tie(b.originOrder, b.layerOrder);
+        });
+
+        constexpr double actionRadius = 0.5;
+        double minimumDistance = actionRadius;
+        std::optional<SelectableObject> best;
+        for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+            double distance = std::numeric_limits<double>::infinity();
+            switch (it->object.kind) {
+                case SelectableObjectKind::Stroke:
+                    distance = strokeDistance(ink[it->object.index], point);
+                    break;
+                case SelectableObjectKind::Text:
+                    distance = quadrilateralDistance(textCorners(texts[it->object.index]), point);
+                    break;
+                case SelectableObjectKind::Image:
+                    distance = quadrilateralDistance(canvasImageCorners(images[it->object.index]), point);
+                    break;
+            }
+            if (distance == 0) {
+                return it->object;
+            }
+            if (distance < minimumDistance) {
+                minimumDistance = distance;
+                best = it->object;
+            }
+        }
+        return best;
+    }
+
     void cancel() {
         cancelSelection();
         finishErase();
@@ -2225,6 +2359,61 @@ private:
         };
         return {transform(0, 0), transform(item.layoutWidth, 0),
                 transform(item.layoutWidth, item.layoutHeight), transform(0, item.layoutHeight)};
+    }
+
+    static double strokeDistance(const Ink& stroke, Point point) {
+        if (stroke.points.empty() || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0) {
+            return std::numeric_limits<double>::infinity();
+        }
+        const auto radiusAt = [&](const Point& sample) {
+            const double pressure = stroke.pressureSensitive ? std::max(0.0, sample.pressure) : 1.0;
+            return stroke.brush.width * pressure / 2;
+        };
+        if (stroke.points.size() == 1) {
+            const auto& sample = stroke.points.front();
+            return std::max(std::hypot(point.x - sample.x, point.y - sample.y) - radiusAt(sample), 0.0);
+        }
+
+        double distance = std::numeric_limits<double>::infinity();
+        for (size_t i = 1; i < stroke.points.size(); ++i) {
+            const auto& start = stroke.points[i - 1];
+            const auto& end = stroke.points[i];
+            const double dx = end.x - start.x;
+            const double dy = end.y - start.y;
+            const double lengthSquared = dx * dx + dy * dy;
+            const double factor = lengthSquared > 0 ?
+                                          std::clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) /
+                                                             lengthSquared,
+                                                     0.0, 1.0) :
+                                          0.0;
+            const double distanceToCenter = std::hypot(point.x - (start.x + factor * dx),
+                                                       point.y - (start.y + factor * dy));
+            distance = std::min(distance, std::max(distanceToCenter - radiusAt(start), 0.0));
+        }
+        return distance;
+    }
+
+    static double quadrilateralDistance(const std::array<Point, 4>& corners, Point point) {
+        const auto& origin = corners[0];
+        const auto& horizontal = corners[1];
+        const auto& vertical = corners[3];
+        const double hx = horizontal.x - origin.x;
+        const double hy = horizontal.y - origin.y;
+        const double vx = vertical.x - origin.x;
+        const double vy = vertical.y - origin.y;
+        const double determinant = hx * vy - vx * hy;
+        if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-12) {
+            return std::numeric_limits<double>::infinity();
+        }
+        const double dx = point.x - origin.x;
+        const double dy = point.y - origin.y;
+        const double localX = (dx * vy - vx * dy) / determinant;
+        const double localY = (hx * dy - dx * hy) / determinant;
+        const double projectedX = origin.x + std::clamp(localX, 0.0, 1.0) * hx +
+                                  std::clamp(localY, 0.0, 1.0) * vx;
+        const double projectedY = origin.y + std::clamp(localX, 0.0, 1.0) * hy +
+                                  std::clamp(localY, 0.0, 1.0) * vy;
+        return std::hypot(point.x - projectedX, point.y - projectedY);
     }
 
     static TextItem transformText(TextItem item, const SelectionTransform& transform) {

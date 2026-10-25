@@ -441,6 +441,68 @@ int main(int argc, char** argv) {
             rejected = true;
         }
         check(rejected, "Trailing clipboard data accepted");
+
+        state = fixture();
+        state.selected.clear();
+        state.selectedTexts.clear();
+        state.selectedImages.clear();
+        state.brush.tool = Tool::SelectObject;
+        state.ink = {{0, {{50, 100}, {150, 100}}, {Tool::Pen, {0, 0, 0}, 1}, false, 0, 1, 0},
+                     {0, {{50, 101.5}, {150, 101.5}}, {Tool::Pen, {0, 0, 0}, 1}, false, 1, 1, 0}};
+        check(state.selectObjectAt(0, {100, 100.7}) && state.selected == std::vector<size_t>{0},
+              "Select Object must choose the closest stroke near overlapping edges");
+        state.ink[1].points = {{50, 100.2}, {150, 100.2}};
+        check(state.selectObjectAt(0, {100, 100.3}) && state.selected == std::vector<size_t>{1},
+              "Select Object must choose the frontmost object when multiple hits contain the pointer");
+
+        TextItem selectableText;
+        selectableText.page = 0;
+        selectableText.layerId = 1;
+        selectableText.originLayer = 0;
+        selectableText.layerOrder = 2;
+        selectableText.text = "selectable text";
+        selectableText.layoutWidth = 60;
+        selectableText.layoutHeight = 20;
+        selectableText.x = 180;
+        selectableText.y = 180;
+        state.texts = {selectableText};
+        state.images = {imageAt(0, 190, 180, 3)};
+        const auto nearTextEdge = state.pickSelectableObject(0, {240.25, 190});
+        check(nearTextEdge && nearTextEdge->kind == SelectableObjectKind::Text &&
+                      !state.pickSelectableObject(0, {240.6, 190}),
+              "Select Object rectangular hit testing did not use the 0.5 point action radius");
+        check(state.selectObjectAt(0, {195, 185}) && state.selected.empty() && state.selectedTexts.empty() &&
+                      state.selectedImages == std::vector<size_t>{0},
+              "Select Object did not prefer a frontmost native image over overlapping text");
+        check(state.selectObjectAt(0, {185, 185}, true) && state.selectedTexts == std::vector<size_t>{0} &&
+                      state.selectedImages == std::vector<size_t>{0},
+              "Shift-click Select Object did not add native text to the existing selection");
+        check(!state.selectObjectAt(0, {350, 280}, true) && state.selectedTexts == std::vector<size_t>{0} &&
+                      state.selectedImages == std::vector<size_t>{0},
+              "Shift-click on empty space should preserve the existing selection");
+        check(!state.selectObjectAt(0, {350, 280}) && !state.hasSelection(),
+              "Select Object on empty space should clear the old selection");
+
+        state = fixture();
+        state.selected.clear();
+        state.brush.tool = Tool::SelectObject;
+        CanvasInput objectInput(state);
+        const auto objectStart = state.pageScreenPoint(0, 140, 130);
+        const auto objectEnd = state.pageScreenPoint(0, 160, 150);
+        objectInput.begin(Device::Mouse, {objectStart.x, objectStart.y, {}});
+        objectInput.motion(Device::Mouse, {objectEnd.x, objectEnd.y, {}});
+        objectInput.finish(Device::Mouse);
+        check(state.selected == std::vector<size_t>{0} && near(state.ink[0].points[0].x, 100),
+              "Select Object should select on the first click without dragging the newly selected object");
+        const auto moveStart = state.pageScreenPoint(0, 130, 130);
+        const auto moveEnd = state.pageScreenPoint(0, 150, 145);
+        objectInput.begin(Device::Mouse, {moveStart.x, moveStart.y, {}});
+        objectInput.motion(Device::Mouse, {moveEnd.x, moveEnd.y, {}});
+        objectInput.finish(Device::Mouse);
+        check(near(state.ink[0].points[0].x, 120) && near(state.ink[0].points[0].y, 115) &&
+                      state.selected == std::vector<size_t>{0},
+              "Select Object should preserve shared selection-handle move behavior");
+
         state = fixture();
         check(state.pasteStrokes(copy, 1, {150, 100}), "Paste failed");
         check(state.selected == std::vector<size_t>({3, 4}) && state.ink.size() == 5,

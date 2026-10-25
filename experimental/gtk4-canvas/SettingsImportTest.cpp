@@ -154,6 +154,12 @@ int main() {
     require(edgeParsed.settings.eraserMode == prototype::EraserMode::Whiteout,
             "Per-tool eraser mode must still load when current names an unmigrated tool");
 
+    const auto objectToolParsed = prototype::parseSettingsXml(
+            "<settings><data name=\"tools\"><attribute name=\"current\" type=\"string\" "
+            "value=\"selectObject\"/></data></settings>");
+    require(objectToolParsed.ok && objectToolParsed.settings.activeTool == prototype::Tool::SelectObject,
+            "The current Select Object tool was not restored from settings.xml");
+
     // 3. Truncated/malformed XML rolls back transactionally to clean defaults.
     const auto truncated = prototype::parseSettingsXml(
             "<settings><property name=\"themeVariant\" value=\"forceDark\"/><data name=\"tools\">");

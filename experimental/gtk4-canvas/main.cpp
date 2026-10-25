@@ -1576,7 +1576,18 @@ private:
         if (state.selectionAcrossLayers && tool == Tool::SelectLasso) {
             return 4;
         }
-        return static_cast<guint>(tool) - static_cast<guint>(Tool::SelectRectangle);
+        switch (tool) {
+            case Tool::SelectRectangle:
+                return 0;
+            case Tool::SelectLasso:
+                return 1;
+            case Tool::SmartSelect:
+                return 2;
+            case Tool::SelectObject:
+                return 5;
+            default:
+                return 0;
+        }
     }
 
     void activateSelection(Tool tool, bool acrossLayers = false) {
@@ -2017,6 +2028,12 @@ private:
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionActions, prototype::isSelectionTool(tool));
+        gtk_widget_set_tooltip_text(selectionLabel,
+                                    tool == Tool::SelectObject ?
+                                            "Click the nearest object on the active layer; Shift-click to add. "
+                                            "Drag the selected object or its handles to transform it." :
+                                            "Drag to select or move; drag a square handle to resize, or the circle "
+                                            "handle to rotate.");
         const bool drawingTool = tool == Tool::Pen || tool == Tool::Highlighter;
         gtk_widget_set_visible(drawingOptionsExpander, drawingTool);
         const bool stabilizeFreehand = drawingTool &&
@@ -2694,7 +2711,8 @@ private:
                              this);
             gtk_box_append(GTK_BOX(toolGroup), toolButtons[i]);
         }
-        gtk_widget_set_tooltip_text(toolButtons[3], "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S)");
+        gtk_widget_set_tooltip_text(toolButtons[3],
+                                    "Rectangle (Ctrl+Shift+R), Lasso (Ctrl+Shift+G), Smart (S), Object");
         textButton = gtk_toggle_button_new();
         gtk_button_set_child(GTK_BUTTON(textButton), gtk_image_new_from_icon_name("format-text-symbolic"));
         gtk_widget_set_tooltip_text(textButton, "Text tool (T)");
@@ -2938,18 +2956,20 @@ private:
         gtk_widget_set_tooltip_text(paletteButton, "Quick colors and drawing tools");
 
         const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", "Rectangle: Visible layers",
-                                        "Lasso: Visible layers", nullptr};
+                                        "Lasso: Visible layers", "Object", nullptr};
         selectionModeDropdown = gtk_drop_down_new_from_strings(selectionModes);
         gtk_widget_set_tooltip_text(selectionModeDropdown,
-                                    "Visible-layer modes search from the top visible layer downward and select "
-                                    "strokes on the first layer with matches");
+                                    "Object selects the nearest item in the active layer. Visible-layer modes "
+                                    "search from the top visible layer downward and select editable objects on "
+                                    "the first layer with matches.");
         g_signal_connect(
                 selectionModeDropdown, "notify::selected",
                 G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
                     auto* self = static_cast<Prototype*>(data);
                     const auto selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
                     const auto tool = selected == 1 || selected == 4 ? Tool::SelectLasso :
-                                      selected == 2 ? Tool::SmartSelect : Tool::SelectRectangle;
+                                      selected == 2 ? Tool::SmartSelect :
+                                      selected == 5 ? Tool::SelectObject : Tool::SelectRectangle;
                     const bool acrossLayers = selected == 3 || selected == 4;
                     if (prototype::isSelectionTool(self->state.brush.tool) &&
                         (tool != self->state.brush.tool || acrossLayers != self->state.selectionAcrossLayers)) {
@@ -2972,8 +2992,6 @@ private:
         selectionLabel = gtk_label_new("Drag to select");
         gtk_widget_set_tooltip_text(selectionLabel, "Drag to move, drag a square to resize, or drag the circle to rotate");
         gtk_box_append(GTK_BOX(toolbar), selectionLabel);
-        const auto initialToolIdx = static_cast<size_t>(importedConfig.settings.activeTool);
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[initialToolIdx]), true);
         selectTool(importedConfig.settings.activeTool);
         adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), toolbar);
 
@@ -3231,8 +3249,9 @@ private:
         }
         updateTextEditorPosition();
         updateTitle();
-        gtk_label_set_text(GTK_LABEL(selectionLabel), !state.hasSelection() ? "Drag to select" :
-                               (std::to_string(state.selectionCount()) + " selected").c_str());
+        gtk_label_set_text(GTK_LABEL(selectionLabel),
+                           state.hasSelection() ? (std::to_string(state.selectionCount()) + " selected").c_str() :
+                           state.brush.tool == Tool::SelectObject ? "Click to select" : "Drag to select");
         gtk_widget_set_sensitive(openButton, !options.worker.empty());
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
@@ -4929,8 +4948,8 @@ private:
                                 state.layersForPage(0).layers[0].name == "Lower" &&
                                 state.layersForPage(0).layers[1].name == "Upper",
                         "Visible-layer selection verification requires its native two-layer fixture");
-                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 5,
-                        "Selection mode menu does not expose both visible-layer variants");
+                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 6,
+                        "Selection mode menu does not expose both visible-layer variants and Select Object");
                 activateSelection(Tool::SelectRectangle);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
                 require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers,
@@ -5045,7 +5064,45 @@ private:
                 require(state.brush.tool == Tool::SmartSelect && !state.selectionAcrossLayers &&
                                 gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 2,
                         "Smart Select incorrectly retained the multilayer scope");
-                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, hidden-layer fallback, remembered tool state, and shortcuts\n";
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 5);
+                require(state.brush.tool == Tool::SelectObject && !state.selectionAcrossLayers &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 5,
+                        "Select Object mode did not activate as a distinct tool");
+                selectTool(Tool::Pen);
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+                require(state.brush.tool == Tool::SelectObject &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 5,
+                        "Reopening selection did not restore Select Object mode");
+                std::vector<size_t> activeStrokeIndices;
+                for (size_t index = 0; index < state.ink.size(); ++index) {
+                    if (state.ink[index].page == 0 && state.ink[index].layerId == state.activeLayerId(0) &&
+                        state.layerVisible(0, state.ink[index].layerId)) {
+                        activeStrokeIndices.push_back(index);
+                    }
+                }
+                require(activeStrokeIndices.size() >= 2,
+                        "Select Object click verification needs two strokes on the active layer");
+                const auto firstStroke = activeStrokeIndices[0];
+                const auto secondStroke = activeStrokeIndices[1];
+                const auto firstBefore = state.ink[firstStroke].points;
+                const auto clickStroke = [&](size_t index) {
+                    const auto& stroke = state.ink[index];
+                    const auto& anchor = stroke.points[stroke.points.size() / 2];
+                    const auto screen = state.pageScreenPoint(stroke.page, anchor.x, anchor.y);
+                    g_signal_emit_by_name(mouse, "drag-begin", screen.x, screen.y);
+                    g_signal_emit_by_name(mouse, "drag-end", 0.0, 0.0);
+                };
+                state.clearSelection();
+                clickStroke(firstStroke);
+                require(state.selected == std::vector<size_t>{firstStroke} &&
+                                state.ink[firstStroke].points == firstBefore,
+                        "Select Object did not select on click without moving the object");
+                input.shiftHeld = true;
+                clickStroke(secondStroke);
+                input.shiftHeld = false;
+                require(state.selected == std::vector<size_t>({firstStroke, secondStroke}),
+                        "Shift-click Select Object did not add a second object");
+                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Select Object mode, hidden-layer fallback, remembered tool state, and shortcuts\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
