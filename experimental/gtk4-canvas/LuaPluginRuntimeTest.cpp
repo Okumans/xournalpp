@@ -62,13 +62,24 @@ int main() {
                 "[plugin]\nmainfile=main.lua\n",
                 "function initUi() app.registerUi({menu='Unavailable', callback='run'}) end\n"
                 "function run() app.activateAction('missing-action') end\n");
+    const auto dialogPlugin = root / "DialogPlugin";
+    writePlugin(dialogPlugin,
+                "[about]\ndescription=Asynchronous plugin dialog\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Dialog', callback='showDialog'})\n"
+                "  app.registerUi({menu='Error Dialog', callback='showErrorDialog'})\n"
+                "end\n"
+                "function showDialog() app.openDialog('Choose one', {'First', 'Second'}, 'dialogResult') end\n"
+                "function showErrorDialog() app.openDialog('Problem', {'OK'}, '', true) end\n"
+                "function dialogResult(result) app.changeActionState('test-mode', result) end\n");
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 5, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 6, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -83,6 +94,11 @@ int main() {
     bool changedSelection = false;
     std::string changedTool;
     std::int64_t changedMode = -1;
+    std::string dialogPluginName;
+    std::string dialogMessage;
+    std::vector<prototype::PluginDialogButton> dialogButtons;
+    bool dialogError = true;
+    std::function<void(int)> dialogResponse;
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -98,6 +114,16 @@ int main() {
         changedMode = std::get<std::int64_t>(value);
         return true;
     };
+    host.openDialog = [&](std::string_view pluginName, std::string_view message,
+                          const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
+                          std::function<void(int)> response, std::string&) {
+        dialogPluginName = pluginName;
+        dialogMessage = message;
+        dialogButtons = buttons;
+        dialogError = isError;
+        dialogResponse = std::move(response);
+        return true;
+    };
     runtime.loadEnabled(std::move(host));
 
     const auto loadedColorSummary = runtime.findPlugin("ColorCycle");
@@ -105,6 +131,9 @@ int main() {
             "Enabled Lua plugin did not run initUi and register its menu callback");
     const auto loadedDefaultSummary = runtime.findPlugin("DefaultPlugin");
     require(loadedDefaultSummary && loadedDefaultSummary->loaded, "Default-enabled plugin did not load");
+    const auto loadedDialogPlugin = runtime.findPlugin("DialogPlugin");
+    require(loadedDialogPlugin && loadedDialogPlugin->loaded && loadedDialogPlugin->menuItems == 2,
+            "Plugin using app.openDialog did not load and register its menu callback");
     require(!runtime.findPlugin("InvalidMain")->loaded, "Invalid plugin mainfile unexpectedly loaded");
     const auto loadedInvalidApi = runtime.findPlugin("InvalidApi");
     require(loadedInvalidApi && !loadedInvalidApi->loaded &&
@@ -119,6 +148,21 @@ int main() {
     require(runtime.invokeMenu("ColorCycle", 0), "Registered plugin menu callback did not execute");
     require(changedColor == 0x123456 && changedTool == "pen" && changedSelection && changedMode == 7,
             "Lua app API arguments did not reach the GTK4 host callback");
+    require(runtime.invokeMenu("DialogPlugin", 0) && dialogPluginName == "DialogPlugin" &&
+                    dialogMessage == "Choose one" && !dialogError && dialogButtons.size() == 2 &&
+                    dialogButtons[0].response == 1 && dialogButtons[0].label == "First" &&
+                    dialogButtons[1].response == 2 && dialogButtons[1].label == "Second" && dialogResponse,
+            "app.openDialog did not preserve its message, ordered buttons, plugin name, and response callback");
+    dialogResponse(0);
+    require(changedMode == 7, "Closing a plugin dialog must not invoke its button callback");
+    dialogResponse(2);
+    require(changedMode == 2, "Plugin dialog button responses must reach the Lua callback as integers");
+    require(runtime.invokeMenu("DialogPlugin", 1) && dialogError && dialogMessage == "Problem" &&
+                    dialogButtons.size() == 1 && dialogButtons[0].response == 1 &&
+                    dialogButtons[0].label == "OK" && dialogResponse,
+            "Error dialogs must preserve their error flag and button response data");
+    dialogResponse(1);
+    require(changedMode == 2, "A plugin dialog without a callback must not activate unrelated plugin actions");
     require(runtime.handleKeyPress(GDK_KEY_R, GDK_SHIFT_MASK, false) && changedMode == 7,
             "Plugin canvas shortcut did not run with legacy shifted-key matching");
     require(!runtime.handleKeyPress(GDK_KEY_r, GdkModifierType(0), true),
@@ -126,8 +170,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 2 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 2,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 4 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 3,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

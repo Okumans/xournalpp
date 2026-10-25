@@ -373,16 +373,17 @@ def verify_plugins(args, evidence):
     output.mkdir(parents=True, exist_ok=True)
     plugin_root = Path(__file__).resolve().parents[2] / "plugins"
     color_cycle = plugin_root / "ColorCycle"
+    example = plugin_root / "Example"
     tool_shortcuts = plugin_root / "ToolShortcuts"
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{tool_shortcuts.resolve()}\ndisabled=\n",
+        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()}\ndisabled=\n",
         encoding="utf-8")
     result = run(
         [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
          "--verify-plugins"],
         env=dict(os.environ, G_DEBUG="fatal-criticals"),
     )
-    expected = "PASS: private GTK4 ColorCycle, ToolShortcuts, Smart Select shortcut and plugin manager"
+    expected = "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut and plugin manager"
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
     for screenshot in ("plugins-menu", "plugins-manager"):
@@ -390,11 +391,13 @@ def verify_plugins(args, evidence):
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing plugin integration screenshot: {path}")
     saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
-    for plugin in ("ColorCycle", "ToolShortcuts", "Example"):
+    for plugin in ("ColorCycle", "ToolShortcuts"):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")
-    print("PASS: private GTK4 plugin manager and bundled Lua callback integration", flush=True)
+    if str(example.resolve()) in saved_settings:
+        raise RuntimeError("Plugin manager did not persist the disabled default Example plugin state")
+    print("PASS: private GTK4 plugin manager, asynchronous Lua dialogs, and bundled callbacks", flush=True)
     return str(directory)
 
 

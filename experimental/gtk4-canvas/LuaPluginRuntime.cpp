@@ -149,6 +149,7 @@ int luaOpenApp(lua_State* state) {
             {"changeToolColor", LuaPluginRuntime::luaChangeToolColor},
             {"changeActionState", LuaPluginRuntime::luaChangeActionState},
             {"activateAction", LuaPluginRuntime::luaActivateAction},
+            {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
 
@@ -654,6 +655,25 @@ bool LuaPluginRuntime::activateAction(std::string_view action, std::string& erro
     return host.activateAction(action, error);
 }
 
+bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
+                                  const std::vector<PluginDialogButton>& buttons, bool isError,
+                                  std::string_view callback, std::string& error) {
+    if (!host.openDialog) {
+        error = "Plugin dialogs are unavailable in this GTK 4 host";
+        return false;
+    }
+
+    auto* pluginEntry = &plugin;
+    const std::string callbackName(callback);
+    return host.openDialog(plugin.name, message, buttons, isError,
+                           [this, pluginEntry, callbackName](int response) {
+                               if (response >= 1 && !callbackName.empty()) {
+                                   call(*pluginEntry, callbackName, static_cast<std::int64_t>(response));
+                               }
+                           },
+                           error);
+}
+
 void LuaPluginRuntime::reportError(const Plugin& plugin, std::string_view message) const {
     g_warning("Plugin '%s': %.*s", plugin.name.c_str(), static_cast<int>(message.size()), message.data());
     if (host.reportError) {
@@ -873,6 +893,59 @@ int LuaPluginRuntime::luaActivateAction(lua_State* state) {
         }
     }
     if (!activated) {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaOpenDialog(lua_State* state) {
+    const char* message = luaL_checkstring(state, 1);
+    luaL_checktype(state, 2, LUA_TTABLE);
+    const char* callback = luaL_optstring(state, 3, "");
+    const bool isError = lua_toboolean(state, 4);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    bool opened = false;
+    {
+        std::string messageText(message);
+        std::string callbackName(callback);
+        std::vector<PluginDialogButton> buttons;
+        lua_pushnil(state);
+        while (lua_next(state, 2) != 0) {
+            if (!lua_isinteger(state, -2) || lua_type(state, -1) != LUA_TSTRING) {
+                std::snprintf(error, sizeof(error), "openDialog options must map integer responses to button labels");
+                lua_pop(state, 2);
+                break;
+            }
+            const auto response = lua_tointeger(state, -2);
+            if (response < std::numeric_limits<int>::min() || response > std::numeric_limits<int>::max()) {
+                std::snprintf(error, sizeof(error), "openDialog response values must fit in an integer");
+                lua_pop(state, 2);
+                break;
+            }
+            const char* label = lua_tostring(state, -1);
+            buttons.push_back({static_cast<int>(response), label ? label : ""});
+            lua_pop(state, 1);
+        }
+        std::sort(buttons.begin(), buttons.end(),
+                  [](const PluginDialogButton& lhs, const PluginDialogButton& rhs) {
+                      return lhs.response < rhs.response;
+                  });
+        if (error[0] == '\0') {
+            std::string hostError;
+            opened = plugin->runtime->openDialog(*plugin, messageText, buttons, isError, callbackName, hostError);
+            if (!opened) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Could not open plugin dialog" : hostError.c_str());
+            }
+        }
+    }
+    if (!opened) {
         lua_pushstring(state, error);
         return lua_error(state);
     }

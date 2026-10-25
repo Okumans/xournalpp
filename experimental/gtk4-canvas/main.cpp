@@ -349,6 +349,12 @@ public:
     }
 
 private:
+    struct PluginDialogContext {
+        Prototype* prototype = nullptr;
+        std::map<std::string, int> responses;
+        std::function<void(int)> callback;
+    };
+
     static void fail(GError* error) {
         const std::string message = error ? error->message : "Unknown PDF error";
         g_clear_error(&error);
@@ -891,6 +897,11 @@ private:
         host.activateAction = [this](std::string_view action, std::string& error) {
             return activatePluginAction(action, error);
         };
+        host.openDialog = [this](std::string_view plugin, std::string_view message,
+                                 const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
+                                 std::function<void(int)> callback, std::string& error) {
+            return showPluginDialog(plugin, message, buttons, isError, std::move(callback), error);
+        };
         host.reportError = [this](std::string_view plugin, std::string_view message) {
             if (window) {
                 showAlert("Plugin error", std::string(plugin) + ": " + std::string(message));
@@ -899,6 +910,55 @@ private:
             }
         };
         pluginRuntime->loadEnabled(std::move(host));
+    }
+
+    bool showPluginDialog(std::string_view pluginName, std::string_view message,
+                          const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
+                          std::function<void(int)> callback, std::string& error) {
+        if (!window) {
+            error = "The main window is not available";
+            return false;
+        }
+        if (messageDialog) {
+            error = "Another dialog is already open";
+            return false;
+        }
+
+        const std::string title = (isError ? "Error in Xournal++ Plugin «" : "Xournal++ Plugin «") +
+                                  std::string(pluginName) + "»";
+        const std::string body(message);
+        auto* dialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(title.c_str(), body.c_str()));
+        auto* context = new PluginDialogContext{this, {}, std::move(callback)};
+        for (const auto& button: buttons) {
+            const auto response = std::to_string(button.response);
+            const auto responseId = "plugin-response-" + response;
+            context->responses.emplace(responseId, button.response);
+            adw_alert_dialog_add_response(dialog, responseId.c_str(), button.label.c_str());
+        }
+        constexpr const char* dismissResponse = "plugin-dismiss";
+        adw_alert_dialog_set_close_response(dialog, dismissResponse);
+        if (!buttons.empty()) {
+            const auto firstResponse = "plugin-response-" + std::to_string(buttons.front().response);
+            adw_alert_dialog_set_default_response(dialog, firstResponse.c_str());
+        }
+        g_signal_connect_data(
+                dialog, "response",
+                G_CALLBACK(+[](AdwAlertDialog* dialog, const char* response, gpointer data) {
+                    auto* context = static_cast<PluginDialogContext*>(data);
+                    if (context->prototype->messageDialog == dialog) {
+                        context->prototype->messageDialog = nullptr;
+                    }
+                    const auto selected = context->responses.find(response ? response : "");
+                    if (selected != context->responses.end() && context->callback) {
+                        context->callback(selected->second);
+                    }
+                }),
+                context,
+                +[](gpointer data, GClosure*) { delete static_cast<PluginDialogContext*>(data); },
+                static_cast<GConnectFlags>(0));
+        messageDialog = dialog;
+        adw_dialog_present(ADW_DIALOG(dialog), window);
+        return true;
     }
 
     static std::optional<Tool> pluginToolFromName(std::string_view name) {
@@ -1521,12 +1581,15 @@ private:
         const auto toolShortcuts = pluginRuntime->findPlugin("ToolShortcuts");
         require(toolShortcuts && toolShortcuts->loaded && toolShortcuts->menuItems == 14,
                 "Enabled bundled ToolShortcuts plugin did not register its complete menu set");
+        const auto example = pluginRuntime->findPlugin("Example");
+        require(example && example->loaded && example->menuItems == 1,
+                "Enabled bundled Example plugin did not register its menu callback");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 2,
-                "Plugins menu did not include both enabled plugin groups");
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 3,
+                "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
                 "Registered Lua menu action is missing from the application window");
@@ -1573,6 +1636,14 @@ private:
         state.clearSelection();
         state.ink.pop_back();
 
+        g_action_group_activate_action(G_ACTION_GROUP(window), "gtk4-plugin-1", nullptr);
+        require(messageDialog &&
+                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-2"), "No") ==
+                                0,
+                "Example plugin did not open its GTK dialog with the legacy button labels");
+        answerDialog("plugin-response-2");
+        require(messageDialog == nullptr, "Example plugin dialog did not close after choosing a response");
+
         openPluginManager();
         require(pluginManagerWindow && gtk_widget_get_visible(GTK_WIDGET(pluginManagerWindow)),
                 "Manage Plugins action did not present the GTK manager window");
@@ -1587,16 +1658,17 @@ private:
         captureTopLevel("plugins-manager", GTK_WIDGET(pluginManagerWindow));
 
         const auto exampleSwitch = pluginManagerSwitches.find("Example");
-        const auto example = pluginRuntime->findPlugin("Example");
         require(exampleSwitch != pluginManagerSwitches.end() && example,
                 "Plugin manager is missing the bundled Example plugin control");
-        gtk_switch_set_active(GTK_SWITCH(exampleSwitch->second), true);
+        gtk_switch_set_active(GTK_SWITCH(exampleSwitch->second), false);
         g_signal_emit_by_name(pluginManagerApplyButton, "clicked");
         require(messageDialog &&
-                        importedConfig.settings.pluginsEnabled.find(example->path.string()) != std::string::npos,
-                "Applying plugin changes did not persist the enabled plugin path");
+                        importedConfig.settings.pluginsEnabled.find(example->path.string()) == std::string::npos &&
+                        !pluginRuntime->findPlugin("Example")->pendingEnabled,
+                "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
-        std::cout << "PASS: private GTK4 ColorCycle, ToolShortcuts, Smart Select shortcut and plugin manager\n";
+        std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut and plugin "
+                     "manager\n";
     }
 
     static guint settingsThemeIndex(prototype::ThemeVariant theme) {
