@@ -28,9 +28,10 @@ With a document worker, the header's Insert Image action opens a local image
 chooser. The image is placed at the center of the active page, scaled to fit
 within 60% of the page, and selected in Smart Select. Drag the image to move it,
 drag a corner handle to resize it proportionally, or drag the top rotation handle
-to rotate around its center. Rotation follows imported and editable
-`snapRotationTolerance`. Delete removes the selected image, and insertion, move,
-resize, rotation, and deletion share the native undo history.
+to rotate around its center. Rotation snapping follows imported and editable
+`snapRotation` and `snapRotationTolerance` settings; holding Alt temporarily
+reverses the snapping setting. Delete removes the selected image, and insertion,
+move, resize, rotation, and deletion share the native undo history.
 Embedded image orientation is honored, and images larger than 32 megapixels are
 scaled down for display. The original encoded bytes and transforms survive
 `.xopp` save, autosave, reopen, and PDF export. The current image workflow does

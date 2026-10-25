@@ -98,6 +98,15 @@ inline double snapCanvasImageRotation(double radians, double tolerance) {
     return std::abs(snapped - radians) < threshold ? snapped : radians;
 }
 
+inline double canvasImageRotationDelta(double startAngle, double currentAngle, bool snapRotation,
+                                       double tolerance) {
+    if (!std::isfinite(startAngle) || !std::isfinite(currentAngle)) {
+        return 0;
+    }
+    const double targetAngle = snapRotation ? snapCanvasImageRotation(currentAngle, tolerance) : currentAngle;
+    return std::remainder(targetAngle - startAngle, 2 * std::acos(-1.0));
+}
+
 inline bool rotateCanvasImage(CanvasImage& image, double radians) {
     if (!validCanvasImage(image) || !std::isfinite(radians)) {
         return false;

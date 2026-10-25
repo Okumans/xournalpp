@@ -28,7 +28,7 @@ registration in `ToolHandler::initTools`.
 | `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work; reproduce all production hit geometry and renderer interactions. |
 | `highlighter` | Partial | Core opacity and native serialization work; reproduce production stroke geometry and blend behavior. |
 | `text` | Partial | Rich editing and round-trip work. Add text object selection, move/resize/rotate, transform-following editor placement, IME, and accessibility. |
-| `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, and PDF export work. Add image clipboard operations and integrate images into general object selection. |
+| `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, and PDF export work. Rotation uses imported/editable snap settings and the Alt override. Add image clipboard operations and integrate images into general object selection. |
 | `selectRect` | Partial | Selects editable strokes on the active visible foreground layer; extend to the full production object and layer rules. |
 | `selectRegion` | Partial | Lasso-selects editable strokes on the active visible foreground layer; extend to the full production object and layer rules. |
 | `selectMultiLayerRect` | Pending | Select matching objects across layers with production visibility and ordering semantics. |

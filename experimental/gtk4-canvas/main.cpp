@@ -414,6 +414,7 @@ private:
         ZoomStep,
         ScrollZoomStep,
         RotationSnapTolerance,
+        SnapRotation,
     };
 
     GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
@@ -544,6 +545,9 @@ private:
             case PreferenceKey::RotationSnapTolerance:
                 settings.snapRotationTolerance = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
+            case PreferenceKey::SnapRotation:
+                settings.snapRotation = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
         }
 
         prototype::applyImportedSettingsToCanvas(state, settings);
@@ -638,6 +642,9 @@ private:
         adw_preferences_page_add(behavior, navigationGroup);
         auto* selectionGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
         adw_preferences_group_set_title(selectionGroup, "Selection");
+        preferenceSwitch(selectionGroup, "Snap image rotation",
+                         "Snap to 15° increments; hold Alt to temporarily reverse this setting",
+                         importedConfig.settings.snapRotation, PreferenceKey::SnapRotation);
         preferenceSpin(selectionGroup, "Rotation snap tolerance",
                        "Snap image rotation to 15° increments near a match",
                        importedConfig.settings.snapRotationTolerance, 0.0, 1.0, 0.05, 2, "",
@@ -3150,8 +3157,9 @@ private:
         imageGesture.reset();
         if (gesture.mode == ImageGesture::Mode::Rotate) {
             gesture.preview = gesture.original;
-            const double angle = prototype::snapCanvasImageRotation(
-                    gesture.rotationDelta, state.snapRotationTolerance);
+            const double angle = prototype::canvasImageRotationDelta(
+                    gesture.startAngle, gesture.startAngle + gesture.rotationDelta,
+                    state.snapRotationEnabled != input.altHeld, state.snapRotationTolerance);
             prototype::rotateCanvasImage(gesture.preview, angle);
             const auto& before = gesture.original.transform;
             const auto& after = gesture.preview.transform;
@@ -4635,17 +4643,28 @@ private:
                             "Legacy stylus mappings were not imported before opening Preferences");
                     openPreferences();
                     break;
-                case 1:
+                case 1: {
                     require(control(PreferenceKey::Theme) && control(PreferenceKey::StylusButtonOne) &&
                                     control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout) &&
-                                    control(PreferenceKey::RotationSnapTolerance),
+                                    control(PreferenceKey::RotationSnapTolerance) &&
+                                    control(PreferenceKey::SnapRotation),
                             "Preferences dialog is missing appearance, stylus or autosave controls");
                     require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Highlighter) &&
                                     adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonTwo))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Hand),
                             "Preferences rows did not show imported stylus mappings");
+                    require(adw_switch_row_get_active(
+                                    ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
+                            "Rotation snapping should be enabled by default in Preferences");
                     capture("preferences-dialog");
+                    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "behavior");
+                    require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "behavior",
+                            "Preferences dialog did not switch to the Behavior page");
+                    break;
+                }
+                case 2: {
+                    capture("preferences-behavior");
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne)),
                                                static_cast<guint>(prototype::ButtonToolAction::Pen));
@@ -4653,9 +4672,11 @@ private:
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::AutosaveTimeout)), 9);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::ZoomStep)), 22.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::RotationSnapTolerance)), 0.45);
+                    adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation)), false);
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     !importedConfig.settings.pressureSensitivity &&
+                                    !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
@@ -4687,6 +4708,7 @@ private:
                                 "The stylus Hand mapping did not pan without changing the toolbar tool");
                     }
                     break;
+                }
                 default:
                     capture("preferences-edited");
                     std::cout << "PASS: Adw Preferences editing, legacy stylus mapping import and persistent GTK 4 settings\n";
@@ -4701,6 +4723,7 @@ private:
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     importedConfig.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand &&
                                     !importedConfig.settings.pressureSensitivity &&
+                                    !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8,
@@ -4714,6 +4737,9 @@ private:
                                     !adw_switch_row_get_active(
                                             ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity))),
                             "Preferences dialog did not display restored values");
+                    require(!adw_switch_row_get_active(
+                                    ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
+                            "Preferences dialog did not restore the rotation snapping setting");
                     capture("preferences-reloaded");
                     std::cout << "PASS: GTK 4 preferences survive application restart\n";
                     adw_dialog_close(ADW_DIALOG(preferencesDialog));
@@ -4812,7 +4838,32 @@ private:
                                 std::hypot(prototype::canvasImageCenter(state.images[0]).x - centerBeforeRotation.x,
                                            prototype::canvasImageCenter(state.images[0]).y - centerBeforeRotation.y) < 1e-6,
                         "Image rotation should snap to 30 degrees around its center");
+                const auto snappedTransform = state.images[0].transform;
+                const auto snappedHandle = prototype::canvasImageRotationHandle(state.images[0], state.zoom);
+                const double snappedHandleAngle = std::atan2(snappedHandle.y - centerBeforeRotation.y,
+                                                             snappedHandle.x - centerBeforeRotation.x);
+                const prototype::Point unsnappedHandle{
+                        centerBeforeRotation.x + handleRadius * std::cos(snappedHandleAngle + 2 * G_PI / 180.0),
+                        centerBeforeRotation.y + handleRadius * std::sin(snappedHandleAngle + 2 * G_PI / 180.0)};
+                const auto unsnappedStart = state.pageScreenPoint(state.images[0].page, snappedHandle.x,
+                                                                   snappedHandle.y);
+                const auto unsnappedEnd = state.pageScreenPoint(state.images[0].page, unsnappedHandle.x,
+                                                                 unsnappedHandle.y);
+                input.setModifiers(false, false, true);
+                begin(Device::Mouse, unsnappedStart.x, unsnappedStart.y);
+                motion(Device::Mouse, unsnappedEnd.x, unsnappedEnd.y);
+                finish(Device::Mouse);
+                input.setModifiers(false, false, false);
+                require(std::abs(std::atan2(state.images[0].transform.yx, state.images[0].transform.xx) -
+                                         (G_PI / 6.0 + 2 * G_PI / 180.0)) < 1e-6,
+                        "Holding Alt should temporarily disable rotation snapping");
                 const auto rotatedTransform = state.images[0].transform;
+                state.undo();
+                require(std::abs(state.images[0].transform.xx - snappedTransform.xx) < 1e-9 &&
+                                std::abs(state.images[0].transform.xy - snappedTransform.xy) < 1e-9 &&
+                                std::abs(state.images[0].transform.yx - snappedTransform.yx) < 1e-9 &&
+                                std::abs(state.images[0].transform.yy - snappedTransform.yy) < 1e-9,
+                        "Undo should restore the snapped image rotation after an Alt rotation");
                 state.undo();
                 require(std::abs(state.images[0].transform.xx - movedTransform.xx) < 1e-9 &&
                                 std::abs(state.images[0].transform.xy - movedTransform.xy) < 1e-9 &&
@@ -4820,9 +4871,15 @@ private:
                                 std::abs(state.images[0].transform.yy - movedTransform.yy) < 1e-9,
                         "Undo should restore the image transform from before rotation");
                 state.redo();
+                require(std::abs(state.images[0].transform.xx - snappedTransform.xx) < 1e-9 &&
+                                std::abs(state.images[0].transform.xy - snappedTransform.xy) < 1e-9 &&
+                                std::abs(state.images[0].transform.yx - snappedTransform.yx) < 1e-9 &&
+                                std::abs(state.images[0].transform.yy - snappedTransform.yy) < 1e-9,
+                        "Redo should restore the snapped image rotation");
+                state.redo();
                 require(std::abs(state.images[0].transform.xy - rotatedTransform.xy) < 1e-9 &&
                                 std::abs(state.images[0].transform.yx - rotatedTransform.yx) < 1e-9,
-                        "Redo should restore the rotated image transform");
+                        "Redo should restore the unsnapped Alt image rotation");
                 imageVerifyExpected = state.images[0].transform;
                 saveCopyTo((std::filesystem::path(options.smokeDirectory) / "image-saved.xopp").string());
                 break;
@@ -6292,7 +6349,7 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
-    std::array<GtkWidget*, 13> preferenceControls{};
+    std::array<GtkWidget*, 14> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;

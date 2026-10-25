@@ -150,6 +150,14 @@ static void imageRotationGeometry() {
     const double snappedAngle = snapCanvasImageRotation(std::acos(-1.0) / 6.0 + 0.01, 0.30);
     check(std::abs(snappedAngle - std::acos(-1.0) / 6.0) < 1e-9,
           "image rotation should snap to the nearest 15-degree angle within tolerance");
+    const double startAngle = -80 * std::acos(-1.0) / 180.0;
+    const double currentAngle = -62 * std::acos(-1.0) / 180.0;
+    check(std::abs(canvasImageRotationDelta(startAngle, currentAngle, true, 0.30) -
+                   20 * std::acos(-1.0) / 180.0) < 1e-9,
+          "rotation snapping should align the resulting image angle to a global 15-degree increment");
+    check(std::abs(canvasImageRotationDelta(startAngle, currentAngle, false, 0.30) -
+                   18 * std::acos(-1.0) / 180.0) < 1e-9,
+          "disabled rotation snapping should preserve the unrounded pointer angle");
     check(rotateCanvasImage(image, std::acos(-1.0) / 2), "a finite rotation should update a valid image");
     const auto afterCenter = canvasImageCenter(image);
     check(std::abs(afterCenter.x - beforeCenter.x) < 1e-9 && std::abs(afterCenter.y - beforeCenter.y) < 1e-9,

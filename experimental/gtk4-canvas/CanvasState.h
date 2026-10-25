@@ -99,6 +99,7 @@ public:
     double minimumPressure = behavior::minimumPressure;
     double pressureMultiplier = behavior::pressureMultiplier;
     double shapeRecognizerMinSize = 40;
+    bool snapRotationEnabled = true;
     double snapRotationTolerance = 0.30;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;

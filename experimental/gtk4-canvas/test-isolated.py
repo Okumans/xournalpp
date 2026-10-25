@@ -337,13 +337,13 @@ def verify_preferences(args, evidence):
         if hashlib.sha256(settings_path.read_bytes()).hexdigest() != settings_hash:
             raise RuntimeError("GTK 4 Preferences modified the original settings.xml")
 
-    for name in ("preferences-dialog", "preferences-edited", "preferences-reloaded"):
+    for name in ("preferences-dialog", "preferences-behavior", "preferences-edited", "preferences-reloaded"):
         path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing GTK 4 Preferences screenshot: {path}")
     stored = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
     for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
-                     "rotation-snap-tolerance=0.45", "button-one=1", "button-two=4"):
+                     "rotation-snap-tolerance=0.45", "snap-rotation=false", "button-one=1", "button-two=4"):
         if expected not in stored:
             raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
     print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)

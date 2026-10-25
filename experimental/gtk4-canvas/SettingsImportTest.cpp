@@ -36,6 +36,7 @@ int main() {
   <property name="pressureMultiplier" value="1.35"/>
   <property name="zoomStep" value="25.00000000"/>
   <property name="zoomStepScroll" value="4.50000000"/>
+  <property name="snapRotation" value="false"/>
   <property name="snapRotationTolerance" value="0.65"/>
   <property name="strokeRecognizerMinSize" value="32"/>
   <property name="stabilizerAveragingMethod" value="2"/>
@@ -93,6 +94,7 @@ int main() {
             "Pressure settings mismatch");
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");
     require(near(s.snapRotationTolerance, 0.65), "Selection rotation tolerance import mismatch");
+    require(!s.snapRotation, "Selection rotation snapping preference import mismatch");
     require(near(s.shapeRecognizerMinSize, 32) &&
                     s.stabilizer.averaging == prototype::AveragingMethod::VelocityGaussian &&
                     s.stabilizer.preprocessor == prototype::StrokePreprocessor::Deadzone &&
@@ -105,6 +107,7 @@ int main() {
     prototype::applyImportedSettingsToCanvas(importedState, s);
     require(near(importedState.shapeRecognizerMinSize, 32), "Shape recognizer minimum size was not applied to canvas state");
     require(near(importedState.snapRotationTolerance, 0.65), "Rotation tolerance was not applied to canvas state");
+    require(!importedState.snapRotationEnabled, "Rotation snapping setting was not applied to canvas state");
     require(!s.showSidebar && s.themeVariant == prototype::ThemeVariant::ForceDark,
             "showSidebar or forceDark mismatch");
     require(s.autosaveEnabled && s.autosaveTimeoutMinutes == 7 && s.effectiveAutosaveSeconds() == 420,
