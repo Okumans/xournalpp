@@ -752,6 +752,15 @@ std::string LuaPluginRuntime::documentFilename() const {
     return host.documentFilename ? host.documentFilename() : std::string{};
 }
 
+PluginDocumentStructure LuaPluginRuntime::documentStructure() const {
+    if (host.documentStructure) {
+        return host.documentStructure();
+    }
+    PluginDocumentStructure structure;
+    structure.xoppFilename = documentFilename();
+    return structure;
+}
+
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
                                   const std::vector<PluginDialogButton>& buttons, bool isError,
                                   std::string_view callback, std::string& error) {
@@ -1571,9 +1580,59 @@ int LuaPluginRuntime::luaGetDocumentStructure(lua_State* state) {
         return luaL_error(state, "No owning plugin state");
     }
 
-    const auto filename = plugin->runtime->documentFilename();
-    lua_createtable(state, 0, 1);
-    lua_pushlstring(state, filename.data(), filename.size());
+    const auto structure = plugin->runtime->documentStructure();
+    lua_createtable(state, 0, 4);
+
+    lua_createtable(state, static_cast<int>(std::min<std::size_t>(
+                                 structure.pages.size(), static_cast<std::size_t>(std::numeric_limits<int>::max()))),
+                    0);
+    for (std::size_t pageIndex = 0; pageIndex < structure.pages.size(); ++pageIndex) {
+        const auto& page = structure.pages[pageIndex];
+        lua_pushinteger(state, static_cast<lua_Integer>(pageIndex + 1));
+        lua_createtable(state, 0, 9);
+        lua_pushnumber(state, page.width);
+        lua_setfield(state, -2, "pageWidth");
+        lua_pushnumber(state, page.height);
+        lua_setfield(state, -2, "pageHeight");
+        lua_pushboolean(state, page.isAnnotated);
+        lua_setfield(state, -2, "isAnnotated");
+        lua_pushlstring(state, page.pageTypeFormat.data(), page.pageTypeFormat.size());
+        lua_setfield(state, -2, "pageTypeFormat");
+        lua_pushlstring(state, page.pageTypeConfig.data(), page.pageTypeConfig.size());
+        lua_setfield(state, -2, "pageTypeConfig");
+        lua_pushinteger(state, static_cast<lua_Integer>(page.backgroundColor));
+        lua_setfield(state, -2, "backgroundColor");
+        lua_pushinteger(state, static_cast<lua_Integer>(page.pdfBackgroundPageNo));
+        lua_setfield(state, -2, "pdfBackgroundPageNo");
+        lua_createtable(state, 0,
+                        static_cast<int>(std::min<std::size_t>(
+                                page.layers.size(), static_cast<std::size_t>(std::numeric_limits<int>::max()))));
+        for (std::size_t layerIndex = 0; layerIndex < page.layers.size(); ++layerIndex) {
+            const auto& layer = page.layers[layerIndex];
+            lua_pushinteger(state, static_cast<lua_Integer>(layerIndex));
+            lua_createtable(state, 0, layer.isAnnotated ? 3 : 2);
+            lua_pushboolean(state, layer.visible);
+            lua_setfield(state, -2, "isVisible");
+            lua_pushlstring(state, layer.name.data(), layer.name.size());
+            lua_setfield(state, -2, "name");
+            if (layer.isAnnotated) {
+                lua_pushboolean(state, *layer.isAnnotated);
+                lua_setfield(state, -2, "isAnnotated");
+            }
+            lua_settable(state, -3);
+        }
+        lua_setfield(state, -2, "layers");
+        lua_pushinteger(state, static_cast<lua_Integer>(page.currentLayer));
+        lua_setfield(state, -2, "currentLayer");
+        lua_settable(state, -3);
+    }
+    lua_setfield(state, -2, "pages");
+
+    lua_pushinteger(state, static_cast<lua_Integer>(structure.currentPage));
+    lua_setfield(state, -2, "currentPage");
+    lua_pushlstring(state, structure.pdfBackgroundFilename.data(), structure.pdfBackgroundFilename.size());
+    lua_setfield(state, -2, "pdfBackgroundFilename");
+    lua_pushlstring(state, structure.xoppFilename.data(), structure.xoppFilename.size());
     lua_setfield(state, -2, "xoppFilename");
     return 1;
 }

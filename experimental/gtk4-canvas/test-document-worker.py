@@ -29,6 +29,13 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def read_document_path(path):
+    header, value = path.read_bytes().split(b"\n", 1)
+    magic, length = header.decode("ascii").split()
+    assert magic == "XOURNALPP_GTK4_DOCUMENT_PATH_V1" and int(length) == len(value)
+    return value.decode("utf-8")
+
+
 def content(element):
     # Formatting whitespace between XML elements is not document content.
     return (element.tag, sorted(element.attrib.items()),
@@ -103,12 +110,14 @@ def read_layers(path):
 
     magic, count = read_line().split()
     assert magic in ("XOURNALPP_GTK4_LAYERS_V1", "XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3",
-                     "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
+                     "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5", "XOURNALPP_GTK4_LAYERS_V6")
+    version6 = magic == "XOURNALPP_GTK4_LAYERS_V6"
     version2 = magic in ("XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3",
-                         "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
-    version3 = magic in ("XOURNALPP_GTK4_LAYERS_V3", "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
-    version4 = magic in ("XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
-    version5 = magic == "XOURNALPP_GTK4_LAYERS_V5"
+                         "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5", "XOURNALPP_GTK4_LAYERS_V6")
+    version3 = magic in ("XOURNALPP_GTK4_LAYERS_V3", "XOURNALPP_GTK4_LAYERS_V4",
+                         "XOURNALPP_GTK4_LAYERS_V5", "XOURNALPP_GTK4_LAYERS_V6")
+    version4 = magic in ("XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5", "XOURNALPP_GTK4_LAYERS_V6")
+    version5 = magic in ("XOURNALPP_GTK4_LAYERS_V5", "XOURNALPP_GTK4_LAYERS_V6")
     pages = []
     for _ in range(int(count)):
         if version4:
@@ -128,6 +137,7 @@ def read_layers(path):
         else:
             initial_count, selected, background, layer_count = map(int, read_line().split())
             grid_x_offset = grid_y_offset = grid_x_step = grid_y_step = 0.0
+        background_color = int(read_line()) if version6 else 0xffffff
         background_name = None
         if version2:
             has_background_name, name_bytes = map(int, read_line().split())
@@ -151,16 +161,22 @@ def read_layers(path):
             offset += 1
         layers = []
         for _ in range(layer_count):
-            visible, name_bytes, origin_count = map(int, read_line().split())
+            if version6:
+                visible, has_non_editable_elements, name_bytes, origin_count = map(int, read_line().split())
+            else:
+                visible, name_bytes, origin_count = map(int, read_line().split())
+                has_non_editable_elements = 0
             origins = [int(read_line()) for _ in range(origin_count)]
             name = data[offset:offset + name_bytes].decode("utf-8")
             offset += name_bytes
             assert data[offset:offset + 1] == b"\n"
             offset += 1
-            layers.append({"name": name, "visible": bool(visible), "origins": origins})
+            layers.append({"name": name, "visible": bool(visible), "origins": origins,
+                           "has_non_editable_elements": bool(has_non_editable_elements)})
         pages.append({"initial_count": initial_count, "selected": selected,
                       "background_visible": bool(background), "background_name": background_name,
                       "background_format": background_format, "background_config": background_config,
+                      "background_color": background_color,
                       "grid_x_offset": grid_x_offset, "grid_y_offset": grid_y_offset,
                       "grid_x_step": grid_x_step, "grid_y_step": grid_y_step, "layers": layers})
     assert offset == len(data)
@@ -205,6 +221,15 @@ def main():
         run("open", "", blank, temporary / "blank.pdf")
         assert json.loads(run("inspect", blank))["pages"] == [
             {"width": 595, "height": 842, "layers": 1, "strokes": 0, "texts": 0, "images": 0}]
+        blank_metadata = temporary / "blank-metadata"
+        blank_metadata.mkdir()
+        run("open", "", blank_metadata / "snapshot.xopp", blank_metadata / "preview.pdf",
+            blank_metadata / "ink.dat", blank_metadata / "text.dat", blank_metadata / "layers.dat",
+            blank_metadata / "images.dat")
+        assert read_document_path(blank_metadata / "pdf-background-path.dat") == ""
+        blank_page_metadata = read_layers(blank_metadata / "layers.dat")[0]
+        assert blank_page_metadata["background_color"] == 0xffffff
+        assert all(not layer["has_non_editable_elements"] for layer in blank_page_metadata["layers"])
         source = temporary / "source.xopp"
         root = xml(fixtures / "benchmark/typed-text.xopp")
         page = root.find("page")
@@ -491,6 +516,8 @@ def main():
         layer_pages = read_layers(layered_state)
         assert len(layer_pages) == 1 and layer_pages[0]["initial_count"] == 2
         assert layer_pages[0]["grid_y_offset"] == 80
+        assert layer_pages[0]["background_color"] == 0xffffff
+        assert [layer["has_non_editable_elements"] for layer in layer_pages[0]["layers"]] == [True, True]
         assert [(layer["name"], layer["origins"]) for layer in layer_pages[0]["layers"]] == [
             ("Lower", [0]), ("Upper", [1])]
         layered_packets = read_ink_transfer(layered_ink)
@@ -661,6 +688,8 @@ def main():
         run("open", fixtures / "packaged_xopp/pdfBackground/new.xopp",
             pdf_bg_open / "snapshot.xopp", pdf_bg_open / "preview.pdf", pdf_bg_open / "ink.dat",
             pdf_bg_open / "text.dat", pdf_bg_open / "layers.dat", pdf_bg_open / "images.dat")
+        background_path = read_document_path(pdf_bg_open / "pdf-background-path.dat")
+        assert background_path and background_path.endswith(".pdf")
         labels_file = pdf_bg_open / "pdf-labels.dat"
         labels_header = labels_file.read_text().splitlines()[0].split()
         assert labels_header[0] == "XOURNALPP_GTK4_PDF_LABELS_V1" and int(labels_header[1]) >= 2

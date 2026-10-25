@@ -81,7 +81,8 @@ inline void validate(const LayerDocument& pages) {
             page.layers.size() > maxLayersPerPage || page.selectedLayer == 0 ||
             page.selectedLayer > page.layers.size() || !std::isfinite(page.gridXOffset) ||
             !std::isfinite(page.gridYOffset) || !std::isfinite(page.gridXStep) || !std::isfinite(page.gridYStep) ||
-            page.gridXStep < 0 || page.gridYStep < 0 || ((page.gridXStep == 0) != (page.gridYStep == 0))) {
+            page.gridXStep < 0 || page.gridYStep < 0 || ((page.gridXStep == 0) != (page.gridYStep == 0)) ||
+            page.backgroundColor > 0xffffffU) {
             throw std::runtime_error("Invalid page layer metadata");
         }
         if (page.backgroundName &&
@@ -138,7 +139,8 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
     const bool version3 = magic == "XOURNALPP_GTK4_LAYERS_V3";
     const bool version4 = magic == "XOURNALPP_GTK4_LAYERS_V4";
     const bool version5 = magic == "XOURNALPP_GTK4_LAYERS_V5";
-    if ((!version1 && !version2 && !version3 && !version4 && !version5) || count > maxLayerPages) {
+    const bool version6 = magic == "XOURNALPP_GTK4_LAYERS_V6";
+    if ((!version1 && !version2 && !version3 && !version4 && !version5 && !version6) || count > maxLayerPages) {
         throw std::runtime_error("Invalid layer-transfer header");
     }
 
@@ -149,7 +151,7 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
         PageLayerInfo page;
         int backgroundVisible = 0;
         size_t layerCount = 0;
-        if (version4 || version5) {
+        if (version4 || version5 || version6) {
             layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), page.initialLayerCount,
                                             page.selectedLayer, backgroundVisible, page.gridXOffset,
                                             page.gridYOffset, page.gridXStep, page.gridYStep, layerCount);
@@ -164,7 +166,13 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
             throw std::runtime_error("Invalid page layer-transfer header");
         }
         page.backgroundVisible = backgroundVisible != 0;
-        if (version2 || version3 || version4 || version5) {
+        if (version6) {
+            layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), page.backgroundColor);
+            if (page.backgroundColor > 0xffffffU) {
+                throw std::runtime_error("Invalid page background color");
+            }
+        }
+        if (version2 || version3 || version4 || version5 || version6) {
             int hasBackgroundName = 0;
             size_t nameBytes = 0;
             layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), hasBackgroundName, nameBytes);
@@ -180,7 +188,7 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
                 throw std::runtime_error("Layer transfer exceeds its size limit");
             }
         }
-        if (version5) {
+        if (version5 || version6) {
             size_t formatBytes = 0;
             size_t configBytes = 0;
             layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), formatBytes, configBytes);
@@ -200,11 +208,22 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
             int visible = 0;
             size_t nameBytes = 0;
             size_t originCount = 0;
-            layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), visible, nameBytes, originCount);
+            int hasNonEditableElements = 0;
+            if (version6) {
+                layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), visible,
+                                                hasNonEditableElements, nameBytes, originCount);
+            } else {
+                layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), visible,
+                                                nameBytes, originCount);
+            }
             if ((visible != 0 && visible != 1) || nameBytes > maxLayerNameBytes || originCount > maxLayerOrigins) {
                 throw std::runtime_error("Invalid layer-transfer entry");
             }
+            if (hasNonEditableElements != 0 && hasNonEditableElements != 1) {
+                throw std::runtime_error("Invalid layer annotation metadata");
+            }
             layer.visible = visible != 0;
+            layer.hasNonEditableElements = hasNonEditableElements != 0;
             layer.origins.reserve(originCount);
             for (size_t origin = 0; origin < originCount; ++origin) {
                 size_t id = 0;
@@ -235,11 +254,12 @@ inline void writeLayerTransfer(const std::filesystem::path& path, const LayerDoc
     }
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_LAYERS_V5 " << pages.size() << '\n';
+    stream << "XOURNALPP_GTK4_LAYERS_V6 " << pages.size() << '\n';
     for (const auto& page: pages) {
         stream << page.initialLayerCount << ' ' << page.selectedLayer << ' ' << page.backgroundVisible << ' '
                << page.gridXOffset << ' ' << page.gridYOffset << ' ' << page.gridXStep << ' ' << page.gridYStep << ' '
                << page.layers.size() << '\n';
+        stream << page.backgroundColor << '\n';
         const size_t backgroundNameBytes = page.backgroundName ? page.backgroundName->size() : 0;
         stream << page.backgroundName.has_value() << ' ' << backgroundNameBytes << '\n';
         if (page.backgroundName) {
@@ -252,7 +272,8 @@ inline void writeLayerTransfer(const std::filesystem::path& path, const LayerDoc
         stream.write(page.backgroundConfig.data(), static_cast<std::streamsize>(page.backgroundConfig.size()));
         stream.put('\n');
         for (const auto& layer: page.layers) {
-            stream << layer.visible << ' ' << layer.name.size() << ' ' << layer.origins.size() << '\n';
+            stream << layer.visible << ' ' << layer.hasNonEditableElements << ' ' << layer.name.size() << ' '
+                   << layer.origins.size() << '\n';
             for (size_t origin: layer.origins) {
                 stream << origin << '\n';
             }

@@ -144,6 +144,27 @@ int main() {
                 "end\n"
                 "function exportDefaults() app.export({outputFile='/tmp/plugin-default.pdf'}) end\n"
                 "function malformed() app.addStrokes({strokes={{x={1,2}, y={3}}}}) end\n");
+    const auto documentStructurePlugin = root / "DocumentStructurePlugin";
+    writePlugin(documentStructurePlugin,
+                "[about]\ndescription=Document structure API\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi() app.registerUi({menu='Read structure', callback='read'}) end\n"
+                "function read()\n"
+                "  local doc = app.getDocumentStructure()\n"
+                "  assert(doc.currentPage == 1 and #doc.pages == 1)\n"
+                "  assert(doc.pdfBackgroundFilename == '/tmp/background.pdf')\n"
+                "  assert(doc.xoppFilename == '/tmp/plugin-test.xopp')\n"
+                "  local page = doc.pages[1]\n"
+                "  assert(page.pageWidth == 612 and page.pageHeight == 792 and page.isAnnotated)\n"
+                "  assert(page.pageTypeFormat == 'graph' and page.pageTypeConfig == 'r1=14.17')\n"
+                "  assert(page.backgroundColor == 0x123456 and page.pdfBackgroundPageNo == 3)\n"
+                "  assert(page.currentLayer == 2)\n"
+                "  assert(page.layers[0].name == 'Paper' and not page.layers[0].isVisible)\n"
+                "  assert(page.layers[0].isAnnotated == nil)\n"
+                "  assert(page.layers[1].name == 'Ink' and page.layers[1].isVisible)\n"
+                "  assert(page.layers[1].isAnnotated)\n"
+                "  app.changeActionState('document-page-count', #doc.pages)\n"
+                "end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -155,7 +176,7 @@ int main() {
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
                                      quickScreenshotPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 12, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 13, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -171,6 +192,7 @@ int main() {
     std::string changedTool;
     std::int64_t changedMode = -1;
     std::int64_t strokeCount = -1;
+    std::int64_t documentPageCount = -1;
     std::vector<prototype::PluginStrokeInput> addedStrokes;
     prototype::PluginStrokeUndoPolicy addedStrokePolicy = prototype::PluginStrokeUndoPolicy::Grouped;
     double pageWidthChange = 0;
@@ -198,12 +220,14 @@ int main() {
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
-        if ((action != "test-mode" && action != "stroke-count") ||
+        if ((action != "test-mode" && action != "stroke-count" && action != "document-page-count") ||
             !std::holds_alternative<std::int64_t>(value)) {
             return false;
         }
         if (action == "test-mode") {
             changedMode = std::get<std::int64_t>(value);
+        } else if (action == "document-page-count") {
+            documentPageCount = std::get<std::int64_t>(value);
         } else {
             strokeCount = std::get<std::int64_t>(value);
         }
@@ -257,6 +281,15 @@ int main() {
         return quickScreenshotCalled;
     };
     host.documentFilename = [] { return std::string("/tmp/plugin-test.xopp"); };
+    host.documentStructure = [] {
+        prototype::PluginDocumentStructure structure;
+        structure.pages = {{612, 792, true, "graph", "r1=14.17", 0x123456, 3,
+                            {{false, "Paper", std::nullopt}, {true, "Ink", true}}, 2}};
+        structure.currentPage = 1;
+        structure.pdfBackgroundFilename = "/tmp/background.pdf";
+        structure.xoppFilename = "/tmp/plugin-test.xopp";
+        return structure;
+    };
     host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
         changedBackgroundFormat = format;
         changedBackgroundConfig = config;
@@ -299,6 +332,10 @@ int main() {
     require(loadedStrokeMutationPlugin && loadedStrokeMutationPlugin->loaded &&
                     loadedStrokeMutationPlugin->menuItems == 4,
             "Plugin using stroke creation and layer/page APIs did not load its callbacks");
+    const auto loadedDocumentStructurePlugin = runtime.findPlugin("DocumentStructurePlugin");
+    require(loadedDocumentStructurePlugin && loadedDocumentStructurePlugin->loaded &&
+                    loadedDocumentStructurePlugin->menuItems == 1,
+            "Plugin using the complete document-structure API did not load");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -320,6 +357,8 @@ int main() {
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
+    require(runtime.invokeMenu("DocumentStructurePlugin", 0) && documentPageCount == 1,
+            "app.getDocumentStructure did not expose the upstream page, background, and layer fields");
     require(runtime.invokeMenu("StrokeApiPlugin", 0) && strokeCount == 2,
             "app.getStrokes did not preserve point arrays, pressure, style fields, references, and page/layer data");
     require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
@@ -398,8 +437,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 18 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 9,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 19 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 10,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

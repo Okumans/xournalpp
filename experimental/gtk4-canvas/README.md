@@ -71,10 +71,10 @@ behaviors remain unported; see
 The bundled Export plugin registers PDF, SVG, and PNG actions with their master
 accelerators. It exports the current unsaved canvas state through the document
 worker and supports page/layer ranges, background selection, progressive PDF
-layers, PDF backend selection, and PNG DPI/width/height. Its original filename
-logic reads `xoppFilename` from `app.getDocumentStructure()`; the GTK 4 host
-currently supplies that field while the remaining structure fields are still
-being ported.
+layers, PDF backend selection, and PNG DPI/width/height. The GTK 4 host exposes
+the master `app.getDocumentStructure()` page dimensions, annotation state,
+paper format/configuration/color, PDF page mapping, current layer and visibility,
+layer names/annotation state, and document/PDF filenames.
 
 The bundled ImageActions plugin registers all ten legacy image operations.
 When libvips is available at build time, the GTK 4 host performs invert,

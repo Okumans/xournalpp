@@ -781,8 +781,9 @@ function app.getToolInfo(tool) end
 --- Returns a table encoding the document structure in a Lua table.
 --- 
 --- @return {pages:{pageWidth:number, pageHeight:number, isAnnotated:boolean, pageTypeFormat:string,
---- pageTypeConfig:string, backgroundColor:integer, pdfBackgroundPageNo:integer, layers:{isVisible:boolean,
---- isAnnotated:boolean}[], currentLayer:integer}[], currentPage:integer, pdfBackgroundFilename:string,
+--- pageTypeConfig:string, backgroundColor:integer, pdfBackgroundPageNo:integer,
+--- layers:{name:string,isVisible:boolean,isAnnotated?:boolean}[], currentLayer:integer}[], currentPage:integer,
+--- pdfBackgroundFilename:string,
 --- xoppFilename:string}
 --- 
 --- The shape of the returned Lua table will be:
@@ -798,9 +799,11 @@ function app.getToolInfo(tool) end
 ---       "pdfBackgroundPageNo" = integer (0, if there is no pdf background page),
 ---       "layers" = {
 ---         [0] = {
+---           "name" = string,
 ---           "isVisible" = bool
 ---         },
 ---         [1] = {
+---           "name" = string,
 ---           "isVisible" = bool,
 ---           "isAnnotated" = bool
 ---         },

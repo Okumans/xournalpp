@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
@@ -15,6 +16,7 @@ struct CanvasLayer {
     std::string name;
     bool visible = true;
     std::vector<size_t> origins;
+    bool hasNonEditableElements = false;
 
     bool operator==(const CanvasLayer&) const = default;
 };
@@ -26,6 +28,7 @@ struct PageLayers {
     std::optional<std::string> backgroundName;
     std::string backgroundFormat;
     std::string backgroundConfig;
+    std::uint32_t backgroundColor = 0xffffff;
     double gridXOffset = 0;
     double gridYOffset = 0;
     double gridXStep = 0;
