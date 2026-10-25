@@ -74,7 +74,9 @@ worker and supports page/layer ranges, background selection, progressive PDF
 layers, PDF backend selection, and PNG DPI/width/height. The GTK 4 host exposes
 the master `app.getDocumentStructure()` page dimensions, annotation state,
 paper format/configuration/color, PDF page mapping, current layer and visibility,
-layer names/annotation state, and document/PDF filenames. Lua plugins can also
+layer names/annotation state, and document/PDF filenames. `app.getZoom()` and
+`app.setZoom()` expose the current zoom and change it around the viewport center,
+leaving fit mode and using the canvas zoom limits. Lua plugins can also
 query editable strokes, text, links, and images by selection, layer, page, or
 document; returned element references remain valid across vector growth and
 value-semantic edits. `app.addToSelection()` and `app.clearSelection()` support

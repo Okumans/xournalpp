@@ -382,6 +382,8 @@ int luaOpenApp(lua_State* state) {
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
+            {"getZoom", LuaPluginRuntime::luaGetZoom},
+            {"setZoom", LuaPluginRuntime::luaSetZoom},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
             {"getTexts", LuaPluginRuntime::luaGetTexts},
             {"getLinks", LuaPluginRuntime::luaGetLinks},
@@ -936,6 +938,31 @@ bool LuaPluginRuntime::transformSelectedImages(std::int64_t action, std::string&
     return host.transformSelectedImages(action, error);
 }
 
+bool LuaPluginRuntime::getZoom(double& zoom, std::string& error) const {
+    if (!host.getZoom) {
+        error = "Zoom queries are unavailable in this GTK 4 host";
+        return false;
+    }
+    zoom = host.getZoom();
+    if (!std::isfinite(zoom)) {
+        error = "The GTK 4 host returned an invalid zoom value";
+        return false;
+    }
+    return true;
+}
+
+bool LuaPluginRuntime::setZoom(double zoom, std::string& error) {
+    if (!host.setZoom) {
+        error = "Zoom changes are unavailable in this GTK 4 host";
+        return false;
+    }
+    if (!std::isfinite(zoom)) {
+        error = "Zoom must be a finite number";
+        return false;
+    }
+    return host.setZoom(zoom, error);
+}
+
 bool LuaPluginRuntime::getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error) {
     if (!host.getStrokes) {
         error = "Stroke access is unavailable in this GTK 4 host";
@@ -1372,6 +1399,39 @@ int LuaPluginRuntime::luaTransformSelectedImages(lua_State* state) {
     std::string error;
     if (!plugin->runtime->transformSelectedImages(action, error)) {
         return luaL_error(state, "%s", error.empty() ? "Image action failed" : error.c_str());
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaGetZoom(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    double zoom = 0;
+    std::string error;
+    if (!plugin->runtime->getZoom(zoom, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading zoom failed" : error.c_str());
+    }
+    lua_pushnumber(state, zoom);
+    return 1;
+}
+
+int LuaPluginRuntime::luaSetZoom(lua_State* state) {
+    if (!lua_isnumber(state, 1)) {
+        return luaL_error(state, "setZoom expects a number");
+    }
+    const double zoom = lua_tonumber(state, 1);
+    if (!std::isfinite(zoom)) {
+        return luaL_error(state, "Zoom must be a finite number");
+    }
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->setZoom(zoom, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Changing zoom failed" : error.c_str());
     }
     return 0;
 }
