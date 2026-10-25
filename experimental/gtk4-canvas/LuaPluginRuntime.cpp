@@ -401,6 +401,7 @@ int luaOpenApp(lua_State* state) {
             {"addImages", LuaPluginRuntime::luaAddImages},
             {"setPageSize", LuaPluginRuntime::luaSetPageSize},
             {"setCurrentPage", LuaPluginRuntime::luaSetCurrentPage},
+            {"setCurrentLayer", LuaPluginRuntime::luaSetCurrentLayer},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
             {"export", LuaPluginRuntime::luaExport},
@@ -1097,6 +1098,14 @@ bool LuaPluginRuntime::setCurrentPage(std::size_t pageNumber, std::string& error
         return false;
     }
     return host.setCurrentPage(pageNumber, error);
+}
+
+bool LuaPluginRuntime::setCurrentLayer(std::size_t layerNumber, bool updateVisibility, std::string& error) {
+    if (!host.setCurrentLayer) {
+        error = "Layer selection is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.setCurrentLayer(layerNumber, updateVisibility, error);
 }
 
 bool LuaPluginRuntime::setLayerVisibility(bool visible, std::string& error) {
@@ -2696,6 +2705,20 @@ int LuaPluginRuntime::luaSetCurrentPage(lua_State* state) {
     std::string error;
     if (!plugin->runtime->setCurrentPage(pageNumber, error)) {
         return luaL_error(state, "%s", error.empty() ? "Changing the current page failed" : error.c_str());
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaSetCurrentLayer(lua_State* state) {
+    const auto layerNumber = static_cast<std::size_t>(luaL_checkinteger(state, 1));
+    const bool updateVisibility = lua_isboolean(state, 2) && lua_toboolean(state, 2);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->setCurrentLayer(layerNumber, updateVisibility, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Changing the current layer failed" : error.c_str());
     }
     return 0;
 }

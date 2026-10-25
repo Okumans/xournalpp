@@ -401,6 +401,26 @@ int main() {
                 "  app.changeActionState('palette-summary', #palette .. ':' .. palette[2].name .. ':' .. "
                 "palette[2].color)\n"
                 "end\n");
+    const auto currentLayerApiPlugin = root / "CurrentLayerApiPlugin";
+    writePlugin(currentLayerApiPlugin,
+                "[about]\ndescription=Select the current foreground layer\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Select second layer', callback='selectSecond'})\n"
+                "  app.registerUi({menu='Select and reveal through second', callback='revealSecond'})\n"
+                "  app.registerUi({menu='Select layer zero', callback='selectZero'})\n"
+                "  app.registerUi({menu='Reject missing layer', callback='missingLayer'})\n"
+                "  app.registerUi({menu='Reject negative layer', callback='negativeLayer'})\n"
+                "  app.registerUi({menu='Reject fractional layer', callback='fractionalLayer'})\n"
+                "  app.registerUi({menu='Ignore nonboolean visibility', callback='ignoreVisibility'})\n"
+                "end\n"
+                "function selectSecond() app.setCurrentLayer(2) end\n"
+                "function revealSecond() app.setCurrentLayer(2, true) end\n"
+                "function selectZero() app.setCurrentLayer(0, true) end\n"
+                "function missingLayer() app.setCurrentLayer(4) end\n"
+                "function negativeLayer() app.setCurrentLayer(-1) end\n"
+                "function fractionalLayer() app.setCurrentLayer(1.5) end\n"
+                "function ignoreVisibility() app.setCurrentLayer(3, 'true') end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -414,9 +434,9 @@ int main() {
                                      imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
                                      zoomApiPlugin.string() + "," + folderApiPlugin.string() + "," +
                                      currentPageApiPlugin.string() + "," + pageLabelApiPlugin.string() + "," +
-                                     colorPaletteApiPlugin.string(), {});
+                                     colorPaletteApiPlugin.string() + "," + currentLayerApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 22, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 23, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -470,6 +490,9 @@ int main() {
     double zoomValue = 1.25;
     std::size_t currentPageNumber = 2;
     constexpr std::size_t testPageCount = 5;
+    std::size_t currentLayerNumber = 1;
+    constexpr std::size_t testLayerCount = 3;
+    std::vector<bool> testLayerVisibility{true, false, true};
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -539,6 +562,19 @@ int main() {
     host.getColorPalette = [&] { return testPalette; };
     host.setCurrentPage = [&](std::size_t pageNumber, std::string&) {
         currentPageNumber = std::clamp(pageNumber, std::size_t{1}, testPageCount);
+        return true;
+    };
+    host.setCurrentLayer = [&](std::size_t layerNumber, bool updateVisibility, std::string& error) {
+        if (layerNumber > testLayerCount) {
+            error = "No layer with layer ID " + std::to_string(static_cast<std::int64_t>(layerNumber));
+            return false;
+        }
+        currentLayerNumber = std::max<std::size_t>(1, layerNumber);
+        if (updateVisibility) {
+            for (std::size_t index = 0; index < testLayerVisibility.size(); ++index) {
+                testLayerVisibility[index] = index + 1 <= layerNumber;
+            }
+        }
         return true;
     };
     host.getStrokes = [](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
@@ -738,6 +774,10 @@ int main() {
     require(loadedColorPaletteApiPlugin && loadedColorPaletteApiPlugin->loaded &&
                     loadedColorPaletteApiPlugin->menuItems == 1,
             "Plugin using the color palette API did not load its callback");
+    const auto loadedCurrentLayerApiPlugin = runtime.findPlugin("CurrentLayerApiPlugin");
+    require(loadedCurrentLayerApiPlugin && loadedCurrentLayerApiPlugin->loaded &&
+                    loadedCurrentLayerApiPlugin->menuItems == 7,
+            "Plugin using current-layer selection did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -812,6 +852,30 @@ int main() {
             "app.getPageLabel accepted a fractional page number");
     require(runtime.invokeMenu("ColorPaletteApiPlugin", 0) && paletteSummary == "3:Dark Blue:1193046",
             "app.getColorPalette did not preserve swatch order, names, or 24-bit integer colors");
+    require(runtime.invokeMenu("CurrentLayerApiPlugin", 0) && currentLayerNumber == 2 &&
+                    testLayerVisibility == std::vector<bool>({true, false, true}),
+            "app.setCurrentLayer changed visibility when its option was omitted");
+    require(runtime.invokeMenu("CurrentLayerApiPlugin", 1) && currentLayerNumber == 2 &&
+                    testLayerVisibility == std::vector<bool>({true, true, false}),
+            "app.setCurrentLayer did not reveal layers through the selected foreground layer");
+    require(runtime.invokeMenu("CurrentLayerApiPlugin", 2) && currentLayerNumber == 1 &&
+                    testLayerVisibility == std::vector<bool>({false, false, false}),
+            "app.setCurrentLayer did not preserve the legacy layer-zero selection and visibility behavior");
+    require(!runtime.invokeMenu("CurrentLayerApiPlugin", 3) &&
+                    runtime.findPlugin("CurrentLayerApiPlugin")->error.find("No layer with layer ID 4") !=
+                            std::string::npos,
+            "app.setCurrentLayer accepted a missing layer");
+    require(!runtime.invokeMenu("CurrentLayerApiPlugin", 4) &&
+                    runtime.findPlugin("CurrentLayerApiPlugin")->error.find("No layer with layer ID -1") !=
+                            std::string::npos,
+            "app.setCurrentLayer accepted a negative layer number");
+    require(!runtime.invokeMenu("CurrentLayerApiPlugin", 5) &&
+                    runtime.findPlugin("CurrentLayerApiPlugin")->error.find("number has no integer representation") !=
+                            std::string::npos,
+            "app.setCurrentLayer accepted a fractional layer number");
+    require(runtime.invokeMenu("CurrentLayerApiPlugin", 6) && currentLayerNumber == 3 &&
+                    testLayerVisibility == std::vector<bool>({false, false, false}),
+            "app.setCurrentLayer did not ignore a nonboolean visibility option");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1020,8 +1084,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 59 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 19,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 66 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 20,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

@@ -1605,6 +1605,9 @@ private:
         host.setCurrentPage = [this](std::size_t pageNumber, std::string& error) {
             return setPluginCurrentPage(pageNumber, error);
         };
+        host.setCurrentLayer = [this](std::size_t layerNumber, bool updateVisibility, std::string& error) {
+            return setPluginCurrentLayer(layerNumber, updateVisibility, error);
+        };
         host.setLayerVisibility = [this](bool visible, std::string& error) {
             return setPluginLayerVisibility(visible, error);
         };
@@ -2957,6 +2960,43 @@ private:
         return true;
     }
 
+    bool setPluginCurrentLayer(std::size_t layerNumber, bool updateVisibility, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
+            error = "Wait for the current document operation or input gesture to finish before selecting a layer";
+            return false;
+        }
+        if (state.page < 0 || static_cast<std::size_t>(state.page) >= state.pageLayers.size()) {
+            error = "No page!";
+            return false;
+        }
+
+        auto& pageLayers = state.pageLayers[static_cast<std::size_t>(state.page)];
+        if (layerNumber > pageLayers.layers.size()) {
+            error = "No layer with layer ID " + std::to_string(static_cast<std::int64_t>(layerNumber));
+            return false;
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const auto selectedLayer = std::max<std::size_t>(1, layerNumber);
+        if (!state.selectLayer(state.page, selectedLayer)) {
+            error = "No layer with layer ID " + std::to_string(static_cast<std::int64_t>(layerNumber));
+            return false;
+        }
+        selectedImageIndex.reset();
+
+        if (updateVisibility) {
+            for (std::size_t layerId = 1; layerId <= pageLayers.layers.size(); ++layerId) {
+                pageLayers.layers[layerId - 1].visible = layerId <= layerNumber;
+            }
+        }
+
+        thumbnails.clear();
+        rebuildLayerStack();
+        update();
+        return true;
+    }
+
     bool setPluginPageSize(double width, double height, bool relative, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving) {
             error = "Wait for the current document operation to finish before changing page size";
@@ -4244,6 +4284,79 @@ private:
                                    pageError.c_str());
         state.selectActivePage(originalPage);
         selectedImageIndex = originalImageSelection;
+        update();
+
+        const auto originalPageLayers = state.pageLayers;
+        const auto originalLayerRevision = state.revision();
+        const bool originalCanUndoLayerState = state.canUndo();
+        const bool originalCanRedoLayerState = state.canRedo();
+        const int layerTestPage = state.page;
+        auto& layerTestState = state.pageLayers.at(static_cast<std::size_t>(layerTestPage));
+        while (layerTestState.layers.size() < 3) {
+            layerTestState.layers.push_back({"Plugin API test layer", true, {prototype::newLayerOrigin}});
+        }
+        const auto foregroundLayerVisibility = [&] {
+            std::vector<bool> visibility;
+            const auto& layers = state.pageLayers[static_cast<std::size_t>(layerTestPage)].layers;
+            visibility.reserve(layers.size());
+            for (const auto& layer: layers) {
+                visibility.push_back(layer.visible);
+            }
+            return visibility;
+        };
+        const auto initialLayerVisibility = foregroundLayerVisibility();
+        const bool initialBackgroundVisibility = layerTestState.backgroundVisible;
+        const auto revisionRemainsUnchanged = [&] {
+            return state.revision() == originalLayerRevision && state.canUndo() == originalCanUndoLayerState &&
+                   state.canRedo() == originalCanRedoLayerState;
+        };
+        std::string layerError;
+        require(setPluginCurrentLayer(2, false, layerError) &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)].selectedLayer == 2 &&
+                        foregroundLayerVisibility() == initialLayerVisibility &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)].backgroundVisible ==
+                                initialBackgroundVisibility &&
+                        state.selected.empty() && state.selectedTexts.empty() && state.selectedImages.empty() &&
+                        revisionRemainsUnchanged(),
+                layerError.empty() ? "app.setCurrentLayer did not select layer two without changing visibility or history" :
+                                     layerError.c_str());
+
+        auto expectedLayerVisibility = initialLayerVisibility;
+        std::fill(expectedLayerVisibility.begin(), expectedLayerVisibility.end(), false);
+        expectedLayerVisibility[0] = true;
+        expectedLayerVisibility[1] = true;
+        require(setPluginCurrentLayer(2, true, layerError) &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)].selectedLayer == 2 &&
+                        foregroundLayerVisibility() == expectedLayerVisibility &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)].backgroundVisible ==
+                                initialBackgroundVisibility &&
+                        revisionRemainsUnchanged(),
+                layerError.empty() ? "app.setCurrentLayer did not reveal layers through layer two without history" :
+                                     layerError.c_str());
+
+        require(setPluginCurrentLayer(0, true, layerError) &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)].selectedLayer == 1 &&
+                        std::none_of(state.pageLayers[static_cast<std::size_t>(layerTestPage)].layers.begin(),
+                                     state.pageLayers[static_cast<std::size_t>(layerTestPage)].layers.end(),
+                                     [](const auto& layer) { return layer.visible; }) &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)].backgroundVisible ==
+                                initialBackgroundVisibility &&
+                        revisionRemainsUnchanged(),
+                layerError.empty() ? "app.setCurrentLayer did not retain the layer-zero visibility behavior" :
+                                     layerError.c_str());
+
+        const auto beforeInvalidLayer = state.pageLayers[static_cast<std::size_t>(layerTestPage)];
+        const auto missingLayerId = beforeInvalidLayer.layers.size() + 1;
+        require(!setPluginCurrentLayer(missingLayerId, true, layerError) &&
+                        layerError == "No layer with layer ID " + std::to_string(missingLayerId) &&
+                        state.pageLayers[static_cast<std::size_t>(layerTestPage)] == beforeInvalidLayer &&
+                        revisionRemainsUnchanged(),
+                "app.setCurrentLayer accepted an out-of-range layer or changed state before reporting the error");
+
+        state.pageLayers = originalPageLayers;
+        state.clearSelection();
+        selectedImageIndex = originalImageSelection;
+        rebuildLayerStack();
         update();
 
         const auto documentStructure = pluginDocumentStructure();
