@@ -2,18 +2,20 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <gio/gio.h>
 
-#include "DocumentAutosave.h"
 #include "AudioTarget.h"
-#include "DocumentTextTransfer.h"
+#include "DocumentAutosave.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
+#include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
 
@@ -208,6 +210,45 @@ public:
 
     StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
         return stagePageMutation(worker, "insert-page", afterPage);
+    }
+
+    StagedRevision stageInsertPagesAfter(const std::string& worker, const std::vector<int>& afterPages) {
+        if (afterPages.empty() || afterPages.size() > maxPdfPageMapPages || pdfPageMap.size() > maxPdfPageMapPages) {
+            throw std::runtime_error("Invalid page insertion batch size");
+        }
+        int previous = std::numeric_limits<int>::max();
+        for (int afterPage: afterPages) {
+            if (afterPage < 0 || static_cast<size_t>(afterPage) >= pdfPageMap.size() || afterPage >= previous) {
+                throw std::runtime_error("Page insertion indices must be valid and strictly descending");
+            }
+            previous = afterPage;
+        }
+
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            const auto insertions = staged.directory / "page-insertions.dat";
+            std::ofstream output(insertions, std::ios::binary | std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error("Cannot create page insertion list");
+            }
+            output << "XOURNALPP_GTK4_PAGE_INSERTIONS_V1 " << afterPages.size() << '\n';
+            for (int afterPage: afterPages) {
+                output << afterPage << '\n';
+            }
+            output.close();
+            if (!output) {
+                throw std::runtime_error("Cannot write page insertion list");
+            }
+
+            runWorker(worker, {"insert-pages", snapshotPath().string(), staged.snapshotPath().string(),
+                               staged.previewPath().string(), insertions.string(), audioFolder.string(),
+                               audioDirectory.string()});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
     }
 
     StagedRevision stageDeletePageAt(const std::string& worker, int pageIndex) {

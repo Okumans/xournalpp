@@ -43,7 +43,9 @@ selected button response, and ToolShortcuts can select common tools including
 Smart Select. HighlightPosition toggles a translucent pointer halo with Alt+X;
 its appearance and enabled state are editable in Preferences and persist across
 launches. ToggleGrid changes the active page between plain and graph paper while
-updating grid snapping. Page background changes use the native document worker,
+updating grid snapping. SpaceForNotes supports both PDF-gap and force modes and
+persists the inserted pages through the native document worker; page insertions
+are not undoable yet. Page background changes use the native document worker,
 persist in the `.xopp` save path, and participate in undo/redo. The full master
 Lua API, plugin toolbar actions, Search, and most bundled plugin behaviors
 remain unported; see

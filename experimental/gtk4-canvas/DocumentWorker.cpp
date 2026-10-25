@@ -921,6 +921,44 @@ size_t parsePageIndex(std::string_view text, size_t limit, const char* label) {
     return parsed;
 }
 
+std::vector<size_t> readPageInsertionIndices(const fs::path& path, size_t originalPageCount) {
+    std::error_code sizeError;
+    const auto fileSize = fs::file_size(path, sizeError);
+    if (sizeError || fileSize > prototype::bridge::maxPdfPageMapBytes) {
+        throw std::runtime_error("Page insertion list is missing or too large");
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Cannot open page insertion list");
+    }
+
+    std::string magic;
+    size_t count = 0;
+    input.imbue(std::locale::classic());
+    if (!(input >> magic >> count) || magic != "XOURNALPP_GTK4_PAGE_INSERTIONS_V1" || count == 0 ||
+        count > prototype::bridge::maxPdfPageMapPages || count > originalPageCount) {
+        throw std::runtime_error("Invalid page insertion-list header");
+    }
+
+    std::vector<size_t> afterPages;
+    afterPages.reserve(count);
+    size_t previous = originalPageCount;
+    for (size_t index = 0; index < count; ++index) {
+        long long afterPage = -1;
+        if (!(input >> afterPage) || afterPage < 0 || static_cast<unsigned long long>(afterPage) >= originalPageCount ||
+            static_cast<size_t>(afterPage) >= previous) {
+            throw std::runtime_error("Page insertion indices must be valid and strictly descending");
+        }
+        previous = static_cast<size_t>(afterPage);
+        afterPages.push_back(previous);
+    }
+    input >> std::ws;
+    if (!input.eof()) {
+        throw std::runtime_error("Unexpected trailing page insertion-list data");
+    }
+    return afterPages;
+}
+
 void insertPageAfterInDocument(Document& document, size_t afterPage) {
     const auto source = document.getPage(afterPage);
     if (!source) {
@@ -1022,6 +1060,7 @@ int main(int argc, char** argv) {
                     "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES [AUDIO_FOLDER "
                     "[AUDIO_CACHE]]]]]] | "
                     "insert-page INPUT SNAPSHOT PDF AFTER_PAGE [AUDIO_FOLDER [AUDIO_CACHE]] | "
+                    "insert-pages INPUT SNAPSHOT PDF INSERTION_LIST [AUDIO_FOLDER AUDIO_CACHE] | "
                     "delete-page INPUT SNAPSHOT PDF PAGE_INDEX [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "revision INPUT SNAPSHOT PDF INK TEXT LAYERS IMAGES [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
@@ -1098,6 +1137,19 @@ int main(int argc, char** argv) {
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 argc == 8 ? fs::path(argv[6]) : fs::path{},
                                 argc == 8 ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "insert-pages" && (argc == 6 || argc == 8)) {
+            const auto afterPages = readPageInsertionIndices(fs::absolute(argv[5]), document->getPageCount());
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            for (const auto afterPage: afterPages) {
+                insertPageAfterInDocument(*document, afterPage);
+            }
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
+                                argc == 8 ? fs::path(argv[6]) : fs::path{}, argc == 8 ? fs::path(argv[7]) : fs::path{});
         } else if (command == "delete-page" && (argc == 6 || argc == 8)) {
             if (document->getPageCount() <= 1) {
                 throw std::runtime_error("Cannot delete the only remaining page");
