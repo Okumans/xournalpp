@@ -161,6 +161,11 @@ struct PluginImageResult {
     std::string error;
 };
 
+struct PluginPaletteColor {
+    std::string name;
+    std::uint32_t color = 0;
+};
+
 enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
 
 struct PluginRuntimeHost {
@@ -172,6 +177,7 @@ struct PluginRuntimeHost {
     std::function<bool(std::int64_t, std::string&)> transformSelectedImages;
     std::function<int()> getDisplayDpi;
     std::function<bool(std::size_t, std::string&, std::string&)> getPageLabel;
+    std::function<std::vector<PluginPaletteColor>()> getColorPalette;
     std::function<double()> getZoom;
     std::function<bool(double, std::string&)> setZoom;
     std::function<bool(std::string_view, std::vector<PluginStroke>&, std::string&)> getStrokes;
@@ -250,6 +256,7 @@ public:
     static int luaGetFolder(lua_State* state);
     static int luaGetDisplayDpi(lua_State* state);
     static int luaGetPageLabel(lua_State* state);
+    static int luaGetColorPalette(lua_State* state);
     static int luaGetZoom(lua_State* state);
     static int luaSetZoom(lua_State* state);
     static int luaGetStrokes(lua_State* state);
@@ -288,6 +295,7 @@ private:
     bool transformSelectedImages(std::int64_t action, std::string& error);
     bool getDisplayDpi(int& dpi, std::string& error) const;
     bool getPageLabel(std::size_t pageNumber, std::string& label, std::string& error) const;
+    bool getColorPalette(std::vector<PluginPaletteColor>& palette, std::string& error) const;
     bool getZoom(double& zoom, std::string& error) const;
     bool setZoom(double zoom, std::string& error);
     bool getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error);
