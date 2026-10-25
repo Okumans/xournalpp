@@ -347,7 +347,7 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
             raise RuntimeError("GTK 4 Preferences modified settings.xml or the imported toolbar.ini")
 
     for name in (
-            "main-tool-rail-default", "preferences-dialog", "preferences-behavior", "preferences-toolbar",
+            "main-tool-rail-default", "preferences-dialog", "preferences-input", "preferences-behavior", "preferences-toolbar",
             "preferences-edited", "preferences-reloaded"):
         path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
         if not path.is_file() or path.stat().st_size < 1000:
@@ -356,6 +356,8 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
     for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
                      "rotation-snap-tolerance=0.45", "snap-rotation=false", "snap-grid=false",
                      "snap-grid-size=24", "snap-grid-tolerance=0.4", "button-one=1", "button-two=5",
+                     "[Pointer Highlight]", "enabled=true", "fill-color=2131899478", "radius=17",
+                     "border-color=3232484847", "border-width=2",
                      "main-tool-rail=SMART_SELECT,TEXT,PEN,HAND", "row-1=SMART_SELECT,PEN",
                      "row-2=ZOOM_SLIDER", "row-3=FINE", "row-4=DRAW_ARROW"):
         if expected not in stored:
@@ -376,30 +378,33 @@ def verify_plugins(args, evidence):
     example = plugin_root / "Example"
     tool_shortcuts = plugin_root / "ToolShortcuts"
     toggle_grid = plugin_root / "ToggleGrid"
+    highlight_position = plugin_root / "HighlightPosition"
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()}\ndisabled=\n",
+        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()}\ndisabled=\n",
         encoding="utf-8")
     if not args.worker:
-        raise RuntimeError("ToggleGrid integration checks require --worker")
+        raise RuntimeError("Bundled plugin integration checks require --worker")
     result = run(
         [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
          "--worker", str(args.worker.resolve()), "--verify-plugins"],
         env=dict(os.environ, G_DEBUG="fatal-criticals"),
     )
-    expected = "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut and plugin manager, ToggleGrid paper changes, and background undo/redo"
+    expected = "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, HighlightPosition, ToggleGrid paper changes, and background undo/redo"
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
-    for screenshot in ("plugins-menu", "plugins-manager"):
+    for screenshot in ("plugins-menu", "plugins-manager", "position-highlight-on"):
         path = output / f"{screenshot}.png"
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing plugin integration screenshot: {path}")
     saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
-    for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid"):
+    for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition"):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")
     if str(example.resolve()) in saved_settings:
         raise RuntimeError("Plugin manager did not persist the disabled default Example plugin state")
+    if "[Pointer Highlight]" not in saved_settings or "enabled=false" not in saved_settings:
+        raise RuntimeError("HighlightPosition did not persist its final disabled state")
     print("PASS: private GTK4 plugin manager, asynchronous Lua dialogs, and bundled callbacks", flush=True)
     return str(directory)
 

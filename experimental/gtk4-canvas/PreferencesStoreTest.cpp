@@ -46,6 +46,11 @@ int main() {
     saved.themeVariant = prototype::ThemeVariant::ForceDark;
     saved.showSidebar = false;
     saved.pressureSensitivity = false;
+    saved.highlightPosition = true;
+    saved.cursorHighlightColor = 0x7f123456U;
+    saved.cursorHighlightRadius = 17.0;
+    saved.cursorHighlightBorderColor = 0xffabcdefU;
+    saved.cursorHighlightBorderWidth = 2.0;
     saved.minimumPressure = 0.17;
     saved.pressureMultiplier = 1.75;
     saved.zoomStep = 0.22;
@@ -74,10 +79,13 @@ int main() {
     const auto loadedResult = prototype::loadGtk4Preferences(directory, loaded);
     require(loadedResult.found && loadedResult.warning.empty(), "Saved GTK 4 preferences could not be loaded");
     require(loaded.themeVariant == prototype::ThemeVariant::ForceDark && !loaded.showSidebar &&
-                    !loaded.pressureSensitivity && near(loaded.minimumPressure, 0.17) &&
-                    near(loaded.pressureMultiplier, 1.75) && near(loaded.zoomStep, 0.22) &&
-                    near(loaded.scrollZoomStep, 0.035) && near(loaded.edgePanSpeed, 31) &&
-                    near(loaded.edgePanMaxMultiplier, 3.5) && !loaded.snapRotation &&
+                    !loaded.pressureSensitivity && near(loaded.minimumPressure, 0.17) && loaded.highlightPosition &&
+                    loaded.cursorHighlightColor == saved.cursorHighlightColor &&
+                    near(loaded.cursorHighlightRadius, 17.0) &&
+                    loaded.cursorHighlightBorderColor == saved.cursorHighlightBorderColor &&
+                    near(loaded.cursorHighlightBorderWidth, 2.0) && near(loaded.pressureMultiplier, 1.75) &&
+                    near(loaded.zoomStep, 0.22) && near(loaded.scrollZoomStep, 0.035) &&
+                    near(loaded.edgePanSpeed, 31) && near(loaded.edgePanMaxMultiplier, 3.5) && !loaded.snapRotation &&
                     near(loaded.snapRotationTolerance, 0.45) && !loaded.snapGrid && near(loaded.snapGridSize, 23.5) &&
                     near(loaded.snapGridTolerance, 0.35) && loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
