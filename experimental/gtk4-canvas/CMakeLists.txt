@@ -8,6 +8,7 @@ pkg_check_modules(UI REQUIRED IMPORTED_TARGET gtk4>=4.10 libadwaita-1>=1.5 poppl
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0)
 pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua5.4)
+pkg_check_modules(GTK_SOURCEVIEW QUIET IMPORTED_TARGET gtksourceview-5>=5.0)
 set(GTK4_CANVAS_HAVE_VIPS FALSE)
 if(GTK4_CANVAS_ENABLE_VIPS)
     pkg_check_modules(VIPS QUIET IMPORTED_TARGET vips)
@@ -25,6 +26,10 @@ target_compile_definitions(xournalpp-gtk4-canvas PRIVATE
                            GTK4_CANVAS_BUNDLED_PLUGIN_DIR="${XOURNALPP_REPO_ROOT}/plugins"
                            GTK4_CANVAS_RESOURCE_DIR="${XOURNALPP_REPO_ROOT}/resources")
 target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::UI PkgConfig::GSTREAMER PkgConfig::LUA)
+if(GTK_SOURCEVIEW_FOUND)
+    target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::GTK_SOURCEVIEW)
+    target_compile_definitions(xournalpp-gtk4-canvas PRIVATE GTK4_CANVAS_HAVE_SOURCEVIEW=1)
+endif()
 if(GTK4_CANVAS_HAVE_VIPS)
     target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::VIPS)
     target_compile_definitions(xournalpp-gtk4-canvas PRIVATE GTK4_CANVAS_HAVE_VIPS=1)

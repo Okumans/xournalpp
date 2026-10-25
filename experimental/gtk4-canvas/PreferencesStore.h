@@ -3,10 +3,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <gio/gio.h>
 
@@ -78,6 +80,34 @@ inline void readDouble(GKeyFile* keyFile, const char* group, const char* name, d
         value = candidate;
     }
     g_clear_error(&error);
+}
+
+inline void readString(GKeyFile* keyFile, const char* group, const char* name, std::string& value,
+                       std::size_t maximumBytes) {
+    if (!g_key_file_has_key(keyFile, group, name, nullptr)) {
+        return;
+    }
+    GError* error = nullptr;
+    gchar* candidate = g_key_file_get_string(keyFile, group, name, &error);
+    if (!error && candidate && std::strlen(candidate) <= maximumBytes && g_utf8_validate(candidate, -1, nullptr)) {
+        value = candidate;
+    }
+    g_clear_error(&error);
+    g_free(candidate);
+}
+
+inline std::string pathToUtf8(const std::filesystem::path& path) {
+    const auto value = path.u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
+inline std::filesystem::path pathFromUtf8(std::string_view value) {
+    std::u8string encoded;
+    encoded.reserve(value.size());
+    for (const unsigned char character: value) {
+        encoded.push_back(static_cast<char8_t>(character));
+    }
+    return std::filesystem::path(encoded);
 }
 
 inline ButtonToolAction readButtonAction(GKeyFile* keyFile, const char* name, ButtonToolAction fallback) {
@@ -234,11 +264,41 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
         g_clear_error(&railError);
         g_free(value);
     }
+    detail(keyFile.get(), "LaTeX", "auto-check-dependencies", settings.latexAutoCheckDependencies);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "default-text", settings.latexDefaultText,
+                                   maxCanvasLatexSourceBytes);
+    std::string latexTemplatePath = preferences_detail::pathToUtf8(settings.latexTemplatePath);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "template-path", latexTemplatePath, 4096);
+    settings.latexTemplatePath = preferences_detail::pathFromUtf8(latexTemplatePath);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "generator-command", settings.latexGeneratorCommand,
+                                   16384);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "source-view-theme", settings.latexSourceViewThemeId,
+                                   128);
+    detail(keyFile.get(), "LaTeX", "source-view-auto-indent", settings.latexSourceViewAutoIndent);
+    detail(keyFile.get(), "LaTeX", "source-view-syntax-highlight", settings.latexSourceViewSyntaxHighlight);
+    detail(keyFile.get(), "LaTeX", "source-view-line-numbers", settings.latexSourceViewShowLineNumbers);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "editor-font", settings.latexEditorFont, 256);
+    detail(keyFile.get(), "LaTeX", "use-custom-editor-font", settings.latexUseCustomEditorFont);
+    detail(keyFile.get(), "LaTeX", "editor-word-wrap", settings.latexEditorWordWrap);
+    detail(keyFile.get(), "LaTeX", "use-external-editor", settings.latexUseExternalEditor);
+    detail(keyFile.get(), "LaTeX", "external-editor-auto-confirm", settings.latexExternalEditorAutoConfirm);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "external-editor-command",
+                                   settings.latexExternalEditorCommand, 16384);
+    preferences_detail::readString(keyFile.get(), "LaTeX", "temporary-file-extension",
+                                   settings.latexTemporaryFileExtension, 64);
     return result;
 }
 
 inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const ImportedSettings& settings,
                                 std::string& errorMessage) {
+    if (settings.latexDefaultText.size() > maxCanvasLatexSourceBytes ||
+        preferences_detail::pathToUtf8(settings.latexTemplatePath).size() > 4096 ||
+        settings.latexGeneratorCommand.size() > 16384 || settings.latexSourceViewThemeId.size() > 128 ||
+        settings.latexEditorFont.size() > 256 || settings.latexExternalEditorCommand.size() > 16384 ||
+        settings.latexTemporaryFileExtension.size() > 64) {
+        errorMessage = "A LaTeX preference exceeds its size limit";
+        return false;
+    }
     std::error_code ec;
     std::filesystem::create_directories(configDir, ec);
     if (ec) {
@@ -298,6 +358,27 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
         return false;
     }
     g_key_file_set_string(keyFile.get(), "Toolbar", "main-tool-rail", mainToolRail.c_str());
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "auto-check-dependencies", settings.latexAutoCheckDependencies);
+    g_key_file_set_string(keyFile.get(), "LaTeX", "default-text", settings.latexDefaultText.c_str());
+    const auto latexTemplatePath = preferences_detail::pathToUtf8(settings.latexTemplatePath);
+    g_key_file_set_string(keyFile.get(), "LaTeX", "template-path", latexTemplatePath.c_str());
+    g_key_file_set_string(keyFile.get(), "LaTeX", "generator-command", settings.latexGeneratorCommand.c_str());
+    g_key_file_set_string(keyFile.get(), "LaTeX", "source-view-theme", settings.latexSourceViewThemeId.c_str());
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "source-view-auto-indent", settings.latexSourceViewAutoIndent);
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "source-view-syntax-highlight",
+                           settings.latexSourceViewSyntaxHighlight);
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "source-view-line-numbers",
+                           settings.latexSourceViewShowLineNumbers);
+    g_key_file_set_string(keyFile.get(), "LaTeX", "editor-font", settings.latexEditorFont.c_str());
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "use-custom-editor-font", settings.latexUseCustomEditorFont);
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "editor-word-wrap", settings.latexEditorWordWrap);
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "use-external-editor", settings.latexUseExternalEditor);
+    g_key_file_set_boolean(keyFile.get(), "LaTeX", "external-editor-auto-confirm",
+                           settings.latexExternalEditorAutoConfirm);
+    g_key_file_set_string(keyFile.get(), "LaTeX", "external-editor-command",
+                          settings.latexExternalEditorCommand.c_str());
+    g_key_file_set_string(keyFile.get(), "LaTeX", "temporary-file-extension",
+                          settings.latexTemporaryFileExtension.c_str());
     gsize length = 0;
     gchar* data = g_key_file_to_data(keyFile.get(), &length, nullptr);
     if (!data) {

@@ -224,6 +224,18 @@ int main() {
             "<settings><property name=\"latexSettings.defaultText\" value=\"\\alpha\"/>"
             "<property name=\"latexSettings.globalTemplatePath\" value=\"/tmp/formula.tex\"/>"
             "<property name=\"latexSettings.genCmd\" value=\"tectonic '{}'\"/>"
+            "<property name=\"latexSettings.autoCheckDependencies\" value=\"false\"/>"
+            "<property name=\"latexSettings.sourceViewThemeId\" value=\"Adwaita-dark\"/>"
+            "<property name=\"latexSettings.sourceViewAutoIndent\" value=\"false\"/>"
+            "<property name=\"latexSettings.sourceViewSyntaxHighlight\" value=\"false\"/>"
+            "<property name=\"latexSettings.sourceViewShowLineNumbers\" value=\"true\"/>"
+            "<property name=\"latexSettings.editorFont\" font=\"Monospace\" size=\"15\"/>"
+            "<property name=\"latexSettings.useCustomEditorFont\" value=\"true\"/>"
+            "<property name=\"latexSettings.editorWordWrap\" value=\"false\"/>"
+            "<property name=\"latexSettings.useExternalEditor\" value=\"true\"/>"
+            "<property name=\"latexSettings.externalEditorAutoConfirm\" value=\"true\"/>"
+            "<property name=\"latexSettings.externalEditorCmd\" value=\"code --wait\"/>"
+            "<property name=\"latexSettings.temporaryFileExt\" value=\"ltx\"/>"
             "<data name=\"tools\"><attribute name=\"current\" type=\"string\" value=\"latex\"/></data>"
             "<data name=\"latex\"><attribute name=\"color\" type=\"hex\" value=\"ff123456\"/>"
             "</data></settings>");
@@ -231,6 +243,18 @@ int main() {
                     latexSettingsParsed.settings.latexDefaultText == "\\alpha" &&
                     latexSettingsParsed.settings.latexTemplatePath == "/tmp/formula.tex" &&
                     latexSettingsParsed.settings.latexGeneratorCommand == "tectonic '{}'" &&
+                    !latexSettingsParsed.settings.latexAutoCheckDependencies &&
+                    latexSettingsParsed.settings.latexSourceViewThemeId == "Adwaita-dark" &&
+                    !latexSettingsParsed.settings.latexSourceViewAutoIndent &&
+                    !latexSettingsParsed.settings.latexSourceViewSyntaxHighlight &&
+                    latexSettingsParsed.settings.latexSourceViewShowLineNumbers &&
+                    latexSettingsParsed.settings.latexEditorFont == "Monospace 15" &&
+                    latexSettingsParsed.settings.latexUseCustomEditorFont &&
+                    !latexSettingsParsed.settings.latexEditorWordWrap &&
+                    latexSettingsParsed.settings.latexUseExternalEditor &&
+                    latexSettingsParsed.settings.latexExternalEditorAutoConfirm &&
+                    latexSettingsParsed.settings.latexExternalEditorCommand == "code --wait" &&
+                    latexSettingsParsed.settings.latexTemporaryFileExtension == "ltx" &&
                     latexSettingsParsed.settings.latexColor == std::array<double, 3>{0x12 / 255.0, 0x34 / 255.0,
                                                                                     0x56 / 255.0},
             "LaTeX tool, generator, template, default source or color settings were not imported");

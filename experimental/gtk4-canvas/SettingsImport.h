@@ -67,8 +67,24 @@ struct ImportedSettings {
     double textFontSize = 12;
     std::array<double, 3> latexColor{0, 0, 0};
     std::filesystem::path latexTemplatePath;
+#ifdef __APPLE__
+    std::string latexGeneratorCommand{"/Library/TeX/texbin/pdflatex -halt-on-error -interaction=nonstopmode '{}'"};
+#else
     std::string latexGeneratorCommand{"pdflatex -halt-on-error -interaction=nonstopmode '{}'"};
+#endif
     std::string latexDefaultText{"x^2"};
+    bool latexAutoCheckDependencies = true;
+    std::string latexSourceViewThemeId;
+    bool latexSourceViewAutoIndent = true;
+    bool latexSourceViewSyntaxHighlight = true;
+    bool latexSourceViewShowLineNumbers = false;
+    std::string latexEditorFont{"Monospace 12"};
+    bool latexUseCustomEditorFont = false;
+    bool latexEditorWordWrap = true;
+    bool latexUseExternalEditor = false;
+    bool latexExternalEditorAutoConfirm = false;
+    std::string latexExternalEditorCommand;
+    std::string latexTemporaryFileExtension{"tex"};
     double shapeRecognizerMinSize = 40;
     bool snapRotation = true;
     double snapRotationTolerance = 0.30;
@@ -225,7 +241,9 @@ struct XmlState {
 };
 
 inline void applyProperty(ImportedSettings& out, std::string_view name, std::string_view value) {
-    if (name == "latexSettings.defaultText") {
+    if (name == "latexSettings.autoCheckDependencies") {
+        out.latexAutoCheckDependencies = (value == "true");
+    } else if (name == "latexSettings.defaultText") {
         if (value.size() <= maxCanvasLatexSourceBytes) {
             out.latexDefaultText = value;
         }
@@ -234,8 +252,38 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
             out.latexTemplatePath = std::filesystem::path(std::string(value));
         }
     } else if (name == "latexSettings.genCmd") {
-        if (!value.empty() && value.size() <= 16384) {
+        if (value.size() <= 16384) {
             out.latexGeneratorCommand = value;
+        }
+    } else if (name == "latexSettings.sourceViewThemeId") {
+        if (value.size() <= 128) {
+            out.latexSourceViewThemeId = value;
+        }
+    } else if (name == "latexSettings.sourceViewAutoIndent") {
+        out.latexSourceViewAutoIndent = (value == "true");
+    } else if (name == "latexSettings.sourceViewSyntaxHighlight") {
+        out.latexSourceViewSyntaxHighlight = (value == "true");
+    } else if (name == "latexSettings.sourceViewShowLineNumbers") {
+        out.latexSourceViewShowLineNumbers = (value == "true");
+    } else if (name == "latexSettings.editorFont") {
+        if (value.size() <= 256) {
+            out.latexEditorFont = value;
+        }
+    } else if (name == "latexSettings.useCustomEditorFont") {
+        out.latexUseCustomEditorFont = (value == "true");
+    } else if (name == "latexSettings.editorWordWrap") {
+        out.latexEditorWordWrap = (value == "true");
+    } else if (name == "latexSettings.useExternalEditor") {
+        out.latexUseExternalEditor = (value == "true");
+    } else if (name == "latexSettings.externalEditorAutoConfirm") {
+        out.latexExternalEditorAutoConfirm = (value == "true");
+    } else if (name == "latexSettings.externalEditorCmd") {
+        if (value.size() <= 16384) {
+            out.latexExternalEditorCommand = value;
+        }
+    } else if (name == "latexSettings.temporaryFileExt") {
+        if (value.size() <= 64) {
+            out.latexTemporaryFileExtension = value;
         }
     } else if (name == "presureSensitivity" || name == "pressureSensitivity") {
         out.pressureSensitivity = (value == "true");
@@ -577,6 +625,28 @@ inline SettingsParseResult parseSettingsXml(std::string_view xmlContent) {
                     if (const auto parsed = settings_detail::parseAsciiDouble(size); parsed && *parsed > 0) {
                         st->candidate.textFontSize = std::clamp(*parsed, 1.0, 512.0);
                     }
+                }
+            } else if (propName && std::string_view(propName) == "latexSettings.editorFont") {
+                const char* font = settings_detail::findAttr(attrNames, attrValues, "font");
+                const char* size = settings_detail::findAttr(attrNames, attrValues, "size");
+                if (font && *font && std::string_view(font).size() <= 224) {
+                    std::string description(font);
+                    if (size) {
+                        if (const auto parsed = settings_detail::parseAsciiDouble(size); parsed && *parsed > 0 &&
+                            *parsed <= 512) {
+                            char formattedSize[64];
+                            const auto [end, error] = std::to_chars(formattedSize,
+                                                                    formattedSize + sizeof(formattedSize), *parsed,
+                                                                    std::chars_format::general);
+                            if (error == std::errc{}) {
+                                description.push_back(' ');
+                                description.append(formattedSize, end);
+                            }
+                        }
+                    }
+                    st->candidate.latexEditorFont = std::move(description);
+                } else if (const char* value = settings_detail::findAttr(attrNames, attrValues, "value")) {
+                    settings_detail::applyProperty(st->candidate, propName, value);
                 }
             } else if (propName) {
                 const char* propValue = settings_detail::findAttr(attrNames, attrValues, "value");

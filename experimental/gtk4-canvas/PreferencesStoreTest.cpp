@@ -71,6 +71,21 @@ int main() {
     saved.mainToolRail = {prototype::MainToolAction::Pen, prototype::MainToolAction::SmartSelect,
                           prototype::MainToolAction::Text, prototype::MainToolAction::Hand};
     saved.floatingToolboxRows = {{{"SMART_SELECT", "PEN"}, {}, {"COLOR(8)", "DRAW_ARROW"}, {"UNDO"}}};
+    saved.latexAutoCheckDependencies = false;
+    saved.latexDefaultText = "\\int_0^1 x\\,dx";
+    saved.latexTemplatePath = directory / "templates" / "wide formula.tex";
+    saved.latexGeneratorCommand = "tectonic --keep-logs '{}'";
+    saved.latexSourceViewThemeId = "Adwaita-dark";
+    saved.latexSourceViewAutoIndent = false;
+    saved.latexSourceViewSyntaxHighlight = false;
+    saved.latexSourceViewShowLineNumbers = true;
+    saved.latexEditorFont = "Monospace 15";
+    saved.latexUseCustomEditorFont = true;
+    saved.latexEditorWordWrap = false;
+    saved.latexUseExternalEditor = true;
+    saved.latexExternalEditorAutoConfirm = true;
+    saved.latexExternalEditorCommand = "code --wait";
+    saved.latexTemporaryFileExtension = "ltx";
     std::string error;
     require(prototype::saveGtk4Preferences(directory, saved, error), "GTK 4 preferences could not be saved");
 
@@ -92,8 +107,24 @@ int main() {
                     loaded.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox &&
                     loaded.pluginsEnabled == saved.pluginsEnabled && loaded.pluginsDisabled == saved.pluginsDisabled &&
                     loaded.mainToolRail == saved.mainToolRail &&
-                    loaded.floatingToolboxRows == saved.floatingToolboxRows,
+                    loaded.floatingToolboxRows == saved.floatingToolboxRows &&
+                    !loaded.latexAutoCheckDependencies && loaded.latexDefaultText == saved.latexDefaultText &&
+                    loaded.latexTemplatePath == saved.latexTemplatePath &&
+                    loaded.latexGeneratorCommand == saved.latexGeneratorCommand &&
+                    loaded.latexSourceViewThemeId == saved.latexSourceViewThemeId &&
+                    !loaded.latexSourceViewAutoIndent && !loaded.latexSourceViewSyntaxHighlight &&
+                    loaded.latexSourceViewShowLineNumbers && loaded.latexEditorFont == saved.latexEditorFont &&
+                    loaded.latexUseCustomEditorFont && !loaded.latexEditorWordWrap &&
+                    loaded.latexUseExternalEditor && loaded.latexExternalEditorAutoConfirm &&
+                    loaded.latexExternalEditorCommand == saved.latexExternalEditorCommand &&
+                    loaded.latexTemporaryFileExtension == saved.latexTemporaryFileExtension,
             "Saved GTK 4 preference values did not roundtrip");
+
+    auto oversized = saved;
+    oversized.latexDefaultText.assign(prototype::maxCanvasLatexSourceBytes + 1, 'x');
+    error.clear();
+    require(!prototype::saveGtk4Preferences(directory, oversized, error) && !error.empty(),
+            "Saving must refuse LaTeX preference values above their size limits");
 
     const auto preferencePath = directory / "gtk4-canvas.ini";
     const auto outside = directory / "outside.ini";
