@@ -382,6 +382,7 @@ def verify_plugins(args, evidence):
     space_for_notes = plugin_root / "SpaceForNotes"
     image_actions = plugin_root / "ImageActions"
     fit_to_content = plugin_root / "FitToContent"
+    export_plugin = plugin_root / "Export"
     make_image_actions_png(output / "image-actions-input.png")
     image_actions_test = args.binary.resolve().with_name("canvas-image-actions-test")
     if not image_actions_test.is_file():
@@ -389,7 +390,7 @@ def verify_plugins(args, evidence):
     image_actions_result = run([str(image_actions_test)], env=dict(os.environ, G_DEBUG="fatal-criticals"))
     image_actions_available = "PASS: GTK4 canvas image actions (libvips)" in image_actions_result
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()},{image_actions.resolve()},{fit_to_content.resolve()}\ndisabled=\n",
+        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()},{image_actions.resolve()},{fit_to_content.resolve()},{export_plugin.resolve()}\ndisabled=\n",
         encoding="utf-8")
     if not args.worker:
         raise RuntimeError("Bundled plugin integration checks require --worker")
@@ -401,7 +402,7 @@ def verify_plugins(args, evidence):
     )
     expected = (
         "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-        "HighlightPosition, ImageActions, FitToContent page resizing, SpaceForNotes page insertion, "
+        "HighlightPosition, Export PDF/SVG/PNG, ImageActions, FitToContent page resizing, SpaceForNotes page insertion, "
         "ToggleGrid paper changes, and background undo/redo"
     )
     if expected not in result:
@@ -416,7 +417,7 @@ def verify_plugins(args, evidence):
             raise RuntimeError(f"Missing plugin integration screenshot: {path}")
     saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
     for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition", "SpaceForNotes", "ImageActions",
-                   "FitToContent"):
+                   "FitToContent", "Export"):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")
