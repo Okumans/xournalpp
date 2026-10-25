@@ -300,12 +300,17 @@ int main() {
                 "  app.registerUi({menu='Clamp zoom', callback='clamp'})\n"
                 "  app.registerUi({menu='Reject nonnumeric zoom', callback='badType'})\n"
                 "  app.registerUi({menu='Reject nonfinite zoom', callback='badNumber'})\n"
+                "  app.registerUi({menu='Read display DPI', callback='readDpi'})\n"
                 "end\n"
                 "function read() assert(app.getZoom() == 1.25) end\n"
                 "function set() app.setZoom(2.5); assert(app.getZoom() == 2.5) end\n"
                 "function clamp() app.setZoom(15); assert(app.getZoom() == 8) end\n"
                 "function badType() app.setZoom('not a number') end\n"
-                "function badNumber() app.setZoom(0/0) end\n");
+                "function badNumber() app.setZoom(0/0) end\n"
+                "function readDpi()\n"
+                "  local dpi = app.getDisplayDpi()\n"
+                "  assert(math.type(dpi) == 'integer' and dpi == 144)\n"
+                "end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -398,6 +403,7 @@ int main() {
         zoomValue = std::clamp(zoom, 0.1, 8.0);
         return true;
     };
+    host.getDisplayDpi = [] { return 144; };
     host.getStrokes = [](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
                          std::string& error) {
         if (type == "selection") {
@@ -578,8 +584,8 @@ int main() {
                     loadedSplineCreationPlugin->menuItems == 6,
             "Plugin using spline creation did not load its callbacks");
     const auto loadedZoomApiPlugin = runtime.findPlugin("ZoomApiPlugin");
-    require(loadedZoomApiPlugin && loadedZoomApiPlugin->loaded && loadedZoomApiPlugin->menuItems == 5,
-            "Plugin using zoom read and write APIs did not load its callbacks");
+    require(loadedZoomApiPlugin && loadedZoomApiPlugin->loaded && loadedZoomApiPlugin->menuItems == 6,
+            "Plugin using zoom and display DPI APIs did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -610,6 +616,8 @@ int main() {
     require(!runtime.invokeMenu("ZoomApiPlugin", 4) &&
                     runtime.findPlugin("ZoomApiPlugin")->error.find("finite number") != std::string::npos,
             "app.setZoom accepted a nonfinite value");
+    require(runtime.invokeMenu("ZoomApiPlugin", 5),
+            "app.getDisplayDpi did not return the host display DPI as a Lua integer");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -818,7 +826,7 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 46 &&
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 47 &&
                     g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 15,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);

@@ -1557,6 +1557,7 @@ private:
         host.transformSelectedImages = [this](std::int64_t action, std::string& error) {
             return transformSelectedImagesFromPlugin(action, error);
         };
+        host.getDisplayDpi = [this] { return pluginDisplayDpi(); };
         host.getZoom = [this] { return state.zoom; };
         host.setZoom = [this](double value, std::string& error) { return setPluginZoom(value, error); };
         host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
@@ -2864,6 +2865,28 @@ private:
         return true;
     }
 
+    int pluginDisplayDpi() const {
+        constexpr int defaultDpi = 72;
+        auto* native = canvas ? gtk_widget_get_native(canvas) : nullptr;
+        auto* surface = native ? gtk_native_get_surface(native) : nullptr;
+        auto* display = canvas ? gtk_widget_get_display(canvas) : nullptr;
+        if (!surface || !display) {
+            return defaultDpi;
+        }
+        auto* monitor = gdk_display_get_monitor_at_surface(display, surface);
+        if (!monitor) {
+            return defaultDpi;
+        }
+        GdkRectangle geometry{};
+        gdk_monitor_get_geometry(monitor, &geometry);
+        const int heightMillimeters = gdk_monitor_get_height_mm(monitor);
+        if (heightMillimeters <= 0 || geometry.height <= 0) {
+            return defaultDpi;
+        }
+        const double detectedDpi = static_cast<double>(geometry.height) * 25.4 / heightMillimeters;
+        return static_cast<int>(std::lround(std::clamp(detectedDpi, 36.0, 720.0)));
+    }
+
     bool setPluginZoom(double value, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
             error = "Wait for the current document operation or input gesture to finish before changing zoom";
@@ -4105,6 +4128,9 @@ private:
 
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const int displayDpi = pluginDisplayDpi();
+        require(displayDpi >= 36 && displayDpi <= 720,
+                "app.getDisplayDpi did not return a bounded monitor DPI value or fallback");
         const auto savedZoom = state.zoom;
         const auto savedOffsetX = state.offsetX;
         const auto savedOffsetY = state.offsetY;
