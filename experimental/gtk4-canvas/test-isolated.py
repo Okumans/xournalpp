@@ -270,19 +270,28 @@ def verify_layer_management(args, evidence):
          "--smoke-dir", str(output)],
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_LAYER_VERIFY_MODE="1"),
     )
-    if "PASS: GTK layer selection, add, visibility, merge, undo and save" not in result:
+    if ("PASS: GTK layer selection, add, rename, duplicate, reorder, visibility, merge, undo and save"
+            not in result):
         raise RuntimeError("Layer management verification did not finish")
-    for screenshot in ("layer-stack", "layer-added", "layer-merged", "layer-hidden", "layer-saved"):
+    for screenshot in ("layer-stack", "layer-added", "layer-merged", "layer-hidden",
+                       "layer-background-renamed", "layer-renamed", "layer-duplicated",
+                       "layer-moved-down", "layers-hidden-all", "layers-shown-all", "layer-saved"):
         path = output / f"{screenshot}.png"
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty layer management screenshot: {path}")
     saved = ET.fromstring(gzip.decompress((output / "layer-saved.xopp").read_bytes()))
     pages = saved.findall("page")
     layers = pages[0].findall("layer")
-    if len(pages) != 2 or [layer.attrib.get("name") for layer in layers] != ["Lower", "Upper"]:
-        raise RuntimeError("Layer UI actions did not save the expected per-page layer stack")
+    if (len(pages) != 2 or [layer.attrib.get("name") for layer in layers] !=
+            ["Lower", "Upper renamed", "Duplicate"]):
+        raise RuntimeError("Layer UI actions did not save the renamed and duplicated per-page layer stack")
+    if pages[0].find("background").attrib.get("name") != "Paper":
+        raise RuntimeError("Layer UI save did not persist the explicit background name")
+    if [layer.attrib.get("name") for layer in pages[1].findall("layer")] != ["Lower", "Upper"]:
+        raise RuntimeError("Layer UI actions changed the other page's layer stack")
     lower_strokes = layers[0].findall("stroke")
     upper_strokes = layers[1].findall("stroke")
+    copied_strokes = layers[2].findall("stroke")
     if (len(lower_strokes) != 2 or lower_strokes[0].attrib.get("style") != "dash" or
             lower_strokes[1].attrib.get("tool") != "pen"):
         raise RuntimeError("Layer UI save lost or reordered non-top layer content")
@@ -290,6 +299,10 @@ def verify_layer_management(args, evidence):
             upper_strokes[1].attrib.get("tool") != "highlighter" or
             upper_strokes[2].attrib.get("tool") != "pen"):
         raise RuntimeError("Layer UI save lost merged native content or new active-layer ink")
+    if (len(copied_strokes) != 3 or copied_strokes[0].attrib.get("fill") != "128" or
+            copied_strokes[1].attrib.get("tool") != "highlighter" or
+            copied_strokes[2].attrib.get("tool") != "pen"):
+        raise RuntimeError("Layer duplication did not copy native and editable layer content")
     print("PASS: private GTK4 layer UI interaction and native save/reopen semantics", flush=True)
     return str(output)
 

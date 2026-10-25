@@ -12,7 +12,8 @@ presets, Xournal++ discrete tool size presets (`Very Fine`..`Very Thick`) synced
 custom widths, three eraser modes (`Standard` partial `PaddedBox` splitting, `Whiteout`,
 and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages without resetting zoom and becomes an overlay in
 narrower windows. Its per-page Layers panel selects, shows/hides, adds, deletes,
-and merges foreground layers. With a document worker, Open, Save, Save As, Export as PDF,
+duplicates, renames, reorders, and merges foreground layers, and can show or hide
+them all at once. These layer changes use undo/redo. With a document worker, Open, Save, Save As, Export as PDF,
 Insert Page After, and Delete Current Page run in the
 background. New ink, text, and image edits are saved as native objects in their active
 foreground layers alongside the original content. Open and Close protect
@@ -75,7 +76,8 @@ different zoom levels. For native documents, the worker extracts supported ink,
 text, and images from the editable suffix of every foreground layer, including hidden
 layers. Drawing, erasing, and stroke selection target the active visible layer;
 background and other layers are not affected. The Layers sidebar selects layers,
-shows or hides them, and adds, deletes, or merges them down. Editable strokes can
+shows or hides them individually or all at once, and adds, deletes, duplicates,
+renames, reorders, or merges them down. Editable strokes can
 also be resized, rotated, moved across pages, copied and pasted with native
 `.xopp` pressure/color/style retained. Save and export preserve layer grouping,
 visibility, and native object order. The clipboard reader limits input to 64 MiB
