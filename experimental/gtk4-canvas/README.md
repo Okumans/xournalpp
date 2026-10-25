@@ -307,6 +307,10 @@ path. It explicitly renders a 2x raster cache
 and checks its dimensions. This is **not** a compositor-at-2x or physical HiDPI display test;
 the headless compositor reports device scale 1.
 
+The focused `--selection-only` GUI check loads a two-layer native document and
+verifies visible-layer rectangle and lasso selection, hidden-layer fallback,
+selection-mode persistence, and the regular rectangle shortcut.
+
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. Rich-text editing does not include
@@ -370,13 +374,13 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of unsupported native objects, multi-layer selection, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
+The experiment still needs editing of unsupported native objects, general multi-object selection for strokes, text, and images, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
 ## Stroke selection
 
-Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes from the active visible foreground layer. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select (`S`) picks the topmost stroke by path distance or an editable image by its bounds. Selected images can be moved, resized from a corner handle while preserving aspect ratio, or rotated around the center from the top handle. Hold Shift to add a rectangle to an existing selection.
+Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes from the active visible foreground layer. The selection-mode menu also offers visible-layer rectangle and lasso modes: they search top to bottom, skip hidden layers, then select all matching strokes from the first visible layer with matches, as in the native selector. They do not combine matches from multiple layers. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select (`S`) picks the topmost stroke by path distance or an editable image by its bounds. Selected images can be moved, resized from a corner handle while preserving aspect ratio, or rotated around the center from the top handle. Hold Shift to add a rectangle to an existing selection.
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 

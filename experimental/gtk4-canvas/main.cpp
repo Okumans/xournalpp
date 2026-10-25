@@ -1569,8 +1569,19 @@ private:
         gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), matched ? static_cast<guint>(*matched) : 5u);
     }
 
-    void activateSelection(Tool tool) {
+    guint selectionModeIndex(Tool tool) const {
+        if (state.selectionAcrossLayers && tool == Tool::SelectRectangle) {
+            return 3;
+        }
+        if (state.selectionAcrossLayers && tool == Tool::SelectLasso) {
+            return 4;
+        }
+        return static_cast<guint>(tool) - static_cast<guint>(Tool::SelectRectangle);
+    }
+
+    void activateSelection(Tool tool, bool acrossLayers = false) {
         selectionTool = tool;
+        state.selectionAcrossLayers = acrossLayers;
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
         selectTool(tool);
     }
@@ -1976,7 +1987,7 @@ private:
         gtk_widget_set_visible(textFormatBox, tool == Tool::Text);
         if (prototype::isSelectionTool(tool)) {
             selectionTool = tool;
-            gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), static_cast<guint>(tool)-3);
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), selectionModeIndex(tool));
         }
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
@@ -2884,13 +2895,26 @@ private:
         gtk_box_append(GTK_BOX(paletteContent), drawingOptionsExpander);
         gtk_widget_set_tooltip_text(paletteButton, "Quick colors and drawing tools");
 
-        const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", nullptr};
+        const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", "Rectangle: Visible layers",
+                                        "Lasso: Visible layers", nullptr};
         selectionModeDropdown = gtk_drop_down_new_from_strings(selectionModes);
-        g_signal_connect(selectionModeDropdown, "notify::selected", G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
-            auto* self = static_cast<Prototype*>(data);
-            const auto tool = static_cast<Tool>(3 + gtk_drop_down_get_selected(GTK_DROP_DOWN(object)));
-            if (tool != self->state.brush.tool && prototype::isSelectionTool(self->state.brush.tool)) self->activateSelection(tool);
-        }), this);
+        gtk_widget_set_tooltip_text(selectionModeDropdown,
+                                    "Visible-layer modes search from the top visible layer downward and select "
+                                    "strokes on the first layer with matches");
+        g_signal_connect(
+                selectionModeDropdown, "notify::selected",
+                G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    const auto selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
+                    const auto tool = selected == 1 || selected == 4 ? Tool::SelectLasso :
+                                      selected == 2 ? Tool::SmartSelect : Tool::SelectRectangle;
+                    const bool acrossLayers = selected == 3 || selected == 4;
+                    if (prototype::isSelectionTool(self->state.brush.tool) &&
+                        (tool != self->state.brush.tool || acrossLayers != self->state.selectionAcrossLayers)) {
+                        self->activateSelection(tool, acrossLayers);
+                    }
+                }),
+                this);
         gtk_box_append(GTK_BOX(toolbar), selectionModeDropdown);
         selectionActions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_widget_add_css_class(selectionActions, "linked");
@@ -3099,6 +3123,10 @@ private:
                                             g_getenv("XOURNALPP_IMAGE_VERIFY_SOURCE") : "";
                 imageVerifyStep = 0;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_SELECTION_VERIFY_MODE"); verifyMode && *verifyMode) {
+                selectionVerifyMode = verifyMode;
+                selectionVerifyStep = 0;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -3123,6 +3151,8 @@ private:
                                     --self->imageVerifyStep;
                                 } else if (!self->layerVerifyMode.empty()) {
                                     --self->layerVerifyStep;
+                                } else if (!self->selectionVerifyMode.empty()) {
+                                    --self->selectionVerifyStep;
                                 } else if (self->documentSmokeStep >= 0) {
                                     --self->documentSmokeStep;
                                 } else {
@@ -4835,6 +4865,102 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
+    gboolean smokeSelectionModes() {
+        switch (selectionVerifyStep++) {
+            case 0: {
+                require(nativeSession && pageCount == 1 && state.layersForPage(0).layers.size() == 2 &&
+                                state.ink.size() == 4 && state.layersForPage(0).layers[0].name == "Lower" &&
+                                state.layersForPage(0).layers[1].name == "Upper",
+                        "Visible-layer selection verification requires its native two-layer fixture");
+                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 5,
+                        "Selection mode menu does not expose both visible-layer variants");
+                activateSelection(Tool::SelectRectangle);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
+                require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers,
+                        "Visible-layer rectangle mode did not activate multilayer selection");
+                state.clearSelection();
+                {
+                    const auto start = state.pageScreenPoint(0, 45, 95);
+                    const auto end = state.pageScreenPoint(0, 205, 220);
+                    g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+                    g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+                    g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+                }
+                require(state.selected == std::vector<size_t>({2, 3}),
+                        "Visible-layer rectangle did not select all matching strokes from the upper layer only");
+                break;
+            }
+            case 1: {
+                capture("selection-visible-layer-rectangle");
+                state.clearSelection();
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 4);
+                require(state.brush.tool == Tool::SelectLasso && state.selectionAcrossLayers,
+                        "Visible-layer lasso mode did not activate multilayer selection");
+                const auto start = state.pageScreenPoint(0, 45, 95);
+                const std::array<prototype::Point, 4> polygon{{{205, 95}, {205, 220}, {45, 220}, {45, 95}}};
+                const auto end = state.pageScreenPoint(0, polygon.back().x, polygon.back().y);
+                g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+                for (const auto& point: polygon) {
+                    const auto screen = state.pageScreenPoint(0, point.x, point.y);
+                    g_signal_emit_by_name(mouse, "drag-update", screen.x - start.x, screen.y - start.y);
+                }
+                g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+                require(state.selected == std::vector<size_t>({2, 3}),
+                        "Visible-layer lasso did not select all matching strokes from the upper layer only");
+                break;
+            }
+            case 2: {
+                capture("selection-visible-layer-lasso");
+                state.clearSelection();
+                auto* upperVisibility = findLayerControl(2, true);
+                require(upperVisibility, "Upper-layer visibility control is missing");
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(upperVisibility), false);
+                require(!state.layerVisible(0, 2), "Upper layer did not become hidden before fallback selection");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
+                const auto start = state.pageScreenPoint(0, 45, 95);
+                const auto end = state.pageScreenPoint(0, 205, 220);
+                g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+                g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+                g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+                require(state.selected == std::vector<size_t>({0, 1}),
+                        "Visible-layer rectangle did not fall back to the next visible matching layer");
+                break;
+            }
+            case 3: {
+                capture("selection-hidden-layer-fallback");
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(state.layerVisible(0, 2), "Undo did not restore the upper layer visibility");
+                state.clearSelection();
+                selectTool(Tool::Pen);
+                require(state.selectionAcrossLayers, "Changing drawing tools discarded the remembered selection mode");
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
+                require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 3,
+                        "Reopening selection did not restore the visible-layer rectangle mode");
+                gboolean handled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_r, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
+                require(handled && state.brush.tool == Tool::SelectRectangle && !state.selectionAcrossLayers &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 0,
+                        "The rectangle keyboard shortcut did not select the regular single-layer tool");
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 4);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 2);
+                require(state.brush.tool == Tool::SmartSelect && !state.selectionAcrossLayers &&
+                                gtk_drop_down_get_selected(GTK_DROP_DOWN(selectionModeDropdown)) == 2,
+                        "Smart Select incorrectly retained the multilayer scope");
+                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, hidden-layer fallback, remembered tool state, and shortcuts\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+            }
+            default:
+                return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokePreferencesVerify() {
         const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
         if (preferencesVerifyMode == "edit") {
@@ -5321,6 +5447,9 @@ private:
         }
         if (!layerVerifyMode.empty()) {
             return smokeLayers();
+        }
+        if (!selectionVerifyMode.empty()) {
+            return smokeSelectionModes();
         }
         if (!imageVerifyMode.empty()) {
             return smokeImages();
@@ -6485,6 +6614,8 @@ private:
     std::string imageVerifyMode;
     std::string imageVerifySource;
     int imageVerifyStep = -1;
+    std::string selectionVerifyMode;
+    int selectionVerifyStep = -1;
     prototype::CanvasImageTransform imageVerifyExpected;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;

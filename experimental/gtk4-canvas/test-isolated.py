@@ -413,8 +413,59 @@ def verify_images(args, evidence):
     return str(output)
 
 
+def verify_selection_modes(args, evidence):
+    directory = evidence / "selection-modes"
+    shutil.rmtree(directory, ignore_errors=True)
+    output = directory / "run"
+    output.mkdir(parents=True, exist_ok=True)
+    if not args.worker:
+        raise RuntimeError("Visible-layer selection GUI checks require the document worker")
+    fixture = directory / "selection-demo.xopp"
+    root = ET.Element("xournal", {"creator": "Xournal++", "fileversion": "4"})
+    ET.SubElement(root, "title").text = "Visible-layer selection"
+    page = ET.SubElement(root, "page", {"width": "595", "height": "842"})
+    ET.SubElement(page, "background", {"type": "solid", "color": "#ffffffff", "style": "plain"})
+    lower = ET.SubElement(page, "layer", {"name": "Lower"})
+    ET.SubElement(lower, "stroke", {"tool": "pen", "capStyle": "round", "color": "#303030ff",
+                                      "width": "3"}).text = "60 120 190 120"
+    ET.SubElement(lower, "stroke", {"tool": "pen", "capStyle": "round", "color": "#303030ff",
+                                      "width": "3"}).text = "60 145 190 145"
+    upper = ET.SubElement(page, "layer", {"name": "Upper"})
+    ET.SubElement(upper, "stroke", {"tool": "pen", "capStyle": "round", "color": "#d44f25ff",
+                                      "width": "4"}).text = "60 175 190 175"
+    ET.SubElement(upper, "stroke", {"tool": "pen", "capStyle": "round", "color": "#d44f25ff",
+                                      "width": "4"}).text = "60 200 190 200"
+    fixture.write_bytes(gzip.compress(ET.tostring(root, encoding="utf-8", xml_declaration=True)))
+    fixture_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    result = run(
+        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
+         "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_SELECTION_VERIFY_MODE="visible-layers"),
+    )
+    if ("PASS: GTK visible-layer rectangle/lasso selection, hidden-layer fallback, remembered tool state, and shortcuts"
+            not in result):
+        raise RuntimeError("GTK visible-layer selection mode verification did not finish")
+    for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",
+                 "selection-hidden-layer-fallback"):
+        screenshot = output / f"{name}.png"
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing or empty visible-layer selection screenshot: {screenshot}")
+    if hashlib.sha256(fixture.read_bytes()).hexdigest() != fixture_hash:
+        raise RuntimeError("Visible-layer selection fixture changed during the GUI check")
+    print("PASS: private GTK4 visible-layer selection menu, mode state and shortcut behavior", flush=True)
+    return str(output)
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.selection_only:
+        selection_evidence = verify_selection_modes(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"selection-modes": selection_evidence},
+             "fixture": str(evidence / "selection-modes" / "selection-demo.xopp"),
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.image_only:
         image_evidence = verify_images(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -604,6 +655,7 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--layer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--image-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -652,6 +704,8 @@ def main():
             command.append("--layer-only")
         if args.image_only:
             command.append("--image-only")
+        if args.selection_only:
+            command.append("--selection-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 
