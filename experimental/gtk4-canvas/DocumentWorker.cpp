@@ -206,6 +206,14 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
             throw std::runtime_error("Layer transfer no longer matches the document snapshot");
         }
         auto& oldLayers = page->getLayers();
+        std::vector<size_t> sourceUseCount(pageInfo.initialLayerCount, 0);
+        for (const auto& targetInfo: pageInfo.layers) {
+            for (size_t origin: targetInfo.origins) {
+                if (origin < sourceUseCount.size()) {
+                    ++sourceUseCount[origin];
+                }
+            }
+        }
         std::vector<Layer*> replacement;
         replacement.reserve(pageInfo.layers.size());
         for (const auto& info: pageInfo.layers) {
@@ -222,7 +230,14 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
             for (size_t origin: pageInfo.layers[targetIndex].origins) {
                 if (origin < pageInfo.initialLayerCount) {
                     auto* source = oldLayers.at(origin);
-                    for (auto& element: source->clearNoFree()) {
+                    std::vector<ElementPtr> sourceElements;
+                    if (sourceUseCount[origin] > 1) {
+                        std::unique_ptr<Layer> duplicate(source->clone());
+                        sourceElements = duplicate->clearNoFree();
+                    } else {
+                        sourceElements = source->clearNoFree();
+                    }
+                    for (auto& element: sourceElements) {
                         target->addElement(std::move(element));
                     }
                 }
@@ -262,6 +277,9 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
         }
         oldLayers = std::move(replacement);
         page->setSelectedLayerId(pageInfo.selectedLayer);
+        if (pageInfo.backgroundName) {
+            page->setBackgroundName(*pageInfo.backgroundName);
+        }
         GTK4DocumentLayerAccess::setBackgroundVisible(*page, pageInfo.backgroundVisible);
     }
 }
@@ -537,6 +555,9 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
         pageInfo.initialLayerCount = page->getLayerCount();
         pageInfo.selectedLayer = std::clamp(page->getSelectedLayerId(), size_t{1}, pageInfo.initialLayerCount);
         pageInfo.backgroundVisible = page->isLayerVisible(0);
+        if (page->backgroundHasName()) {
+            pageInfo.backgroundName = page->getBackgroundName();
+        }
         pageInfo.layers.clear();
         for (size_t layerIndex = 0; layerIndex < page->getLayerCount(); ++layerIndex) {
             const auto* layer = page->getLayersView()[layerIndex];

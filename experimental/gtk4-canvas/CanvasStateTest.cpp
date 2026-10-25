@@ -460,6 +460,89 @@ static void layerManagement() {
           "background visibility should participate in undo history");
 }
 
+static void layerRenameDuplicateReorderAndVisibility() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}});
+    PageLayers source;
+    source.initialLayerCount = 3;
+    source.selectedLayer = 2;
+    source.backgroundName = "Paper";
+    source.layers = {{"Lower", true, {0}}, {"Upper", false, {1}}, {"Top", true, {2}}};
+    state.setLayerDocument({source, source});
+
+    state.brush = {Tool::Pen, {0, 0, 0}, 2};
+    check(state.begin(Device::Mouse, 20, 20), "drawing should begin on the selected layer before duplication");
+    state.append(Device::Mouse, 40, 40);
+    state.finish(Device::Mouse);
+    TextItem text;
+    text.page = 0;
+    text.text = "layer text";
+    check(state.insertText(text), "text should insert on the selected layer before duplication");
+    CanvasImage image;
+    image.page = 0;
+    image.pixelWidth = 2;
+    image.pixelHeight = 2;
+    image.encodedData = "image bytes";
+    check(state.insertImage(image), "image should insert on the selected layer before duplication");
+
+    check(state.renameLayer(0, 0, "Ruled Paper") &&
+                  state.layersForPage(0).backgroundName == "Ruled Paper",
+          "the background name should be editable");
+    state.undo();
+    check(state.layersForPage(0).backgroundName == "Paper",
+          "undo should restore the background name");
+    check(state.renameLayer(0, 2, "Notes") && state.layersForPage(0).layers[1].name == "Notes",
+          "the selected foreground layer name should be editable");
+    state.undo();
+    check(state.layersForPage(0).layers[1].name == "Upper",
+          "undo should restore the foreground layer name");
+
+    check(state.duplicateCurrentLayer(), "the selected foreground layer should duplicate");
+    const auto& duplicated = state.layersForPage(0);
+    check(duplicated.layers.size() == 4 && duplicated.selectedLayer == 3 &&
+                  duplicated.layers[1].origins == std::vector<size_t>({1}) &&
+                  duplicated.layers[2].origins == std::vector<size_t>({1}) &&
+                  !duplicated.layers[2].visible && state.ink.size() == 2 && state.texts.size() == 2 &&
+                  state.images.size() == 2,
+          "duplicating a layer should copy its identity, visibility, and session ink, text, and images");
+    check(state.ink[0].layerId == 2 && state.ink[1].layerId == 3 &&
+                  state.ink[0].originLayer == state.ink[1].originLayer &&
+                  state.texts[0].layerId == 2 && state.texts[1].layerId == 3 &&
+                  state.images[0].layerId == 2 && state.images[1].layerId == 3,
+          "duplicated editable objects should retain source origins and receive the new layer ID");
+    state.undo();
+    check(state.layersForPage(0).layers.size() == 3 && state.ink.size() == 1 && state.texts.size() == 1 &&
+                  state.images.size() == 1,
+          "undo should remove a duplicate layer and its copied editable objects");
+    state.redo();
+    check(state.layersForPage(0).layers.size() == 4 && state.ink.size() == 2 && state.texts.size() == 2 &&
+                  state.images.size() == 2,
+          "redo should restore a duplicate layer and its copied editable objects");
+
+    check(state.moveCurrentLayer(true) && state.activeLayerId(0) == 4 &&
+                  state.layersForPage(0).layers[3].origins == std::vector<size_t>({1}) &&
+                  state.ink[1].layerId == 4 && state.texts[1].layerId == 4 && state.images[1].layerId == 4,
+          "moving a selected layer up should reorder it and remap its editable objects");
+    state.undo();
+    check(state.activeLayerId(0) == 3 && state.ink[1].layerId == 3 && state.texts[1].layerId == 3 &&
+                  state.images[1].layerId == 3,
+          "undo should restore layer order and editable object IDs");
+    check(state.moveCurrentLayer(false) && state.activeLayerId(0) == 2 && state.ink[1].layerId == 2 &&
+                  state.texts[1].layerId == 2 && state.images[1].layerId == 2,
+          "moving a selected layer down should remap its editable objects");
+
+    check(state.setAllLayersVisible(0, false) && !state.layerVisible(0, 1) &&
+                  !state.layerVisible(0, 2) && !state.layerVisible(0, 3) && state.layerVisible(0, 0),
+          "hide all should hide foreground layers without changing background visibility");
+    state.undo();
+    check(state.layerVisible(0, 1) && !state.layerVisible(0, 2) && !state.layerVisible(0, 3) &&
+                  state.layerVisible(0, 4),
+          "undo should restore all foreground visibility values");
+    check(state.setAllLayersVisible(0, true), "show all should restore every foreground layer");
+    check(!state.setAllLayersVisible(0, true), "show all should not create history when no layer changes");
+    check(state.layersForPage(1) == source, "layer actions should not modify other pages");
+}
+
 int main() {
     try {
         savedHistory();
@@ -469,6 +552,7 @@ int main() {
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
         layerManagement();
+        layerRenameDuplicateReorderAndVisibility();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
         check(std::abs(behavior::steppedZoom(1, true, false) - 1.1) < 1e-12,
