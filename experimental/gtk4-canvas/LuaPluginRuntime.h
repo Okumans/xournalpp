@@ -15,6 +15,8 @@
 #include <gio/gio.h>
 #include <gtk/gtk.h>
 
+#include "DocumentExport.h"
+
 struct lua_State;
 
 namespace prototype {
@@ -66,6 +68,8 @@ struct PluginRuntimeHost {
     std::function<bool(double, double, bool, std::string&)> setPageSize;
     std::function<bool(bool, std::string&)> setLayerVisibility;
     std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
+    std::function<bool(const DocumentExportOptions&, std::string&)> exportDocument;
+    std::function<std::string()> documentFilename;
     std::function<bool(std::string_view, std::string_view, const std::vector<PluginDialogButton>&, bool,
                        std::function<void(int)>, std::string&)>
             openDialog;
@@ -122,6 +126,8 @@ public:
     static int luaSetPageSize(lua_State* state);
     static int luaSetLayerVisibility(lua_State* state);
     static int luaSetCurrentLayerName(lua_State* state);
+    static int luaExport(lua_State* state);
+    static int luaGetDocumentStructure(lua_State* state);
     static int luaOpenDialog(lua_State* state);
 
 private:
@@ -144,6 +150,8 @@ private:
     bool setPageSize(double width, double height, bool relative, std::string& error);
     bool setLayerVisibility(bool visible, std::string& error);
     bool setCurrentLayerName(std::string_view name, std::string& error);
+    bool exportDocument(const DocumentExportOptions& options, std::string& error);
+    std::string documentFilename() const;
     bool openDialog(Plugin& plugin, std::string_view message, const std::vector<PluginDialogButton>& buttons,
                     bool isError, std::string_view callback, std::string& error);
     void reportError(const Plugin& plugin, std::string_view message) const;

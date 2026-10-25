@@ -121,6 +121,8 @@ int main() {
                 "function initUi()\n"
                 "  app.registerUi({menu='Mutate strokes', callback='mutate'})\n"
                 "  app.registerUi({menu='Reject malformed strokes', callback='malformed'})\n"
+                "  app.registerUi({menu='Export options', callback='exportOptions'})\n"
+                "  app.registerUi({menu='Export defaults', callback='exportDefaults'})\n"
                 "end\n"
                 "function mutate()\n"
                 "  local refs = app.addStrokes({strokes={\n"
@@ -133,6 +135,14 @@ int main() {
                 "  app.setCurrentLayerName('moved for fitting')\n"
                 "  app.activateAction('layer-new-above-current')\n"
                 "end\n"
+                "function exportOptions()\n"
+                "  local document = app.getDocumentStructure()\n"
+                "  assert(document.xoppFilename == '/tmp/plugin-test.xopp')\n"
+                "  app.export({outputFile='/tmp/plugin-test.png', range='2-3; 7', layerRange='1-2', "
+                "background='none', progressiveMode=true, backend='cairo', pngDpi=180.0, pngWidth=400.0, "
+                "pngHeight=600.0})\n"
+                "end\n"
+                "function exportDefaults() app.export({outputFile='/tmp/plugin-default.pdf'}) end\n"
                 "function malformed() app.addStrokes({strokes={{x={1,2}, y={3}}}}) end\n");
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
@@ -161,6 +171,8 @@ int main() {
     double pageWidthChange = 0;
     double pageHeightChange = 0;
     bool pageSizeRelative = false;
+    bool exportCalled = false;
+    std::vector<prototype::DocumentExportOptions> exportRequests;
     bool layerVisible = true;
     std::string renamedLayer;
     std::string dialogPluginName;
@@ -229,6 +241,12 @@ int main() {
         renamedLayer = name;
         return true;
     };
+    host.exportDocument = [&](const prototype::DocumentExportOptions& options, std::string&) {
+        exportCalled = true;
+        exportRequests.push_back(options);
+        return true;
+    };
+    host.documentFilename = [] { return std::string("/tmp/plugin-test.xopp"); };
     host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
         changedBackgroundFormat = format;
         changedBackgroundConfig = config;
@@ -269,7 +287,7 @@ int main() {
             "Plugin using app.getStrokes did not load and register its menu callbacks");
     const auto loadedStrokeMutationPlugin = runtime.findPlugin("StrokeMutationPlugin");
     require(loadedStrokeMutationPlugin && loadedStrokeMutationPlugin->loaded &&
-                    loadedStrokeMutationPlugin->menuItems == 2,
+                    loadedStrokeMutationPlugin->menuItems == 4,
             "Plugin using stroke creation and layer/page APIs did not load its callbacks");
     require(!runtime.findPlugin("InvalidMain")->loaded, "Invalid plugin mainfile unexpectedly loaded");
     const auto loadedInvalidApi = runtime.findPlugin("InvalidApi");
@@ -312,6 +330,21 @@ int main() {
     require(!runtime.invokeMenu("StrokeMutationPlugin", 1) &&
                     runtime.findPlugin("StrokeMutationPlugin")->error.find("not equal length") != std::string::npos,
             "app.addStrokes accepted malformed point arrays");
+    require(runtime.invokeMenu("StrokeMutationPlugin", 2) && exportCalled && exportRequests.size() == 1 &&
+                    exportRequests.back().outputFile == "/tmp/plugin-test.png" &&
+                    exportRequests.back().range == std::optional<std::string>("2-3; 7") &&
+                    exportRequests.back().layerRange == std::optional<std::string>("1-2") &&
+                    exportRequests.back().background == "none" && exportRequests.back().progressiveMode &&
+                    exportRequests.back().backend == "cairo" && exportRequests.back().pngDpi == 180 &&
+                    exportRequests.back().pngWidth == 400 && exportRequests.back().pngHeight == 600,
+            "app.export or getDocumentStructure did not preserve the plugin options");
+    require(runtime.invokeMenu("StrokeMutationPlugin", 3) && exportRequests.size() == 2 &&
+                    exportRequests.back().outputFile == "/tmp/plugin-default.pdf" &&
+                    !exportRequests.back().range && !exportRequests.back().layerRange &&
+                    exportRequests.back().background == "all" && !exportRequests.back().progressiveMode &&
+                    exportRequests.back().backend == "default" && exportRequests.back().pngDpi == -1 &&
+                    exportRequests.back().pngWidth == -1 && exportRequests.back().pngHeight == -1,
+            "app.export did not apply the master option defaults");
     require(runtime.invokeMenu("BeamerPresentation", 0) && activatedActions == std::vector<std::string>{"beamer-next"},
             "Beamer +1 did not dispatch the next-animation host action");
     require(runtime.invokeMenu("BeamerPresentation", 1) &&
@@ -349,7 +382,7 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 15 &&
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 17 &&
                     g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 8,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
