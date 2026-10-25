@@ -181,6 +181,31 @@ public:
                            layerTransfer.string(), imageTransfer.string()});
     }
 
+    StagedRevision stageRevision(const std::string& worker, const std::vector<StrokePacket>& packets,
+                                 const std::vector<TextItem>& texts, const std::vector<ImagePacket>& images,
+                                 const LayerDocument& layers) {
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            const auto transfer = staged.directory / "revision.ink";
+            const auto textTransfer = staged.directory / "revision.text";
+            const auto layerTransfer = staged.directory / "revision.layers";
+            const auto imageTransfer = staged.directory / "revision.images";
+            writeTransfer(transfer, packets);
+            writeTextTransfer(textTransfer, texts);
+            writeLayerTransfer(layerTransfer, layers);
+            writeImageTransfer(imageTransfer, images);
+            runWorker(worker,
+                      {"revision", snapshotPath().string(), staged.snapshotPath().string(),
+                       staged.previewPath().string(), transfer.string(), textTransfer.string(), layerTransfer.string(),
+                       imageTransfer.string(), audioFolder.string(), audioDirectory.string()});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
+
     StagedRevision stageInsertPageAfter(const std::string& worker, int afterPage) {
         return stagePageMutation(worker, "insert-page", afterPage);
     }

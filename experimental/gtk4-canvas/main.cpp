@@ -259,6 +259,7 @@ public:
             std::cerr << "xournalpp-gtk4-canvas: " << preferenceLoad.warning << '\n';
         }
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
+        state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
         input.setStabilizerConfig(importedConfig.settings.stabilizer);
         penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth};
         highlightBrush = {Tool::Highlighter, importedConfig.settings.highlighterColor,
@@ -897,6 +898,10 @@ private:
         host.activateAction = [this](std::string_view action, std::string& error) {
             return activatePluginAction(action, error);
         };
+        host.changeCurrentPageBackground = [this](std::string_view format, std::string_view config,
+                                                  std::string& error) {
+            return changePluginPageBackground(format, config, error);
+        };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -910,6 +915,107 @@ private:
             }
         };
         pluginRuntime->loadEnabled(std::move(host));
+    }
+
+    bool changePluginPageBackground(std::string_view format, std::string_view config, std::string& error) {
+        if (format != "plain" && format != "graph") {
+            error = "This GTK 4 host currently supports the plain and graph page backgrounds";
+            return false;
+        }
+        if (!nativeSession || options.worker.empty()) {
+            error = "Changing a page background requires the document worker";
+            return false;
+        }
+        if (busy || choosingFile || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            const std::string formatCopy(format);
+            const std::string configCopy(config);
+            waitForAutosave([this, formatCopy, configCopy] {
+                std::string deferredError;
+                if (!changePluginPageBackground(formatCopy, configCopy, deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+        finishTextEditing();
+        resetInput(true);
+        if (!state.changePageBackground(state.page, std::string(format), std::string(config))) {
+            return true;
+        }
+        return true;
+    }
+
+    void refreshNativeDocumentRevision(int changedPage) {
+        if (!nativeSession || options.worker.empty() || closed || changedPage < 0 || changedPage >= state.pageCount()) {
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, changedPage] { refreshNativeDocumentRevision(changedPage); });
+            return;
+        }
+        if (busy) {
+            showError("Cannot update the page background while another document operation is running");
+            return;
+        }
+
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto packets = prototype::bridge::transferInk(state.committedInk());
+        const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
+        const auto layers = state.pageLayers;
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Updating page background…",
+                [session, worker, packets, texts, images, layers, staged] {
+                    *staged = session->stageRevision(worker, packets, texts, images, layers);
+                },
+                [this, session, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
+                    std::vector<prototype::PageSize> sizes;
+                    prototype::bridge::LayerDocument layerState;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers =
+                                openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                         static_cast<int>(sizes.size()));
+                        layerState = prototype::bridge::readLayerTransfer(staged->layerStatePath());
+                    } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
+                    state.setLayerDocument(layerState);
+                    g_clear_object(&pdfTextDocument);
+                    pdfTextDocumentPath.clear();
+                    pageCache.clear();
+                    layerPageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    updateTitle();
+                });
     }
 
     bool showPluginDialog(std::string_view pluginName, std::string_view message,
@@ -1584,11 +1690,14 @@ private:
         const auto example = pluginRuntime->findPlugin("Example");
         require(example && example->loaded && example->menuItems == 1,
                 "Enabled bundled Example plugin did not register its menu callback");
+        const auto toggleGrid = pluginRuntime->findPlugin("ToggleGrid");
+        require(toggleGrid && toggleGrid->loaded && toggleGrid->menuItems == 1 && nativeSession,
+                "Enabled bundled ToggleGrid plugin did not load with a native document worker");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 3,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 4,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -1636,6 +1745,32 @@ private:
         state.clearSelection();
         state.ink.pop_back();
 
+        require(pluginRuntime->invokeMenu("ToggleGrid", 0), "ToggleGrid menu action did not execute");
+        waitForPluginDocumentJob();
+        require(state.layersForPage(0).backgroundFormat == "plain" && !state.snapGridEnabled,
+                "ToggleGrid did not set the native page to plain paper and disable grid snapping");
+        capture("toggle-grid-plain");
+        require(pluginRuntime->invokeMenu("ToggleGrid", 0), "ToggleGrid second menu action did not execute");
+        waitForPluginDocumentJob();
+        require(state.layersForPage(0).backgroundFormat == "graph" && state.snapGridEnabled,
+                "ToggleGrid did not set the native page to graph paper and enable grid snapping");
+        capture("toggle-grid-graph");
+        state.undo();
+        waitForPluginDocumentJob();
+        require(state.layersForPage(0).backgroundFormat == "plain",
+                "Undo did not restore the prior page background through the native worker");
+        state.redo();
+        waitForPluginDocumentJob();
+        require(state.layersForPage(0).backgroundFormat == "graph",
+                "Redo did not restore the graph page background through the native worker");
+        const auto roundTripPath =
+                (std::filesystem::path(options.smokeDirectory) / "toggle-grid-round-trip.xopp").string();
+        nativeSession->saveCopy(options.worker, roundTripPath, prototype::bridge::transferInk(state.committedInk()),
+                                state.texts, prototype::bridge::transferImages(state.images), state.pageLayers);
+        const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
+        require(!reopened.initialLayers.empty() && reopened.initialLayers[0].backgroundFormat == "graph",
+                "Saving and reopening a ToggleGrid document did not preserve its graph background");
+
         g_action_group_activate_action(G_ACTION_GROUP(window), "gtk4-plugin-1", nullptr);
         require(messageDialog &&
                         g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-2"), "No") ==
@@ -1668,7 +1803,16 @@ private:
                 "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
         std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut and plugin "
-                     "manager\n";
+                     "manager, ToggleGrid paper changes, and background undo/redo\n";
+    }
+
+    void waitForPluginDocumentJob() {
+        const gint64 deadline = g_get_monotonic_time() + 20 * G_USEC_PER_SEC;
+        while (busy && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(!busy, "ToggleGrid native page-background revision did not finish within 20 seconds");
     }
 
     static guint settingsThemeIndex(prototype::ThemeVariant theme) {
@@ -1765,6 +1909,7 @@ private:
         const auto eraserWidth = state.eraserWidth;
         state = CanvasState{};
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
+        state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
         state.setPages(std::move(pageSizes));
         state.selectActivePage(0);
         state.setLayerDocument(session->initialLayers);
@@ -5924,6 +6069,9 @@ private:
                     200,
                     +[](gpointer data) -> gboolean {
                         auto* self = static_cast<Prototype*>(data);
+                        if (self->busy || (self->options.worker.size() && !self->nativeSession)) {
+                            return G_SOURCE_CONTINUE;
+                        }
                         try {
                             self->verifyPluginIntegration();
                         } catch (const std::exception& error) {

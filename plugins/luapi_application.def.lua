@@ -609,10 +609,11 @@ function app.refreshPage() end
 --- Change page background of current page
 --- 
 --- @param background string backgroundType (e.g. "graph")
+--- @param config string optional page-template configuration (e.g. "r1=14.17")
 --- 
 --- Example: app.changeCurrentPageBackground("graph")
 --- changes the page background of the current page to graph paper
-function app.changeCurrentPageBackground(background) end
+function app.changeCurrentPageBackground(background, config) end
 
 --- Query all colors of the current palette.
 --- 

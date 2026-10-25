@@ -24,6 +24,8 @@ struct PageLayers {
     size_t selectedLayer = 1;
     bool backgroundVisible = true;
     std::optional<std::string> backgroundName;
+    std::string backgroundFormat;
+    std::string backgroundConfig;
     double gridXOffset = 0;
     double gridYOffset = 0;
     double gridXStep = 0;

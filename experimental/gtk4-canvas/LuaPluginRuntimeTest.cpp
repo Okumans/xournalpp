@@ -73,13 +73,19 @@ int main() {
                 "function showDialog() app.openDialog('Choose one', {'First', 'Second'}, 'dialogResult') end\n"
                 "function showErrorDialog() app.openDialog('Problem', {'OK'}, '', true) end\n"
                 "function dialogResult(result) app.changeActionState('test-mode', result) end\n");
+    const auto backgroundPlugin = root / "BackgroundPlugin";
+    writePlugin(backgroundPlugin,
+                "[about]\ndescription=Page background action\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi() app.registerUi({menu='Set paper', callback='setPaper'}) end\n"
+                "function setPaper() app.changeCurrentPageBackground('graph', 'r1=14.17') end\n");
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 6, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 7, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -99,6 +105,8 @@ int main() {
     std::vector<prototype::PluginDialogButton> dialogButtons;
     bool dialogError = true;
     std::function<void(int)> dialogResponse;
+    std::string changedBackgroundFormat;
+    std::string changedBackgroundConfig;
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -112,6 +120,11 @@ int main() {
             return false;
         }
         changedMode = std::get<std::int64_t>(value);
+        return true;
+    };
+    host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
+        changedBackgroundFormat = format;
+        changedBackgroundConfig = config;
         return true;
     };
     host.openDialog = [&](std::string_view pluginName, std::string_view message,
@@ -148,6 +161,9 @@ int main() {
     require(runtime.invokeMenu("ColorCycle", 0), "Registered plugin menu callback did not execute");
     require(changedColor == 0x123456 && changedTool == "pen" && changedSelection && changedMode == 7,
             "Lua app API arguments did not reach the GTK4 host callback");
+    require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
+                    changedBackgroundConfig == "r1=14.17",
+            "Page background type and configuration did not reach the GTK4 host callback");
     require(runtime.invokeMenu("DialogPlugin", 0) && dialogPluginName == "DialogPlugin" &&
                     dialogMessage == "Choose one" && !dialogError && dialogButtons.size() == 2 &&
                     dialogButtons[0].response == 1 && dialogButtons[0].label == "First" &&
@@ -170,8 +186,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 4 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 3,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 5 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 4,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
