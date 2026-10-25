@@ -443,7 +443,8 @@ int main(int argc, char** argv) {
         check(copy.size() == 2 && copy[0].points[1].pressure == .75 && copy[1].brush.width == 14,
               "Clipboard lost pressure/style");
         const auto payload = clipboard::decodePayload(bytes);
-        check(payload.strokes.size() == 2 && payload.images.empty(),
+        check(payload.objects.size() == 2 && std::holds_alternative<Ink>(payload.objects[0]) &&
+                      std::holds_alternative<Ink>(payload.objects[1]),
               "Native stroke clipboard payload decoded with the wrong object type");
         CanvasImage clipboardImage;
         clipboardImage.pixelWidth = 320;
@@ -457,8 +458,8 @@ int main(int argc, char** argv) {
                       near(imageCopy.transform.xx, 0.75) && near(imageCopy.transform.yx, 0.25) &&
                       near(imageCopy.transform.xy, -0.25) && near(imageCopy.transform.yy, 0.75) &&
                       near(imageCopy.transform.x, 122) && near(imageCopy.transform.y, 86) &&
-                      imageCopy.encodedData == clipboardImage.encodedData && imagePayload.images.size() == 1 &&
-                      imagePayload.strokes.empty(),
+                      imageCopy.encodedData == clipboardImage.encodedData && imagePayload.objects.size() == 1 &&
+                      std::holds_alternative<CanvasImage>(imagePayload.objects.front()),
               "Native image clipboard round trip lost its raster data or transform");
         for (size_t length = 0; length < imageBytes.size(); ++length) {
             bool rejectedImage = false;
@@ -477,12 +478,29 @@ int main(int argc, char** argv) {
         const auto imagesBytes = clipboard::encodeImages(clipboardImages);
         const auto imagesCopy = clipboard::decodeImages(imagesBytes);
         const auto imagesPayload = clipboard::decodePayload(imagesBytes);
-        check(imagesCopy.size() == 2 && imagesPayload.images.size() == 2 &&
+        check(imagesCopy.size() == 2 && imagesPayload.objects.size() == 2 &&
+                      std::all_of(imagesPayload.objects.begin(), imagesPayload.objects.end(), [](const auto& object) {
+                          return std::holds_alternative<CanvasImage>(object);
+                      }) &&
                       imagesCopy[0].encodedData == clipboardImage.encodedData &&
                       imagesCopy[1].encodedData == secondClipboardImage.encodedData &&
                       near(imagesCopy[1].transform.xx, 1.25) && near(imagesCopy[1].transform.x, 194) &&
                       near(imagesCopy[1].transform.y, 68),
               "Native multi-image clipboard round trip lost image order, data or relative transforms");
+        CanvasImage clipboardFormula;
+        clipboardFormula.page = 0;
+        clipboardFormula.kind = CanvasImageKind::Latex;
+        clipboardFormula.nativeWidth = 24;
+        clipboardFormula.nativeHeight = 12;
+        clipboardFormula.encodedData = "%PDF-1.7\nLaTeX clipboard fixture";
+        clipboardFormula.latexSource = "\\frac{a}{b}";
+        clipboardFormula.transform = {1, 0, 0, 1, 40, 50};
+        const auto formulaBytes = clipboard::encodeImage(clipboardFormula);
+        const auto formulaCopy = clipboard::decodeImage(formulaBytes);
+        check(formulaCopy.kind == CanvasImageKind::Latex && formulaCopy.nativeWidth == 24 &&
+                      formulaCopy.nativeHeight == 12 && formulaCopy.encodedData == clipboardFormula.encodedData &&
+                      formulaCopy.latexSource == clipboardFormula.latexSource,
+              "Native LaTeX clipboard round trip lost the editable source or PDF dimensions");
         TextItem clipboardText;
         clipboardText.page = 0;
         clipboardText.layerOrder = 2;
@@ -530,8 +548,40 @@ int main(int argc, char** argv) {
         expectedClipboardLink.originLayer = newLayerOrigin;
         check(decodedTexts.size() == 2 && decodedTexts[0] == expectedClipboardText &&
                       decodedTexts[1] == expectedClipboardLink &&
-                      textPayload.texts == decodedTexts && textPayload.strokes.empty() && textPayload.images.empty(),
+                      textPayload.objects.size() == decodedTexts.size() &&
+                      std::holds_alternative<TextItem>(textPayload.objects[0]) &&
+                      std::holds_alternative<TextItem>(textPayload.objects[1]) &&
+                      std::get<TextItem>(textPayload.objects[0]) == decodedTexts[0] &&
+                      std::get<TextItem>(textPayload.objects[1]) == decodedTexts[1],
               "Native text clipboard round trip lost rich styles, transforms, Unicode or links");
+
+        auto mixedStroke = state.ink.front();
+        mixedStroke.page = 0;
+        mixedStroke.layerId = 1;
+        mixedStroke.originLayer = 0;
+        mixedStroke.layerOrder = 1;
+        auto mixedText = clipboardText;
+        mixedText.layerOrder = 2;
+        auto mixedImage = clipboardImage;
+        mixedImage.page = 0;
+        mixedImage.layerId = 1;
+        mixedImage.originLayer = 0;
+        mixedImage.layerOrder = 3;
+        auto mixedLink = clipboardLink;
+        mixedLink.layerOrder = 4;
+        const std::vector<EditableObject> mixedObjects{mixedStroke, mixedText, mixedImage, mixedLink};
+        const auto mixedBytes = clipboard::encodeObjects(mixedObjects, textBounds);
+        const auto decodedMixed = clipboard::decodeObjects(mixedBytes);
+        check(decodedMixed.size() == mixedObjects.size() &&
+                      std::holds_alternative<Ink>(decodedMixed[0]) &&
+                      std::holds_alternative<TextItem>(decodedMixed[1]) &&
+                      std::holds_alternative<CanvasImage>(decodedMixed[2]) &&
+                      std::holds_alternative<TextItem>(decodedMixed[3]) &&
+                      std::get<Ink>(decodedMixed[0]).points == mixedStroke.points &&
+                      std::get<TextItem>(decodedMixed[1]).styleRuns == mixedText.styleRuns &&
+                      std::get<CanvasImage>(decodedMixed[2]).encodedData == mixedImage.encodedData &&
+                      std::get<TextItem>(decodedMixed[3]).linkUrl == mixedLink.linkUrl,
+              "Mixed native clipboard round trip lost object order or object-specific data");
         bool rejectedTextTrailingData = false;
         try {
             clipboard::decodeTexts(textBytes + "trailing");
@@ -572,6 +622,64 @@ int main(int argc, char** argv) {
         state.redo();
         check(state.texts.size() == 4 && state.selectedTexts == std::vector<size_t>{2, 3},
               "Redo did not restore the pasted text group and its selection");
+
+        state = fixture();
+        state.ink[0].layerOrder = 1;
+        state.ink[0].originLayer = 0;
+        state.selected = {0};
+        state.texts = {clipboardText, clipboardLink};
+        state.texts[0].layerOrder = 2;
+        state.texts[1].layerOrder = 4;
+        state.selectedTexts = {0, 1};
+        state.images = {clipboardImage};
+        state.images[0].page = 0;
+        state.images[0].layerId = 1;
+        state.images[0].originLayer = 0;
+        state.images[0].layerOrder = 3;
+        state.selectedImages = {0};
+        const auto mixedCopies = state.copySelectedObjects();
+        check(mixedCopies.size() == 4 && std::holds_alternative<Ink>(mixedCopies[0]) &&
+                      std::holds_alternative<TextItem>(mixedCopies[1]) &&
+                      std::holds_alternative<CanvasImage>(mixedCopies[2]) &&
+                      std::holds_alternative<TextItem>(mixedCopies[3]),
+              "Mixed selection copy did not preserve cross-type stacking order");
+        const auto sourceBounds = state.selectionBox();
+        check(sourceBounds.has_value(), "Mixed source selection has no bounds");
+        const double expectedMixedDx = 150 - (sourceBounds->x0 / 2.0 + sourceBounds->x1 / 2.0);
+        const double expectedMixedDy = 100 - (sourceBounds->y0 / 2.0 + sourceBounds->y1 / 2.0);
+        const auto originalInkCount = state.ink.size();
+        const auto originalTexts = state.texts;
+        const auto originalImages = state.images;
+        check(state.pasteObjects(mixedCopies, 1, {150, 100}) && state.ink.size() == originalInkCount + 1 &&
+                      state.texts.size() == originalTexts.size() + 2 && state.images.size() == originalImages.size() + 1 &&
+                      state.selected == std::vector<size_t>{originalInkCount} &&
+                      state.selectedTexts == std::vector<size_t>{2, 3} && state.selectedImages == std::vector<size_t>{1} &&
+                      state.ink.back().page == 1 && state.texts[2].page == 1 && state.images[1].page == 1 &&
+                      state.texts[3].linkUrl == clipboardLink.linkUrl &&
+                      state.texts[2].styleRuns == clipboardText.styleRuns &&
+                      near(state.ink.back().points.front().x, mixedStroke.points.front().x + expectedMixedDx) &&
+                      near(state.ink.back().points.front().y, mixedStroke.points.front().y + expectedMixedDy) &&
+                      near(state.texts[2].x, clipboardText.x + expectedMixedDx) &&
+                      near(state.texts[2].y, clipboardText.y + expectedMixedDy) &&
+                      near(state.images[1].transform.x, clipboardImage.transform.x + expectedMixedDx) &&
+                      near(state.images[1].transform.y, clipboardImage.transform.y + expectedMixedDy),
+              "Mixed object paste lost page assignment, link/style data or selected objects");
+        const auto mixedPasteBounds = state.selectionBox();
+        check(mixedPasteBounds && near((mixedPasteBounds->x0 + mixedPasteBounds->x1) / 2, 150) &&
+                      near((mixedPasteBounds->y0 + mixedPasteBounds->y1) / 2, 100),
+              "Mixed object paste did not center the group at the requested point");
+        state.undo();
+        check(state.ink.size() == originalInkCount && state.texts == originalTexts &&
+                      state.images.size() == originalImages.size() &&
+                      state.images[0].encodedData == originalImages[0].encodedData &&
+                      state.selected == std::vector<size_t>{0} && state.selectedTexts == std::vector<size_t>{0, 1} &&
+                      state.selectedImages == std::vector<size_t>{0},
+              "One undo did not remove the mixed paste and restore the source selection");
+        state.redo();
+        check(state.ink.size() == originalInkCount + 1 && state.texts.size() == originalTexts.size() + 2 &&
+                      state.images.size() == originalImages.size() + 1,
+              "Redo did not restore the mixed object group");
+
         bool rejectedSingleDecode = false;
         try {
             clipboard::decodeImage(imagesBytes);
