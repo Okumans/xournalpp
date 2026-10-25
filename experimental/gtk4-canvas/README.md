@@ -38,8 +38,9 @@ The Plugins menu discovers bundled plugins plus folders supplied through
 manifest and persists enable/disable choices in `gtk4-canvas.ini`; changes take
 effect after restarting the prototype. Lua menu callbacks and canvas shortcuts
 work for the supported API subset. ColorCycle runs with its full color list and
-selection recoloring, and ToolShortcuts can select common tools including Smart
-Select. The full master Lua API, plugin toolbar actions, Search, and most
+selection recoloring, Example can open an asynchronous dialog and receive the
+selected button response, and ToolShortcuts can select common tools including
+Smart Select. The full master Lua API, plugin toolbar actions, Search, and most
 bundled plugin behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
