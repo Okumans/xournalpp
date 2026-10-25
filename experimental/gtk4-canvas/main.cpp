@@ -1587,6 +1587,11 @@ private:
                                std::vector<std::uintptr_t>& references, std::string& error) {
             return addPluginLinks(links, policy, references, error);
         };
+        host.addImages = [this](const std::vector<prototype::PluginImageInput>& images,
+                                prototype::PluginStrokeUndoPolicy policy,
+                                std::vector<prototype::PluginImageResult>& results, std::string& error) {
+            return addPluginImages(images, policy, results, error);
+        };
         host.setPageSize = [this](double width, double height, bool relative, std::string& error) {
             return setPluginPageSize(width, height, relative, error);
         };
@@ -2724,6 +2729,134 @@ private:
         references.reserve(count);
         for (std::size_t index = first; index < first + count; ++index) {
             references.push_back(state.texts[index].pluginReference);
+        }
+        update();
+        return true;
+    }
+
+    bool addPluginImages(const std::vector<prototype::PluginImageInput>& inputs,
+                         prototype::PluginStrokeUndoPolicy policy,
+                         std::vector<prototype::PluginImageResult>& results, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before adding images";
+            return false;
+        }
+
+        results.assign(inputs.size(), {});
+        if (inputs.empty()) {
+            return true;
+        }
+
+        std::vector<prototype::CanvasImage> additions;
+        std::vector<std::size_t> inputIndices;
+        additions.reserve(std::min(inputs.size(), prototype::maxCanvasImageObjects));
+        inputIndices.reserve(additions.capacity());
+        const std::size_t remainingImageSlots = state.images.size() >= prototype::maxCanvasImageObjects ?
+                                                       0 :
+                                                       prototype::maxCanvasImageObjects - state.images.size();
+        const auto pageSize = state.pageSize(state.page);
+
+        for (std::size_t index = 0; index < inputs.size(); ++index) {
+            const auto& input = inputs[index];
+            try {
+                if (input.path.has_value() == input.data.has_value()) {
+                    throw std::runtime_error("exactly one of 'path' or image 'data' is required");
+                }
+                if (!std::isfinite(input.x) || !std::isfinite(input.y) || !std::isfinite(input.scale) ||
+                    input.scale <= 0 ||
+                    (input.maxWidth <= 0 && input.maxWidth != -1) ||
+                    (input.maxHeight <= 0 && input.maxHeight != -1)) {
+                    throw std::runtime_error("image dimensions, coordinates, or scale are invalid");
+                }
+                if (additions.size() >= remainingImageSlots) {
+                    throw std::runtime_error("the document image limit has been reached");
+                }
+
+                prototype::CanvasImage image;
+                if (input.path) {
+                    image = prototype::readCanvasImageFile(std::filesystem::path(*input.path));
+                } else {
+                    image.encodedData = *input.data;
+                    image.surface = prototype::decodeCanvasImage(image.encodedData, image.pixelWidth,
+                                                                  image.pixelHeight);
+                }
+
+                double width = image.pixelWidth;
+                double height = image.pixelHeight;
+                if (input.maxWidth != -1 && input.maxHeight != -1) {
+                    if (input.aspectRatio) {
+                        const double scaleY = static_cast<double>(input.maxHeight) / height;
+                        const double scaleX = static_cast<double>(input.maxWidth) / width;
+                        const double manualScale = std::min(scaleY, scaleX);
+                        width *= manualScale;
+                        height *= manualScale;
+                    } else {
+                        width = input.maxWidth;
+                        height = input.maxHeight;
+                    }
+                } else if (input.maxWidth != -1) {
+                    if (input.aspectRatio) {
+                        height = height / width * input.maxWidth;
+                    }
+                    width = input.maxWidth;
+                } else if (input.maxHeight != -1) {
+                    if (input.aspectRatio) {
+                        width = width / height * input.maxHeight;
+                    }
+                    height = input.maxHeight;
+                }
+                width *= input.scale;
+                height *= input.scale;
+
+                double automaticScale = 1;
+                if (input.x + width > pageSize.width || input.y + height > pageSize.height) {
+                    const double scaleX = (pageSize.width - input.x) / width;
+                    const double scaleY = (pageSize.height - input.y) / height;
+                    automaticScale = std::min(scaleX, scaleY);
+                }
+                width *= automaticScale;
+                height *= automaticScale;
+                if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
+                    throw std::runtime_error("image does not fit on the current page");
+                }
+
+                image.page = state.page;
+                image.transform = {width / image.pixelWidth, 0, 0, height / image.pixelHeight, input.x, input.y};
+                if (!prototype::validCanvasImage(image)) {
+                    throw std::runtime_error("the decoded image has invalid dimensions or transform");
+                }
+                additions.push_back(std::move(image));
+                inputIndices.push_back(index);
+            } catch (const std::exception& imageError) {
+                results[index].error = "Error: " + std::string(imageError.what());
+            }
+        }
+
+        if (additions.empty()) {
+            return true;
+        }
+
+        int undoPolicyValue = 0;
+        switch (policy) {
+            case prototype::PluginStrokeUndoPolicy::Grouped:
+                undoPolicyValue = 0;
+                break;
+            case prototype::PluginStrokeUndoPolicy::Individual:
+                undoPolicyValue = 1;
+                break;
+            case prototype::PluginStrokeUndoPolicy::None:
+                undoPolicyValue = 2;
+                break;
+        }
+        const auto first = state.images.size();
+        if (!state.addPluginImages(std::move(additions), undoPolicyValue)) {
+            for (const auto inputIndex: inputIndices) {
+                results[inputIndex].error = "Error: inserting the image into the current layer failed";
+            }
+            return true;
+        }
+        for (std::size_t index = 0; index < inputIndices.size(); ++index) {
+            results[inputIndices[index]].reference = state.images[first + index].pluginReference;
         }
         update();
         return true;
@@ -4040,7 +4173,7 @@ private:
         pluginImage.transform.yy = 0.5;
         pluginImage.transform.x = 11;
         pluginImage.transform.y = 12;
-        pluginImage.encodedData = std::move(pluginImageBytes);
+        pluginImage.encodedData = pluginImageBytes;
         state.images.push_back(std::move(pluginImage));
 
         const auto annotatedStructure = pluginDocumentStructure();
@@ -4212,6 +4345,80 @@ private:
         state.undo();
         require(state.texts.size() == creationLinkCount,
                 "app.addLinks should create one undoable edit");
+
+        const auto creationImageCount = state.images.size();
+        const auto creationSelectionBeforeImages = state.selected;
+        const auto creationTextSelectionBeforeImages = state.selectedTexts;
+        const auto pageSize = state.pageSize(state.page);
+        const auto imageFixturePath = std::filesystem::path(options.smokeDirectory) / "plugin-image.png";
+        {
+            std::ofstream imageFixture(imageFixturePath, std::ios::binary | std::ios::trunc);
+            require(static_cast<bool>(imageFixture), "Could not create the Lua image path fixture");
+            imageFixture.write(pluginImageBytes.data(), static_cast<std::streamsize>(pluginImageBytes.size()));
+            require(static_cast<bool>(imageFixture), "Could not write the Lua image path fixture");
+        }
+
+        prototype::PluginImageInput imageDataInput;
+        imageDataInput.data = pluginImageBytes;
+        imageDataInput.x = pageSize.width - 30;
+        imageDataInput.y = pageSize.height - 20;
+        imageDataInput.maxWidth = 40;
+        imageDataInput.maxHeight = 20;
+        imageDataInput.scale = 2;
+        prototype::PluginImageInput missingImageInput;
+        missingImageInput.path = (std::filesystem::path(options.smokeDirectory) / "missing-plugin-image.png").string();
+        prototype::PluginImageInput imagePathInput;
+        imagePathInput.path = imageFixturePath.string();
+        imagePathInput.x = 10;
+        imagePathInput.y = 15;
+        imagePathInput.maxWidth = 18;
+        imagePathInput.maxHeight = 10;
+        imagePathInput.aspectRatio = false;
+        imagePathInput.scale = 1.5;
+        std::vector<prototype::PluginImageResult> createdImageResults;
+        require(addPluginImages({imageDataInput, missingImageInput, imagePathInput},
+                                prototype::PluginStrokeUndoPolicy::Grouped, createdImageResults, creationError) &&
+                        createdImageResults.size() == 3 && createdImageResults[0].reference &&
+                        !createdImageResults[1].reference &&
+                        createdImageResults[1].error.find("Error:") == 0 && createdImageResults[2].reference &&
+                        state.images.size() == creationImageCount + 2,
+                creationError.empty() ?
+                        "app.addImages did not return per-input success and soft-error results" :
+                        creationError.c_str());
+        const auto& createdDataImage = state.images[creationImageCount];
+        const auto& createdPathImage = state.images[creationImageCount + 1];
+        const auto dataImageBounds = prototype::canvasImageBounds(createdDataImage);
+        const auto pathImageBounds = prototype::canvasImageBounds(createdPathImage);
+        require(createdDataImage.encodedData == pluginImageBytes && createdDataImage.surface &&
+                        createdDataImage.page == state.page &&
+                        createdDataImage.layerId == state.activeLayerId(state.page) &&
+                        createdDataImage.pluginReference == *createdImageResults[0].reference &&
+                        std::abs(dataImageBounds.x0 - imageDataInput.x) < 1e-9 &&
+                        std::abs(dataImageBounds.y0 - imageDataInput.y) < 1e-9 &&
+                        std::abs((dataImageBounds.x1 - dataImageBounds.x0) - 20) < 1e-9 &&
+                        std::abs((dataImageBounds.y1 - dataImageBounds.y0) - 20) < 1e-9 &&
+                        createdPathImage.encodedData == pluginImageBytes && createdPathImage.surface &&
+                        createdPathImage.pluginReference == *createdImageResults[2].reference &&
+                        std::abs(pathImageBounds.x0 - imagePathInput.x) < 1e-9 &&
+                        std::abs(pathImageBounds.y0 - imagePathInput.y) < 1e-9 &&
+                        std::abs((pathImageBounds.x1 - pathImageBounds.x0) - 27) < 1e-9 &&
+                        std::abs((pathImageBounds.y1 - pathImageBounds.y0) - 15) < 1e-9 &&
+                        state.selected.empty() && state.selectedTexts.empty() &&
+                        state.selectedImages == std::vector<size_t>({creationImageCount, creationImageCount + 1}),
+                "app.addImages lost decoded bytes, active-layer metadata, scaling, page-fit sizing, or selection");
+        const auto createdImageReferences = std::vector<std::uintptr_t>{*createdImageResults[0].reference,
+                                                                         *createdImageResults[2].reference};
+        state.undo();
+        require(state.images.size() == creationImageCount && state.selected == creationSelectionBeforeImages &&
+                        state.selectedTexts == creationTextSelectionBeforeImages &&
+                        state.selectedImages == creationImageSelection,
+                "Grouped app.addImages did not undo in one step and restore the prior selection");
+        state.redo();
+        require(state.images.size() == creationImageCount + 2 &&
+                        state.images[creationImageCount].pluginReference == createdImageReferences[0] &&
+                        state.images[creationImageCount + 1].pluginReference == createdImageReferences[1],
+                "app.addImages redo did not preserve its opaque references");
+        state.undo();
 
         state.ink.resize(savedInkSize);
         state.texts.resize(savedTextSize);

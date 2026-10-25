@@ -534,6 +534,90 @@ public:
         return true;
     }
 
+    bool addPluginImages(std::vector<CanvasImage> additions, int undoPolicy) {
+        if (additions.empty()) {
+            return true;
+        }
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size() ||
+            undoPolicy < 0 || undoPolicy > 2 || current || eraseGesture || selectionGesture ||
+            images.size() > maxCanvasImageObjects || additions.size() > maxCanvasImageObjects - images.size()) {
+            return false;
+        }
+
+        ensurePluginReferences();
+        const auto pageIndex = page;
+        const auto layerId = activeLayerId(pageIndex);
+        const auto origin = activeLayerOrigin(pageIndex);
+        size_t nextOrder = nextOriginOrder(pageIndex, origin);
+        for (auto& image: additions) {
+            image.page = pageIndex;
+            image.layerId = layerId;
+            image.originLayer = origin;
+            image.layerOrder = nextOrder++;
+            image.pluginReference = allocatePluginReference();
+            if (!validCanvasImage(image)) {
+                return false;
+            }
+        }
+
+        const size_t first = images.size();
+        const auto newSelection = [first](size_t count) {
+            std::vector<size_t> selection;
+            selection.reserve(count);
+            for (size_t index = first; index < first + count; ++index) {
+                selection.push_back(index);
+            }
+            return selection;
+        };
+        const auto selectNewImages = [this, &newSelection](size_t count) {
+            selected.clear();
+            selectedTexts.clear();
+            selectedImages = newSelection(count);
+            selectionFrame.reset();
+        };
+
+        if (undoPolicy == 2) {
+            for (auto& image: additions) {
+                images.push_back(std::move(image));
+            }
+            selectNewImages(additions.size());
+            // Non-undoable image batches form a dirty revision boundary so
+            // older edits cannot replay against changed image indices.
+            undoStates.clear();
+            redoStates.clear();
+            revisionBase = ++nextRevision;
+            return true;
+        }
+        if (undoPolicy == 0) {
+            Edit edit;
+            edit.imageChanges.push_back({first, {}, first, std::move(additions)});
+            edit.selectionBefore = selected;
+            edit.selectionAfter = std::vector<size_t>{};
+            edit.textSelectionBefore = selectedTexts;
+            edit.textSelectionAfter = std::vector<size_t>{};
+            edit.imageSelectionBefore = selectedImages;
+            edit.imageSelectionAfter = newSelection(edit.imageChanges.front().after.size());
+            apply(edit, true);
+            record(std::move(edit));
+            return true;
+        }
+
+        size_t insertedCount = 0;
+        for (auto& image: additions) {
+            Edit edit;
+            edit.imageChanges.push_back({images.size(), {}, images.size(), {std::move(image)}});
+            edit.selectionBefore = selected;
+            edit.selectionAfter = std::vector<size_t>{};
+            edit.textSelectionBefore = selectedTexts;
+            edit.textSelectionAfter = std::vector<size_t>{};
+            edit.imageSelectionBefore = selectedImages;
+            edit.imageSelectionAfter = newSelection(++insertedCount);
+            apply(edit, true);
+            record(std::move(edit));
+        }
+        return true;
+    }
+
     bool changePageBackground(int pageIndex, const std::string& format, const std::string& config = {}) {
         if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size() || format.empty()) {
             return false;

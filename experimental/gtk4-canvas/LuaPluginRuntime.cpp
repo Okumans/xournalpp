@@ -212,6 +212,45 @@ bool readLuaColor(lua_State* state, int tableIndex, std::optional<std::uint32_t>
     return true;
 }
 
+bool readLuaBinaryField(lua_State* state, int tableIndex, const char* field, std::optional<std::string>& value,
+                        char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, field);
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        return true;
+    }
+    if (lua_type(state, -1) != LUA_TSTRING) {
+        std::snprintf(error, errorSize, "Field '%s' must be a string", field);
+        lua_pop(state, 1);
+        return false;
+    }
+    std::size_t length = 0;
+    const char* bytes = lua_tolstring(state, -1, &length);
+    value = std::string(bytes, length);
+    lua_pop(state, 1);
+    return true;
+}
+
+bool readLuaIntegerField(lua_State* state, int tableIndex, const char* field, std::optional<lua_Integer>& value,
+                         char* error, std::size_t errorSize) {
+    const int absoluteIndex = lua_absindex(state, tableIndex);
+    lua_getfield(state, absoluteIndex, field);
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        return true;
+    }
+    int isInteger = 0;
+    const lua_Integer integer = lua_tointegerx(state, -1, &isInteger);
+    lua_pop(state, 1);
+    if (!isInteger) {
+        std::snprintf(error, errorSize, "Field '%s' must be an integer", field);
+        return false;
+    }
+    value = integer;
+    return true;
+}
+
 bool readLuaUndoPolicy(lua_State* state, int tableIndex, PluginStrokeUndoPolicy& policy,
                        char* error, std::size_t errorSize) {
     const int absoluteIndex = lua_absindex(state, tableIndex);
@@ -290,6 +329,7 @@ int luaOpenApp(lua_State* state) {
             {"addStrokes", LuaPluginRuntime::luaAddStrokes},
             {"addTexts", LuaPluginRuntime::luaAddTexts},
             {"addLinks", LuaPluginRuntime::luaAddLinks},
+            {"addImages", LuaPluginRuntime::luaAddImages},
             {"setPageSize", LuaPluginRuntime::luaSetPageSize},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
@@ -907,6 +947,15 @@ bool LuaPluginRuntime::addLinks(const std::vector<PluginLinkInput>& links, Plugi
         return false;
     }
     return host.addLinks(links, undoPolicy, references, error);
+}
+
+bool LuaPluginRuntime::addImages(const std::vector<PluginImageInput>& images, PluginStrokeUndoPolicy undoPolicy,
+                                 std::vector<PluginImageResult>& results, std::string& error) {
+    if (!host.addImages) {
+        error = "Adding images is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.addImages(images, undoPolicy, results, error);
 }
 
 bool LuaPluginRuntime::setPageSize(double width, double height, bool relative, std::string& error) {
@@ -2015,6 +2064,132 @@ int LuaPluginRuntime::luaAddLinks(lua_State* state) {
             for (const auto reference: references) {
                 lua_pushlightuserdata(state, reinterpret_cast<void*>(reference));
                 lua_rawseti(state, -2, ++referenceIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaAddImages(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginImageInput> images;
+        std::vector<PluginImageResult> results;
+        PluginStrokeUndoPolicy undoPolicy = PluginStrokeUndoPolicy::Grouped;
+        constexpr std::size_t maxImageCount = 4096;
+        constexpr std::size_t maxImageBytes = 64 * 1024 * 1024;
+
+        lua_settop(state, 1);
+        if (!lua_istable(state, 1)) {
+            std::snprintf(error, sizeof(error), "addImages expects an options table");
+        }
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "images");
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Missing image table!");
+            }
+        }
+
+        const int imagesIndex = error[0] == '\0' ? lua_absindex(state, -1) : 0;
+        const std::size_t imageCount = imagesIndex ? lua_rawlen(state, imagesIndex) : 0;
+        if (error[0] == '\0' && imageCount > maxImageCount) {
+            std::snprintf(error, sizeof(error), "Image batch exceeds the supported image count");
+        }
+
+        for (std::size_t index = 1; error[0] == '\0' && index <= imageCount; ++index) {
+            lua_rawgeti(state, imagesIndex, static_cast<lua_Integer>(index));
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Image entry %zu must be a table", index);
+                lua_pop(state, 1);
+                break;
+            }
+            const int imageIndex = lua_absindex(state, -1);
+            PluginImageInput input;
+            std::optional<std::string> path;
+            std::optional<double> x;
+            std::optional<double> y;
+            std::optional<double> scale;
+            std::optional<lua_Integer> maxWidth;
+            std::optional<lua_Integer> maxHeight;
+            if (!readLuaStringField(state, imageIndex, "path", path, false, error, sizeof(error)) ||
+                !readLuaBinaryField(state, imageIndex, "data", input.data, error, sizeof(error)) ||
+                !readLuaNumberField(state, imageIndex, "x", x, false, error, sizeof(error)) ||
+                !readLuaNumberField(state, imageIndex, "y", y, false, error, sizeof(error)) ||
+                !readLuaIntegerField(state, imageIndex, "maxWidth", maxWidth, error, sizeof(error)) ||
+                !readLuaIntegerField(state, imageIndex, "maxHeight", maxHeight, error, sizeof(error)) ||
+                !readLuaNumberField(state, imageIndex, "scale", scale, false, error, sizeof(error))) {
+                lua_pop(state, 1);
+                break;
+            }
+            if (!path && !input.data) {
+                std::snprintf(error, sizeof(error), "No 'path' parameter or image 'data' was provided");
+            } else if (path && input.data) {
+                std::snprintf(error, sizeof(error), "Only one of 'path' or image 'data' can be provided");
+            } else if (input.data && input.data->size() > maxImageBytes) {
+                std::snprintf(error, sizeof(error), "Image data exceeds the supported 64 MiB limit");
+            }
+
+            if (error[0] == '\0') {
+                const auto validDimension = [](const std::optional<lua_Integer>& dimension) {
+                    return !dimension || (*dimension == -1 || (*dimension > 0 &&
+                                                                  *dimension <= std::numeric_limits<int>::max()));
+                };
+                if (!validDimension(maxWidth) || !validDimension(maxHeight)) {
+                    std::snprintf(error, sizeof(error),
+                                  "Image dimensions must be positive integers or -1 to disable manual sizing");
+                }
+            }
+            if (error[0] == '\0' && scale && *scale <= 0) {
+                std::snprintf(error, sizeof(error), "Image scale must be positive");
+            }
+
+            if (error[0] == '\0') {
+                input.path = std::move(path);
+                input.x = x.value_or(0);
+                input.y = y.value_or(0);
+                input.maxWidth = static_cast<int>(maxWidth.value_or(-1));
+                input.maxHeight = static_cast<int>(maxHeight.value_or(-1));
+                input.scale = scale.value_or(1);
+                lua_getfield(state, imageIndex, "aspectRatio");
+                input.aspectRatio = lua_isnil(state, -1) || lua_toboolean(state, -1);
+                lua_pop(state, 1);
+                images.push_back(std::move(input));
+            }
+            lua_pop(state, 1);
+        }
+
+        if (error[0] == '\0' && !readLuaUndoPolicy(state, 1, undoPolicy, error, sizeof(error))) {
+            // The policy parser has already described the invalid value.
+        }
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->addImages(images, undoPolicy, results, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Adding images failed" : hostError.c_str());
+            } else if (results.size() != images.size()) {
+                std::snprintf(error, sizeof(error), "The GTK 4 host returned incomplete image results");
+            }
+        }
+        if (error[0] == '\0') {
+            lua_createtable(state, static_cast<int>(results.size()), 0);
+            lua_Integer resultIndex = 0;
+            for (const auto& result: results) {
+                if (result.reference && *result.reference != 0) {
+                    lua_pushlightuserdata(state, reinterpret_cast<void*>(*result.reference));
+                } else {
+                    const auto& message = result.error.empty() ? "Error: image insertion failed" : result.error;
+                    lua_pushlstring(state, message.data(), message.size());
+                }
+                lua_rawseti(state, -2, ++resultIndex);
             }
         }
     }

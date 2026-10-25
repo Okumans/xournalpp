@@ -145,6 +145,22 @@ struct PluginImage {
     std::optional<std::size_t> layer;
 };
 
+struct PluginImageInput {
+    std::optional<std::string> path;
+    std::optional<std::string> data;
+    double x = 0;
+    double y = 0;
+    int maxWidth = -1;
+    int maxHeight = -1;
+    double scale = 1;
+    bool aspectRatio = true;
+};
+
+struct PluginImageResult {
+    std::optional<std::uintptr_t> reference;
+    std::string error;
+};
+
 enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
 
 struct PluginRuntimeHost {
@@ -166,6 +182,8 @@ struct PluginRuntimeHost {
                        std::vector<std::uintptr_t>&, std::string&)> addTexts;
     std::function<bool(const std::vector<PluginLinkInput>&, PluginStrokeUndoPolicy,
                        std::vector<std::uintptr_t>&, std::string&)> addLinks;
+    std::function<bool(const std::vector<PluginImageInput>&, PluginStrokeUndoPolicy,
+                       std::vector<PluginImageResult>&, std::string&)> addImages;
     std::function<bool(double, double, bool, std::string&)> setPageSize;
     std::function<bool(bool, std::string&)> setLayerVisibility;
     std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
@@ -233,6 +251,7 @@ public:
     static int luaAddStrokes(lua_State* state);
     static int luaAddTexts(lua_State* state);
     static int luaAddLinks(lua_State* state);
+    static int luaAddImages(lua_State* state);
     static int luaSetPageSize(lua_State* state);
     static int luaSetLayerVisibility(lua_State* state);
     static int luaSetCurrentLayerName(lua_State* state);
@@ -267,6 +286,8 @@ private:
                   std::vector<std::uintptr_t>& references, std::string& error);
     bool addLinks(const std::vector<PluginLinkInput>& links, PluginStrokeUndoPolicy undoPolicy,
                   std::vector<std::uintptr_t>& references, std::string& error);
+    bool addImages(const std::vector<PluginImageInput>& images, PluginStrokeUndoPolicy undoPolicy,
+                   std::vector<PluginImageResult>& results, std::string& error);
     bool setPageSize(double width, double height, bool relative, std::string& error);
     bool setLayerVisibility(bool visible, std::string& error);
     bool setCurrentLayerName(std::string_view name, std::string& error);

@@ -1029,6 +1029,78 @@ static void pluginTextBatchHistory() {
           "undo must not remove non-undoable plugin text or mark its change clean");
 }
 
+static void pluginImageBatchHistory() {
+    CanvasState state;
+    state.setPages({{595, 842}});
+    state.ink.push_back(Ink{0, {{1, 1}, {2, 2}}, {Tool::Pen, {0, 0, 0}, 1}});
+    state.selected = {0};
+
+    CanvasImage first;
+    first.pixelWidth = 10;
+    first.pixelHeight = 20;
+    first.encodedData = "first image";
+    first.transform = {2, 0, 0, 2, 10, 20};
+    CanvasImage second;
+    second.pixelWidth = 30;
+    second.pixelHeight = 40;
+    second.encodedData = "second image";
+    second.transform = {1, 0, 0, 1, 40, 50};
+
+    check(state.addPluginImages({first, second}, 0) && state.images.size() == 2 &&
+                  state.images[0].layerId == state.activeLayerId(0) && state.images[0].layerOrder == 0 &&
+                  state.images[1].layerOrder == 1 && state.images[0].pluginReference != 0 &&
+                  state.images[1].pluginReference != 0 &&
+                  state.images[0].pluginReference != state.images[1].pluginReference &&
+                  state.selected.empty() && state.selectedTexts.empty() &&
+                  state.selectedImages == std::vector<size_t>({0, 1}),
+          "grouped plugin image insertion must target the current layer and select the new image batch");
+    const auto firstReference = state.images[0].pluginReference;
+    const auto secondReference = state.images[1].pluginReference;
+    state.undo();
+    check(state.images.empty() && state.selected == std::vector<size_t>{0} && state.selectedImages.empty(),
+          "grouped plugin image insertion must undo in one step and restore the prior selection");
+    state.redo();
+    check(state.images.size() == 2 && state.images[0].pluginReference == firstReference &&
+                  state.images[1].pluginReference == secondReference && state.selectedImages ==
+                          std::vector<size_t>({0, 1}),
+          "grouped plugin image redo must preserve image data references and selection");
+
+    CanvasImage third;
+    third.pixelWidth = 2;
+    third.pixelHeight = 3;
+    third.encodedData = "third image";
+    CanvasImage fourth = third;
+    fourth.encodedData = "fourth image";
+    check(state.addPluginImages({third, fourth}, 1) && state.images.size() == 4,
+          "individual plugin image insertion did not add its full batch");
+    state.undo();
+    check(state.images.size() == 3 && state.selectedImages == std::vector<size_t>{2},
+          "individual plugin image insertion must undo one object at a time and restore prior new selection");
+    state.redo();
+    check(state.images.size() == 4 && state.selectedImages == std::vector<size_t>({2, 3}),
+          "individual plugin image redo did not restore the final image and selection");
+
+    CanvasImage invalid;
+    invalid.pixelWidth = 0;
+    invalid.pixelHeight = 5;
+    invalid.encodedData = "invalid image";
+    check(!state.addPluginImages({invalid}, 0) && state.images.size() == 4,
+          "plugin image insertion accepted invalid image metadata or partially changed the document");
+
+    const auto previousRevision = state.revision();
+    CanvasImage irreversible;
+    irreversible.pixelWidth = 1;
+    irreversible.pixelHeight = 1;
+    irreversible.encodedData = "irreversible image";
+    check(state.addPluginImages({irreversible}, 2), "non-undoable plugin image insertion failed");
+    const auto irreversibleRevision = state.revision();
+    check(state.images.size() == 5 && irreversibleRevision != previousRevision && !state.canUndo() && !state.canRedo(),
+          "non-undoable plugin image must mark the document dirty and establish an undo boundary");
+    state.undo();
+    check(state.images.size() == 5 && state.revision() == irreversibleRevision,
+          "undo must not remove non-undoable plugin image or mark its change clean");
+}
+
 static void pluginElementReferences() {
     CanvasState state;
     state.setPages({{300, 400}});
@@ -1243,6 +1315,7 @@ int main() {
         pageBackgroundHistory();
         pluginStrokeAndPageSizeHistory();
         pluginTextBatchHistory();
+        pluginImageBatchHistory();
         pluginElementReferences();
         pdfAnnotationInkHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
