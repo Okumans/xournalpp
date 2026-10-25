@@ -379,25 +379,30 @@ def verify_plugins(args, evidence):
     tool_shortcuts = plugin_root / "ToolShortcuts"
     toggle_grid = plugin_root / "ToggleGrid"
     highlight_position = plugin_root / "HighlightPosition"
+    space_for_notes = plugin_root / "SpaceForNotes"
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()}\ndisabled=\n",
+        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()}\ndisabled=\n",
         encoding="utf-8")
     if not args.worker:
         raise RuntimeError("Bundled plugin integration checks require --worker")
     result = run(
         [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
-         "--worker", str(args.worker.resolve()), "--verify-plugins"],
+         "--worker", str(args.worker.resolve()), "--pdf",
+         str(Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"), "--verify-plugins"],
         env=dict(os.environ, G_DEBUG="fatal-criticals"),
     )
-    expected = "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, HighlightPosition, ToggleGrid paper changes, and background undo/redo"
+    expected = (
+        "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
+        "HighlightPosition, SpaceForNotes page insertion, ToggleGrid paper changes, and background undo/redo"
+    )
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
-    for screenshot in ("plugins-menu", "plugins-manager", "position-highlight-on"):
+    for screenshot in ("plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps"):
         path = output / f"{screenshot}.png"
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing plugin integration screenshot: {path}")
     saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
-    for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition"):
+    for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition", "SpaceForNotes"):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")

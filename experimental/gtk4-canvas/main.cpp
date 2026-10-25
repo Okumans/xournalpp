@@ -971,6 +971,7 @@ private:
                                                   std::string& error) {
             return changePluginPageBackground(format, config, error);
         };
+        host.addEmptyPages = [this](bool force, std::string& error) { return addEmptyPagesFromPlugin(force, error); };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -1804,11 +1805,14 @@ private:
         const auto highlightPosition = pluginRuntime->findPlugin("HighlightPosition");
         require(highlightPosition && highlightPosition->loaded && highlightPosition->menuItems == 1,
                 "Enabled bundled HighlightPosition plugin did not register its menu action");
+        const auto spaceForNotes = pluginRuntime->findPlugin("SpaceForNotes");
+        require(spaceForNotes && spaceForNotes->loaded && spaceForNotes->menuItems == 2,
+                "Enabled bundled SpaceForNotes plugin did not register both page insertion modes");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 5,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 6,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -1859,6 +1863,46 @@ private:
         require(!importedConfig.settings.highlightPosition,
                 "HighlightPosition did not disable the pointer halo on its second activation");
 
+        require(nativeSession && pageCount == 2 && nativeSession->pdfPageMap == std::vector<int>({0, 1}),
+                "SpaceForNotes integration needs the two-page PDF fixture");
+        require(pluginRuntime->invokeMenu("SpaceForNotes", 0),
+                "SpaceForNotes normal mode did not start from its plugin menu");
+        waitForPluginDocumentJob();
+        require(pageCount == 4 && state.page == 1 && nativeSession->pdfPageMap == std::vector<int>({0, -1, 1, -1}),
+                "SpaceForNotes normal mode did not insert lined pages after consecutive PDF pages");
+        require(state.layersForPage(1).backgroundFormat == "lined" &&
+                        state.layersForPage(3).backgroundFormat == "lined",
+                "SpaceForNotes normal mode did not preserve inserted page background metadata");
+        capture("space-for-notes-pdf-gaps");
+        require(pluginRuntime->invokeMenu("SpaceForNotes", 1),
+                "SpaceForNotes force mode did not start from its plugin menu");
+        waitForPluginDocumentJob();
+        require(pageCount == 8 && state.page == 1 &&
+                        nativeSession->pdfPageMap == std::vector<int>({0, -1, -1, -1, 1, -1, -1, -1}),
+                "SpaceForNotes force mode did not add a page after every page in reverse-safe order");
+        for (const auto page: {1, 3, 5, 7}) {
+            require(state.layersForPage(page).backgroundFormat == "lined",
+                    "SpaceForNotes force mode did not preserve inserted page background metadata");
+        }
+        require(pluginRuntime->invokeMenu("SpaceForNotes", 0),
+                "SpaceForNotes normal mode could not be invoked after note pages existed");
+        require(pageCount == 8 && state.page == 0 &&
+                        nativeSession->pdfPageMap == std::vector<int>({0, -1, -1, -1, 1, -1, -1, -1}),
+                "SpaceForNotes normal mode duplicated note pages or failed to restore the first page");
+        const auto notesRoundTripPath =
+                (std::filesystem::path(options.smokeDirectory) / "space-for-notes-round-trip.xopp").string();
+        nativeSession->saveCopy(options.worker, notesRoundTripPath,
+                                prototype::bridge::transferInk(state.committedInk()), state.texts,
+                                prototype::bridge::transferImages(state.images), state.pageLayers);
+        const prototype::bridge::DocumentSession reopenedNotes(options.worker, notesRoundTripPath);
+        require(reopenedNotes.pdfPageMap == std::vector<int>({0, -1, -1, -1, 1, -1, -1, -1}),
+                "Saving and reopening a SpaceForNotes document changed PDF and note page placement");
+        require(reopenedNotes.initialLayers.size() == 8 && reopenedNotes.initialLayers[1].backgroundFormat == "lined" &&
+                        reopenedNotes.initialLayers[3].backgroundFormat == "lined" &&
+                        reopenedNotes.initialLayers[5].backgroundFormat == "lined" &&
+                        reopenedNotes.initialLayers[7].backgroundFormat == "lined",
+                "Saving and reopening a SpaceForNotes document changed note page backgrounds");
+
         constexpr std::array<std::uint32_t, 11> expectedColors{
                 0x000000, 0x008000, 0x00c0ff, 0x00ff00, 0x3333cc, 0x808080,
                 0xff0000, 0xff00ff, 0xff8000, 0xffff00, 0xffffff,
@@ -1889,6 +1933,7 @@ private:
         state.clearSelection();
         state.ink.pop_back();
 
+        navigateToPage(0);
         require(pluginRuntime->invokeMenu("ToggleGrid", 0), "ToggleGrid menu action did not execute");
         waitForPluginDocumentJob();
         require(state.layersForPage(0).backgroundFormat == "plain" && !state.snapGridEnabled,
@@ -1947,7 +1992,8 @@ private:
                 "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
         std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-                     "HighlightPosition, ToggleGrid paper changes, and background undo/redo\n";
+                     "HighlightPosition, SpaceForNotes page insertion, ToggleGrid paper changes, and background "
+                     "undo/redo\n";
     }
 
     void waitForPluginDocumentJob() {
@@ -2713,11 +2759,16 @@ private:
                     std::vector<PopplerDocument*> candidateLayers;
                     std::vector<PopplerDocument*> candidateAudioLayers;
                     std::vector<prototype::PageSize> sizes;
+                    prototype::bridge::LayerDocument layerState;
                     try {
                         std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
                         candidateLayers = openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
                         candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
                                                                           static_cast<int>(sizes.size()));
+                        layerState = prototype::bridge::readLayerTransfer(staged->layerStatePath());
+                        if (layerState.size() != sizes.size()) {
+                            throw std::runtime_error("Inserted page layer metadata does not match the document");
+                        }
                     } catch (...) {
                         if (candidate) {
                             g_object_unref(candidate);
@@ -2738,6 +2789,8 @@ private:
                     pageCount = static_cast<int>(sizes.size());
                     state.insertPageAfter(afterPage, sizes.at(static_cast<size_t>(afterPage + 1)));
                     state.setPages(std::move(sizes));
+                    state.pageLayers.at(static_cast<size_t>(afterPage + 1)) =
+                            layerState.at(static_cast<size_t>(afterPage + 1));
                     state.selectActivePage(afterPage + 1);
                     savedRevision.reset();
                     savedNormally = false;
@@ -2750,6 +2803,115 @@ private:
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
                     navigateToPage(afterPage + 1);
                 });
+    }
+
+    bool addEmptyPagesFromPlugin(bool force, std::string& error) {
+        if (!nativeSession || options.worker.empty()) {
+            error = "Adding note pages requires a native document and document worker";
+            return false;
+        }
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            waitForAutosave([this, force] {
+                std::string deferredError;
+                if (!addEmptyPagesFromPlugin(force, deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+        if (nativeSession->pdfPageMap.size() != static_cast<size_t>(pageCount) ||
+            state.pages.size() != static_cast<size_t>(pageCount)) {
+            error = "The loaded document page metadata is inconsistent";
+            return false;
+        }
+
+        std::vector<int> afterPages;
+        for (int page = pageCount - 1; page >= 0; --page) {
+            const auto pageIndex = static_cast<size_t>(page);
+            const bool currentHasPdfBackground = nativeSession->pdfPageMap[pageIndex] >= 0;
+            const bool nextHasPdfBackground =
+                    page + 1 < pageCount && nativeSession->pdfPageMap[static_cast<size_t>(page + 1)] >= 0;
+            if (force || (currentHasPdfBackground && (page + 1 == pageCount || nextHasPdfBackground))) {
+                afterPages.push_back(page);
+            }
+        }
+
+        if (afterPages.empty()) {
+            navigateToPage(0);
+            return true;
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const int finalPage = afterPages.back() == 0 ? 1 : 0;
+        const auto sourcePageSizes = state.pages;
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Adding note pages…",
+                [session, worker, afterPages, staged] { *staged = session->stageInsertPagesAfter(worker, afterPages); },
+                [this, session, afterPages, sourcePageSizes, finalPage, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
+                    std::vector<prototype::PageSize> sizes;
+                    prototype::bridge::LayerDocument layerState;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers =
+                                openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                         static_cast<int>(sizes.size()));
+                        layerState = prototype::bridge::readLayerTransfer(staged->layerStatePath());
+                        if (layerState.size() != sizes.size()) {
+                            throw std::runtime_error("Inserted page layer metadata does not match the document");
+                        }
+                    } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
+                    pageCount = static_cast<int>(sizes.size());
+                    for (const int afterPage: afterPages) {
+                        state.insertPageAfter(afterPage, sourcePageSizes.at(static_cast<size_t>(afterPage)));
+                    }
+                    state.setPages(std::move(sizes));
+                    for (const int afterPage: afterPages) {
+                        const auto insertedPage = static_cast<size_t>(
+                                afterPage + 1 +
+                                std::count_if(afterPages.begin(), afterPages.end(),
+                                              [afterPage](int pageBefore) { return pageBefore < afterPage; }));
+                        state.pageLayers.at(insertedPage) = layerState.at(insertedPage);
+                    }
+                    savedRevision.reset();
+                    savedNormally = false;
+                    savedCopyPath.clear();
+                    pageCache.clear();
+                    layerPageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    navigateToPage(finalPage);
+                });
+        return true;
     }
 
     void deleteCurrentPage() {

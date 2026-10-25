@@ -150,6 +150,7 @@ int luaOpenApp(lua_State* state) {
             {"changeActionState", LuaPluginRuntime::luaChangeActionState},
             {"activateAction", LuaPluginRuntime::luaActivateAction},
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
+            {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
@@ -665,6 +666,14 @@ bool LuaPluginRuntime::changeCurrentPageBackground(std::string_view format, std:
     return host.changeCurrentPageBackground(format, config, error);
 }
 
+bool LuaPluginRuntime::addEmptyPages(bool force, std::string& error) {
+    if (!host.addEmptyPages) {
+        error = "Adding note pages is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.addEmptyPages(force, error);
+}
+
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
                                   const std::vector<PluginDialogButton>& buttons, bool isError,
                                   std::string_view callback, std::string& error) {
@@ -929,6 +938,21 @@ int LuaPluginRuntime::luaChangeCurrentPageBackground(lua_State* state) {
     if (!changed) {
         lua_pushstring(state, error);
         return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaAddEmptyPages(lua_State* state) {
+    if (!lua_isboolean(state, 1)) {
+        return luaL_error(state, "addEmptyPages expects a boolean force flag");
+    }
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->addEmptyPages(lua_toboolean(state, 1), error)) {
+        return luaL_error(state, "%s", error.empty() ? "Adding note pages failed" : error.c_str());
     }
     return 0;
 }

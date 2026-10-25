@@ -101,21 +101,32 @@ def read_layers(path):
         return value
 
     magic, count = read_line().split()
-    assert magic in ("XOURNALPP_GTK4_LAYERS_V1", "XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3")
-    version2 = magic in ("XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3")
-    version3 = magic == "XOURNALPP_GTK4_LAYERS_V3"
+    assert magic in ("XOURNALPP_GTK4_LAYERS_V1", "XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3",
+                     "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
+    version2 = magic in ("XOURNALPP_GTK4_LAYERS_V2", "XOURNALPP_GTK4_LAYERS_V3",
+                         "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
+    version3 = magic in ("XOURNALPP_GTK4_LAYERS_V3", "XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
+    version4 = magic in ("XOURNALPP_GTK4_LAYERS_V4", "XOURNALPP_GTK4_LAYERS_V5")
+    version5 = magic == "XOURNALPP_GTK4_LAYERS_V5"
     pages = []
     for _ in range(int(count)):
-        if version3:
+        if version4:
+            values = read_line().split()
+            assert len(values) == 8
+            initial_count, selected, background = map(int, values[:3])
+            grid_x_offset, grid_y_offset, grid_x_step, grid_y_step = map(float, values[3:7])
+            layer_count = int(values[7])
+        elif version3:
             initial_count, selected, background, grid_y_offset, layer_count = read_line().split()
             initial_count = int(initial_count)
             selected = int(selected)
             background = int(background)
             grid_y_offset = float(grid_y_offset)
             layer_count = int(layer_count)
+            grid_x_offset = grid_x_step = grid_y_step = 0.0
         else:
             initial_count, selected, background, layer_count = map(int, read_line().split())
-            grid_y_offset = 0.0
+            grid_x_offset = grid_y_offset = grid_x_step = grid_y_step = 0.0
         background_name = None
         if version2:
             has_background_name, name_bytes = map(int, read_line().split())
@@ -125,6 +136,18 @@ def read_layers(path):
                 offset += name_bytes
                 assert data[offset:offset + 1] == b"\n"
                 offset += 1
+        background_format = ""
+        background_config = ""
+        if version5:
+            format_bytes, config_bytes = map(int, read_line().split())
+            background_format = data[offset:offset + format_bytes].decode("utf-8")
+            offset += format_bytes
+            assert data[offset:offset + 1] == b"\n"
+            offset += 1
+            background_config = data[offset:offset + config_bytes].decode("utf-8")
+            offset += config_bytes
+            assert data[offset:offset + 1] == b"\n"
+            offset += 1
         layers = []
         for _ in range(layer_count):
             visible, name_bytes, origin_count = map(int, read_line().split())
@@ -136,7 +159,9 @@ def read_layers(path):
             layers.append({"name": name, "visible": bool(visible), "origins": origins})
         pages.append({"initial_count": initial_count, "selected": selected,
                       "background_visible": bool(background), "background_name": background_name,
-                      "grid_y_offset": grid_y_offset, "layers": layers})
+                      "background_format": background_format, "background_config": background_config,
+                      "grid_x_offset": grid_x_offset, "grid_y_offset": grid_y_offset,
+                      "grid_x_step": grid_x_step, "grid_y_step": grid_y_step, "layers": layers})
     assert offset == len(data)
     return pages
 
@@ -579,6 +604,20 @@ def main():
         assert (pdf_bg_ins / "snapshot.xopp.bg.pdf").is_file()
         bg_nodes = [p.find("background").attrib for p in xml(pdf_bg_ins / "snapshot.xopp").findall("page")]
         assert bg_nodes[0]["type"] == "pdf" and bg_nodes[1]["type"] == "solid" and bg_nodes[1]["style"] == "lined"
+
+        # Batch insertion uses original page indices in descending order, preserving each PDF page association.
+        batch_list = temporary / "page-insertions.dat"
+        batch_list.write_text("XOURNALPP_GTK4_PAGE_INSERTIONS_V1 2\n1\n0\n")
+        pdf_bg_batch = temporary / "pdf-bg-batch"
+        pdf_bg_batch.mkdir()
+        run("insert-pages", pdf_bg_open / "snapshot.xopp", pdf_bg_batch / "snapshot.xopp",
+            pdf_bg_batch / "preview.pdf", batch_list)
+        assert (pdf_bg_batch / "snapshot.xopp.bg.pdf").is_file()
+        batch_nodes = [p.find("background").attrib
+                       for p in xml(pdf_bg_batch / "snapshot.xopp").findall("page")]
+        assert len(batch_nodes) == 4
+        assert [node["type"] for node in batch_nodes] == ["pdf", "solid", "pdf", "solid"]
+        assert [node.get("style") for node in batch_nodes] == [None, "lined", None, "lined"]
 
         # Exercise both legacy sidecars and packaged attachments across directories.
         for index, name in enumerate(("pdfBackground/old.xopp", "pdfBackground/new.xopp",

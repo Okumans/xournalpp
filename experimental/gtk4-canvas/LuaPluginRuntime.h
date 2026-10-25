@@ -31,6 +31,7 @@ struct PluginRuntimeHost {
     std::function<bool(std::string_view, const PluginActionValue&, std::string&)> changeActionState;
     std::function<bool(std::string_view, std::string&)> activateAction;
     std::function<bool(std::string_view, std::string_view, std::string&)> changeCurrentPageBackground;
+    std::function<bool(bool, std::string&)> addEmptyPages;
     std::function<bool(std::string_view, std::string_view, const std::vector<PluginDialogButton>&, bool,
                        std::function<void(int)>, std::string&)>
             openDialog;
@@ -80,6 +81,7 @@ public:
     static int luaChangeActionState(lua_State* state);
     static int luaActivateAction(lua_State* state);
     static int luaChangeCurrentPageBackground(lua_State* state);
+    static int luaAddEmptyPages(lua_State* state);
     static int luaOpenDialog(lua_State* state);
 
 private:
@@ -94,6 +96,7 @@ private:
     bool changeActionState(std::string_view action, const PluginActionValue& value, std::string& error);
     bool activateAction(std::string_view action, std::string& error);
     bool changeCurrentPageBackground(std::string_view format, std::string_view config, std::string& error);
+    bool addEmptyPages(bool force, std::string& error);
     bool openDialog(Plugin& plugin, std::string_view message, const std::vector<PluginDialogButton>& buttons,
                     bool isError, std::string_view callback, std::string& error);
     void reportError(const Plugin& plugin, std::string_view message) const;

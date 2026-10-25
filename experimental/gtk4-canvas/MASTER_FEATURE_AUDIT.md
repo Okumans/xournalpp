@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **53 task areas — 40 Partial, 9 Pending, 4 Covered, and 0
+Current ledger count: **53 task areas — 41 Partial, 8 Pending, 4 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -111,7 +111,7 @@ it is part of the master plugin distribution.
 | `ImageActions` | Invert, resize, flip, rotate, make white pixels transparent, trim/crop, and split selected images into rows or columns. | Pending |
 | `LayerActions` | Clone layers to following pages, hide layers, and add top layers. | Pending |
 | `QuickScreenshot` | Capture a screen region to an image using supported platform utilities. | Pending |
-| `SpaceForNotes` | Add empty pages for notes. | Pending |
+| `SpaceForNotes` | Add empty pages for notes. | Partial — both upstream modes run: add a lined page after each PDF page that is not already followed by a note page, or force a page after every page. Changes survive save/reopen; page insertions are not undoable yet. |
 | `ToggleGrid` | Toggle the page grid. | Covered — toggles grid snapping and switches the active page between plain and graph backgrounds; native document save, reopen, undo, and redo preserve the background. |
 | `ToolShortcuts` | Add canvas-scoped tool and page-navigation shortcuts. | Partial — bundled shortcuts select common tools including Smart Select, navigate pages, open Go to Page, and invoke undo/redo. Search and some master actions are missing. |
 
@@ -120,7 +120,7 @@ it is part of the master plugin distribution.
 | Area | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
 | Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, selection edge-pan speed/multiplier, spacing, tolerance, pointer highlight enable/color/radius/border, laser tool colors/sizes, laser fade delay, stylus Floating Toolbox mapping, audio playback folder/seek/disable settings, the customizable main tool rail, and editable floating-toolbar rows. Audit every user-facing setting, per-device `deviceClasses`, audio device/recording controls, unsupported toolbar actions, and the legacy drag/drop customization workflow. |
-| Lua plugin runtime and manager | Partial | Discovers bundled, explicit `--plugin-dir`, and per-user plugin paths; reads `plugin.ini`, loads enabled Lua 5.4 scripts, exposes a Plugins menu and manager, persists enabled-path overrides, and dispatches registered menu actions, accelerators, and canvas shortcuts. `app.C` tool IDs, `app.registerUi`, asynchronous `app.openDialog`, color changes, selected-stroke/text recoloring, common tool selection, grid snapping and position highlighting state, current-page plain/graph background changes, page navigation, Go to Page, undo/redo, and default-tool actions work. Port the remaining master Lua API, toolbar integration, plugin-specific actions and state, and remaining bundled plugins. |
+| Lua plugin runtime and manager | Partial | Discovers bundled, explicit `--plugin-dir`, and per-user plugin paths; reads `plugin.ini`, loads enabled Lua 5.4 scripts, exposes a Plugins menu and manager, persists enabled-path overrides, and dispatches registered menu actions, accelerators, and canvas shortcuts. `app.C` tool IDs, `app.registerUi`, asynchronous `app.openDialog`, color changes, selected-stroke/text recoloring, common tool selection, grid snapping and position highlighting state, current-page plain/graph background changes, batched empty-page insertion, page navigation, Go to Page, undo/redo, and default-tool actions work. Port the remaining master Lua API, toolbar integration, plugin-specific actions and state, and remaining bundled plugins. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Match touchpad pan/scroll sensitivity and motion stability to the original app; port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |
