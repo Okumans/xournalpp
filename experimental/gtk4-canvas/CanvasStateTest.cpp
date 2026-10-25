@@ -953,6 +953,101 @@ static void pluginStrokeAndPageSizeHistory() {
           "undo after an irreversible plugin edit must return to its dirty revision boundary");
 }
 
+static void pluginElementReferences() {
+    CanvasState state;
+    state.setPages({{300, 400}});
+
+    Ink stroke{0, {{10, 10}, {20, 20}}, {Tool::Pen, {0, 0, 0}, 2}};
+    stroke.layerOrder = 1;
+    state.ink.push_back(stroke);
+
+    TextItem text;
+    text.page = 0;
+    text.layerOrder = 2;
+    text.text = "plugin text";
+    state.texts.push_back(text);
+
+    CanvasImage image;
+    image.page = 0;
+    image.layerOrder = 3;
+    image.pixelWidth = 10;
+    image.pixelHeight = 10;
+    image.encodedData = "image bytes";
+    state.images.push_back(image);
+
+    state.ensurePluginReferences();
+    const std::vector<std::uintptr_t> references{state.ink[0].pluginReference, state.texts[0].pluginReference,
+                                                 state.images[0].pluginReference};
+    check(references[0] != 0 && references[1] != 0 && references[2] != 0 &&
+                  references[0] != references[1] && references[0] != references[2] &&
+                  references[1] != references[2],
+          "plugin element references must be nonzero and unique across object types");
+
+    auto editedStroke = state.ink[0];
+    editedStroke.brush.color = {1, 0, 0};
+    check(state.applyInkEdits({{0, editedStroke}}, {}) && state.ink[0].pluginReference == references[0],
+          "stroke value edits must preserve the Lua element reference");
+    state.undo();
+    check(state.ink[0].pluginReference == references[0], "stroke undo must preserve the Lua element reference");
+    state.redo();
+    check(state.ink[0].pluginReference == references[0], "stroke redo must preserve the Lua element reference");
+
+    auto editedText = state.texts[0];
+    editedText.text = "edited plugin text";
+    check(state.replaceText(0, editedText) && state.texts[0].pluginReference == references[1],
+          "text replacement must preserve the Lua element reference");
+    state.undo();
+    check(state.texts[0].pluginReference == references[1], "text undo must preserve the Lua element reference");
+    state.redo();
+    check(state.texts[0].pluginReference == references[1], "text redo must preserve the Lua element reference");
+
+    auto editedImage = state.images[0];
+    editedImage.transform.x = 5;
+    check(state.replaceImage(0, editedImage) && state.images[0].pluginReference == references[2],
+          "image replacement must preserve the Lua element reference");
+    state.undo();
+    check(state.images[0].pluginReference == references[2], "image undo must preserve the Lua element reference");
+    state.redo();
+    check(state.images[0].pluginReference == references[2], "image redo must preserve the Lua element reference");
+
+    for (size_t index = 0; index < 128; ++index) {
+        auto extra = stroke;
+        extra.layerOrder = index + 4;
+        state.ink.push_back(std::move(extra));
+    }
+    state.ensurePluginReferences();
+    check(state.ink[0].pluginReference == references[0] && state.texts[0].pluginReference == references[1] &&
+                  state.images[0].pluginReference == references[2],
+          "plugin references must survive object-vector growth");
+
+    state.addPluginReferencesToSelection(references);
+    check(state.selected == std::vector<size_t>{0} && state.selectedTexts == std::vector<size_t>{0} &&
+                  state.selectedImages == std::vector<size_t>{0},
+          "plugin references should select matching objects from the active layer");
+
+    state.clearSelection();
+    auto duplicate = state.ink[0];
+    duplicate.layerOrder = 1000;
+    state.ink.push_back(duplicate);
+    state.ensurePluginReferences();
+    const auto duplicateReference = state.ink.back().pluginReference;
+    check(duplicateReference != 0 && duplicateReference != references[0] &&
+                  state.ink[0].pluginReference == references[0],
+          "duplicated objects must receive a distinct reference without changing the source reference");
+    state.addPluginReferencesToSelection({references[0]});
+    check(state.selected == std::vector<size_t>{0},
+          "a source reference must not select a later duplicate of the object");
+
+    state.clearSelection();
+    state.ink.pop_back();
+    state.addPluginReferencesToSelection({duplicateReference});
+    check(!state.hasSelection(), "deleted object references must not select a different object");
+    state.ink.push_back(stroke);
+    state.ensurePluginReferences();
+    check(state.ink.back().pluginReference != duplicateReference,
+          "a deleted plugin reference must not be reused for a later object");
+}
+
 static void pdfAnnotationInkHistory() {
     CanvasState state;
     state.setPages({{300, 200}});
@@ -1071,6 +1166,7 @@ int main() {
         layerRenameDuplicateReorderAndVisibility();
         pageBackgroundHistory();
         pluginStrokeAndPageSizeHistory();
+        pluginElementReferences();
         pdfAnnotationInkHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");

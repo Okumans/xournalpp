@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "CanvasLayers.h"
@@ -47,8 +48,16 @@ struct TextItem {
     double layoutWidth = 0;
     double layoutHeight = 0;
     std::vector<TextStyleRun> styleRuns;
+    std::uintptr_t pluginReference = 0;
 
-    bool operator==(const TextItem&) const = default;
+    bool operator==(const TextItem& other) const {
+        return std::tie(page, layerOrder, layerId, originLayer, text, fontName, linkUrl, isLink, fontSize, color,
+                        wrapWidth, alignment, justify, xx, yx, xy, yy, x, y, layoutWidth, layoutHeight, styleRuns) ==
+               std::tie(other.page, other.layerOrder, other.layerId, other.originLayer, other.text, other.fontName,
+                        other.linkUrl, other.isLink, other.fontSize, other.color, other.wrapWidth, other.alignment,
+                        other.justify, other.xx, other.yx, other.xy, other.yy, other.x, other.y,
+                        other.layoutWidth, other.layoutHeight, other.styleRuns);
+    }
 };
 
 }  // namespace prototype

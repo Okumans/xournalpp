@@ -16,6 +16,7 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -109,6 +110,7 @@ struct Ink {
     size_t originLayer = newLayerOrigin;
     int fill = -1;
     int capStyle = 0;
+    std::uintptr_t pluginReference = 0;
 };
 
 struct LaserTrail {
@@ -208,6 +210,71 @@ public:
     }
 
     size_t activeLayerId(int pageIndex) const { return layersForPage(pageIndex).selectedLayer; }
+
+    // Lua exposes these as opaque lightuserdata, matching the GTK 3 API's
+    // reference shape. The integer token is never dereferenced, so vector
+    // growth and object moves cannot invalidate a reference.
+    void ensurePluginReferences() {
+        std::uintptr_t greatestReference = 0;
+        const auto noteReferences = [&greatestReference](const auto& objects) {
+            for (const auto& object: objects) {
+                greatestReference = std::max(greatestReference, object.pluginReference);
+            }
+        };
+        noteReferences(ink);
+        noteReferences(texts);
+        noteReferences(images);
+        if (greatestReference >= nextPluginReference) {
+            nextPluginReference = greatestReference == std::numeric_limits<std::uintptr_t>::max() ?
+                                          0 :
+                                          greatestReference + 1;
+        }
+
+        std::unordered_set<std::uintptr_t> references;
+        const auto ensureUnique = [this, &references](auto& objects) {
+            for (auto& object: objects) {
+                if (object.pluginReference == 0 || !references.insert(object.pluginReference).second) {
+                    object.pluginReference = allocatePluginReference();
+                    references.insert(object.pluginReference);
+                }
+            }
+        };
+        ensureUnique(ink);
+        ensureUnique(texts);
+        ensureUnique(images);
+    }
+
+    void addPluginReferencesToSelection(const std::vector<std::uintptr_t>& requestedReferences) {
+        if (requestedReferences.empty()) {
+            return;
+        }
+        ensurePluginReferences();
+        cancelSelection();
+        cancelVerticalSpace();
+
+        const std::unordered_set<std::uintptr_t> references(requestedReferences.begin(), requestedReferences.end());
+        const size_t layerId = activeLayerId(page);
+        const auto addMatches = [this, &references, layerId](const auto& objects, auto& selection) {
+            std::erase_if(selection, [&objects](size_t index) { return index >= objects.size(); });
+            for (size_t index = 0; index < objects.size(); ++index) {
+                const auto& object = objects[index];
+                if (object.page == page && object.layerId == layerId && references.contains(object.pluginReference)) {
+                    selection.push_back(index);
+                }
+            }
+            std::sort(selection.begin(), selection.end(), [&objects](size_t lhs, size_t rhs) {
+                if (objects[lhs].layerOrder != objects[rhs].layerOrder) {
+                    return objects[lhs].layerOrder < objects[rhs].layerOrder;
+                }
+                return lhs < rhs;
+            });
+            selection.erase(std::unique(selection.begin(), selection.end()), selection.end());
+        };
+        addMatches(ink, selected);
+        addMatches(texts, selectedTexts);
+        addMatches(images, selectedImages);
+        selectionFrame.reset();
+    }
 
     size_t activeLayerOrigin(int pageIndex) const {
         const auto& pageState = layersForPage(pageIndex);
@@ -2762,6 +2829,7 @@ public:
         item.layerOrder = texts[index].layerOrder;
         item.layerId = texts[index].layerId;
         item.originLayer = texts[index].originLayer;
+        item.pluginReference = item.isLink == texts[index].isLink ? texts[index].pluginReference : 0;
         Edit edit;
         edit.textChanges.push_back({index, {texts[index]}, index, {std::move(item)}});
         edit.selectionBefore = selected;
@@ -3025,6 +3093,7 @@ public:
         image.layerOrder = images[index].layerOrder;
         image.layerId = images[index].layerId;
         image.originLayer = images[index].originLayer;
+        image.pluginReference = images[index].pluginReference;
         Edit edit;
         edit.imageChanges.push_back({index, {images[index]}, index, {std::move(image)}});
         edit.selectionBefore = edit.selectionAfter = selected;
@@ -4393,6 +4462,16 @@ private:
     std::optional<SelectionFrameState> selectionFrame;
     std::optional<VerticalSpacePreview> verticalSpace;
     std::optional<Device> laserOwner;
+    std::uintptr_t nextPluginReference = 1;
+
+    std::uintptr_t allocatePluginReference() {
+        if (nextPluginReference == 0) {
+            throw std::overflow_error("Lua element reference space exhausted");
+        }
+        const auto reference = nextPluginReference;
+        nextPluginReference = reference == std::numeric_limits<std::uintptr_t>::max() ? 0 : reference + 1;
+        return reference;
+    }
 };
 
 }  // namespace prototype

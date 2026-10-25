@@ -165,6 +165,38 @@ int main() {
                 "  assert(page.layers[1].isAnnotated)\n"
                 "  app.changeActionState('document-page-count', #doc.pages)\n"
                 "end\n");
+    const auto objectQueryPlugin = root / "ObjectQueryPlugin";
+    writePlugin(objectQueryPlugin,
+                "[about]\ndescription=Query editable document objects\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read objects', callback='read'})\n"
+                "  app.registerUi({menu='Reject invalid references', callback='malformed'})\n"
+                "end\n"
+                "function read()\n"
+                "  local images = app.getImages('selection')\n"
+                "  local texts = app.getTexts('all')\n"
+                "  local links = app.getLinks('page')\n"
+                "  assert(#images == 1 and images[1].x == 11 and images[1].y == 12)\n"
+                "  assert(images[1].width == 40 and images[1].height == 30)\n"
+                "  assert(images[1].data == 'PNG\\0bytes' and images[1].format == 'png')\n"
+                "  assert(images[1].imageWidth == 80 and images[1].imageHeight == 60)\n"
+                "  assert(images[1].ref ~= nil and images[1].page == nil and images[1].layer == nil)\n"
+                "  assert(#texts == 1 and texts[1].text == 'note')\n"
+                "  assert(texts[1].font.name == 'Sans' and texts[1].font.size == 14)\n"
+                "  assert(texts[1].color == 0x123456 and texts[1].x == 21 and texts[1].y == 22)\n"
+                "  assert(texts[1].wrap == 90 and texts[1].width == 45 and texts[1].height == 18)\n"
+                "  assert(texts[1].ref ~= nil and texts[1].page == 2 and texts[1].layer == 3)\n"
+                "  assert(#links == 1 and links[1].text == 'site' and links[1].url == 'https://example.test')\n"
+                "  assert(links[1].alignment == 1 and links[1].font.name == 'Serif' and links[1].font.size == 12)\n"
+                "  assert(links[1].color == 0xabcdef and links[1].x == 31 and links[1].y == 32)\n"
+                "  assert(links[1].width == 60 and links[1].height == 16)\n"
+                "  assert(links[1].ref ~= nil and links[1].page == nil and links[1].layer == 2)\n"
+                "  app.clearSelection()\n"
+                "  app.addToSelection({images[1].ref, texts[1].ref, links[1].ref})\n"
+                "  app.changeActionState('object-count', #images * 100 + #texts * 10 + #links)\n"
+                "end\n"
+                "function malformed() app.addToSelection({'not a reference'}) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -176,7 +208,7 @@ int main() {
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
                                      quickScreenshotPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 13, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 14, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -193,6 +225,7 @@ int main() {
     std::int64_t changedMode = -1;
     std::int64_t strokeCount = -1;
     std::int64_t documentPageCount = -1;
+    std::int64_t pluginObjectCount = -1;
     std::vector<prototype::PluginStrokeInput> addedStrokes;
     prototype::PluginStrokeUndoPolicy addedStrokePolicy = prototype::PluginStrokeUndoPolicy::Grouped;
     double pageWidthChange = 0;
@@ -203,6 +236,12 @@ int main() {
     std::vector<prototype::DocumentExportOptions> exportRequests;
     bool layerVisible = true;
     std::string renamedLayer;
+    std::string imageQueryType;
+    std::string textQueryType;
+    std::string linkQueryType;
+    const std::string pluginImageBytes{"PNG\0bytes", 9};
+    std::vector<std::uintptr_t> selectedPluginReferences;
+    bool pluginSelectionCleared = false;
     std::string dialogPluginName;
     std::string dialogMessage;
     std::vector<prototype::PluginDialogButton> dialogButtons;
@@ -220,7 +259,8 @@ int main() {
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
-        if ((action != "test-mode" && action != "stroke-count" && action != "document-page-count") ||
+        if ((action != "test-mode" && action != "stroke-count" && action != "document-page-count" &&
+             action != "object-count") ||
             !std::holds_alternative<std::int64_t>(value)) {
             return false;
         }
@@ -228,6 +268,8 @@ int main() {
             changedMode = std::get<std::int64_t>(value);
         } else if (action == "document-page-count") {
             documentPageCount = std::get<std::int64_t>(value);
+        } else if (action == "object-count") {
+            pluginObjectCount = std::get<std::int64_t>(value);
         } else {
             strokeCount = std::get<std::int64_t>(value);
         }
@@ -257,6 +299,27 @@ int main() {
         references = {0x51, 0x52};
         return true;
     };
+    host.getImages = [&](std::string_view type, std::vector<prototype::PluginImage>& images, std::string&) {
+        imageQueryType = type;
+        images = {{11, 12, 40, 30, pluginImageBytes, "png", 80, 60, 0x61, std::nullopt, std::nullopt}};
+        return true;
+    };
+    host.getTexts = [&](std::string_view type, std::vector<prototype::PluginText>& texts, std::string&) {
+        textQueryType = type;
+        texts = {{"note", "Sans", 14, 0x123456, 21, 22, 90, 45, 18, 0x62, 2, 3}};
+        return true;
+    };
+    host.getLinks = [&](std::string_view type, std::vector<prototype::PluginLink>& links, std::string&) {
+        linkQueryType = type;
+        links = {{"site", "https://example.test", 1, "Serif", 12, 0xabcdef, 31, 32, 60, 16, 0x63,
+                  std::nullopt, 2}};
+        return true;
+    };
+    host.addToSelection = [&](const std::vector<std::uintptr_t>& references, std::string&) {
+        selectedPluginReferences = references;
+        return true;
+    };
+    host.clearSelection = [&] { pluginSelectionCleared = true; };
     host.setPageSize = [&](double width, double height, bool relative, std::string&) {
         pageWidthChange = width;
         pageHeightChange = height;
@@ -336,6 +399,9 @@ int main() {
     require(loadedDocumentStructurePlugin && loadedDocumentStructurePlugin->loaded &&
                     loadedDocumentStructurePlugin->menuItems == 1,
             "Plugin using the complete document-structure API did not load");
+    const auto loadedObjectQueryPlugin = runtime.findPlugin("ObjectQueryPlugin");
+    require(loadedObjectQueryPlugin && loadedObjectQueryPlugin->loaded && loadedObjectQueryPlugin->menuItems == 2,
+            "Plugin using editable object queries and selection references did not load");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -361,6 +427,15 @@ int main() {
             "app.getDocumentStructure did not expose the upstream page, background, and layer fields");
     require(runtime.invokeMenu("StrokeApiPlugin", 0) && strokeCount == 2,
             "app.getStrokes did not preserve point arrays, pressure, style fields, references, and page/layer data");
+    require(runtime.invokeMenu("ObjectQueryPlugin", 0) && pluginObjectCount == 111 &&
+                    imageQueryType == "selection" && textQueryType == "all" && linkQueryType == "page" &&
+                    pluginSelectionCleared && selectedPluginReferences ==
+                            std::vector<std::uintptr_t>({0x61, 0x62, 0x63}),
+            "app.getImages/getTexts/getLinks or reference-based selection lost fields or references");
+    require(!runtime.invokeMenu("ObjectQueryPlugin", 1) &&
+                    runtime.findPlugin("ObjectQueryPlugin")->error.find("array of element references") !=
+                            std::string::npos,
+            "app.addToSelection accepted a non-reference value");
     require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
                     runtime.findPlugin("StrokeApiPlugin")->error.find("There is no selection") != std::string::npos,
             "app.getStrokes selection errors were not reported to the plugin");
@@ -437,8 +512,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 19 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 10,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 21 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 11,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

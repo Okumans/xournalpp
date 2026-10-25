@@ -153,6 +153,11 @@ int luaOpenApp(lua_State* state) {
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
+            {"getTexts", LuaPluginRuntime::luaGetTexts},
+            {"getLinks", LuaPluginRuntime::luaGetLinks},
+            {"getImages", LuaPluginRuntime::luaGetImages},
+            {"addToSelection", LuaPluginRuntime::luaAddToSelection},
+            {"clearSelection", LuaPluginRuntime::luaClearSelection},
             {"addStrokes", LuaPluginRuntime::luaAddStrokes},
             {"setPageSize", LuaPluginRuntime::luaSetPageSize},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
@@ -699,6 +704,47 @@ bool LuaPluginRuntime::getStrokes(std::string_view type, std::vector<PluginStrok
     return host.getStrokes(type, strokes, error);
 }
 
+bool LuaPluginRuntime::getTexts(std::string_view type, std::vector<PluginText>& texts, std::string& error) {
+    if (!host.getTexts) {
+        error = "Text access is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getTexts(type, texts, error);
+}
+
+bool LuaPluginRuntime::getLinks(std::string_view type, std::vector<PluginLink>& links, std::string& error) {
+    if (!host.getLinks) {
+        error = "Link access is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getLinks(type, links, error);
+}
+
+bool LuaPluginRuntime::getImages(std::string_view type, std::vector<PluginImage>& images, std::string& error) {
+    if (!host.getImages) {
+        error = "Image access is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getImages(type, images, error);
+}
+
+bool LuaPluginRuntime::addToSelection(const std::vector<std::uintptr_t>& references, std::string& error) {
+    if (!host.addToSelection) {
+        error = "Adding elements to the selection is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.addToSelection(references, error);
+}
+
+bool LuaPluginRuntime::clearSelection(std::string& error) {
+    if (!host.clearSelection) {
+        error = "Clearing the selection is unavailable in this GTK 4 host";
+        return false;
+    }
+    host.clearSelection();
+    return true;
+}
+
 bool LuaPluginRuntime::addStrokes(const std::vector<PluginStrokeInput>& strokes, PluginStrokeUndoPolicy undoPolicy,
                                   std::vector<std::uintptr_t>& references, std::string& error) {
     if (!host.addStrokes) {
@@ -1133,6 +1179,250 @@ int LuaPluginRuntime::luaGetStrokes(lua_State* state) {
         return lua_error(state);
     }
     return 1;
+}
+
+int LuaPluginRuntime::luaGetTexts(lua_State* state) {
+    const char* type = luaL_checkstring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginText> texts;
+        std::string hostError;
+        if (!plugin->runtime->getTexts(type, texts, hostError)) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Text access is unavailable" : hostError.c_str());
+        } else {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(texts.size(),
+                                                                          std::numeric_limits<int>::max())), 0);
+            lua_Integer textIndex = 0;
+            for (const auto& text: texts) {
+                lua_createtable(state, 0, 11);
+                lua_pushlstring(state, text.text.data(), text.text.size());
+                lua_setfield(state, -2, "text");
+                lua_createtable(state, 0, 2);
+                lua_pushlstring(state, text.fontName.data(), text.fontName.size());
+                lua_setfield(state, -2, "name");
+                lua_pushnumber(state, text.fontSize);
+                lua_setfield(state, -2, "size");
+                lua_setfield(state, -2, "font");
+                lua_pushinteger(state, static_cast<lua_Integer>(text.color));
+                lua_setfield(state, -2, "color");
+                lua_pushnumber(state, text.x);
+                lua_setfield(state, -2, "x");
+                lua_pushnumber(state, text.y);
+                lua_setfield(state, -2, "y");
+                if (text.wrap) {
+                    lua_pushnumber(state, *text.wrap);
+                    lua_setfield(state, -2, "wrap");
+                }
+                lua_pushnumber(state, text.width);
+                lua_setfield(state, -2, "width");
+                lua_pushnumber(state, text.height);
+                lua_setfield(state, -2, "height");
+                if (text.reference != 0) {
+                    lua_pushlightuserdata(state, reinterpret_cast<void*>(text.reference));
+                    lua_setfield(state, -2, "ref");
+                }
+                if (text.page) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*text.page));
+                    lua_setfield(state, -2, "page");
+                }
+                if (text.layer) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*text.layer));
+                    lua_setfield(state, -2, "layer");
+                }
+                lua_rawseti(state, -2, ++textIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaGetLinks(lua_State* state) {
+    const char* type = luaL_checkstring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginLink> links;
+        std::string hostError;
+        if (!plugin->runtime->getLinks(type, links, hostError)) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Link access is unavailable" : hostError.c_str());
+        } else {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(links.size(),
+                                                                          std::numeric_limits<int>::max())), 0);
+            lua_Integer linkIndex = 0;
+            for (const auto& link: links) {
+                lua_createtable(state, 0, 12);
+                lua_pushlstring(state, link.text.data(), link.text.size());
+                lua_setfield(state, -2, "text");
+                lua_pushlstring(state, link.url.data(), link.url.size());
+                lua_setfield(state, -2, "url");
+                lua_pushinteger(state, link.alignment);
+                lua_setfield(state, -2, "alignment");
+                lua_createtable(state, 0, 2);
+                lua_pushlstring(state, link.fontName.data(), link.fontName.size());
+                lua_setfield(state, -2, "name");
+                lua_pushnumber(state, link.fontSize);
+                lua_setfield(state, -2, "size");
+                lua_setfield(state, -2, "font");
+                lua_pushinteger(state, static_cast<lua_Integer>(link.color));
+                lua_setfield(state, -2, "color");
+                lua_pushnumber(state, link.x);
+                lua_setfield(state, -2, "x");
+                lua_pushnumber(state, link.y);
+                lua_setfield(state, -2, "y");
+                lua_pushnumber(state, link.width);
+                lua_setfield(state, -2, "width");
+                lua_pushnumber(state, link.height);
+                lua_setfield(state, -2, "height");
+                if (link.reference != 0) {
+                    lua_pushlightuserdata(state, reinterpret_cast<void*>(link.reference));
+                    lua_setfield(state, -2, "ref");
+                }
+                if (link.page) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*link.page));
+                    lua_setfield(state, -2, "page");
+                }
+                if (link.layer) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*link.layer));
+                    lua_setfield(state, -2, "layer");
+                }
+                lua_rawseti(state, -2, ++linkIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaGetImages(lua_State* state) {
+    const char* type = luaL_checkstring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginImage> images;
+        std::string hostError;
+        if (!plugin->runtime->getImages(type, images, hostError)) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Image access is unavailable" : hostError.c_str());
+        } else {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(images.size(),
+                                                                          std::numeric_limits<int>::max())), 0);
+            lua_Integer imageIndex = 0;
+            for (const auto& image: images) {
+                lua_createtable(state, 0, 11);
+                lua_pushnumber(state, image.x);
+                lua_setfield(state, -2, "x");
+                lua_pushnumber(state, image.y);
+                lua_setfield(state, -2, "y");
+                lua_pushnumber(state, image.width);
+                lua_setfield(state, -2, "width");
+                lua_pushnumber(state, image.height);
+                lua_setfield(state, -2, "height");
+                lua_pushlstring(state, image.data.data(), image.data.size());
+                lua_setfield(state, -2, "data");
+                lua_pushlstring(state, image.format.data(), image.format.size());
+                lua_setfield(state, -2, "format");
+                lua_pushinteger(state, image.imageWidth);
+                lua_setfield(state, -2, "imageWidth");
+                lua_pushinteger(state, image.imageHeight);
+                lua_setfield(state, -2, "imageHeight");
+                if (image.reference != 0) {
+                    lua_pushlightuserdata(state, reinterpret_cast<void*>(image.reference));
+                    lua_setfield(state, -2, "ref");
+                }
+                if (image.page) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*image.page));
+                    lua_setfield(state, -2, "page");
+                }
+                if (image.layer) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*image.layer));
+                    lua_setfield(state, -2, "layer");
+                }
+                lua_rawseti(state, -2, ++imageIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaAddToSelection(lua_State* state) {
+    luaL_checktype(state, 1, LUA_TTABLE);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<std::uintptr_t> references;
+        lua_pushnil(state);
+        while (lua_next(state, 1) != 0) {
+            if (lua_type(state, -1) != LUA_TLIGHTUSERDATA) {
+                std::snprintf(error, sizeof(error), "addToSelection expects an array of element references");
+                lua_pop(state, 2);
+                break;
+            }
+            references.push_back(reinterpret_cast<std::uintptr_t>(lua_touserdata(state, -1)));
+            lua_pop(state, 1);
+        }
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->addToSelection(references, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Adding elements to the selection failed" : hostError.c_str());
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaClearSelection(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    char error[512]{};
+    {
+        std::string hostError;
+        if (!plugin->runtime->clearSelection(hostError)) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Clearing the selection failed" : hostError.c_str());
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
 }
 
 int LuaPluginRuntime::luaAddStrokes(lua_State* state) {
