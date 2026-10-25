@@ -67,6 +67,7 @@ struct Options {
     bool disableAudio = false;
     bool verifyPlugins = false;
     bool verifyBeamer = false;
+    bool verifyLayerActions = false;
     int width = 1100;
     int height = 820;
 };
@@ -1636,6 +1637,251 @@ private:
         return true;
     }
 
+    void showLayerActionsNotice(const char* message) {
+        std::string error;
+        if (!showPluginDialog("LayerActions", message, {{1, "OK"}}, true, {}, error)) {
+            showError(error);
+        }
+    }
+
+    void startLayerActionsClone(int currentPage, int pdfPage, bool allowAnnotated,
+                                const std::shared_ptr<prototype::bridge::DocumentSession>& session,
+                                const std::string& worker,
+                                const std::vector<prototype::bridge::StrokePacket>& packets,
+                                const std::vector<prototype::TextItem>& texts,
+                                const std::vector<prototype::bridge::ImagePacket>& images,
+                                const prototype::bridge::LayerDocument& layers) {
+        if (nativeSession != session || currentPage < 0 || currentPage + 1 >= pageCount) {
+            showError("The LayerActions source page changed before cloning could start");
+            return;
+        }
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        runDocumentJob(
+                "Cloning layers to the next PDF page…",
+                [session, worker, currentPage, pdfPage, allowAnnotated, packets, texts, images, layers, staged] {
+                    *staged = session->stageLayerActionsCloneNext(worker, currentPage, pdfPage, allowAnnotated,
+                                                                  packets, texts, images, layers);
+                },
+                [this, session, currentPage, staged] {
+                    PopplerDocument* candidate = nullptr;
+                    std::vector<PopplerDocument*> candidateLayers;
+                    std::vector<PopplerDocument*> candidateAudioLayers;
+                    std::vector<prototype::PageSize> sizes;
+                    prototype::bridge::LayerDocument layerState;
+                    std::vector<Ink> hydratedInk;
+                    std::vector<prototype::TextItem> hydratedTexts;
+                    std::vector<prototype::CanvasImage> hydratedImages;
+                    try {
+                        std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                        candidateLayers =
+                                openLayerPreviewPdfs(staged->layerPreviewPaths(), static_cast<int>(sizes.size()));
+                        candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                         static_cast<int>(sizes.size()));
+                        layerState = prototype::bridge::readLayerTransfer(staged->layerStatePath());
+                        hydratedInk = prototype::bridge::sessionInk(
+                                prototype::bridge::readTransfer(staged->editableInkPath()));
+                        hydratedTexts = prototype::bridge::readTextTransfer(staged->editableTextPath());
+                        const auto imagePackets = prototype::bridge::readImageTransfer(staged->editableImagesPath());
+                        hydratedImages.reserve(imagePackets.size());
+                        for (const auto& packet: imagePackets) {
+                            auto image = prototype::bridge::canvasImage(packet);
+                            int width = 0;
+                            int height = 0;
+                            image.surface = prototype::decodeCanvasImage(image.encodedData, width, height);
+                            if (width != image.pixelWidth || height != image.pixelHeight) {
+                                throw std::runtime_error("Transferred image dimensions changed during cloning");
+                            }
+                            hydratedImages.push_back(std::move(image));
+                        }
+                        if (sizes.size() != static_cast<size_t>(pageCount) || layerState.size() != sizes.size() ||
+                            currentPage + 1 >= static_cast<int>(sizes.size())) {
+                            throw std::runtime_error("LayerActions clone output does not match the current document");
+                        }
+                    } catch (...) {
+                        if (candidate) {
+                            g_object_unref(candidate);
+                        }
+                        releaseLayerPreviewPdfs(candidateLayers);
+                        releaseLayerPreviewPdfs(candidateAudioLayers);
+                        prototype::bridge::DocumentSession::discardRevision(*staged);
+                        throw;
+                    }
+
+                    session->commitRevision(*staged);
+                    g_clear_object(&document);
+                    document = candidate;
+                    releaseLayerPreviewPdfs(layerDocuments);
+                    layerDocuments = std::move(candidateLayers);
+                    releaseLayerPreviewPdfs(audioLayerDocuments);
+                    audioLayerDocuments = std::move(candidateAudioLayers);
+                    audioTargets = session->audioTargets;
+                    if (!state.replaceNextPageWithClone(currentPage, sizes.at(static_cast<size_t>(currentPage + 1)))) {
+                        throw std::runtime_error("Cannot replace the next page with the cloned page");
+                    }
+                    pageCount = static_cast<int>(sizes.size());
+                    state.setPages(std::move(sizes));
+                    state.setLayerDocument(layerState);
+                    state.ink = std::move(hydratedInk);
+                    state.texts = std::move(hydratedTexts);
+                    state.images = std::move(hydratedImages);
+                    state.selectActivePage(currentPage + 1);
+                    savedRevision.reset();
+                    savedNormally = false;
+                    savedCopyPath.clear();
+                    selectedImageIndex.reset();
+                    g_clear_object(&pdfTextDocument);
+                    pdfTextDocumentPath.clear();
+                    pageCache.clear();
+                    layerPageCache.clear();
+                    thumbnails.clear();
+                    thumbnailWidgets.clear();
+                    pageList = nullptr;
+                    adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                    navigateToPage(currentPage + 1);
+                    updateTitle();
+                });
+    }
+
+    bool cloneNextPageFromLayerActions(std::string& error) {
+        if (!nativeSession || options.worker.empty()) {
+            error = "Cloning layers requires an open document and document worker";
+            return false;
+        }
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            waitForAutosave([this] {
+                std::string deferredError;
+                if (!cloneNextPageFromLayerActions(deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const int currentPage = state.page;
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto packets = prototype::bridge::transferInk(state.committedInk());
+        const auto texts = state.texts;
+        const auto images = prototype::bridge::transferImages(state.images);
+        const auto layers = state.pageLayers;
+        auto target = std::make_shared<prototype::bridge::LayerActionTargetInfo>();
+        runDocumentJob(
+                "Checking the next page…",
+                [session, worker, currentPage, packets, texts, images, layers, target] {
+                    *target = session->inspectLayerActionTarget(worker, currentPage, packets, texts, images, layers);
+                },
+                [this, currentPage, session, worker, packets, texts, images, layers, target] {
+                    if (!target->hasNextPage) {
+                        showLayerActionsNotice("No next page. ");
+                        return;
+                    }
+                    if (target->nextPdfPage < 0) {
+                        showLayerActionsNotice("Next page has no pdf background. ");
+                        return;
+                    }
+                    if (!target->nextPageAnnotated) {
+                        startLayerActionsClone(currentPage, target->nextPdfPage, false, session, worker, packets,
+                                               texts, images, layers);
+                        return;
+                    }
+
+                    std::string dialogError;
+                    const bool shown = showPluginDialog(
+                            "LayerActions", "Next page contains annotations that will be lost, when proceeding. ",
+                            {{1, "Cancel"}, {2, "Proceed"}}, false,
+                            [this, currentPage, pdfPage = target->nextPdfPage, session, worker, packets, texts, images,
+                             layers](int response) {
+                                if (response == 2) {
+                                    startLayerActionsClone(currentPage, pdfPage, true, session, worker, packets, texts,
+                                                           images, layers);
+                                }
+                            },
+                            dialogError);
+                    if (!shown) {
+                        showError(dialogError);
+                    }
+                });
+        return true;
+    }
+
+    bool hideLayersFromLayerActions(std::string& error) {
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            waitForAutosave([this] {
+                std::string deferredError;
+                if (!hideLayersFromLayerActions(deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const int currentPage = state.page;
+        for (int page = 0; page < state.pageCount(); ++page) {
+            const auto count = state.layersForPage(page).layers.size();
+            if (!state.selectLayer(page, 1)) {
+                error = "LayerActions could not select the first layer on every page";
+                return false;
+            }
+            for (size_t layer = 1; layer <= count; ++layer) {
+                state.setLayerVisible(page, layer, layer == 1);
+            }
+        }
+        state.selectActivePage(currentPage);
+        navigateToPage(currentPage);
+        refreshAfterLayerMutation();
+        return true;
+    }
+
+    bool addTopLayerToEveryPageFromLayerActions(std::string& error) {
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "A document operation is already in progress";
+            return false;
+        }
+        if (autosaving) {
+            waitForAutosave([this] {
+                std::string deferredError;
+                if (!addTopLayerToEveryPageFromLayerActions(deferredError)) {
+                    showError(deferredError);
+                }
+            });
+            return true;
+        }
+        for (int page = 0; page < state.pageCount(); ++page) {
+            if (state.layersForPage(page).layers.size() >= prototype::bridge::maxLayersPerPage) {
+                error = "A page already has the maximum supported number of layers";
+                return false;
+            }
+        }
+
+        finishTextEditing();
+        resetInput(true);
+        const int currentPage = state.page;
+        for (int page = 0; page < state.pageCount(); ++page) {
+            const auto topLayer = state.layersForPage(page).layers.size();
+            state.selectActivePage(page);
+            if (!state.selectLayer(page, topLayer) || !state.addLayerAboveCurrent()) {
+                error = "LayerActions could not add a top layer to every page";
+                return false;
+            }
+        }
+        state.selectActivePage(currentPage);
+        navigateToPage(currentPage);
+        refreshAfterLayerMutation();
+        return true;
+    }
+
     bool activatePluginAction(std::string_view action, std::string& error) {
         if (action == "goto-next") {
             navigateToPage(state.page + 1);
@@ -1661,6 +1907,12 @@ private:
             return stepBeamerPresentation(-1, error);
         } else if (action == "beamer-clean") {
             return cleanBeamerAnimations(error);
+        } else if (action == "layer-actions-clone-next") {
+            return cloneNextPageFromLayerActions(error);
+        } else if (action == "layer-actions-hide") {
+            return hideLayersFromLayerActions(error);
+        } else if (action == "layer-actions-add-top") {
+            return addTopLayerToEveryPageFromLayerActions(error);
         } else {
             error = "This master action is not available in the GTK 4 prototype yet: " + std::string(action);
             return false;
@@ -2296,6 +2548,126 @@ private:
                         reopened.pdfPageLabels[0] == reopened.pdfPageLabels[1],
                 "Saving and reopening the cleaned Beamer document lost its page or attached-PDF labels");
         std::cout << "PASS: private GTK4 Beamer animation advance, reverse, cleanup, and native reopen\n";
+    }
+
+    void verifyLayerActionsIntegration() {
+        require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto layerActions = pluginRuntime->findPlugin("LayerActions");
+        require(layerActions && layerActions->loaded && layerActions->menuItems == 3,
+                "Enabled LayerActions plugin did not register all three menu actions");
+        require(nativeSession && pageCount == 2 && nativeSession->pdfPageMap == std::vector<int>({0, 1}),
+                "LayerActions integration expects a two-page PDF document");
+
+        for (int page = 0; page < pageCount; ++page) {
+            state.selectActivePage(page);
+            require(state.addLayerAboveCurrent() && state.addLayerAboveCurrent(),
+                    "LayerActions fixture could not create three foreground layers per page");
+        }
+        state.setLayerVisible(0, 0, false);
+        state.setLayerVisible(0, 2, false);
+        state.selectActivePage(0);
+        navigateToPage(0);
+
+        Ink sourceStroke;
+        sourceStroke.page = 0;
+        sourceStroke.layerId = 3;
+        sourceStroke.originLayer = 2;
+        sourceStroke.layerOrder = 0;
+        sourceStroke.brush = {Tool::Pen, {1, 0, 0}, 3};
+        sourceStroke.points = {{35, 45, 1}, {90, 100, 1}};
+        Ink nextPageAnnotation = sourceStroke;
+        nextPageAnnotation.page = 1;
+        nextPageAnnotation.layerId = 2;
+        nextPageAnnotation.originLayer = 1;
+        nextPageAnnotation.brush.color = {0, 0, 1};
+        nextPageAnnotation.points = {{160, 45, 1}, {210, 100, 1}};
+        state.ink = {sourceStroke, nextPageAnnotation};
+
+        require(pluginRuntime->invokeMenu("LayerActions", 0),
+                "LayerActions clone did not start its target-page check");
+        waitForPluginDocumentJob();
+        require(messageDialog &&
+                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-1"), "Cancel") ==
+                                0 &&
+                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-2"), "Proceed") ==
+                                0,
+                "LayerActions did not ask before replacing an annotated next page");
+        answerDialog("plugin-response-1");
+        require(messageDialog == nullptr && pageCount == 2 && state.ink.size() == 2 &&
+                        nativeSession->pdfPageMap == std::vector<int>({0, 1}),
+                "Canceling LayerActions clone modified the existing next page");
+
+        require(pluginRuntime->invokeMenu("LayerActions", 0),
+                "LayerActions clone could not be retried after cancellation");
+        waitForPluginDocumentJob();
+        require(messageDialog != nullptr, "LayerActions omitted the second annotated-page confirmation");
+        answerDialog("plugin-response-2");
+        waitForPluginDocumentJob();
+        require(pageCount == 2 && state.page == 1 && nativeSession->pdfPageMap == std::vector<int>({0, 1}) &&
+                        state.ink.size() == 2 && state.ink[0].page == 0 && state.ink[1].page == 1 &&
+                        state.ink[0].layerId == 3 && state.ink[1].layerId == 3 &&
+                        !state.pageLayers[0].backgroundVisible && state.pageLayers[1].backgroundVisible &&
+                        !state.pageLayers[0].layers[1].visible && state.pageLayers[1].layers[1].visible,
+                "Proceed did not replace the annotated page with a clone of the source and its next PDF background");
+        capture("layer-actions-cloned");
+
+        const auto cloneRoundTripPath =
+                (std::filesystem::path(options.smokeDirectory) / "layer-actions-clone-round-trip.xopp").string();
+        nativeSession->saveCopy(options.worker, cloneRoundTripPath,
+                                prototype::bridge::transferInk(state.committedInk()), state.texts,
+                                prototype::bridge::transferImages(state.images), state.pageLayers);
+        const prototype::bridge::DocumentSession cloneReopened(options.worker, cloneRoundTripPath);
+        require(cloneReopened.pdfPageMap == std::vector<int>({0, 1}) && cloneReopened.initialInk.size() == 2 &&
+                        cloneReopened.initialInk[0].page == 0 && cloneReopened.initialInk[1].page == 1 &&
+                        cloneReopened.initialLayers[0].layers.size() == 3 &&
+                        cloneReopened.initialLayers[1].layers.size() == 3 &&
+                        cloneReopened.initialLayers[0].backgroundVisible &&
+                        cloneReopened.initialLayers[1].backgroundVisible,
+                "LayerActions clone did not preserve its page layers and editable content through save/reopen");
+
+        require(pluginRuntime->invokeMenu("LayerActions", 0),
+                "LayerActions clone did not start its final-page check");
+        waitForPluginDocumentJob();
+        require(messageDialog &&
+                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-1"), "OK") == 0,
+                "LayerActions did not report that the final page has no successor");
+        answerDialog("plugin-response-1");
+
+        require(pluginRuntime->invokeMenu("LayerActions", 1), "LayerActions hide did not execute");
+        require(state.page == 1 && state.pageLayers.size() == 2 &&
+                        std::all_of(state.pageLayers.begin(), state.pageLayers.end(), [](const prototype::PageLayers& page) {
+                            return page.selectedLayer == 1 && page.layers[0].visible && !page.layers[1].visible &&
+                                   !page.layers[2].visible;
+                        }) && !state.pageLayers[0].backgroundVisible && state.pageLayers[1].backgroundVisible,
+                "LayerActions hide did not select layer one, hide higher layers, and preserve background visibility");
+
+        require(pluginRuntime->invokeMenu("LayerActions", 2), "LayerActions add did not execute");
+        require(state.page == 1 && state.pageLayers[0].layers.size() == 4 &&
+                        state.pageLayers[1].layers.size() == 4 && state.pageLayers[0].selectedLayer == 4 &&
+                        state.pageLayers[1].selectedLayer == 4,
+                "LayerActions add did not create and select a top layer on each page");
+        state.undo();
+        require(state.pageLayers[0].layers.size() == 4 && state.pageLayers[1].layers.size() == 3,
+                "Undo did not revert the last per-page LayerActions layer addition");
+        state.undo();
+        require(state.pageLayers[0].layers.size() == 3 && state.pageLayers[1].layers.size() == 3,
+                "Undo did not revert the first per-page LayerActions layer addition");
+        state.redo();
+        state.redo();
+        require(state.pageLayers[0].layers.size() == 4 && state.pageLayers[1].layers.size() == 4,
+                "Redo did not restore both per-page LayerActions layer additions");
+        capture("layer-actions-complete");
+
+        const auto roundTripPath =
+                (std::filesystem::path(options.smokeDirectory) / "layer-actions-round-trip.xopp").string();
+        nativeSession->saveCopy(options.worker, roundTripPath, prototype::bridge::transferInk(state.committedInk()),
+                                state.texts, prototype::bridge::transferImages(state.images), state.pageLayers);
+        const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
+        require(reopened.initialLayers.size() == 2 && reopened.initialLayers[0].layers.size() == 4 &&
+                        reopened.initialLayers[1].layers.size() == 4 && reopened.initialInk.size() == 2,
+                "LayerActions added top layers and cloned editable content did not persist through native save/reopen");
+        std::cout << "PASS: private GTK4 LayerActions annotated-page confirmation, clone, hide, add, undo/redo, and "
+                     "native reopen\n";
     }
 
     void verifyImageActionsPlugin() {
@@ -6735,7 +7107,7 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifyBeamer) {
+        if (options.verifyPlugins || options.verifyBeamer || options.verifyLayerActions) {
             g_timeout_add(
                     200,
                     +[](gpointer data) -> gboolean {
@@ -6746,8 +7118,10 @@ private:
                         try {
                             if (self->options.verifyPlugins) {
                                 self->verifyPluginIntegration();
-                            } else {
+                            } else if (self->options.verifyBeamer) {
                                 self->verifyBeamerIntegration();
+                            } else {
+                                self->verifyLayerActionsIntegration();
                             }
                         } catch (const std::exception& error) {
                             std::cerr << "PLUGIN VERIFY FAILED: " << error.what() << '\n';
@@ -6794,7 +7168,8 @@ private:
                     },
                     this);
         }
-        if (!options.smokeDirectory.empty() && !options.verifyPlugins) {
+        if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifyBeamer &&
+            !options.verifyLayerActions) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
@@ -12616,6 +12991,8 @@ int main(int argc, char** argv) {
                 options.verifyPlugins = true;
             } else if (argument == "--verify-beamer") {
                 options.verifyBeamer = true;
+            } else if (argument == "--verify-layer-actions") {
+                options.verifyLayerActions = true;
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
                         argument == "--smoke-dir") &&
                        i + 1 < argc) {
@@ -12634,6 +13011,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-beamer] "
+                                         "[--verify-layer-actions] "
                                          "[--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
             }
@@ -12649,6 +13027,9 @@ int main(int argc, char** argv) {
         }
         if (options.verifyBeamer && options.smokeDirectory.empty()) {
             throw std::runtime_error("Beamer verification requires --smoke-dir DIRECTORY");
+        }
+        if (options.verifyLayerActions && options.smokeDirectory.empty()) {
+            throw std::runtime_error("LayerActions verification requires --smoke-dir DIRECTORY");
         }
         Prototype app(std::move(options));
         return app.run();

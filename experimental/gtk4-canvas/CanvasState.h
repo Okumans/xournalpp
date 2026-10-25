@@ -1886,6 +1886,61 @@ public:
         selectActivePage(insertedIndex);
     }
 
+    bool replaceNextPageWithClone(int sourcePage, PageSize replacementSize) {
+        if (sourcePage < 0 || sourcePage + 1 >= pageCount() ||
+            static_cast<size_t>(sourcePage) >= pageLayers.size()) {
+            return false;
+        }
+
+        const int insertedPage = sourcePage + 1;
+        auto clonedLayers = pageLayers[static_cast<size_t>(sourcePage)];
+        clonedLayers.backgroundVisible = true;
+        clonedLayers.backgroundName.reset();
+        clonedLayers.backgroundFormat = ":pdf";
+        clonedLayers.backgroundConfig.clear();
+        clonedLayers.gridXOffset = clonedLayers.gridYOffset = 0;
+        clonedLayers.gridXStep = clonedLayers.gridYStep = 0;
+        for (auto& layer: clonedLayers.layers) {
+            layer.visible = true;
+        }
+        std::vector<Ink> clonedInk;
+        std::vector<TextItem> clonedTexts;
+        std::vector<CanvasImage> clonedImages;
+        for (const auto& stroke: ink) {
+            if (stroke.page == sourcePage) {
+                auto copy = stroke;
+                copy.page = insertedPage;
+                clonedInk.push_back(std::move(copy));
+            }
+        }
+        for (const auto& text: texts) {
+            if (text.page == sourcePage) {
+                auto copy = text;
+                copy.page = insertedPage;
+                clonedTexts.push_back(std::move(copy));
+            }
+        }
+        for (const auto& image: images) {
+            if (image.page == sourcePage) {
+                auto copy = image;
+                copy.page = insertedPage;
+                clonedImages.push_back(std::move(copy));
+            }
+        }
+
+        insertPageAfter(sourcePage, replacementSize);
+        pageLayers[static_cast<size_t>(insertedPage)] = clonedLayers;
+        ink.insert(ink.end(), std::make_move_iterator(clonedInk.begin()), std::make_move_iterator(clonedInk.end()));
+        texts.insert(texts.end(), std::make_move_iterator(clonedTexts.begin()), std::make_move_iterator(clonedTexts.end()));
+        images.insert(images.end(), std::make_move_iterator(clonedImages.begin()),
+                      std::make_move_iterator(clonedImages.end()));
+        if (!deletePageAt(insertedPage + 1)) {
+            return false;
+        }
+        selectActivePage(insertedPage);
+        return true;
+    }
+
     bool deletePageAt(int removeIndex) {
         if (pageCount() <= 1 || removeIndex < 0 || removeIndex >= pageCount()) {
             return false;

@@ -350,6 +350,10 @@ Use `--beamer-only` with `--worker` for the Beamer check. It creates a private
 two-page PDF with repeated page labels, then verifies animation advance,
 reverse, cleanup, native save/reopen, and screenshots inside the Cage renderer.
 
+Use `--layer-actions-only` with `--worker` for the LayerActions check. It verifies
+the annotated-page confirmation, PDF-page clone, document-wide layer visibility,
+per-page top-layer creation and undo/redo, and native save/reopen in Cage.
+
 The harness:
 
 1. Removes inherited display, compositor, and session-bus connections.

@@ -479,6 +479,37 @@ def verify_beamer(args, evidence):
     return str(directory)
 
 
+def verify_layer_actions(args, evidence):
+    directory = evidence / "layer-actions"
+    shutil.rmtree(directory, ignore_errors=True)
+    config = directory / "config"
+    output = directory / "run"
+    config.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+    plugin = Path(__file__).resolve().parents[2] / "plugins/LayerActions"
+    pdf = directory / "layer-actions.pdf"
+    write_beamer_pdf(pdf)
+    (config / "gtk4-canvas.ini").write_text(
+        f"[Plugins]\nenabled={plugin.resolve()}\ndisabled=\n", encoding="utf-8")
+    if not args.worker:
+        raise RuntimeError("LayerActions checks require --worker")
+    result = run(
+        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+         "--worker", str(args.worker.resolve()), "--pdf", str(pdf), "--verify-layer-actions"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    expected = (
+        "PASS: private GTK4 LayerActions annotated-page confirmation, clone, hide, add, undo/redo, and native reopen"
+    )
+    if expected not in result:
+        raise RuntimeError("GTK4 LayerActions integration did not complete")
+    for screenshot in ("layer-actions-cloned", "layer-actions-complete"):
+        path = output / f"{screenshot}.png"
+        if not path.is_file() or path.stat().st_size < 1000:
+            raise RuntimeError(f"Missing LayerActions integration screenshot: {path}")
+    return str(directory)
+
+
 def make_png(path, width=32, height=24):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data +
@@ -849,6 +880,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.layer_actions_only:
+        layer_actions_evidence = verify_layer_actions(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"layer-actions": layer_actions_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.beamer_only:
         beamer_evidence = verify_beamer(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1102,6 +1140,7 @@ def main():
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1113,6 +1152,8 @@ def main():
         raise RuntimeError("Laser pointer document round-trip checks require --worker")
     if args.play_object_only and not args.worker:
         raise RuntimeError("Play Object verification requires --worker")
+    if args.layer_actions_only and not args.worker:
+        raise RuntimeError("LayerActions verification requires --worker")
     if args.inside:
         inside(args)
         return
@@ -1174,6 +1215,8 @@ def main():
             command.append("--plugins-only")
         if args.beamer_only:
             command.append("--beamer-only")
+        if args.layer_actions_only:
+            command.append("--layer-actions-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 
