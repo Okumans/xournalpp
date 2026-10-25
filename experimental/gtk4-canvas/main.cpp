@@ -21,6 +21,10 @@
 #include <adwaita.h>
 #include <poppler.h>
 
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/wayland/gdkwayland.h>
+#endif
+
 #include "AudioPlayback.h"
 #include "AudioTarget.h"
 #include "BeamerPresentation.h"
@@ -307,6 +311,15 @@ public:
     }
 
     ~Prototype() {
+        for (const auto& operation: quickScreenshotOperations) {
+            operation->self = nullptr;
+            if (operation->process) {
+                g_subprocess_force_exit(operation->process);
+                g_clear_object(&operation->process);
+            }
+            removeQuickScreenshotDirectory(*operation);
+        }
+        quickScreenshotOperations.clear();
         for (guint* source: {&heartbeatSource, &autosaveSource, &crashHelperSource, &recoveryVerifySource,
                             &selectionEdgePanSource}) {
             if (*source) {
@@ -368,6 +381,15 @@ private:
         Prototype* prototype = nullptr;
         std::map<std::string, int> responses;
         std::function<void(int)> callback;
+    };
+
+    struct QuickScreenshotContext {
+        Prototype* self = nullptr;
+        std::string plugin;
+        std::string directory;
+        std::string imagePath;
+        GSubprocess* process = nullptr;
+        bool copyToClipboard = false;
     };
 
     static void fail(GError* error) {
@@ -1009,6 +1031,9 @@ private:
         host.exportDocument = [this](const prototype::DocumentExportOptions& exportOptions, std::string& error) {
             return exportDocumentFromPlugin(exportOptions, error);
         };
+        host.quickScreenshot = [this](std::string_view plugin, std::string& error) {
+            return startQuickScreenshot(plugin, error);
+        };
         host.documentFilename = [this] { return saveTarget; };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
@@ -1023,6 +1048,365 @@ private:
             }
         };
         pluginRuntime->loadEnabled(std::move(host));
+    }
+
+    static void removeQuickScreenshotDirectory(const QuickScreenshotContext& context) {
+        if (!context.directory.empty()) {
+            std::error_code error;
+            std::filesystem::remove_all(context.directory, error);
+        }
+    }
+
+    void finishQuickScreenshot(const std::shared_ptr<QuickScreenshotContext>& context) {
+        if (context->process) {
+            g_clear_object(&context->process);
+        }
+        if (context->self) {
+            context->self->choosingFile = false;
+            auto& operations = context->self->quickScreenshotOperations;
+            operations.erase(std::remove(operations.begin(), operations.end(), context), operations.end());
+            context->self = nullptr;
+        }
+        removeQuickScreenshotDirectory(*context);
+    }
+
+    void failQuickScreenshot(const std::shared_ptr<QuickScreenshotContext>& context, std::string message) {
+        if (context->self) {
+            auto* self = context->self;
+            if (self->options.verifyPlugins) {
+                self->quickScreenshotVerifyError = std::move(message);
+                self->quickScreenshotVerifyDone = true;
+            } else if (self->window) {
+                self->showAlert("Quick Screenshot failed", message);
+            }
+        }
+        finishQuickScreenshot(context);
+    }
+
+    void cancelQuickScreenshot(const std::shared_ptr<QuickScreenshotContext>& context) {
+        if (context->self && context->self->options.verifyPlugins) {
+            context->self->quickScreenshotVerifyError = "Region capture was cancelled";
+            context->self->quickScreenshotVerifyDone = true;
+        }
+        finishQuickScreenshot(context);
+    }
+
+    bool launchQuickScreenshotProcess(const std::shared_ptr<QuickScreenshotContext>& context,
+                                     const std::vector<std::string>& arguments, bool captureOutput,
+                                     std::string& error) {
+        std::vector<const gchar*> argv;
+        argv.reserve(arguments.size() + 1);
+        for (const auto& argument: arguments) {
+            argv.push_back(argument.c_str());
+        }
+        argv.push_back(nullptr);
+
+        GError* spawnError = nullptr;
+        const auto flags = captureOutput ?
+                                   static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                                                 G_SUBPROCESS_FLAGS_STDERR_SILENCE) :
+                                   static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                                                 G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+        context->process = g_subprocess_newv(argv.data(), flags, &spawnError);
+        if (!context->process) {
+            error = spawnError ? spawnError->message : "Could not start the screenshot utility";
+            g_clear_error(&spawnError);
+            return false;
+        }
+
+        auto* callbackContext = new std::shared_ptr<QuickScreenshotContext>(context);
+        if (captureOutput) {
+            g_subprocess_communicate_utf8_async(
+                    context->process, nullptr, nullptr,
+                    +[](GObject* source, GAsyncResult* result, gpointer data) {
+                        std::unique_ptr<std::shared_ptr<QuickScreenshotContext>> boxed(
+                                static_cast<std::shared_ptr<QuickScreenshotContext>*>(data));
+                        const auto operation = *boxed;
+                        gchar* output = nullptr;
+                        gchar* standardError = nullptr;
+                        GError* error = nullptr;
+                        const bool completed = g_subprocess_communicate_utf8_finish(
+                                G_SUBPROCESS(source), result, &output, &standardError, &error);
+                        std::string geometry = output ? output : "";
+                        g_strstrip(geometry.data());
+                        g_free(output);
+                        g_free(standardError);
+                        g_clear_error(&error);
+                        g_clear_object(&operation->process);
+
+                        if (!operation->self) {
+                            removeQuickScreenshotDirectory(*operation);
+                            return;
+                        }
+                        if (!completed || geometry.empty()) {
+                            operation->self->cancelQuickScreenshot(operation);
+                            return;
+                        }
+
+                        gchar* grimPath = g_find_program_in_path("grim");
+                        std::string launchError;
+                        const bool launched = grimPath && operation->self->launchQuickScreenshotProcess(
+                                                                 operation,
+                                                                 {grimPath, "-g", geometry, operation->imagePath},
+                                                                 false, launchError);
+                        g_free(grimPath);
+                        if (!launched) {
+                            operation->self->failQuickScreenshot(
+                                    operation, launchError.empty() ? "The grim screenshot utility is unavailable" :
+                                                                         launchError);
+                        }
+                    },
+                    callbackContext);
+        } else {
+            g_subprocess_wait_check_async(
+                    context->process, nullptr,
+                    +[](GObject* source, GAsyncResult* result, gpointer data) {
+                        std::unique_ptr<std::shared_ptr<QuickScreenshotContext>> boxed(
+                                static_cast<std::shared_ptr<QuickScreenshotContext>*>(data));
+                        const auto operation = *boxed;
+                        GError* error = nullptr;
+                        const bool completed = g_subprocess_wait_check_finish(G_SUBPROCESS(source), result, &error);
+                        std::error_code fileError;
+                        const auto imageStatus = std::filesystem::symlink_status(operation->imagePath, fileError);
+                        const bool imageExists = !fileError && std::filesystem::is_regular_file(imageStatus);
+                        auto imageSize = imageExists ?
+                                                 std::filesystem::file_size(operation->imagePath, fileError) :
+                                                 0;
+                        if (fileError) {
+                            imageSize = 0;
+                        }
+                        g_clear_error(&error);
+                        g_clear_object(&operation->process);
+
+                        if (!operation->self) {
+                            removeQuickScreenshotDirectory(*operation);
+                            return;
+                        }
+                        if (!completed && !imageExists) {
+                            operation->self->cancelQuickScreenshot(operation);
+                            return;
+                        }
+                        if (!completed || imageSize == 0) {
+                            operation->self->failQuickScreenshot(operation,
+                                                                  "The screenshot utility did not create a PNG image");
+                            return;
+                        }
+                        operation->self->quickScreenshotReady(operation);
+                    },
+                    callbackContext);
+        }
+        return true;
+    }
+
+    bool startQuickScreenshot(std::string_view plugin, std::string& error) {
+        if (!window || closed || busy || choosingFile || messageDialog) {
+            error = "Wait for the current dialog or document operation to finish";
+            return false;
+        }
+
+        gchar* scrot = nullptr;
+        gchar* maim = nullptr;
+        gchar* xclip = nullptr;
+        gchar* grim = nullptr;
+        gchar* slurp = nullptr;
+        bool wayland = g_getenv("WAYLAND_DISPLAY") != nullptr;
+#ifdef GDK_WINDOWING_WAYLAND
+        if (auto* display = gdk_display_get_default()) {
+            wayland = GDK_IS_WAYLAND_DISPLAY(display);
+        }
+#endif
+        if (options.verifyPlugins && g_getenv("XOURNALPP_TEST_QUICK_SCREENSHOT_X11")) {
+            wayland = false;
+        }
+        if (wayland) {
+            grim = g_find_program_in_path("grim");
+            slurp = g_find_program_in_path("slurp");
+        }
+        if (!wayland || !grim || !slurp) {
+            maim = g_find_program_in_path("maim");
+            if (!wayland) {
+                xclip = g_find_program_in_path("xclip");
+            }
+        }
+        const bool clipboardCapture = !wayland && maim && xclip;
+        if (!clipboardCapture && (!grim || !slurp)) {
+            g_clear_pointer(&grim, g_free);
+            g_clear_pointer(&slurp, g_free);
+            scrot = g_find_program_in_path("scrot");
+            if (!scrot && !maim) {
+                maim = g_find_program_in_path("maim");
+            }
+        }
+        if (!clipboardCapture && !grim && !scrot && !maim) {
+            grim = g_find_program_in_path("grim");
+            slurp = g_find_program_in_path("slurp");
+        }
+        if (!clipboardCapture && ((!grim || !slurp) && !scrot && !maim)) {
+            g_free(grim);
+            g_free(slurp);
+            g_free(xclip);
+            g_free(maim);
+            error = "Quick Screenshot needs scrot or maim on X11, or grim and slurp on Wayland";
+            return false;
+        }
+
+        GError* directoryError = nullptr;
+        gchar* directory = g_dir_make_tmp("xournalpp-screenshot-XXXXXX", &directoryError);
+        if (!directory) {
+            error = directoryError ? directoryError->message : "Could not create temporary screenshot storage";
+            g_clear_error(&directoryError);
+            g_free(grim);
+            g_free(slurp);
+            g_free(scrot);
+            g_free(maim);
+            g_free(xclip);
+            return false;
+        }
+
+        auto operation = std::make_shared<QuickScreenshotContext>();
+        operation->self = this;
+        operation->plugin = plugin;
+        operation->directory = directory;
+        operation->imagePath = (std::filesystem::path(directory) / "region.png").string();
+        operation->copyToClipboard = clipboardCapture;
+        g_free(directory);
+        quickScreenshotOperations.push_back(operation);
+        choosingFile = true;
+        resetInput(true);
+
+        bool launched = false;
+        if (grim && slurp) {
+            launched = launchQuickScreenshotProcess(operation, {slurp}, true, error);
+        } else if (scrot) {
+            launched = launchQuickScreenshotProcess(operation,
+                                                    {scrot, "--overwrite", "--select", "--silent",
+                                                     operation->imagePath},
+                                                    false, error);
+        } else if (maim) {
+            launched = launchQuickScreenshotProcess(operation, {maim, "-s", operation->imagePath}, false, error);
+        }
+        g_free(grim);
+        g_free(slurp);
+        g_free(scrot);
+        g_free(maim);
+        g_free(xclip);
+        if (!launched) {
+            finishQuickScreenshot(operation);
+            return false;
+        }
+        return true;
+    }
+
+    void quickScreenshotReady(const std::shared_ptr<QuickScreenshotContext>& context) {
+        if (!context->self) {
+            removeQuickScreenshotDirectory(*context);
+            return;
+        }
+        auto* self = context->self;
+        auto* capturedImage = cairo_image_surface_create_from_png(context->imagePath.c_str());
+        const auto imageStatus = cairo_surface_status(capturedImage);
+        cairo_surface_destroy(capturedImage);
+        if (imageStatus != CAIRO_STATUS_SUCCESS) {
+            self->failQuickScreenshot(context, "The screenshot utility did not produce a readable PNG image");
+            return;
+        }
+        if (context->copyToClipboard) {
+            gchar* contents = nullptr;
+            gsize length = 0;
+            GError* error = nullptr;
+            if (!g_file_get_contents(context->imagePath.c_str(), &contents, &length, &error)) {
+                const std::string message = error ? error->message : "Could not read the captured PNG image";
+                g_clear_error(&error);
+                self->failQuickScreenshot(context, message);
+                return;
+            }
+            auto* bytes = g_bytes_new_take(contents, length);
+            auto* provider = gdk_content_provider_new_for_bytes("image/png", bytes);
+            g_bytes_unref(bytes);
+            const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(self->canvas), provider);
+            g_object_unref(provider);
+            if (!copied) {
+                self->failQuickScreenshot(context, "Could not place the screenshot on the clipboard");
+                return;
+            }
+            if (self->options.verifyPlugins) {
+                self->quickScreenshotVerifyError.clear();
+                self->quickScreenshotVerifyDone = true;
+            }
+            self->finishQuickScreenshot(context);
+            return;
+        }
+        if (self->options.verifyPlugins) {
+            const auto destination = std::filesystem::path(self->options.smokeDirectory) / "quick-screenshot.png";
+            auto* file = g_file_new_for_path(destination.c_str());
+            self->copyQuickScreenshot(context, file);
+            g_object_unref(file);
+            return;
+        }
+
+        auto* dialog = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(dialog, "Save Quick Screenshot");
+        gtk_file_dialog_set_initial_name(dialog, "Untitled.png");
+        auto* callbackContext = new std::shared_ptr<QuickScreenshotContext>(context);
+        gtk_file_dialog_save(dialog, GTK_WINDOW(self->window), nullptr,
+                             +[](GObject* source, GAsyncResult* result, gpointer data) {
+                                 std::unique_ptr<std::shared_ptr<QuickScreenshotContext>> boxed(
+                                         static_cast<std::shared_ptr<QuickScreenshotContext>*>(data));
+                                 const auto operation = *boxed;
+                                 if (!operation->self) {
+                                     removeQuickScreenshotDirectory(*operation);
+                                     return;
+                                 }
+                                 GError* error = nullptr;
+                                 auto* file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &error);
+                                 if (!file) {
+                                     const bool cancelled = error &&
+                                             (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+                                              g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_CANCELLED) ||
+                                              g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED));
+                                     const std::string message = error ? error->message : "Could not choose a file";
+                                     g_clear_error(&error);
+                                     if (cancelled) {
+                                         operation->self->cancelQuickScreenshot(operation);
+                                     } else {
+                                         operation->self->failQuickScreenshot(operation, message);
+                                     }
+                                     return;
+                                 }
+                                 operation->self->copyQuickScreenshot(operation, file);
+                                 g_object_unref(file);
+                             },
+                             callbackContext);
+        g_object_unref(dialog);
+    }
+
+    void copyQuickScreenshot(const std::shared_ptr<QuickScreenshotContext>& context, GFile* destination) {
+        auto* source = g_file_new_for_path(context->imagePath.c_str());
+        auto* callbackContext = new std::shared_ptr<QuickScreenshotContext>(context);
+        g_file_copy_async(source, destination, G_FILE_COPY_OVERWRITE, G_PRIORITY_DEFAULT, nullptr, nullptr, nullptr,
+                          +[](GObject* sourceFile, GAsyncResult* result, gpointer data) {
+                              std::unique_ptr<std::shared_ptr<QuickScreenshotContext>> boxed(
+                                      static_cast<std::shared_ptr<QuickScreenshotContext>*>(data));
+                              const auto operation = *boxed;
+                              GError* error = nullptr;
+                              const bool copied = g_file_copy_finish(G_FILE(sourceFile), result, &error);
+                              const std::string message = error ? error->message : "Could not save the screenshot";
+                              g_clear_error(&error);
+                              if (!operation->self) {
+                                  removeQuickScreenshotDirectory(*operation);
+                                  return;
+                              }
+                              auto* self = operation->self;
+                              if (self->options.verifyPlugins) {
+                                  self->quickScreenshotVerifyError = copied ? "" : message;
+                                  self->quickScreenshotVerifyDone = true;
+                              } else if (!copied && self->window) {
+                                  self->showAlert("Could not save Quick Screenshot", message);
+                              }
+                              self->finishQuickScreenshot(operation);
+                          },
+                          callbackContext);
+        g_object_unref(source);
     }
 
     bool changePluginPageBackground(std::string_view format, std::string_view config, std::string& error) {
@@ -2567,6 +2951,50 @@ private:
         }
     }
 
+    void verifyQuickScreenshotPlugin() {
+        const auto plugin = pluginRuntime->findPlugin("QuickScreenshot");
+        require(plugin && plugin->loaded && plugin->menuItems == 1,
+                "Bundled QuickScreenshot did not register its GTK4 menu callback");
+        quickScreenshotVerifyDone = false;
+        quickScreenshotVerifyError.clear();
+        require(pluginRuntime->invokeMenu("QuickScreenshot", 0),
+                "QuickScreenshot did not dispatch its capture action");
+
+        const auto deadline = g_get_monotonic_time() + 10000000;
+        while (!quickScreenshotVerifyDone && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(quickScreenshotVerifyDone,
+                "QuickScreenshot did not finish capture and saving before the verification timeout");
+        require(quickScreenshotVerifyError.empty(), quickScreenshotVerifyError.c_str());
+
+        const auto path = std::filesystem::path(options.smokeDirectory) / "quick-screenshot.png";
+        auto* surface = cairo_image_surface_create_from_png(path.c_str());
+        const auto status = cairo_surface_status(surface);
+        cairo_surface_destroy(surface);
+        require(status == CAIRO_STATUS_SUCCESS, "QuickScreenshot did not save a valid PNG file");
+
+        g_setenv("XOURNALPP_TEST_QUICK_SCREENSHOT_X11", "1", true);
+        quickScreenshotVerifyDone = false;
+        quickScreenshotVerifyError.clear();
+        const bool clipboardCaptureStarted = pluginRuntime->invokeMenu("QuickScreenshot", 0);
+        g_unsetenv("XOURNALPP_TEST_QUICK_SCREENSHOT_X11");
+        const auto clipboardDeadline = g_get_monotonic_time() + 10000000;
+        while (clipboardCaptureStarted && !quickScreenshotVerifyDone &&
+               g_get_monotonic_time() < clipboardDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(clipboardCaptureStarted && quickScreenshotVerifyDone && quickScreenshotVerifyError.empty(),
+                quickScreenshotVerifyError.empty() ?
+                        "QuickScreenshot did not finish the X11 clipboard capture path" :
+                        quickScreenshotVerifyError.c_str());
+        const auto* clipboardFormats = gdk_clipboard_get_formats(gtk_widget_get_clipboard(canvas));
+        require(gdk_content_formats_contain_mime_type(clipboardFormats, "image/png"),
+                "QuickScreenshot did not publish PNG data to the GTK clipboard");
+    }
+
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
         const auto savedInkSize = state.ink.size();
@@ -2651,11 +3079,14 @@ private:
         const auto exportPlugin = pluginRuntime->findPlugin("Export");
         require(exportPlugin && exportPlugin->loaded && exportPlugin->menuItems == 3,
                 "Enabled bundled Export plugin did not register PDF, SVG, and PNG actions");
+        const auto quickScreenshotPlugin = pluginRuntime->findPlugin("QuickScreenshot");
+        require(quickScreenshotPlugin && quickScreenshotPlugin->loaded && quickScreenshotPlugin->menuItems == 1,
+                "Enabled bundled QuickScreenshot plugin did not register its capture action");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 9,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 10,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -2840,8 +3271,10 @@ private:
                 "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
         verifyFitToContentPlugin();
+        verifyQuickScreenshotPlugin();
         std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-                     "HighlightPosition, Export PDF/SVG/PNG, ImageActions, FitToContent page resizing, "
+                     "HighlightPosition, QuickScreenshot region capture/clipboard, Export PDF/SVG/PNG, ImageActions, "
+                     "FitToContent page resizing, "
                      "SpaceForNotes page insertion, "
                      "ToggleGrid paper changes, and background undo/redo\n";
     }
@@ -13286,6 +13719,9 @@ private:
 
     Options options;
     std::unique_ptr<prototype::LuaPluginRuntime> pluginRuntime;
+    std::vector<std::shared_ptr<QuickScreenshotContext>> quickScreenshotOperations;
+    bool quickScreenshotVerifyDone = false;
+    std::string quickScreenshotVerifyError;
     std::filesystem::path preferencesConfigDir;
     prototype::SettingsImportResult importedConfig;
     int effectiveAutosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;

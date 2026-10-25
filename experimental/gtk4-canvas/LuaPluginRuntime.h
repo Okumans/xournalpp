@@ -69,6 +69,7 @@ struct PluginRuntimeHost {
     std::function<bool(bool, std::string&)> setLayerVisibility;
     std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
     std::function<bool(const DocumentExportOptions&, std::string&)> exportDocument;
+    std::function<bool(std::string_view, std::string&)> quickScreenshot;
     std::function<std::string()> documentFilename;
     std::function<bool(std::string_view, std::string_view, const std::vector<PluginDialogButton>&, bool,
                        std::function<void(int)>, std::string&)>
@@ -127,6 +128,7 @@ public:
     static int luaSetLayerVisibility(lua_State* state);
     static int luaSetCurrentLayerName(lua_State* state);
     static int luaExport(lua_State* state);
+    static int luaQuickScreenshot(lua_State* state);
     static int luaGetDocumentStructure(lua_State* state);
     static int luaOpenDialog(lua_State* state);
 
@@ -151,6 +153,7 @@ private:
     bool setLayerVisibility(bool visible, std::string& error);
     bool setCurrentLayerName(std::string_view name, std::string& error);
     bool exportDocument(const DocumentExportOptions& options, std::string& error);
+    bool quickScreenshot(std::string_view plugin, std::string& error);
     std::string documentFilename() const;
     bool openDialog(Plugin& plugin, std::string_view message, const std::vector<PluginDialogButton>& buttons,
                     bool isError, std::string_view callback, std::string& error);

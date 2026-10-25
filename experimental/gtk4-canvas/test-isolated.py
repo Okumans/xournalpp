@@ -383,6 +383,47 @@ def verify_plugins(args, evidence):
     image_actions = plugin_root / "ImageActions"
     fit_to_content = plugin_root / "FitToContent"
     export_plugin = plugin_root / "Export"
+    quick_screenshot = plugin_root / "QuickScreenshot"
+    fake_bin = directory / "fake-bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    screenshot_input = directory / "captured-region.png"
+    pixel = b"\x00\x32\x78\xc8\xff"
+
+    def png_chunk(kind, payload):
+        crc = zlib.crc32(kind + payload) & 0xffffffff
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
+
+    png_data = (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + png_chunk(b"IDAT", zlib.compress(pixel))
+        + png_chunk(b"IEND", b"")
+    )
+    screenshot_input.write_bytes(png_data)
+    scrot_stub = fake_bin / "scrot"
+    scrot_stub.write_text(
+        "#!/usr/bin/python3\nimport shutil, sys\n"
+        f"shutil.copyfile({str(screenshot_input)!r}, sys.argv[-1])\n",
+        encoding="utf-8")
+    scrot_stub.chmod(0o755)
+    maim_stub = fake_bin / "maim"
+    maim_stub.write_text(
+        "#!/usr/bin/python3\nimport shutil, sys\n"
+        f"shutil.copyfile({str(screenshot_input)!r}, sys.argv[-1])\n",
+        encoding="utf-8")
+    maim_stub.chmod(0o755)
+    xclip_stub = fake_bin / "xclip"
+    xclip_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    xclip_stub.chmod(0o755)
+    grim_stub = fake_bin / "grim"
+    grim_stub.write_text(
+        "#!/usr/bin/python3\nimport shutil, sys\n"
+        f"shutil.copyfile({str(screenshot_input)!r}, sys.argv[-1])\n",
+        encoding="utf-8")
+    grim_stub.chmod(0o755)
+    slurp_stub = fake_bin / "slurp"
+    slurp_stub.write_text("#!/bin/sh\nprintf '0,0 1x1\\n'\n", encoding="utf-8")
+    slurp_stub.chmod(0o755)
     make_image_actions_png(output / "image-actions-input.png")
     image_actions_test = args.binary.resolve().with_name("canvas-image-actions-test")
     if not image_actions_test.is_file():
@@ -390,7 +431,7 @@ def verify_plugins(args, evidence):
     image_actions_result = run([str(image_actions_test)], env=dict(os.environ, G_DEBUG="fatal-criticals"))
     image_actions_available = "PASS: GTK4 canvas image actions (libvips)" in image_actions_result
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()},{image_actions.resolve()},{fit_to_content.resolve()},{export_plugin.resolve()}\ndisabled=\n",
+        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()},{image_actions.resolve()},{fit_to_content.resolve()},{export_plugin.resolve()},{quick_screenshot.resolve()}\ndisabled=\n",
         encoding="utf-8")
     if not args.worker:
         raise RuntimeError("Bundled plugin integration checks require --worker")
@@ -398,26 +439,29 @@ def verify_plugins(args, evidence):
         [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
          "--worker", str(args.worker.resolve()), "--pdf",
          str(Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"), "--verify-plugins"],
-        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+        env=dict(os.environ, G_DEBUG="fatal-criticals",
+                 PATH=str(fake_bin) + os.pathsep + os.environ.get("PATH", "")),
     )
     expected = (
         "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-        "HighlightPosition, Export PDF/SVG/PNG, ImageActions, FitToContent page resizing, SpaceForNotes page insertion, "
+        "HighlightPosition, QuickScreenshot region capture/clipboard, Export PDF/SVG/PNG, ImageActions, "
+        "FitToContent page resizing, SpaceForNotes page insertion, "
         "ToggleGrid paper changes, and background undo/redo"
     )
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
     screenshots = ["plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps",
-                   "fit-to-content-page"]
+                   "fit-to-content-page", "quick-screenshot.png"]
     if image_actions_available:
         screenshots.append("image-actions-split")
     for screenshot in screenshots:
-        path = output / f"{screenshot}.png"
-        if not path.is_file() or path.stat().st_size < 1000:
+        path = output / screenshot if screenshot.endswith(".png") else output / f"{screenshot}.png"
+        min_size = 1 if screenshot == "quick-screenshot.png" else 1000
+        if not path.is_file() or path.stat().st_size < min_size:
             raise RuntimeError(f"Missing plugin integration screenshot: {path}")
     saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
     for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition", "SpaceForNotes", "ImageActions",
-                   "FitToContent", "Export"):
+                   "FitToContent", "Export", "QuickScreenshot"):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")

@@ -144,13 +144,18 @@ int main() {
                 "end\n"
                 "function exportDefaults() app.export({outputFile='/tmp/plugin-default.pdf'}) end\n"
                 "function malformed() app.addStrokes({strokes={{x={1,2}, y={3}}}}) end\n");
+    const auto quickScreenshotPlugin = root / "QuickScreenshot";
+    writePlugin(quickScreenshotPlugin,
+                readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
+                readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/main.lua"));
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
-    runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string(), {});
+    runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
+                                     quickScreenshotPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 11, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 12, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -172,6 +177,7 @@ int main() {
     double pageHeightChange = 0;
     bool pageSizeRelative = false;
     bool exportCalled = false;
+    bool quickScreenshotCalled = false;
     std::vector<prototype::DocumentExportOptions> exportRequests;
     bool layerVisible = true;
     std::string renamedLayer;
@@ -246,6 +252,10 @@ int main() {
         exportRequests.push_back(options);
         return true;
     };
+    host.quickScreenshot = [&](std::string_view plugin, std::string&) {
+        quickScreenshotCalled = plugin == "QuickScreenshot";
+        return quickScreenshotCalled;
+    };
     host.documentFilename = [] { return std::string("/tmp/plugin-test.xopp"); };
     host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
         changedBackgroundFormat = format;
@@ -289,6 +299,10 @@ int main() {
     require(loadedStrokeMutationPlugin && loadedStrokeMutationPlugin->loaded &&
                     loadedStrokeMutationPlugin->menuItems == 4,
             "Plugin using stroke creation and layer/page APIs did not load its callbacks");
+    const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
+    require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
+                    loadedQuickScreenshotPlugin->menuItems == 1,
+            "Bundled QuickScreenshot plugin did not register its menu callback through the GTK4 host");
     require(!runtime.findPlugin("InvalidMain")->loaded, "Invalid plugin mainfile unexpectedly loaded");
     const auto loadedInvalidApi = runtime.findPlugin("InvalidApi");
     require(loadedInvalidApi && !loadedInvalidApi->loaded &&
@@ -345,6 +359,8 @@ int main() {
                     exportRequests.back().backend == "default" && exportRequests.back().pngDpi == -1 &&
                     exportRequests.back().pngWidth == -1 && exportRequests.back().pngHeight == -1,
             "app.export did not apply the master option defaults");
+    require(runtime.invokeMenu("QuickScreenshot", 0) && quickScreenshotCalled,
+            "Bundled QuickScreenshot did not dispatch app.quickScreenshot to the GTK4 host");
     require(runtime.invokeMenu("BeamerPresentation", 0) && activatedActions == std::vector<std::string>{"beamer-next"},
             "Beamer +1 did not dispatch the next-animation host action");
     require(runtime.invokeMenu("BeamerPresentation", 1) &&
@@ -382,8 +398,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 17 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 8,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 18 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 9,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
