@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **52 task areas — 38 Partial, 14 Pending, 0 Covered, and 0
+Current ledger count: **53 task areas — 41 Partial, 11 Pending, 1 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -30,7 +30,9 @@ canvas surround and the page sidebar closed. Put infrequent actions in menus or
 secondary tool sections. Keep Smart Select easy to find and preserve its native
 text, PDF, object, and modifier behavior. Keep toolbar contents and placement
 user-configurable, including the existing customization paths, as the visual
-design evolves.
+design evolves. Keep frequent main tools on a persistent, reorderable rail,
+with Smart Select directly available by default; secondary tools can be grouped
+without removing or disabling them.
 
 ## Master tools
 
@@ -92,15 +94,17 @@ it is not represented by a single `ToolType`.
 ## Built-in plugin inventory
 
 The master repository bundles these directories under `plugins/`. The prototype
-has no Lua runtime, loader, manager, plugin menu, plugin toolbar items, or plugin
-shortcut dispatch, so each remains pending. `Example` is a reference plugin;
-it stays listed because it is part of the master plugin distribution.
+now discovers plugin manifests, loads enabled Lua scripts, dispatches registered
+menu callbacks and canvas shortcuts, and offers a manager that persists enabled
+plugin paths. The host implements only part of the master Lua API, so most
+plugins remain pending. `Example` is a reference plugin; it stays listed because
+it is part of the master plugin distribution.
 
 | Plugin | Observable behavior | GTK 4 status |
 | --- | --- | --- |
 | `BeamerPresentation` | Navigate animated Beamer PDFs and remove animation pages. | Pending |
-| `ColorCycle` | Cycle through a configured color list. | Pending |
-| `Example` | Demonstrate the plugin API. | Pending |
+| `ColorCycle` | Cycle through a configured color list. | Covered |
+| `Example` | Demonstrate the plugin API. | Partial — manifest loading and menu registration work; `app.openDialog` and its dialog callback are missing. |
 | `Export` | Export documents to PDF, SVG, and PNG. | Pending |
 | `FitToContent` | Resize page content to fit a selection or layer. | Pending |
 | `HighlightPosition` | Toggle a position highlight using a shortcut. | Pending |
@@ -109,13 +113,14 @@ it stays listed because it is part of the master plugin distribution.
 | `QuickScreenshot` | Capture a screen region to an image using supported platform utilities. | Pending |
 | `SpaceForNotes` | Add empty pages for notes. | Pending |
 | `ToggleGrid` | Toggle the page grid. | Pending |
-| `ToolShortcuts` | Add canvas-scoped tool and page-navigation shortcuts. | Pending |
+| `ToolShortcuts` | Add canvas-scoped tool and page-navigation shortcuts. | Partial — bundled shortcuts select common tools including Smart Select, navigate pages, open Go to Page, and invoke undo/redo. Search and some master actions are missing. |
 
 ## Cross-cutting application behavior
 
 | Area | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
 | Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, selection edge-pan speed/multiplier, spacing, tolerance, laser tool colors/sizes, laser fade delay, stylus Floating Toolbox mapping, audio playback folder/seek/disable settings, the customizable main tool rail, and editable floating-toolbar rows. Audit every user-facing setting, per-device `deviceClasses`, audio device/recording controls, unsupported toolbar actions, and the legacy drag/drop customization workflow. |
+| Lua plugin runtime and manager | Partial | Discovers bundled, explicit `--plugin-dir`, and per-user plugin paths; reads `plugin.ini`, loads enabled Lua 5.4 scripts, exposes a Plugins menu and manager, persists enabled-path overrides, and dispatches registered menu actions, accelerators, and canvas shortcuts. `app.C` tool IDs, `app.registerUi`, color changes, selected-stroke/text recoloring, common tool selection, grid snapping state, page navigation, Go to Page, undo/redo, and default-tool actions work. Port the full master Lua API, toolbar integration, plugin-specific actions and state, and remaining bundled plugins. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |

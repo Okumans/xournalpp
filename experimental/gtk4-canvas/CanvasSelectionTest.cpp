@@ -116,10 +116,35 @@ static void resizeHandleOutsidePage() {
           "A selection handle outside the page should start its resize gesture");
 }
 
+static void recolorSelectionUndo() {
+    auto state = fixture();
+    TextItem text;
+    text.page = 0;
+    text.text = "color";
+    text.styleRuns.push_back({0, text.text.size(), "Sans", 12, 0xff000000U, 0});
+    state.texts.push_back(text);
+    state.selected = {0};
+    state.selectedTexts = {0};
+
+    check(state.recolorSelection({0.2, 0.3, 0.4}, 0xff334455U),
+          "Plugin-style selection recoloring should update editable ink and text");
+    check(state.ink[0].brush.color == std::array<double, 3>({0.2, 0.3, 0.4}) && state.texts[0].color == 0xff334455U &&
+                  state.texts[0].styleRuns[0].color == 0xff334455U,
+          "Selection recoloring did not update stroke and rich-text colors");
+    state.undo();
+    check(state.ink[0].brush.color == std::array<double, 3>({1, 0, 0}) && state.texts[0].color == 0xff000000U &&
+                  state.texts[0].styleRuns[0].color == 0xff000000U,
+          "Undo did not restore plugin-style stroke and text color changes");
+    state.redo();
+    check(state.ink[0].brush.color == std::array<double, 3>({0.2, 0.3, 0.4}) && state.texts[0].color == 0xff334455U,
+          "Redo did not restore plugin-style selection colors");
+}
+
 int main() {
     try {
         visibleLayerSelection();
         resizeHandleOutsidePage();
+        recolorSelectionUndo();
         auto state = fixture();
         state.zoom = 1.8;
         state.offsetX = -15;

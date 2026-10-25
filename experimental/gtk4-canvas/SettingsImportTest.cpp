@@ -62,6 +62,8 @@ int main() {
   <property name="defaultSeekTime" value="9"/>
   <property name="disableAudio" value="true"/>
   <property name="colorPalette" value="palettes/xournalpp.gpl"/>
+  <property name="pluginEnabled" value="/plugins/ColorCycle"/>
+  <property name="pluginDisabled" value="/plugins/Example"/>
   <data name="buttonConfig">
     <data name="eraser">
       <attribute name="tool" type="string" value="eraser"/>
@@ -116,6 +118,8 @@ int main() {
     require(s.laserPointerFadeOutTimeMs == 750, "Laser pointer fade delay mismatch");
     require(s.audioFolder == std::filesystem::path("recordings") && s.defaultSeekTimeSeconds == 9 && s.disableAudio,
             "Audio playback settings were not imported");
+    require(s.pluginsEnabled == "/plugins/ColorCycle" && s.pluginsDisabled == "/plugins/Example",
+            "Legacy plugin enablement settings were not imported");
     require(s.pressureSensitivity && near(s.minimumPressure, 0.14) && near(s.pressureMultiplier, 1.35),
             "Pressure settings mismatch");
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");

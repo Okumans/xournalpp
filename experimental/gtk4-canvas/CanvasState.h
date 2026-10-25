@@ -2384,6 +2384,59 @@ public:
         });
     }
 
+    bool recolorSelection(const std::array<double, 3>& color, uint32_t textColor) {
+        if (current || eraseGesture || selectionGesture || !hasSelection()) {
+            return false;
+        }
+        for (const auto channel: color) {
+            if (!std::isfinite(channel) || channel < 0 || channel > 1) {
+                return false;
+            }
+        }
+
+        Edit edit;
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+        edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
+        auto inkIndices = selected;
+        std::sort(inkIndices.begin(), inkIndices.end());
+        inkIndices.erase(std::unique(inkIndices.begin(), inkIndices.end()), inkIndices.end());
+        for (const auto index: inkIndices) {
+            if (index >= ink.size()) {
+                return false;
+            }
+            auto replacement = ink[index];
+            replacement.brush.color = color;
+            if (replacement.brush.color != ink[index].brush.color) {
+                edit.changes.push_back({index, {ink[index]}, index, {std::move(replacement)}});
+            }
+        }
+
+        auto textIndices = selectedTexts;
+        std::sort(textIndices.begin(), textIndices.end());
+        textIndices.erase(std::unique(textIndices.begin(), textIndices.end()), textIndices.end());
+        for (const auto index: textIndices) {
+            if (index >= texts.size()) {
+                return false;
+            }
+            auto replacement = texts[index];
+            replacement.color = textColor;
+            for (auto& run: replacement.styleRuns) {
+                run.color = textColor;
+            }
+            if (replacement != texts[index]) {
+                edit.textChanges.push_back({index, {texts[index]}, index, {std::move(replacement)}});
+            }
+        }
+
+        if (edit.changes.empty() && edit.textChanges.empty()) {
+            return false;
+        }
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
     bool deleteText(size_t index) {
         if (index >= texts.size() || current || eraseGesture || selectionGesture) {
             return false;
