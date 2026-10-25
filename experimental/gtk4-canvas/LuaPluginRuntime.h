@@ -245,6 +245,7 @@ public:
     static int luaChangeCurrentPageBackground(lua_State* state);
     static int luaAddEmptyPages(lua_State* state);
     static int luaTransformSelectedImages(lua_State* state);
+    static int luaGetFolder(lua_State* state);
     static int luaGetDisplayDpi(lua_State* state);
     static int luaGetZoom(lua_State* state);
     static int luaSetZoom(lua_State* state);
