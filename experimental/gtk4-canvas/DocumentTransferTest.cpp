@@ -2,6 +2,7 @@
 #include <iostream>
 
 #include "DocumentInk.h"
+#include "PageSizeTransfer.h"
 
 using namespace prototype::bridge;
 
@@ -120,8 +121,25 @@ int main() {
         if (!readTransfer(path).empty()) {
             throw std::runtime_error("Empty transfer must retain the original document without new ink");
         }
+        const std::vector<PageSizePacket> pageSizes{{612.25, 792.5}, {320, 480}};
+        writePageSizeTransfer(path, pageSizes);
+        const auto decodedPageSizes = readPageSizeTransfer(path);
+        if (decodedPageSizes.size() != pageSizes.size() || decodedPageSizes[0].width != pageSizes[0].width ||
+            decodedPageSizes[0].height != pageSizes[0].height || decodedPageSizes[1].width != pageSizes[1].width ||
+            decodedPageSizes[1].height != pageSizes[1].height) {
+            throw std::runtime_error("Page-size transfer did not preserve page dimensions and precision");
+        }
+        bool rejectedPageSizes = false;
+        try {
+            writePageSizeTransfer(path, {{595, 842}, {0, 100}});
+        } catch (const std::runtime_error&) {
+            rejectedPageSizes = true;
+        }
+        if (!rejectedPageSizes || readPageSizeTransfer(path).size() != pageSizes.size()) {
+            throw std::runtime_error("Invalid page-size transfer changed the existing file");
+        }
         std::filesystem::remove(path);
-        std::cout << "PASS: transfer precision, pressure flag, preflight validation and empty sessions\n";
+        std::cout << "PASS: ink and page-size transfer precision, validation and empty sessions\n";
     } catch (const std::exception& error) {
         std::filesystem::remove(path);
         std::cerr << error.what() << '\n';

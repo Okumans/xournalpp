@@ -153,6 +153,10 @@ int luaOpenApp(lua_State* state) {
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
+            {"addStrokes", LuaPluginRuntime::luaAddStrokes},
+            {"setPageSize", LuaPluginRuntime::luaSetPageSize},
+            {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
+            {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
@@ -692,6 +696,39 @@ bool LuaPluginRuntime::getStrokes(std::string_view type, std::vector<PluginStrok
     return host.getStrokes(type, strokes, error);
 }
 
+bool LuaPluginRuntime::addStrokes(const std::vector<PluginStrokeInput>& strokes, PluginStrokeUndoPolicy undoPolicy,
+                                  std::vector<std::uintptr_t>& references, std::string& error) {
+    if (!host.addStrokes) {
+        error = "Adding strokes is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.addStrokes(strokes, undoPolicy, references, error);
+}
+
+bool LuaPluginRuntime::setPageSize(double width, double height, bool relative, std::string& error) {
+    if (!host.setPageSize) {
+        error = "Changing page size is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.setPageSize(width, height, relative, error);
+}
+
+bool LuaPluginRuntime::setLayerVisibility(bool visible, std::string& error) {
+    if (!host.setLayerVisibility) {
+        error = "Layer visibility changes are unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.setLayerVisibility(visible, error);
+}
+
+bool LuaPluginRuntime::setCurrentLayerName(std::string_view name, std::string& error) {
+    if (!host.setCurrentLayerName) {
+        error = "Layer rename is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.setCurrentLayerName(name, error);
+}
+
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
                                   const std::vector<PluginDialogButton>& buttons, bool isError,
                                   std::string_view callback, std::string& error) {
@@ -1064,6 +1101,313 @@ int LuaPluginRuntime::luaGetStrokes(lua_State* state) {
         return lua_error(state);
     }
     return 1;
+}
+
+int LuaPluginRuntime::luaAddStrokes(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginStrokeInput> strokes;
+        std::vector<std::uintptr_t> references;
+        PluginStrokeUndoPolicy undoPolicy = PluginStrokeUndoPolicy::Grouped;
+        constexpr std::size_t maxStrokeCount = 100000;
+        constexpr std::size_t maxPointCount = 1000000;
+        std::size_t totalPointCount = 0;
+
+        lua_settop(state, 1);
+        if (!lua_istable(state, 1)) {
+            std::snprintf(error, sizeof(error), "addStrokes expects an options table");
+        }
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "strokes");
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Missing stroke table!");
+            }
+        }
+
+        const auto strokeCount = error[0] == '\0' ? lua_rawlen(state, -1) : 0;
+        if (error[0] == '\0' && strokeCount > maxStrokeCount) {
+            std::snprintf(error, sizeof(error), "Stroke batch exceeds the supported stroke count");
+        }
+
+        const auto readNumberArray = [state, &error, maxPointCount](int strokeIndex, const char* field,
+                                                                    std::vector<double>& values, bool required) {
+            lua_getfield(state, strokeIndex, field);
+            if (!lua_istable(state, -1)) {
+                if (!required && lua_isnil(state, -1)) {
+                    lua_pop(state, 1);
+                    return;
+                }
+                std::snprintf(error, 512, "Stroke field '%s' must be a number array", field);
+                lua_pop(state, 1);
+                return;
+            }
+            const int arrayIndex = lua_gettop(state);
+            const auto count = lua_rawlen(state, arrayIndex);
+            if (count > maxPointCount) {
+                std::snprintf(error, 512, "Stroke field '%s' exceeds the supported point count", field);
+                lua_pop(state, 1);
+                return;
+            }
+            values.reserve(count);
+            for (std::size_t point = 1; point <= count; ++point) {
+                lua_rawgeti(state, arrayIndex, static_cast<lua_Integer>(point));
+                if (!lua_isnumber(state, -1)) {
+                    std::snprintf(error, 512, "Stroke field '%s' contains a non-number value", field);
+                    lua_pop(state, 1);
+                    break;
+                }
+                const double value = lua_tonumber(state, -1);
+                lua_pop(state, 1);
+                if (!std::isfinite(value)) {
+                    std::snprintf(error, 512, "Stroke field '%s' contains a non-finite value", field);
+                    break;
+                }
+                values.push_back(value);
+            }
+            lua_pop(state, 1);
+        };
+
+        for (std::size_t index = 1; error[0] == '\0' && index <= strokeCount; ++index) {
+            lua_rawgeti(state, 2, static_cast<lua_Integer>(index));
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Stroke entry %zu must be a table", index);
+                lua_pop(state, 1);
+                break;
+            }
+            const int strokeIndex = lua_gettop(state);
+            PluginStrokeInput stroke;
+            readNumberArray(strokeIndex, "x", stroke.x, true);
+            if (error[0] == '\0') {
+                readNumberArray(strokeIndex, "y", stroke.y, true);
+            }
+            if (error[0] == '\0') {
+                readNumberArray(strokeIndex, "pressure", stroke.pressure, false);
+            }
+            if (error[0] == '\0' && stroke.x.size() != stroke.y.size()) {
+                std::snprintf(error, sizeof(error), "X and Y vectors are not equal length!");
+            }
+            if (error[0] == '\0' && !stroke.pressure.empty() && stroke.x.size() != stroke.pressure.size()) {
+                std::snprintf(error, sizeof(error), "Pressure vector is not equal length!");
+            }
+            if (error[0] == '\0' && stroke.x.size() < 2) {
+                std::snprintf(error, sizeof(error), "A stroke must contain at least two points");
+            }
+            if (error[0] == '\0' && stroke.x.size() > maxPointCount - totalPointCount) {
+                std::snprintf(error, sizeof(error), "Stroke batch exceeds the supported point count");
+            }
+            totalPointCount += stroke.x.size();
+
+            const auto readString = [state, strokeIndex, &error](const char* field,
+                                                                 std::optional<std::string>& value) {
+                lua_getfield(state, strokeIndex, field);
+                if (lua_isnil(state, -1)) {
+                    lua_pop(state, 1);
+                    return;
+                }
+                if (lua_type(state, -1) != LUA_TSTRING) {
+                    std::snprintf(error, 512, "Stroke field '%s' must be a string", field);
+                } else {
+                    value = lua_tostring(state, -1);
+                }
+                lua_pop(state, 1);
+            };
+            const auto readNumber = [state, strokeIndex, &error](const char* field,
+                                                                 std::optional<double>& value) {
+                lua_getfield(state, strokeIndex, field);
+                if (lua_isnil(state, -1)) {
+                    lua_pop(state, 1);
+                    return;
+                }
+                if (!lua_isnumber(state, -1)) {
+                    std::snprintf(error, 512, "Stroke field '%s' must be a number", field);
+                } else {
+                    const double number = lua_tonumber(state, -1);
+                    if (!std::isfinite(number) || number <= 0) {
+                        std::snprintf(error, 512, "Stroke field '%s' must be finite and positive", field);
+                    } else {
+                        value = number;
+                    }
+                }
+                lua_pop(state, 1);
+            };
+            const auto readInteger = [state, strokeIndex, &error](const char* field, std::optional<int>& value) {
+                lua_getfield(state, strokeIndex, field);
+                if (lua_isnil(state, -1)) {
+                    lua_pop(state, 1);
+                    return;
+                }
+                if (!lua_isinteger(state, -1)) {
+                    std::snprintf(error, 512, "Stroke field '%s' must be an integer", field);
+                } else {
+                    const auto integer = lua_tointeger(state, -1);
+                    if (integer < std::numeric_limits<int>::min() || integer > std::numeric_limits<int>::max()) {
+                        std::snprintf(error, 512, "Stroke field '%s' is out of range", field);
+                    } else {
+                        value = static_cast<int>(integer);
+                    }
+                }
+                lua_pop(state, 1);
+            };
+
+            if (error[0] == '\0') {
+                readString("tool", stroke.tool);
+                readNumber("width", stroke.width);
+                readString("lineStyle", stroke.lineStyle);
+                std::optional<int> color;
+                readInteger("color", color);
+                if (color) {
+                    if (*color < 0 || *color > 0xffffff) {
+                        std::snprintf(error, sizeof(error), "Color must be an RGB hex code in the range 0x000000..0xFFFFFF");
+                    } else {
+                        stroke.color = static_cast<std::uint32_t>(*color);
+                    }
+                }
+                readInteger("fill", stroke.fill);
+                if (stroke.fill && (*stroke.fill < -1 || *stroke.fill > 255)) {
+                    std::snprintf(error, sizeof(error), "Stroke field 'fill' must be -1 or an opacity from 0 to 255");
+                }
+            }
+            lua_pop(state, 1);
+            if (error[0] == '\0') {
+                strokes.push_back(std::move(stroke));
+            }
+        }
+
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "allowUndoRedoAction");
+            if (lua_isnil(state, -1)) {
+                // The master API groups a batch by default.
+            } else if (lua_type(state, -1) != LUA_TSTRING) {
+                std::snprintf(error, sizeof(error), "Undo policy must be 'grouped', 'individual', or 'none'");
+            } else {
+                const std::string_view policy = lua_tostring(state, -1);
+                if (policy == "grouped") {
+                    undoPolicy = PluginStrokeUndoPolicy::Grouped;
+                } else if (policy == "individual") {
+                    undoPolicy = PluginStrokeUndoPolicy::Individual;
+                } else if (policy == "none") {
+                    undoPolicy = PluginStrokeUndoPolicy::None;
+                } else {
+                    std::snprintf(error, sizeof(error), "Unrecognized undo option: %.*s",
+                                  static_cast<int>(policy.size()), policy.data());
+                }
+            }
+            lua_pop(state, 1);
+        }
+
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->addStrokes(strokes, undoPolicy, references, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Adding strokes failed" : hostError.c_str());
+            }
+        }
+        if (error[0] == '\0') {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(references.size(),
+                                                                          std::numeric_limits<int>::max())),
+                            0);
+            lua_Integer referenceIndex = 0;
+            for (const auto reference: references) {
+                lua_pushlightuserdata(state, reinterpret_cast<void*>(reference));
+                lua_rawseti(state, -2, ++referenceIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaSetPageSize(lua_State* state) {
+    if (!lua_isnumber(state, 1) || !lua_isnumber(state, 2)) {
+        return luaL_error(state, "setPageSize expects width and height numbers");
+    }
+    const double width = lua_tonumber(state, 1);
+    const double height = lua_tonumber(state, 2);
+    bool relative = false;
+    if (lua_isboolean(state, 3)) {
+        relative = lua_toboolean(state, 3);
+    }
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        if (!std::isfinite(width) || !std::isfinite(height)) {
+            std::snprintf(error, sizeof(error), "Page dimensions must be finite");
+        } else {
+            std::string hostError;
+            if (!plugin->runtime->setPageSize(width, height, relative, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Changing page size failed" : hostError.c_str());
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaSetLayerVisibility(lua_State* state) {
+    bool visible = true;
+    if (lua_isboolean(state, 1)) {
+        visible = lua_toboolean(state, 1);
+    } else if (!lua_isnil(state, 1)) {
+        return luaL_error(state, "setLayerVisibility expects a boolean or nil");
+    }
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::string hostError;
+        if (!plugin->runtime->setLayerVisibility(visible, hostError)) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Changing layer visibility failed" : hostError.c_str());
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaSetCurrentLayerName(lua_State* state) {
+    if (!lua_isstring(state, 1)) {
+        return 0;
+    }
+    const char* name = lua_tostring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::string hostError;
+        if (!plugin->runtime->setCurrentLayerName(name, hostError)) {
+            std::snprintf(error, sizeof(error), "%s", hostError.empty() ? "Renaming layer failed" : hostError.c_str());
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 0;
 }
 
 int LuaPluginRuntime::luaOpenDialog(lua_State* state) {

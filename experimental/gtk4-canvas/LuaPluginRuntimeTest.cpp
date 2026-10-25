@@ -114,13 +114,33 @@ int main() {
                 "  app.changeActionState('stroke-count', #strokes)\n"
                 "end\n"
                 "function readSelection() app.getStrokes('selection') end\n");
+    const auto strokeMutationPlugin = root / "StrokeMutationPlugin";
+    writePlugin(strokeMutationPlugin,
+                "[about]\ndescription=Create strokes and edit page layers\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Mutate strokes', callback='mutate'})\n"
+                "  app.registerUi({menu='Reject malformed strokes', callback='malformed'})\n"
+                "end\n"
+                "function mutate()\n"
+                "  local refs = app.addStrokes({strokes={\n"
+                "    {x={1,2}, y={3,4}, pressure={0.5,0.75}, tool='pen', width=2.5, color=0x123456, fill=-1, lineStyle='plain'},\n"
+                "    {x={5,6}, y={7,8}, tool='highlighter'}\n"
+                "  }, allowUndoRedoAction='individual'})\n"
+                "  assert(#refs == 2 and refs[1] ~= nil and refs[2] ~= nil)\n"
+                "  app.setPageSize(50,60,true)\n"
+                "  app.setLayerVisibility(false)\n"
+                "  app.setCurrentLayerName('moved for fitting')\n"
+                "  app.activateAction('layer-new-above-current')\n"
+                "end\n"
+                "function malformed() app.addStrokes({strokes={{x={1,2}, y={3}}}}) end\n");
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 10, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 11, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -136,6 +156,13 @@ int main() {
     std::string changedTool;
     std::int64_t changedMode = -1;
     std::int64_t strokeCount = -1;
+    std::vector<prototype::PluginStrokeInput> addedStrokes;
+    prototype::PluginStrokeUndoPolicy addedStrokePolicy = prototype::PluginStrokeUndoPolicy::Grouped;
+    double pageWidthChange = 0;
+    double pageHeightChange = 0;
+    bool pageSizeRelative = false;
+    bool layerVisible = true;
+    std::string renamedLayer;
     std::string dialogPluginName;
     std::string dialogMessage;
     std::vector<prototype::PluginDialogButton> dialogButtons;
@@ -180,6 +207,28 @@ int main() {
         };
         return true;
     };
+    host.addStrokes = [&](const std::vector<prototype::PluginStrokeInput>& strokes,
+                          prototype::PluginStrokeUndoPolicy policy, std::vector<std::uintptr_t>& references,
+                          std::string&) {
+        addedStrokes = strokes;
+        addedStrokePolicy = policy;
+        references = {0x51, 0x52};
+        return true;
+    };
+    host.setPageSize = [&](double width, double height, bool relative, std::string&) {
+        pageWidthChange = width;
+        pageHeightChange = height;
+        pageSizeRelative = relative;
+        return true;
+    };
+    host.setLayerVisibility = [&](bool visible, std::string&) {
+        layerVisible = visible;
+        return true;
+    };
+    host.setCurrentLayerName = [&](std::string_view name, std::string&) {
+        renamedLayer = name;
+        return true;
+    };
     host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
         changedBackgroundFormat = format;
         changedBackgroundConfig = config;
@@ -188,7 +237,7 @@ int main() {
     host.activateAction = [&](std::string_view action, std::string& error) {
         if (action != "beamer-next" && action != "beamer-previous" && action != "beamer-clean" &&
             action != "layer-actions-clone-next" && action != "layer-actions-hide" &&
-            action != "layer-actions-add-top") {
+            action != "layer-actions-add-top" && action != "layer-new-above-current") {
             error = "Actions are unavailable in this GTK 4 host";
             return false;
         }
@@ -218,6 +267,10 @@ int main() {
     const auto loadedStrokeApiPlugin = runtime.findPlugin("StrokeApiPlugin");
     require(loadedStrokeApiPlugin && loadedStrokeApiPlugin->loaded && loadedStrokeApiPlugin->menuItems == 2,
             "Plugin using app.getStrokes did not load and register its menu callbacks");
+    const auto loadedStrokeMutationPlugin = runtime.findPlugin("StrokeMutationPlugin");
+    require(loadedStrokeMutationPlugin && loadedStrokeMutationPlugin->loaded &&
+                    loadedStrokeMutationPlugin->menuItems == 2,
+            "Plugin using stroke creation and layer/page APIs did not load its callbacks");
     require(!runtime.findPlugin("InvalidMain")->loaded, "Invalid plugin mainfile unexpectedly loaded");
     const auto loadedInvalidApi = runtime.findPlugin("InvalidApi");
     require(loadedInvalidApi && !loadedInvalidApi->loaded &&
@@ -240,6 +293,25 @@ int main() {
     require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
                     runtime.findPlugin("StrokeApiPlugin")->error.find("There is no selection") != std::string::npos,
             "app.getStrokes selection errors were not reported to the plugin");
+    require(runtime.invokeMenu("StrokeMutationPlugin", 0) && addedStrokes.size() == 2 &&
+                    addedStrokePolicy == prototype::PluginStrokeUndoPolicy::Individual &&
+                    addedStrokes[0].x == std::vector<double>({1, 2}) &&
+                    addedStrokes[0].y == std::vector<double>({3, 4}) &&
+                    addedStrokes[0].pressure == std::vector<double>({0.5, 0.75}) &&
+                    addedStrokes[0].tool == std::optional<std::string>("pen") &&
+                    addedStrokes[0].width == std::optional<double>(2.5) &&
+                    addedStrokes[0].color == std::optional<std::uint32_t>(0x123456) &&
+                    addedStrokes[0].fill == std::optional<int>(-1) &&
+                    addedStrokes[0].lineStyle == std::optional<std::string>("plain") &&
+                    addedStrokes[1].pressure.empty() &&
+                    addedStrokes[1].tool == std::optional<std::string>("highlighter") &&
+                    pageWidthChange == 50 && pageHeightChange == 60 && pageSizeRelative && !layerVisible &&
+                    renamedLayer == "moved for fitting" && activatedActions.back() == "layer-new-above-current",
+            "FitToContent stroke, page-size, and layer APIs did not preserve arguments and references");
+    activatedActions.clear();
+    require(!runtime.invokeMenu("StrokeMutationPlugin", 1) &&
+                    runtime.findPlugin("StrokeMutationPlugin")->error.find("not equal length") != std::string::npos,
+            "app.addStrokes accepted malformed point arrays");
     require(runtime.invokeMenu("BeamerPresentation", 0) && activatedActions == std::vector<std::string>{"beamer-next"},
             "Beamer +1 did not dispatch the next-animation host action");
     require(runtime.invokeMenu("BeamerPresentation", 1) &&
@@ -277,8 +349,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 13 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 7,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 15 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 8,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

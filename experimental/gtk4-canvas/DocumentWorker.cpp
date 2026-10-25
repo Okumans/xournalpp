@@ -51,6 +51,7 @@
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
 #include "DocumentPublish.h"
+#include "PageSizeTransfer.h"
 #include "PdfPageLabels.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
@@ -886,12 +887,16 @@ std::vector<prototype::AudioTarget> renderAudioTargets(Document& document, const
     return targets;
 }
 
+std::vector<prototype::bridge::PageSizePacket> readDocumentPageSizes(const Document& document);
+
 void renderPreviewBundle(Document& document, const fs::path& preview, const fs::path& layerState,
                          const fs::path& audioFolder = {}, const fs::path& audioDirectory = {}) {
     createBackgroundPreview(document, preview);
     writePdfTextSource(document, preview.parent_path() / "background.pdf");
     prototype::bridge::writePdfPageMap(preview.parent_path() / "pdf-pages.dat", readPdfPageMap(document));
     prototype::bridge::writePdfPageLabels(preview.parent_path() / "pdf-labels.dat", readPdfPageLabels(document));
+    prototype::bridge::writePageSizeTransfer(preview.parent_path() / "page-sizes.dat",
+                                              readDocumentPageSizes(document));
     size_t maxLayers = 0;
     for (size_t index = 0; index < document.getPageCount(); ++index) {
         maxLayers = std::max(maxLayers, document.getPage(index)->getLayerCount());
@@ -1059,6 +1064,29 @@ void setPdfPageBackground(Document& document, size_t documentPageIndex, size_t p
     page->setSize(pdfPage->getWidth(), pdfPage->getHeight());
 }
 
+std::vector<prototype::bridge::PageSizePacket> readDocumentPageSizes(const Document& document) {
+    std::vector<prototype::bridge::PageSizePacket> sizes;
+    sizes.reserve(document.getPageCount());
+    for (size_t index = 0; index < document.getPageCount(); ++index) {
+        const auto page = document.getPage(index);
+        if (!page) {
+            throw std::runtime_error("Document contains a missing page");
+        }
+        sizes.push_back({page->getWidth(), page->getHeight()});
+    }
+    return sizes;
+}
+
+void applyPageSizes(Document& document, const fs::path& path) {
+    const auto sizes = prototype::bridge::readPageSizeTransfer(path);
+    if (sizes.size() != document.getPageCount()) {
+        throw std::runtime_error("Transferred page-size count does not match the document");
+    }
+    for (size_t index = 0; index < sizes.size(); ++index) {
+        Document::setPageSize(document.getPage(index), sizes[index].width, sizes[index].height);
+    }
+}
+
 void replaceFollowingPageWithClone(Document& document, size_t sourcePageIndex, size_t pdfPageIndex) {
     if (sourcePageIndex + 1 >= document.getPageCount() || pdfPageIndex >= document.getPdfPageCount()) {
         throw std::runtime_error("LayerActions clone target is out of range");
@@ -1158,7 +1186,7 @@ int main(int argc, char** argv) {
         if (argc < 3) {
             throw std::runtime_error(
                     "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
-                    "export-pdf INPUT PDF INK [TEXT [LAYERS [IMAGES]]] | "
+                    "export-pdf INPUT PDF INK [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | "
                     "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES [AUDIO_FOLDER "
                     "[AUDIO_CACHE]]]]]] | "
                     "insert-page INPUT SNAPSHOT PDF AFTER_PAGE [AUDIO_FOLDER [AUDIO_CACHE]] | "
@@ -1171,9 +1199,9 @@ int main(int argc, char** argv) {
                     "layer-actions-clone-next INPUT SNAPSHOT PDF CURRENT_PAGE PDF_PAGE ALLOW_ANNOTATED INK TEXT "
                     "LAYERS IMAGES [AUDIO_FOLDER AUDIO_CACHE] | "
                     "revision INPUT SNAPSHOT PDF INK TEXT LAYERS IMAGES [AUDIO_FOLDER [AUDIO_CACHE]] | "
-                    "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
-                    "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES]]] | "
-                    "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS [IMAGES]]] | version PATH");
+                    "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | "
+                    "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | "
+                    "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | version PATH");
         }
         const std::string command = argv[1];
         LoadContext originalContext, snapshotContext;
@@ -1251,7 +1279,7 @@ int main(int argc, char** argv) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
-        } else if (command == "export-pdf" && (argc >= 5 && argc <= 8)) {
+        } else if (command == "export-pdf" && (argc >= 5 && argc <= 9)) {
             const auto output = fs::absolute(argv[3]);
             const auto texts = argc >= 6 ? prototype::bridge::readTextTransfer(fs::absolute(argv[5])) :
                                            std::vector<prototype::TextItem>{};
@@ -1260,33 +1288,47 @@ int main(int argc, char** argv) {
             const auto images = argc >= 8 ? prototype::bridge::readImageTransfer(fs::absolute(argv[7])) :
                                             std::vector<prototype::bridge::ImagePacket>{};
             appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
+            if (argc >= 9) {
+                applyPageSizes(*document, fs::absolute(argv[8]));
+            }
             exportPdfDocument(*document, output);
-        } else if (command == "insert-page" && (argc == 6 || argc == 8)) {
+        } else if (command == "insert-page" && (argc == 6 || argc == 7 || argc == 8 || argc == 9)) {
             const auto afterPage = parsePageIndex(argv[5], document->getPageCount(), "after-page index");
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
             requireNewTarget(pdf);
+            const bool hasAudioPaths = argc == 8 || argc == 9;
+            const bool hasPageSizes = argc == 7 || argc == 9;
+            if (hasPageSizes) {
+                applyPageSizes(*document, fs::absolute(argv[argc == 7 ? 6 : 8]));
+            }
             insertPageAfterInDocument(*document, afterPage);
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
-                                argc == 8 ? fs::path(argv[6]) : fs::path{},
-                                argc == 8 ? fs::path(argv[7]) : fs::path{});
-        } else if (command == "insert-pages" && (argc == 6 || argc == 8)) {
+                                hasAudioPaths ? fs::path(argv[6]) : fs::path{},
+                                hasAudioPaths ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "insert-pages" && (argc == 6 || argc == 7 || argc == 8 || argc == 9)) {
             const auto afterPages = readPageInsertionIndices(fs::absolute(argv[5]), document->getPageCount());
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
             requireNewTarget(pdf);
+            const bool hasAudioPaths = argc == 8 || argc == 9;
+            const bool hasPageSizes = argc == 7 || argc == 9;
+            if (hasPageSizes) {
+                applyPageSizes(*document, fs::absolute(argv[argc == 7 ? 6 : 8]));
+            }
             for (const auto afterPage: afterPages) {
                 insertPageAfterInDocument(*document, afterPage);
             }
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
-                                argc == 8 ? fs::path(argv[6]) : fs::path{}, argc == 8 ? fs::path(argv[7]) : fs::path{});
-        } else if (command == "delete-page" && (argc == 6 || argc == 8)) {
+                                hasAudioPaths ? fs::path(argv[6]) : fs::path{},
+                                hasAudioPaths ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "delete-page" && (argc == 6 || argc == 7 || argc == 8 || argc == 9)) {
             if (document->getPageCount() <= 1) {
                 throw std::runtime_error("Cannot delete the only remaining page");
             }
@@ -1295,26 +1337,37 @@ int main(int argc, char** argv) {
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
             requireNewTarget(pdf);
+            const bool hasAudioPaths = argc == 8 || argc == 9;
+            const bool hasPageSizes = argc == 7 || argc == 9;
+            if (hasPageSizes) {
+                applyPageSizes(*document, fs::absolute(argv[argc == 7 ? 6 : 8]));
+            }
             document->deletePage(pageIndex);
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
-                                argc == 8 ? fs::path(argv[6]) : fs::path{},
-                                argc == 8 ? fs::path(argv[7]) : fs::path{});
-        } else if (command == "delete-pages" && (argc == 6 || argc == 8)) {
+                                hasAudioPaths ? fs::path(argv[6]) : fs::path{},
+                                hasAudioPaths ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "delete-pages" && (argc == 6 || argc == 7 || argc == 8 || argc == 9)) {
             const auto pageIndices = readPageDeletionIndices(fs::absolute(argv[5]), document->getPageCount());
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
             requireNewTarget(pdf);
+            const bool hasAudioPaths = argc == 8 || argc == 9;
+            const bool hasPageSizes = argc == 7 || argc == 9;
+            if (hasPageSizes) {
+                applyPageSizes(*document, fs::absolute(argv[argc == 7 ? 6 : 8]));
+            }
             for (const auto pageIndex: pageIndices) {
                 document->deletePage(pageIndex);
             }
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
-                                argc == 8 ? fs::path(argv[6]) : fs::path{}, argc == 8 ? fs::path(argv[7]) : fs::path{});
-        } else if (command == "set-pdf-page-background" && (argc == 11 || argc == 13)) {
+                                hasAudioPaths ? fs::path(argv[6]) : fs::path{},
+                                hasAudioPaths ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "set-pdf-page-background" && (argc == 11 || argc == 12 || argc == 13 || argc == 14)) {
             const auto documentPage = parsePageIndex(argv[5], document->getPageCount(), "document page index");
             const auto pdfPage = parsePageIndex(argv[6], document->getPdfPageCount(), "PDF page index");
             const auto snapshot = fs::absolute(argv[3]);
@@ -1325,14 +1378,20 @@ int main(int argc, char** argv) {
             const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[8]));
             const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[9]));
             const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[10]));
+            const bool hasAudioPaths = argc == 13 || argc == 14;
+            const bool hasPageSizes = argc == 12 || argc == 14;
+            if (hasPageSizes) {
+                applyPageSizes(*document, fs::absolute(argv[hasAudioPaths ? 13 : 11]));
+            }
             appendLayerAwareObjects(*document, strokes, texts, images, layers);
             setPdfPageBackground(*document, documentPage, pdfPage);
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
-                                argc == 13 ? fs::path(argv[11]) : fs::path{},
-                                argc == 13 ? fs::path(argv[12]) : fs::path{});
-        } else if (command == "layer-actions-clone-next" && (argc == 12 || argc == 14)) {
+                                hasAudioPaths ? fs::path(argv[11]) : fs::path{},
+                                hasAudioPaths ? fs::path(argv[12]) : fs::path{});
+        } else if (command == "layer-actions-clone-next" &&
+                   (argc == 12 || argc == 13 || argc == 14 || argc == 15)) {
             const auto sourcePage = parsePageIndex(argv[5], document->getPageCount(), "source page index");
             const auto pdfPage = parsePageIndex(argv[6], document->getPdfPageCount(), "next PDF page index");
             if (std::string_view(argv[7]) != "0" && std::string_view(argv[7]) != "1") {
@@ -1353,6 +1412,11 @@ int main(int argc, char** argv) {
             const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[9]));
             const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[10]));
             const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[11]));
+            const bool hasAudioPaths = argc == 14 || argc == 15;
+            const bool hasPageSizes = argc == 13 || argc == 15;
+            if (hasPageSizes) {
+                applyPageSizes(*document, fs::absolute(argv[hasAudioPaths ? 14 : 12]));
+            }
             discardEditableObjects(*document);
             appendLayerAwareObjects(*document, strokes, texts, images, layers);
             if (sourcePage + 1 >= document->getPageCount()) {
@@ -1377,8 +1441,8 @@ int main(int argc, char** argv) {
             document = load(snapshot, snapshotContext);
             const auto layerStatePath = pdf.parent_path() / "layers.dat";
             renderPreviewBundle(*document, pdf, layerStatePath,
-                                argc == 14 ? fs::path(argv[12]) : fs::path{},
-                                argc == 14 ? fs::path(argv[13]) : fs::path{});
+                                hasAudioPaths ? fs::path(argv[12]) : fs::path{},
+                                hasAudioPaths ? fs::path(argv[13]) : fs::path{});
             auto clonedLayers = prototype::bridge::readLayerTransfer(layerStatePath);
             if (clonedLayers.size() != layers.size()) {
                 throw std::runtime_error("LayerActions clone output does not match its source layers");
@@ -1397,7 +1461,7 @@ int main(int argc, char** argv) {
                 }
             }
             prototype::bridge::writeLayerTransfer(layerStatePath, clonedLayers);
-        } else if (command == "revision" && (argc == 9 || argc == 11)) {
+        } else if (command == "revision" && (argc == 9 || argc == 10 || argc == 11 || argc == 12)) {
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
             requireNewTarget(snapshot);
@@ -1407,11 +1471,16 @@ int main(int argc, char** argv) {
             const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[7]));
             const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[8]));
             appendLayerAwareObjects(*document, strokes, texts, images, layers);
+            if (argc == 10) {
+                applyPageSizes(*document, fs::absolute(argv[9]));
+            } else if (argc == 12) {
+                applyPageSizes(*document, fs::absolute(argv[11]));
+            }
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
-                                argc == 11 ? fs::path(argv[9]) : fs::path{},
-                                argc == 11 ? fs::path(argv[10]) : fs::path{});
+                                argc >= 11 ? fs::path(argv[9]) : fs::path{},
+                                argc >= 11 ? fs::path(argv[10]) : fs::path{});
         } else if (command == "open" && (argc >= 5 && argc <= 11)) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&
@@ -1449,7 +1518,7 @@ int main(int argc, char** argv) {
                 render(*document, pdf);
             }
             std::cout << (nativeSave ? "NATIVE_SAVE\n" : "SAVE_AS\n");
-        } else if (command == "save-copy" && (argc >= 5 && argc <= 8)) {
+        } else if (command == "save-copy" && (argc >= 5 && argc <= 9)) {
             if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
                 throw std::runtime_error("Save-copy target must use the .xopp extension");
             }
@@ -1460,8 +1529,11 @@ int main(int argc, char** argv) {
             const auto images = argc >= 8 ? prototype::bridge::readImageTransfer(fs::absolute(argv[7])) :
                                             std::vector<prototype::bridge::ImagePacket>{};
             appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
+            if (argc >= 9) {
+                applyPageSizes(*document, fs::absolute(argv[8]));
+            }
             saveCopy(*document, fs::absolute(argv[3]));
-        } else if (command == "save" && (argc >= 6 && argc <= 9)) {
+        } else if (command == "save" && (argc >= 6 && argc <= 10)) {
             if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
                 throw std::runtime_error("Save target must use the .xopp extension");
             }
@@ -1472,10 +1544,13 @@ int main(int argc, char** argv) {
             const auto images = argc >= 9 ? prototype::bridge::readImageTransfer(fs::absolute(argv[8])) :
                                             std::vector<prototype::bridge::ImagePacket>{};
             appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
+            if (argc >= 10) {
+                applyPageSizes(*document, fs::absolute(argv[9]));
+            }
             const auto output = fs::absolute(argv[3]);
             saveDocument(*document, output, argv[5], false);
             std::cout << prototype::bridge::documentVersion(output).token << '\n';
-        } else if (command == "autosave" && (argc >= 5 && argc <= 8)) {
+        } else if (command == "autosave" && (argc >= 5 && argc <= 9)) {
             const auto output = fs::absolute(argv[3]);
             if (!prototype::bridge::isRecoveryArtifact(output)) {
                 throw std::runtime_error("Autosave target must use an .autosave.xopp or emergencysave.xopp filename");
@@ -1487,6 +1562,9 @@ int main(int argc, char** argv) {
             const auto images = argc >= 8 ? prototype::bridge::readImageTransfer(fs::absolute(argv[7])) :
                                             std::vector<prototype::bridge::ImagePacket>{};
             appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
+            if (argc >= 9) {
+                applyPageSizes(*document, fs::absolute(argv[8]));
+            }
             autosaveDocument(*document, output);
         } else {
             throw std::runtime_error("Invalid document-worker command");

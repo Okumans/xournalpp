@@ -13,6 +13,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -305,6 +306,95 @@ public:
         }
         recordLayerMutation(std::move(before));
         clearSelection();
+        return true;
+    }
+
+    bool resizePage(int pageIndex, double width, double height) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= static_cast<size_t>(pageCount()) ||
+            !std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
+            return false;
+        }
+        const auto before = pageSize(pageIndex);
+        if (before.width == width && before.height == height) {
+            return false;
+        }
+        Edit edit;
+        edit.pageSizeChange = PageSizeChange{pageIndex, before, {width, height}};
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    bool addPluginStrokes(std::vector<Ink> additions, int undoPolicy) {
+        if (additions.empty()) {
+            return true;
+        }
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size() ||
+            undoPolicy < 0 || undoPolicy > 2) {
+            return false;
+        }
+
+        const auto pageIndex = page;
+        const auto layerId = activeLayerId(pageIndex);
+        const auto origin = activeLayerOrigin(pageIndex);
+        size_t nextOrder = nextOriginOrder(pageIndex, origin);
+        for (auto& stroke: additions) {
+            if (stroke.points.size() < 2 || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0 ||
+                stroke.fill < -1 || stroke.fill > 255 || (stroke.fill >= 0 && stroke.brush.tool != Tool::Highlighter)) {
+                return false;
+            }
+            for (const auto& point: stroke.points) {
+                if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.pressure) ||
+                    point.pressure <= 0) {
+                    return false;
+                }
+            }
+            stroke.page = pageIndex;
+            stroke.layerId = layerId;
+            stroke.originLayer = origin;
+            stroke.layerOrder = nextOrder++;
+        }
+
+        const auto preserveSelection = [this](Edit& edit) {
+            edit.selectionBefore = selected;
+            edit.selectionAfter = selected;
+            edit.textSelectionBefore = selectedTexts;
+            edit.textSelectionAfter = selectedTexts;
+            edit.imageSelectionBefore = selectedImages;
+            edit.imageSelectionAfter = selectedImages;
+            edit.hasSelectionFrameState = true;
+            edit.selectionFrameBefore = selectionFrame;
+            edit.selectionFrameAfter = selectionFrame;
+        };
+
+        if (undoPolicy == 2) {
+            for (auto& stroke: additions) {
+                ink.push_back(std::move(stroke));
+            }
+            // These strokes are intentionally irreversible. Drop older history
+            // so later undo operations cannot apply stale object indices, then
+            // keep the mutation visible to dirty-state and autosave tracking.
+            undoStates.clear();
+            redoStates.clear();
+            revisionBase = ++nextRevision;
+            return true;
+        }
+        if (undoPolicy == 0) {
+            Edit edit;
+            edit.changes.push_back({ink.size(), {}, ink.size(), std::move(additions)});
+            preserveSelection(edit);
+            apply(edit, true);
+            record(std::move(edit));
+            return true;
+        }
+
+        for (auto& stroke: additions) {
+            Edit edit;
+            edit.changes.push_back({ink.size(), {}, ink.size(), {std::move(stroke)}});
+            preserveSelection(edit);
+            apply(edit, true);
+            record(std::move(edit));
+        }
         return true;
     }
 
@@ -2931,7 +3021,7 @@ public:
 
     bool canUndo() const { return !undoStates.empty(); }
     bool canRedo() const { return !redoStates.empty(); }
-    size_t revision() const { return undoStates.empty() ? 0 : undoStates.back().revision; }
+    size_t revision() const { return undoStates.empty() ? revisionBase : undoStates.back().revision; }
 
     void beginErase() {
         clearSelection();
@@ -3064,6 +3154,12 @@ private:
         std::vector<CanvasImage> after;
     };
 
+    struct PageSizeChange {
+        int page = 0;
+        PageSize before;
+        PageSize after;
+    };
+
     template <typename T>
     struct IndexedObject {
         size_t index;
@@ -3095,6 +3191,7 @@ private:
         std::vector<TextChange> textChanges;
         std::vector<ImageChange> imageChanges;
         std::optional<LayerMutation> layerMutation;
+        std::optional<PageSizeChange> pageSizeChange;
         size_t revision = 0;
         std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
@@ -3901,6 +3998,16 @@ private:
 
     void apply(const Edit& edit, bool forward) {
         std::optional<int> changedBackgroundPage;
+        if (edit.pageSizeChange) {
+            const auto& change = *edit.pageSizeChange;
+            if (change.page >= 0 && static_cast<size_t>(change.page) < pages.size()) {
+                pages[static_cast<size_t>(change.page)] = forward ? change.after : change.before;
+                if (change.page == page) {
+                    pageWidth = pages[static_cast<size_t>(page)].width;
+                    pageHeight = pages[static_cast<size_t>(page)].height;
+                }
+            }
+        }
         if (edit.layerMutation) {
             const auto& mutation = *edit.layerMutation;
             const auto& layers = forward ? mutation.afterLayers : mutation.beforeLayers;
@@ -3972,6 +4079,7 @@ private:
 
     Device owner = Device::Mouse;
     size_t nextRevision = 0;
+    size_t revisionBase = 0;
     std::vector<Edit> undoStates;
     std::vector<Edit> redoStates;
     std::optional<EraseGesture> eraseGesture;

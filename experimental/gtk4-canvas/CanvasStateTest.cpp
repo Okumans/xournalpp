@@ -843,6 +843,77 @@ static void pageBackgroundHistory() {
           "redo should restore the new page background and refresh its preview");
 }
 
+static void pluginStrokeAndPageSizeHistory() {
+    CanvasState state;
+    state.setPages({{595, 842}});
+
+    Ink existing{0, {{1, 1}, {2, 2}}, {Tool::Pen, {0, 0, 0}, 1}};
+    state.ink.push_back(existing);
+    state.selected = {0};
+    check(state.addPluginStrokes({
+                                        Ink{0, {{10, 20, 0.5}, {30, 40, 0.75}},
+                                            Brush{Tool::Pen, {1, 0, 0}, 2}, true, 0, 1, newLayerOrigin, -1, 0},
+                                        Ink{0, {{50, 60, 1}, {70, 80, 1}},
+                                            Brush{Tool::Highlighter, {1, 1, 0}, 8}, false, 0, 1, newLayerOrigin, 100, 0},
+                                },
+                                0),
+          "grouped plugin stroke insertion failed");
+    check(state.ink.size() == 3 && state.selected == std::vector<size_t>{0} && state.ink[1].page == 0 &&
+                  state.ink[2].layerOrder == state.ink[1].layerOrder + 1,
+          "plugin stroke insertion must target the current layer, preserve selection, and order the batch");
+    state.undo();
+    check(state.ink.size() == 1 && state.selected == std::vector<size_t>{0},
+          "grouped plugin stroke insertion must undo in one step without changing the prior selection");
+    state.redo();
+    check(state.ink.size() == 3 && state.ink[1].points[0].pressure == 0.5 && state.ink[2].fill == 100,
+          "grouped plugin stroke redo lost pressure or highlighter opacity");
+
+    check(state.addPluginStrokes({
+                                        Ink{0, {{100, 100, 1}, {110, 110, 1}},
+                                            Brush{Tool::Pen, {0, 0, 1}, 1}, false, 0, 1, newLayerOrigin, -1, 0},
+                                        Ink{0, {{120, 120, 1}, {130, 130, 1}},
+                                            Brush{Tool::Pen, {0, 0, 1}, 1}, false, 0, 1, newLayerOrigin, -1, 0},
+                                },
+                                1),
+          "individual plugin stroke insertion failed");
+    check(state.ink.size() == 5, "individual plugin stroke insertion did not add its full batch");
+    state.undo();
+    check(state.ink.size() == 4, "individual plugin stroke insertion must undo one stroke at a time");
+    state.undo();
+    check(state.ink.size() == 3, "second individual plugin stroke undo failed");
+    state.redo();
+    state.redo();
+
+    const auto originalSize = state.pageSize(0);
+    check(state.resizePage(0, 320, 480) && state.pageSize(0).width == 320 && state.pageSize(0).height == 480,
+          "plugin page resize did not update page geometry");
+    state.undo();
+    check(state.pageSize(0).width == originalSize.width && state.pageSize(0).height == originalSize.height,
+          "plugin page resize undo did not restore original geometry");
+    state.redo();
+    check(state.pageSize(0).width == 320 && state.pageSize(0).height == 480,
+          "plugin page resize redo did not restore the new geometry");
+
+    const auto priorRevision = state.revision();
+    check(state.addPluginStrokes({
+                                      Ink{0, {{200, 200, 1}, {210, 210, 1}},
+                                          Brush{Tool::Pen, {0, 1, 0}, 2}, false, 0, 1, newLayerOrigin, -1, 0},
+                              },
+                                  2),
+          "non-undoable plugin stroke insertion failed");
+    const auto irreversibleRevision = state.revision();
+    check(state.ink.size() == 6 && irreversibleRevision != priorRevision && !state.canUndo() && !state.canRedo(),
+          "non-undoable plugin strokes must mark the document dirty and establish an undo boundary");
+    state.undo();
+    check(state.ink.size() == 6 && state.revision() == irreversibleRevision,
+          "undo must not remove non-undoable plugin strokes or mark their change clean");
+    check(state.resizePage(0, 400, 600), "page resize after an irreversible edit failed");
+    state.undo();
+    check(state.pageSize(0).width == 320 && state.pageSize(0).height == 480 &&
+                  state.revision() == irreversibleRevision,
+          "undo after an irreversible plugin edit must return to its dirty revision boundary");
+}
+
 static void pdfAnnotationInkHistory() {
     CanvasState state;
     state.setPages({{300, 200}});
@@ -959,6 +1030,7 @@ int main() {
         replaceNextPageWithClone();
         layerRenameDuplicateReorderAndVisibility();
         pageBackgroundHistory();
+        pluginStrokeAndPageSizeHistory();
         pdfAnnotationInkHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
