@@ -95,6 +95,10 @@ std::unique_ptr<Document> load(const fs::path& input, LoadContext& context) {
     return document;
 }
 
+std::vector<prototype::bridge::StrokePacket> extractEditableInk(
+        Document& document, std::vector<prototype::TextItem>* extractedTexts,
+        std::vector<prototype::bridge::ImagePacket>* extractedImages);
+
 void appendStroke(Layer& layer, const prototype::bridge::StrokePacket& packet) {
     auto stroke = std::make_unique<Stroke>();
     stroke->setToolType(packet.whiteout ? StrokeTool::ERASER :
@@ -312,6 +316,12 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
         }
         GTK4DocumentLayerAccess::setBackgroundVisible(*page, pageInfo.backgroundVisible);
     }
+}
+
+void discardEditableObjects(Document& document) {
+    std::vector<prototype::TextItem> discardedTexts;
+    std::vector<prototype::bridge::ImagePacket> discardedImages;
+    static_cast<void>(extractEditableInk(document, &discardedTexts, &discardedImages));
 }
 
 std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& element, int pageIndex,
@@ -1049,6 +1059,25 @@ void setPdfPageBackground(Document& document, size_t documentPageIndex, size_t p
     page->setSize(pdfPage->getWidth(), pdfPage->getHeight());
 }
 
+void replaceFollowingPageWithClone(Document& document, size_t sourcePageIndex, size_t pdfPageIndex) {
+    if (sourcePageIndex + 1 >= document.getPageCount() || pdfPageIndex >= document.getPdfPageCount()) {
+        throw std::runtime_error("LayerActions clone target is out of range");
+    }
+    const auto source = document.getPage(sourcePageIndex);
+    const auto replaced = document.getPage(sourcePageIndex + 1);
+    const auto pdfPage = document.getPdfPage(pdfPageIndex);
+    if (!source || !replaced || !pdfPage || !replaced->getBackgroundType().isPdfPage() ||
+        replaced->getPdfPageNr() != pdfPageIndex) {
+        throw std::runtime_error("The next page no longer has the requested PDF background");
+    }
+
+    auto clone = std::make_shared<XojPage>(*source);
+    clone->setBackgroundPdfPageNr(pdfPageIndex);
+    clone->setSize(pdfPage->getWidth(), pdfPage->getHeight());
+    document.insertPage(clone, sourcePageIndex + 1);
+    document.deletePage(sourcePageIndex + 2);
+}
+
 void saveDocument(Document& document, const fs::path& output, const std::string& expected, bool copy) {
     if (copy) {
         requireNewTarget(output);
@@ -1138,6 +1167,9 @@ int main(int argc, char** argv) {
                     "delete-pages INPUT SNAPSHOT PDF DELETION_LIST [AUDIO_FOLDER AUDIO_CACHE] | "
                     "set-pdf-page-background INPUT SNAPSHOT PDF DOCUMENT_PAGE PDF_PAGE INK TEXT LAYERS IMAGES "
                     "[AUDIO_FOLDER AUDIO_CACHE] | "
+                    "layer-actions-inspect-target INPUT CURRENT_PAGE INK TEXT LAYERS IMAGES | "
+                    "layer-actions-clone-next INPUT SNAPSHOT PDF CURRENT_PAGE PDF_PAGE ALLOW_ANNOTATED INK TEXT "
+                    "LAYERS IMAGES [AUDIO_FOLDER AUDIO_CACHE] | "
                     "revision INPUT SNAPSHOT PDF INK TEXT LAYERS IMAGES [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
                     "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES]]] | "
@@ -1187,7 +1219,35 @@ int main(int argc, char** argv) {
             return 0;
         }
         auto document = load(input, originalContext);
-        if (command == "inspect" && argc == 3) {
+        if (command == "layer-actions-inspect-target" && argc == 8) {
+            const auto currentPage = parsePageIndex(argv[3], document->getPageCount(), "current page index");
+            const auto strokes = prototype::bridge::readTransfer(fs::absolute(argv[4]));
+            const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[5]));
+            const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[6]));
+            const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[7]));
+            discardEditableObjects(*document);
+            appendLayerAwareObjects(*document, strokes, texts, images, layers);
+
+            int pdfPage = -1;
+            bool annotated = false;
+            const bool hasNextPage = currentPage + 1 < document->getPageCount();
+            if (hasNextPage) {
+                const auto next = document->getPage(currentPage + 1);
+                if (!next) {
+                    throw std::runtime_error("The next LayerActions page is unavailable");
+                }
+                if (next->getBackgroundType().isPdfPage() && next->getPdfPageNr() != npos) {
+                    if (next->getPdfPageNr() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                        throw std::runtime_error("The next PDF page index is too large");
+                    }
+                    pdfPage = static_cast<int>(next->getPdfPageNr());
+                }
+                annotated = next->isAnnotated();
+            }
+            std::cout << "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 " << (hasNextPage ? 1 : 0) << ' ' << pdfPage << ' '
+                      << (annotated ? 1 : 0) << '\n';
+            return 0;
+        } else if (command == "inspect" && argc == 3) {
             inspect(*document);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
@@ -1272,6 +1332,71 @@ int main(int argc, char** argv) {
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 argc == 13 ? fs::path(argv[11]) : fs::path{},
                                 argc == 13 ? fs::path(argv[12]) : fs::path{});
+        } else if (command == "layer-actions-clone-next" && (argc == 12 || argc == 14)) {
+            const auto sourcePage = parsePageIndex(argv[5], document->getPageCount(), "source page index");
+            const auto pdfPage = parsePageIndex(argv[6], document->getPdfPageCount(), "next PDF page index");
+            if (std::string_view(argv[7]) != "0" && std::string_view(argv[7]) != "1") {
+                throw std::runtime_error("Invalid LayerActions annotation confirmation");
+            }
+            const bool allowAnnotated = std::string_view(argv[7]) == "1";
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            const auto inkPath = fs::absolute(snapshot.parent_path() / "editable-ink.dat");
+            const auto textPath = fs::absolute(snapshot.parent_path() / "editable-text.dat");
+            const auto imagePath = fs::absolute(snapshot.parent_path() / "editable-images.dat");
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            requireNewTarget(inkPath);
+            requireNewTarget(textPath);
+            requireNewTarget(imagePath);
+            const auto strokes = prototype::bridge::readTransfer(fs::absolute(argv[8]));
+            const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[9]));
+            const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[10]));
+            const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[11]));
+            discardEditableObjects(*document);
+            appendLayerAwareObjects(*document, strokes, texts, images, layers);
+            if (sourcePage + 1 >= document->getPageCount()) {
+                throw std::runtime_error("No next page");
+            }
+            const auto next = document->getPage(sourcePage + 1);
+            if (!next || !next->getBackgroundType().isPdfPage() || next->getPdfPageNr() != pdfPage) {
+                throw std::runtime_error("The next page has no PDF background");
+            }
+            if (next->isAnnotated() && !allowAnnotated) {
+                throw std::runtime_error("The next page contains annotations and requires confirmation");
+            }
+
+            replaceFollowingPageWithClone(*document, sourcePage, pdfPage);
+            std::vector<prototype::TextItem> editableTexts;
+            std::vector<prototype::bridge::ImagePacket> editableImages;
+            const auto editableInk = extractEditableInk(*document, &editableTexts, &editableImages);
+            prototype::bridge::writeTransfer(inkPath, editableInk);
+            prototype::bridge::writeTextTransfer(textPath, editableTexts);
+            prototype::bridge::writeImageTransfer(imagePath, editableImages);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            const auto layerStatePath = pdf.parent_path() / "layers.dat";
+            renderPreviewBundle(*document, pdf, layerStatePath,
+                                argc == 14 ? fs::path(argv[12]) : fs::path{},
+                                argc == 14 ? fs::path(argv[13]) : fs::path{});
+            auto clonedLayers = prototype::bridge::readLayerTransfer(layerStatePath);
+            if (clonedLayers.size() != layers.size()) {
+                throw std::runtime_error("LayerActions clone output does not match its source layers");
+            }
+            for (size_t page = 0; page < clonedLayers.size(); ++page) {
+                const bool isClonePage = page == sourcePage + 1;
+                const auto& sourceState = layers[isClonePage ? sourcePage : page];
+                if (clonedLayers[page].layers.size() != sourceState.layers.size()) {
+                    throw std::runtime_error("LayerActions clone output has an unexpected layer count");
+                }
+                clonedLayers[page].backgroundVisible = isClonePage ? true : sourceState.backgroundVisible;
+                for (size_t layer = 0; layer < clonedLayers[page].layers.size(); ++layer) {
+                    // XojPage copy clones layer names and contents but resets visibility to true.
+                    clonedLayers[page].layers[layer].visible =
+                            isClonePage ? true : sourceState.layers[layer].visible;
+                }
+            }
+            prototype::bridge::writeLayerTransfer(layerStatePath, clonedLayers);
         } else if (command == "revision" && (argc == 9 || argc == 11)) {
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);

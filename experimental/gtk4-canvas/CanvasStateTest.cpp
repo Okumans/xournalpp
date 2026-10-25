@@ -869,6 +869,79 @@ static void pdfAnnotationInkHistory() {
           "PDF annotation redo did not restore the grouped edit");
 }
 
+static void replaceNextPageWithClone() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}, {500, 700}});
+    PageLayers sourceLayers;
+    sourceLayers.initialLayerCount = 2;
+    sourceLayers.selectedLayer = 2;
+    sourceLayers.backgroundVisible = false;
+    sourceLayers.backgroundName = "Source background";
+    sourceLayers.layers = {{"Ink", true, {0}}, {"Notes", false, {1}}};
+    state.setLayerDocument({sourceLayers, PageLayers{}, PageLayers{}});
+
+    Ink sourceStroke;
+    sourceStroke.page = 0;
+    sourceStroke.layerId = 2;
+    sourceStroke.originLayer = 1;
+    sourceStroke.layerOrder = 4;
+    sourceStroke.points = {{10, 20, 1}, {30, 40, 1}};
+    auto replacedStroke = sourceStroke;
+    replacedStroke.page = 1;
+    replacedStroke.points[0].x = 200;
+    auto followingStroke = sourceStroke;
+    followingStroke.page = 2;
+    state.ink = {sourceStroke, replacedStroke, followingStroke};
+
+    TextItem sourceText;
+    sourceText.page = 0;
+    sourceText.layerId = 2;
+    sourceText.text = "source page";
+    auto replacedText = sourceText;
+    replacedText.page = 1;
+    replacedText.text = "replaced page";
+    auto followingText = sourceText;
+    followingText.page = 2;
+    followingText.text = "following page";
+    state.texts = {sourceText, replacedText, followingText};
+
+    CanvasImage sourceImage;
+    sourceImage.page = 0;
+    sourceImage.layerId = 2;
+    sourceImage.encodedData = "source image";
+    auto replacedImage = sourceImage;
+    replacedImage.page = 1;
+    replacedImage.encodedData = "replaced image";
+    auto followingImage = sourceImage;
+    followingImage.page = 2;
+    followingImage.encodedData = "following image";
+    state.images = {sourceImage, replacedImage, followingImage};
+
+    check(state.replaceNextPageWithClone(0, {800, 600}), "cloning should replace an existing next page");
+    check(state.pageCount() == 3 && state.page == 1 && state.pages[1].width == 800 && state.pages[1].height == 600,
+          "cloning should preserve document length and select the replacement at the target page size");
+    auto clonedLayers = sourceLayers;
+    clonedLayers.backgroundVisible = true;
+    clonedLayers.backgroundName.reset();
+    clonedLayers.backgroundFormat = ":pdf";
+    for (auto& layer: clonedLayers.layers) {
+        layer.visible = true;
+    }
+    check(state.pageLayers[1] == clonedLayers,
+          "cloning should match master page-copy behavior for PDF background and layer visibility");
+    check(state.ink.size() == 3 && state.ink[0].page == 0 && state.ink[1].page == 2 && state.ink[2].page == 1 &&
+                  state.ink[2].points[0].x == 10 && state.ink[2].layerId == 2 && state.ink[2].layerOrder == 4,
+          "cloning should duplicate source ink and discard only the replaced page ink");
+    check(state.texts.size() == 3 && state.texts[0].text == "source page" && state.texts[1].text == "following page" &&
+                  state.texts[2].page == 1 && state.texts[2].text == "source page",
+          "cloning should duplicate source text and preserve following-page text");
+    check(state.images.size() == 3 && state.images[0].encodedData == "source image" &&
+                  state.images[1].encodedData == "following image" && state.images[2].page == 1 &&
+                  state.images[2].encodedData == "source image",
+          "cloning should duplicate source images and preserve following-page images");
+    check(!state.replaceNextPageWithClone(2, {595, 842}), "cloning must reject the final page without a successor");
+}
+
 int main() {
     try {
         savedHistory();
@@ -883,6 +956,7 @@ int main() {
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
         layerManagement();
+        replaceNextPageWithClone();
         layerRenameDuplicateReorderAndVisibility();
         pageBackgroundHistory();
         pdfAnnotationInkHistory();

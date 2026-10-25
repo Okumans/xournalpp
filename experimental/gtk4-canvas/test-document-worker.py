@@ -602,6 +602,67 @@ def main():
         labels_header = labels_file.read_text().splitlines()[0].split()
         assert labels_header[0] == "XOURNALPP_GTK4_PDF_LABELS_V1" and int(labels_header[1]) >= 2
 
+        # LayerActions inspects the actual next-page PDF/background and annotation state,
+        # then replaces an annotated target only after explicit confirmation.
+        layer_action_args = [pdf_bg_open / "snapshot.xopp", pdf_bg_open / "ink.dat",
+                             pdf_bg_open / "text.dat", pdf_bg_open / "layers.dat", pdf_bg_open / "images.dat"]
+        no_next = run("layer-actions-inspect-target", layer_action_args[0], "1", *layer_action_args[1:]).strip()
+        assert no_next == "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 0 -1 0"
+        clean_target = run("layer-actions-inspect-target", layer_action_args[0], "0",
+                           *layer_action_args[1:]).strip()
+        assert clean_target == "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 1 1 0"
+
+        layer_action_ink = temporary / "layer-action-annotated.ink"
+        layer_action_packets = [
+            {"page": 0, "layer_id": 1, "origin": 0, "order": 1, "tool": 0, "pressure": 0,
+             "width": 2, "color": (1, 0, 0), "points": [(30, 40, 1), (90, 80, 1)]},
+            {"page": 1, "layer_id": 1, "origin": 0, "order": 1, "tool": 0, "pressure": 0,
+             "width": 2, "color": (0, 0, 1), "points": [(120, 140, 1), (180, 180, 1)]},
+        ]
+        write_ink_v3(layer_action_ink, layer_action_packets)
+        annotated_args = [pdf_bg_open / "snapshot.xopp", layer_action_ink,
+                          pdf_bg_open / "text.dat", pdf_bg_open / "layers.dat", pdf_bg_open / "images.dat"]
+        annotated_target = run("layer-actions-inspect-target", annotated_args[0], "0",
+                               *annotated_args[1:]).strip()
+        assert annotated_target == "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 1 1 1"
+
+        rejected_clone = temporary / "layer-action-rejected"
+        rejected_clone.mkdir()
+        rejected_snapshot = rejected_clone / "snapshot.xopp"
+        rejected_preview = rejected_clone / "preview.pdf"
+        audio_folder = temporary / "layer-action-audio"
+        audio_cache = temporary / "layer-action-audio-cache"
+        audio_folder.mkdir()
+        audio_cache.mkdir()
+        clone_arguments = [annotated_args[0], rejected_snapshot, rejected_preview, "0", "1", "0",
+                           *annotated_args[1:], audio_folder, audio_cache]
+        run("layer-actions-clone-next", *clone_arguments, succeeds=False)
+        assert not rejected_snapshot.exists() and not rejected_preview.exists()
+
+        accepted_clone = temporary / "layer-action-accepted"
+        accepted_clone.mkdir()
+        accepted_snapshot = accepted_clone / "snapshot.xopp"
+        accepted_preview = accepted_clone / "preview.pdf"
+        run("layer-actions-clone-next", annotated_args[0], accepted_snapshot, accepted_preview, "0", "1", "1",
+            *annotated_args[1:], audio_folder, audio_cache)
+        clone_saved = accepted_clone / "native-round-trip.xopp"
+        run("save-copy", accepted_snapshot, clone_saved, accepted_clone / "editable-ink.dat",
+            accepted_clone / "editable-text.dat", accepted_clone / "layers.dat",
+            accepted_clone / "editable-images.dat")
+        cloned_pages = xml(clone_saved).findall("page")
+        assert len(cloned_pages) == 2
+        assert [page.find("background").attrib.get("pageno") for page in cloned_pages] == ["1", "2"]
+        source_clone_strokes = [stroke.text for stroke in cloned_pages[0].findall("layer/stroke")]
+        target_clone_strokes = [stroke.text for stroke in cloned_pages[1].findall("layer/stroke")]
+        assert source_clone_strokes == ["30 40 90 80"], repr(source_clone_strokes)
+        assert target_clone_strokes == ["30 40 90 80"], repr(target_clone_strokes)
+        cloned_ink = read_ink_transfer(accepted_clone / "editable-ink.dat")
+        assert [(packet["page"], packet["points"]) for packet in cloned_ink] == [
+            (0, [(30.0, 40.0, 1.0), (90.0, 80.0, 1.0)]),
+            (1, [(30.0, 40.0, 1.0), (90.0, 80.0, 1.0)]),
+        ]
+        assert accepted_preview.stat().st_size > 500
+
         # Beamer animation stepping changes only the selected page's PDF background.
         beamer_step = temporary / "beamer-step"
         beamer_step.mkdir()
@@ -629,6 +690,16 @@ def main():
         assert (pdf_bg_ins / "snapshot.xopp.bg.pdf").is_file()
         bg_nodes = [p.find("background").attrib for p in xml(pdf_bg_ins / "snapshot.xopp").findall("page")]
         assert bg_nodes[0]["type"] == "pdf" and bg_nodes[1]["type"] == "solid" and bg_nodes[1]["style"] == "lined"
+        non_pdf_target = run("layer-actions-inspect-target", pdf_bg_ins / "snapshot.xopp", "0", empty,
+                             pdf_bg_open / "text.dat", pdf_bg_ins / "layers.dat",
+                             pdf_bg_open / "images.dat").strip()
+        assert non_pdf_target == "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 1 -1 0"
+        non_pdf_clone = temporary / "layer-action-non-pdf"
+        non_pdf_clone.mkdir()
+        run("layer-actions-clone-next", pdf_bg_ins / "snapshot.xopp", non_pdf_clone / "snapshot.xopp",
+            non_pdf_clone / "preview.pdf", "0", "1", "1", empty, pdf_bg_open / "text.dat",
+            pdf_bg_ins / "layers.dat", pdf_bg_open / "images.dat", audio_folder, audio_cache, succeeds=False)
+        assert not (non_pdf_clone / "snapshot.xopp").exists() and not (non_pdf_clone / "preview.pdf").exists()
 
         # Batch insertion uses original page indices in descending order, preserving each PDF page association.
         batch_list = temporary / "page-insertions.dat"

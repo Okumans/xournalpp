@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,12 +16,18 @@
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
-#include "PdfPageLabels.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
+#include "PdfPageLabels.h"
 
 namespace prototype::bridge {
+
+struct LayerActionTargetInfo {
+    bool hasNextPage = false;
+    int nextPdfPage = -1;
+    bool nextPageAnnotated = false;
+};
 
 // The GTK 3 loader/renderer lives in a separate process. Its private snapshot
 // retains native objects independently of subsequent edits to the source file.
@@ -36,6 +43,9 @@ public:
         std::filesystem::path pdfPageLabelsPath() const { return directory / "pdf-labels.dat"; }
         std::filesystem::path layerStatePath() const { return directory / "layers.dat"; }
         std::filesystem::path audioTargetPath() const { return directory / "audio-targets.dat"; }
+        std::filesystem::path editableInkPath() const { return directory / "editable-ink.dat"; }
+        std::filesystem::path editableTextPath() const { return directory / "editable-text.dat"; }
+        std::filesystem::path editableImagesPath() const { return directory / "editable-images.dat"; }
 
         std::vector<std::filesystem::path> layerPreviewPaths() const {
             std::vector<std::filesystem::path> paths;
@@ -319,6 +329,86 @@ public:
                                staged.previewPath().string(), std::to_string(documentPage), std::to_string(pdfPage),
                                ink.string(), text.string(), layer.string(), image.string(), audioFolder.string(),
                                audioDirectory.string()});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
+
+    LayerActionTargetInfo inspectLayerActionTarget(const std::string& worker, int currentPage,
+                                                   const std::vector<StrokePacket>& packets,
+                                                   const std::vector<TextItem>& texts,
+                                                   const std::vector<ImagePacket>& images,
+                                                   const LayerDocument& layers) {
+        if (currentPage < 0 || static_cast<size_t>(currentPage) >= pdfPageMap.size()) {
+            throw std::runtime_error("Invalid source page for LayerActions");
+        }
+
+        const auto directory = path / ("layer-action-inspect-" + std::to_string(nextRevisionId++));
+        std::filesystem::create_directories(directory);
+        try {
+            const auto ink = directory / "inspect.ink";
+            const auto text = directory / "inspect.text";
+            const auto layer = directory / "inspect.layers";
+            const auto image = directory / "inspect.images";
+            writeTransfer(ink, packets);
+            writeTextTransfer(text, texts);
+            writeLayerTransfer(layer, layers);
+            writeImageTransfer(image, images);
+            const auto result = runWorker(worker, {"layer-actions-inspect-target", snapshotPath().string(),
+                                                   std::to_string(currentPage), ink.string(), text.string(),
+                                                   layer.string(), image.string()});
+            std::istringstream stream(result);
+            std::string header;
+            int hasNextPage = 0;
+            int pdfPage = -1;
+            int annotated = 0;
+            if (!(stream >> header >> hasNextPage >> pdfPage >> annotated) ||
+                header != "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1" ||
+                (hasNextPage != 0 && hasNextPage != 1) || pdfPage < -1 || (annotated != 0 && annotated != 1)) {
+                throw std::runtime_error("Invalid LayerActions target metadata from the document worker");
+            }
+            stream >> std::ws;
+            if (!stream.eof() || (!hasNextPage && (pdfPage != -1 || annotated))) {
+                throw std::runtime_error("Inconsistent LayerActions target metadata from the document worker");
+            }
+            return {hasNextPage == 1, pdfPage, annotated == 1};
+        } catch (...) {
+            std::error_code ignored;
+            std::filesystem::remove_all(directory, ignored);
+            throw;
+        }
+    }
+
+    StagedRevision stageLayerActionsCloneNext(const std::string& worker, int currentPage, int pdfPage,
+                                              bool allowAnnotated, const std::vector<StrokePacket>& packets,
+                                              const std::vector<TextItem>& texts,
+                                              const std::vector<ImagePacket>& images,
+                                              const LayerDocument& layers) {
+        if (currentPage < 0 || static_cast<size_t>(currentPage + 1) >= pdfPageMap.size() || pdfPage < 0 ||
+            pdfPageMap[static_cast<size_t>(currentPage + 1)] != pdfPage) {
+            throw std::runtime_error("The next LayerActions page changed before the operation could start");
+        }
+
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            const auto ink = staged.directory / "layer-action.ink";
+            const auto text = staged.directory / "layer-action.text";
+            const auto layer = staged.directory / "layer-action.layers";
+            const auto image = staged.directory / "layer-action.images";
+            writeTransfer(ink, packets);
+            writeTextTransfer(text, texts);
+            writeLayerTransfer(layer, layers);
+            writeImageTransfer(image, images);
+            runWorker(worker, {"layer-actions-clone-next", snapshotPath().string(), staged.snapshotPath().string(),
+                               staged.previewPath().string(), std::to_string(currentPage), std::to_string(pdfPage),
+                               allowAnnotated ? "1" : "0", ink.string(), text.string(), layer.string(),
+                               image.string(), audioFolder.string(), audioDirectory.string()});
+            static_cast<void>(readTransfer(staged.editableInkPath()));
+            static_cast<void>(readTextTransfer(staged.editableTextPath()));
+            static_cast<void>(readImageTransfer(staged.editableImagesPath()));
         } catch (...) {
             discardRevision(staged);
             throw;
