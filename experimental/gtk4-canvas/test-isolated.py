@@ -444,7 +444,8 @@ def verify_selection_modes(args, evidence):
          "--smoke-dir", str(output)],
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_SELECTION_VERIFY_MODE="visible-layers"),
     )
-    if ("PASS: GTK visible-layer rectangle/lasso selection, hidden-layer fallback, remembered tool state, and shortcuts"
+    if ("PASS: GTK visible-layer rectangle/lasso selection, Select Object mode, hidden-layer fallback, "
+            "remembered tool state, and shortcuts"
             not in result):
         raise RuntimeError("GTK visible-layer selection mode verification did not finish")
     for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",

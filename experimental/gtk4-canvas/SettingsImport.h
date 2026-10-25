@@ -294,6 +294,8 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.activeTool = Tool::Highlighter;
             } else if (value == "eraser") {
                 out.activeTool = Tool::Eraser;
+            } else if (value == "selectObject") {
+                out.activeTool = Tool::SelectObject;
             }
         }
         return;

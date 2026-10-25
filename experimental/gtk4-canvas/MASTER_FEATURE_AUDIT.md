@@ -33,7 +33,7 @@ registration in `ToolHandler::initTools`.
 | `selectRegion` | Partial | Lasso-selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |
 | `selectMultiLayerRect` | Partial | Selects editable strokes, text, and images from the topmost visible foreground layer with matches; unsupported native objects are not included. |
 | `selectMultiLayerRegion` | Partial | Lasso-selects editable strokes, text, and images from the topmost visible foreground layer with matches; unsupported native objects are not included. |
-| `selectObject` | Pending | Port the master object-selection behavior as a distinct tool. |
+| `selectObject` | Partial | Select Object picks the closest editable stroke, text, or image on the active visible layer within the master 0.5 pt action radius; exact overlapping hits prefer the frontmost object, and Shift adds to the current selection. Unsupported native objects and their exact hit geometry remain. |
 | `playObject` | Pending | Select and play supported audio objects with production controls and lifecycle. |
 | `verticalSpace` | Pending | Insert vertical space with the same affected objects, undo behavior, and page boundaries. |
 | `hand` | Partial | Space and stylus mappings can pan temporarily; add the dedicated hand-tool behavior. |
@@ -70,7 +70,7 @@ it is not represented by a single `ToolType`.
 | Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including mixed-object edits and cross-page transfer. Exact grid snapping, edge pan, persistent rotated handle frame, transform-following text editor placement, and device behavior remain. |
 | Text editing | Partial | Inline rich-text editing works; selected text can move, resize, rotate, and transfer across pages. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
-| Native object picking | Partial | Editable strokes, images, and text can enter the shared selection model; unsupported native objects cannot be edited. |
+| Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, and text; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` stroke and single-image copy/cut/paste works. Images also offer PNG and accept PNG clipboard paste. Multi-image and mixed-object selection clipboard actions, remaining native types, text and SVG selection targets, and cross-process compatibility remain. |
 
 ## Built-in plugin inventory
