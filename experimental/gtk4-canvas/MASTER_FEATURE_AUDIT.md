@@ -5,6 +5,10 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
+Current ledger count: **52 task areas — 33 Partial, 19 Pending, 0 Covered, and 0
+Obsolete.** Partial means working code exists with parity gaps listed below;
+it does not mean the task is complete.
+
 ## Status rules
 
 - **Covered**: behavior is implemented and has a regression check.
@@ -35,7 +39,7 @@ registration in `ToolHandler::initTools`.
 | `selectMultiLayerRegion` | Partial | Lasso-selects editable strokes, text, and images from the topmost visible foreground layer with matches; unsupported native objects are not included. |
 | `selectObject` | Partial | Select Object picks the closest editable stroke, text, or image on the active visible layer within the master 0.5 pt action radius; exact overlapping hits prefer the frontmost object, and Shift adds to the current selection. Unsupported native objects and their exact hit geometry remain. |
 | `playObject` | Pending | Select and play supported audio objects with production controls and lifecycle. |
-| `verticalSpace` | Pending | Insert vertical space with the same affected objects, undo behavior, and page boundaries. |
+| `verticalSpace` | Partial | The selection-menu mode previews and shifts editable strokes, text, and images wholly above or below a dragged boundary on the active layer; Control switches sides, page-grid snapping applies, and the movement is one undoable edit. Unsupported native objects are not editable, and physical device behavior remains unverified. |
 | `hand` | Partial | Dedicated Hand mode and Space/stylus temporary pan preserve the current selection. Physical device routing, touch gesture details, and kinetic scrolling remain. |
 | `drawRect` | Partial | Drag preview, constraints, and undo work as an editable stroke path; preserve native geometric objects. |
 | `drawEllipse` | Partial | Drag preview, constraints, and undo work as an editable stroke path; preserve native geometric objects. |
@@ -100,7 +104,7 @@ it stays listed because it is part of the master plugin distribution.
 
 | Area | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately. Audit every user-facing setting, per-device `deviceClasses`, and `toolbar.ini` customization. |
+| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, spacing, and tolerance. Audit every user-facing setting, per-device `deviceClasses`, and `toolbar.ini` customization. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |

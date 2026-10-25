@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 using namespace prototype::bridge;
@@ -40,6 +41,7 @@ int main() {
         original[0].selectedLayer = 2;
         original[0].backgroundVisible = false;
         original[0].backgroundName = "Paper";
+        original[0].gridYOffset = 80;
         original[0].layers = {{"Lower", true, {0}}, {"上の層", false, {1, 2}}};
         original[1].initialLayerCount = 1;
         original[1].selectedLayer = 1;
@@ -73,6 +75,11 @@ int main() {
         check(throws([&] { writeLayerTransfer(path, invalidSelection); }),
               "The immutable background was accepted as the active editable layer");
 
+        auto invalidGridOffset = original;
+        invalidGridOffset[0].gridYOffset = std::numeric_limits<double>::infinity();
+        check(throws([&] { writeLayerTransfer(path, invalidGridOffset); }),
+              "A non-finite page-grid offset was accepted");
+
         {
             std::ofstream legacy(path, std::ios::binary);
             legacy << "XOURNALPP_GTK4_LAYERS_V1 1\n1 1 1 1\n1 1 1\n0\nL\n";
@@ -81,6 +88,15 @@ int main() {
         check(legacyDecoded.size() == 1 && !legacyDecoded[0].backgroundName &&
                       legacyDecoded[0].layers[0].name == "L",
               "Version 1 layer-transfer metadata must remain readable without an explicit background name");
+
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_LAYERS_V2 1\n1 1 1 1\n1 1\nP\n1 1 1\n0\nL\n";
+        }
+        const auto version2Decoded = readLayerTransfer(path);
+        check(version2Decoded.size() == 1 && version2Decoded[0].backgroundName == "P" &&
+                      version2Decoded[0].gridYOffset == 0 && version2Decoded[0].layers[0].name == "L",
+              "Version 2 layer-transfer metadata must remain readable with the default grid offset");
 
         {
             std::ofstream truncated(path, std::ios::binary);

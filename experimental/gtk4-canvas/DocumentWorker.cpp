@@ -18,11 +18,13 @@
 
 #include "control/xojfile/LoadHandler.h"
 #include "control/xojfile/SaveHandler.h"
+#include "model/BackgroundConfig.h"
 #include "model/Document.h"
 #include "model/DocumentHandler.h"
 #include "model/Layer.h"
 #include "model/Image.h"
 #include "model/Point.h"
+#include "model/PageType.h"
 #include "model/Stroke.h"
 #include "model/Text.h"
 #include "model/TextAlignment.h"
@@ -561,6 +563,7 @@ void requireNewTarget(const fs::path& target) {
 }
 
 prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
+    using namespace background_config_strings;
     prototype::bridge::LayerDocument layers;
     layers.reserve(document.getPageCount());
     for (size_t pageIndex = 0; pageIndex < document.getPageCount(); ++pageIndex) {
@@ -571,6 +574,21 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
         pageInfo.backgroundVisible = page->isLayerVisible(0);
         if (page->backgroundHasName()) {
             pageInfo.backgroundName = page->getBackgroundName();
+        }
+        const auto background = page->getBackgroundType();
+        if (background.format == PageTypeFormat::Lined || background.format == PageTypeFormat::Ruled) {
+            pageInfo.gridYOffset = 80.0;
+        } else if (background.format == PageTypeFormat::IsoDotted ||
+                   background.format == PageTypeFormat::IsoGraph) {
+            double triangleSize = 14.17;
+            const BackgroundConfig config(background.config);
+            config.loadValue(CFG_RASTER, triangleSize);
+            if (std::isfinite(triangleSize) && triangleSize > 0) {
+                const double step = triangleSize / 2.0;
+                const auto pageHeight = page->getHeight();
+                const auto rows = std::max(0.0, std::floor((pageHeight - 2.0 * triangleSize) / step));
+                pageInfo.gridYOffset = (pageHeight - rows * step) / 2.0;
+            }
         }
         pageInfo.layers.clear();
         for (size_t layerIndex = 0; layerIndex < page->getLayerCount(); ++layerIndex) {

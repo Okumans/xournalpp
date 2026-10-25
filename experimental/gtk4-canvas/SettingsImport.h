@@ -56,6 +56,9 @@ struct ImportedSettings {
     double shapeRecognizerMinSize = 40;
     bool snapRotation = true;
     double snapRotationTolerance = 0.30;
+    bool snapGrid = true;
+    double snapGridSize = behavior::snapGridSize;
+    double snapGridTolerance = behavior::snapGridTolerance;
     StabilizerConfig stabilizer;
 
     bool showSidebar = true;
@@ -221,6 +224,20 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
     } else if (name == "snapRotationTolerance") {
         if (const auto v = parseAsciiDouble(value)) {
             out.snapRotationTolerance = std::clamp(*v, 0.0, 1.0);
+        }
+    } else if (name == "snapGrid") {
+        if (value == "true") {
+            out.snapGrid = true;
+        } else if (value == "false") {
+            out.snapGrid = false;
+        }
+    } else if (name == "snapGridSize") {
+        if (const auto v = parseAsciiDouble(value); v && *v > 0) {
+            out.snapGridSize = std::clamp(*v, 0.1, 1000.0);
+        }
+    } else if (name == "snapGridTolerance") {
+        if (const auto v = parseAsciiDouble(value)) {
+            out.snapGridTolerance = std::clamp(*v, 0.0, 1.0);
         }
     } else if (name == "strokeRecognizerMinSize") {
         if (const auto v = parseAsciiDouble(value); v && *v > 0) {
@@ -537,6 +554,9 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.shapeRecognizerMinSize = settings.shapeRecognizerMinSize;
     state.snapRotationEnabled = settings.snapRotation;
     state.snapRotationTolerance = settings.snapRotationTolerance;
+    state.snapGridEnabled = settings.snapGrid;
+    state.snapGridSize = settings.snapGridSize;
+    state.snapGridTolerance = settings.snapGridTolerance;
     state.zoomStep = settings.zoomStep;
     state.scrollZoomStep = settings.scrollZoomStep;
     state.eraserMode = settings.eraserMode;

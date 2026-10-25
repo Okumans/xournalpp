@@ -1,11 +1,16 @@
 #pragma once
 
+#include <algorithm>
+
 #include <cairo.h>
 
 #include "BehaviorDefaults.h"
 #include "CanvasState.h"
 
 namespace prototype {
+
+void drawCanvasImage(cairo_t* cr, const CanvasImage& image);
+void drawText(cairo_t* cr, const TextItem& item);
 
 inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}) {
     if (ink.points.empty()) {
@@ -64,6 +69,9 @@ inline void drawInkPreview(cairo_t* cr, const CanvasState& state, size_t index) 
 }
 
 inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
+    if (state.verticalSpacePreview()) {
+        return;
+    }
     const auto bounds = state.selectionBox();
     if (!bounds || bounds->page != page) {
         return;
@@ -106,6 +114,60 @@ inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
         }
     }
     cairo_restore(cr);
+}
+
+inline void drawVerticalSpacePreview(cairo_t* cr, const CanvasState& state, int page) {
+    const auto* preview = state.verticalSpacePreview();
+    if (!preview || preview->page != page) {
+        return;
+    }
+
+    const double top = std::min(preview->startY, preview->endY);
+    const double bottom = std::max(preview->startY, preview->endY);
+    cairo_save(cr);
+    cairo_rectangle(cr, 0, top, state.pageSize(page).width, bottom - top);
+    cairo_set_source_rgb(cr, 0.2, 0.52, 0.9);
+    cairo_set_line_width(cr, 1.0 / state.zoom);
+    cairo_stroke_preserve(cr);
+    cairo_set_source_rgba(cr, 0.2, 0.52, 0.9, 0.3);
+    cairo_fill(cr);
+    cairo_restore(cr);
+
+    enum class Kind { Ink, Text, Image };
+    struct Item {
+        size_t order;
+        Kind kind;
+        size_t index;
+    };
+    const auto& layer = state.layersForPage(page).layers.at(preview->layerId - 1);
+    for (const size_t origin: layer.origins) {
+        std::vector<Item> items;
+        for (const auto index: preview->inkIndices) {
+            if (state.ink[index].originLayer == origin) {
+                items.push_back({state.ink[index].layerOrder, Kind::Ink, index});
+            }
+        }
+        for (const auto index: preview->textIndices) {
+            if (state.texts[index].originLayer == origin) {
+                items.push_back({state.texts[index].layerOrder, Kind::Text, index});
+            }
+        }
+        for (const auto index: preview->imageIndices) {
+            if (state.images[index].originLayer == origin) {
+                items.push_back({state.images[index].layerOrder, Kind::Image, index});
+            }
+        }
+        std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.order < b.order; });
+        for (const auto& item: items) {
+            if (item.kind == Kind::Ink) {
+                drawInkPreview(cr, state, item.index);
+            } else if (item.kind == Kind::Text) {
+                drawText(cr, state.displayText(item.index));
+            } else {
+                drawCanvasImage(cr, state.displayImage(item.index));
+            }
+        }
+    }
 }
 
 }  // namespace prototype

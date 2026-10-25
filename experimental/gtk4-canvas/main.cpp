@@ -517,6 +517,9 @@ private:
         ScrollZoomStep,
         RotationSnapTolerance,
         SnapRotation,
+        SnapGrid,
+        SnapGridSize,
+        SnapGridTolerance,
     };
 
     GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
@@ -650,6 +653,15 @@ private:
             case PreferenceKey::SnapRotation:
                 settings.snapRotation = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
                 break;
+            case PreferenceKey::SnapGrid:
+                settings.snapGrid = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::SnapGridSize:
+                settings.snapGridSize = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
+            case PreferenceKey::SnapGridTolerance:
+                settings.snapGridTolerance = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
         }
 
         prototype::applyImportedSettingsToCanvas(state, settings);
@@ -751,6 +763,15 @@ private:
                        "Snap image rotation to 15° increments near a match",
                        importedConfig.settings.snapRotationTolerance, 0.0, 1.0, 0.05, 2, "",
                        PreferenceKey::RotationSnapTolerance);
+        preferenceSwitch(selectionGroup, "Snap spacing to the page grid",
+                         "Snap vertical-space boundaries to the current page grid",
+                         importedConfig.settings.snapGrid, PreferenceKey::SnapGrid);
+        preferenceSpin(selectionGroup, "Grid spacing", "Spacing used when snapping vertical-space boundaries",
+                       importedConfig.settings.snapGridSize, 0.1, 1000.0, 0.1, 2, "pt",
+                       PreferenceKey::SnapGridSize);
+        preferenceSpin(selectionGroup, "Grid snap tolerance", "How close a boundary must be to snap",
+                       importedConfig.settings.snapGridTolerance, 0.0, 1.0, 0.05, 2, "",
+                       PreferenceKey::SnapGridTolerance);
         adw_preferences_page_add(behavior, selectionGroup);
         adw_preferences_dialog_add(preferencesDialog, behavior);
         adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
@@ -2099,6 +2120,9 @@ private:
     }
 
     guint selectionModeIndex(Tool tool) const {
+        if (tool == Tool::VerticalSpace) {
+            return 8;
+        }
         if (state.selectionAcrossLayers && tool == Tool::SelectRectangle) {
             return 3;
         }
@@ -2450,6 +2474,7 @@ private:
         const bool editingText = textEditor && textEditor->active();
         const bool textContext = state.brush.tool == Tool::Text || editingText;
         const bool regularColorContext = state.brush.tool != Tool::Eraser && state.brush.tool != Tool::Hand &&
+                                         state.brush.tool != Tool::VerticalSpace &&
                                          !prototype::isSelectionTool(state.brush.tool);
         if (textFontEntry) {
             gtk_widget_set_visible(textFontEntry, textContext);
@@ -2654,7 +2679,7 @@ private:
         if (textButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(textButton), tool == Tool::Text);
         }
-        if (prototype::isSelectionTool(tool)) {
+        if (prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
         } else if (tool == Tool::Hand) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[4]), true);
@@ -2681,6 +2706,7 @@ private:
         pendingStylusTextTap.reset();
         textDragHandled = false;
         input.cancel();
+        state.cancelVerticalSpace();
         if (!prototype::isSelectionTool(tool) && tool != Tool::Hand) {
             state.clearSelection();
         }
@@ -2702,14 +2728,15 @@ private:
                                static_cast<float>(color[2]), 1};
             gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(colorButton), &rgba);
         }
-        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::Hand &&
+        gtk_widget_set_visible(colorBox, tool != Tool::Eraser && tool != Tool::Hand && tool != Tool::VerticalSpace &&
                                                 !prototype::isSelectionTool(tool));
         gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
-                                                     tool != Tool::Hand);
+                                                     tool != Tool::Hand && tool != Tool::VerticalSpace);
         gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
-                                                    tool != Tool::Hand);
+                                                    tool != Tool::Hand && tool != Tool::VerticalSpace);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
-        gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(selectionModeDropdown,
+                               prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace);
         gtk_widget_set_visible(selectionActions,
                                prototype::isSelectionTool(tool) && !prototype::isPdfTextSelectionTool(tool));
         gtk_widget_set_tooltip_text(selectionLabel,
@@ -2734,6 +2761,8 @@ private:
         if (prototype::isSelectionTool(tool)) {
             selectionTool = tool;
             gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), selectionModeIndex(tool));
+        } else if (tool == Tool::VerticalSpace) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 8);
         }
         gtk_widget_set_sensitive(colorButton, tool != Tool::Eraser);
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
@@ -3694,29 +3723,36 @@ private:
 
         const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", "Rectangle: Visible layers",
                                         "Lasso: Visible layers", "Object", "PDF text: Linear",
-                                        "PDF text: Rectangle", nullptr};
+                                        "PDF text: Rectangle", "Vertical space", nullptr};
         selectionModeDropdown = gtk_drop_down_new_from_strings(selectionModes);
         gtk_widget_set_tooltip_text(selectionModeDropdown,
                                     "Object selects the nearest item in the active layer. Visible-layer modes "
                                     "search from the top visible layer downward and select editable objects on "
-                                    "the first layer with matches.");
+                                    "the first layer with matches. Vertical space shifts objects wholly above or "
+                                    "below a dragged boundary; hold Control to switch sides.");
         g_signal_connect(
                 selectionModeDropdown, "notify::selected",
                 G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
                     auto* self = static_cast<Prototype*>(data);
                     const auto selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
-                    const auto tool = selected == 1 || selected == 4 ? Tool::SelectLasso :
+                    const auto tool = selected == 8 ? Tool::VerticalSpace :
+                                      selected == 1 || selected == 4 ? Tool::SelectLasso :
                                       selected == 2 ? Tool::SmartSelect :
                                       selected == 5 ? Tool::SelectObject :
                                       selected == 6 ? Tool::SelectPdfTextLinear :
                                       selected == 7 ? Tool::SelectPdfTextRect : Tool::SelectRectangle;
                     const bool acrossLayers = selected == 3 || selected == 4;
+                    if (tool == Tool::VerticalSpace) {
+                        self->selectTool(tool);
+                        return;
+                    }
                     if (prototype::isPdfTextSelectionTool(self->state.brush.tool) &&
                         prototype::isPdfTextSelectionTool(tool)) {
                         if (self->state.brush.tool != tool) {
                             self->switchPdfTextSelectionStyle();
                         }
-                    } else if (prototype::isSelectionTool(self->state.brush.tool) &&
+                    } else if ((prototype::isSelectionTool(self->state.brush.tool) ||
+                                self->state.brush.tool == Tool::VerticalSpace) &&
                         (tool != self->state.brush.tool || acrossLayers != self->state.selectionAcrossLayers)) {
                         self->activateSelection(tool, acrossLayers);
                     }
@@ -4303,6 +4339,7 @@ private:
 
     void resetInput(bool interrupted = false) {
         imageGesture.reset();
+        state.cancelVerticalSpace();
         if (textSelectionOwner) {
             state.cancelSelection();
         }
@@ -4324,6 +4361,13 @@ private:
 
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        if (state.brush.tool == Tool::VerticalSpace &&
+            !(device == Device::Stylus && activeStylusAction != prototype::ButtonToolAction::None)) {
+            state.beginVerticalSpace(x, y, input.controlHeld);
+            gtk_widget_grab_focus(canvas);
+            update();
+            return;
+        }
         if (state.brush.tool == Tool::Text && device == Device::Stylus && !eraserEnd &&
             activeStylusAction == prototype::ButtonToolAction::None && !(textEditor && textEditor->active())) {
             pendingStylusTextTap = prototype::Point{x, y};
@@ -4389,6 +4433,11 @@ private:
 
     void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                 uint32_t timeMs = 0) {
+        if (state.verticalSpacePreview()) {
+            state.moveVerticalSpace(x, y, input.controlHeld);
+            update();
+            return;
+        }
         if (device == Device::Stylus && pendingStylusTextTap) {
             const auto start = *pendingStylusTextTap;
             if (std::hypot(x - start.x, y - start.y) < 3.0) {
@@ -4426,6 +4475,13 @@ private:
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt,
                 std::optional<prototype::Point> releasePoint = std::nullopt) {
+        if (state.verticalSpacePreview()) {
+            if (state.finishVerticalSpace()) {
+                thumbnails.clear();
+            }
+            update();
+            return;
+        }
         if (textSelectionOwner && *textSelectionOwner == device) {
             if (releasePoint) {
                 state.moveSelectionPointer(releasePoint->x, releasePoint->y, input.altHeld);
@@ -4872,6 +4928,12 @@ private:
                     self->input.setModifiers((modifiers & GDK_SHIFT_MASK) || key == GDK_KEY_Shift_L || key == GDK_KEY_Shift_R,
                                              (modifiers & GDK_CONTROL_MASK) || key == GDK_KEY_Control_L || key == GDK_KEY_Control_R,
                                              (modifiers & GDK_ALT_MASK) || key == GDK_KEY_Alt_L || key == GDK_KEY_Alt_R);
+                    if (self->state.verticalSpacePreview() &&
+                        (key == GDK_KEY_Control_L || key == GDK_KEY_Control_R)) {
+                        self->state.setVerticalSpaceDirection(self->input.controlHeld);
+                        self->update();
+                        return true;
+                    }
                     if (self->input.splineInProgress && !editingText &&
                         !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))) {
                         if (key == GDK_KEY_BackSpace) {
@@ -5055,6 +5117,10 @@ private:
                              if (key == GDK_KEY_Control_L || key == GDK_KEY_Control_R) control = false;
                              if (key == GDK_KEY_Alt_L || key == GDK_KEY_Alt_R) alt = false;
                              self->input.setModifiers(shift, control, alt);
+                             if (self->state.verticalSpacePreview() &&
+                                 (key == GDK_KEY_Control_L || key == GDK_KEY_Control_R)) {
+                                 self->state.setVerticalSpaceDirection(self->input.controlHeld);
+                             }
                              if (key == GDK_KEY_space) {
                                  self->input.spaceHeld = false;
                                  gtk_widget_set_cursor_from_name(self->canvas,
@@ -5299,17 +5365,23 @@ private:
                     layerItems.reserve(state.ink.size() + state.texts.size());
                     for (size_t index = 0; index < state.ink.size(); ++index) {
                         if (state.displayPage(index) == i && state.displayLayerId(index) == layerId &&
-                            state.displayLayerOrigin(index) == origin) {
+                            state.displayLayerOrigin(index) == origin && !state.verticalSpaceAffectsInk(index)) {
                             layerItems.push_back({state.ink[index].layerOrder, EditableKind::Ink, index});
                         }
                     }
                     for (size_t index = 0; index < state.texts.size(); ++index) {
+                        if (state.verticalSpaceAffectsText(index)) {
+                            continue;
+                        }
                         const auto text = state.displayText(index);
                         if (text.page == i && text.layerId == layerId && text.originLayer == origin) {
                             layerItems.push_back({text.layerOrder, EditableKind::Text, index});
                         }
                     }
                     for (size_t index = 0; index < state.images.size(); ++index) {
+                        if (state.verticalSpaceAffectsImage(index)) {
+                            continue;
+                        }
                         const auto image = displayedImage(index);
                         if (image.page == i && image.layerId == layerId && image.originLayer == origin) {
                             layerItems.push_back({image.layerOrder, EditableKind::Image, index});
@@ -5333,6 +5405,7 @@ private:
                     }
                 }
             }
+            prototype::drawVerticalSpacePreview(cr, state, i);
             prototype::drawSelection(cr, state, i);
             if (state.brush.tool != Tool::Hand && selectedImageIndex && *selectedImageIndex < state.images.size() &&
                 state.images[*selectedImageIndex].page == i &&
@@ -5841,8 +5914,8 @@ private:
                                 state.layersForPage(0).layers[0].name == "Lower" &&
                                 state.layersForPage(0).layers[1].name == "Upper",
                         "Visible-layer selection verification requires its native two-layer fixture");
-                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 8,
-                        "Selection mode menu does not expose visible-layer, object and PDF text modes");
+                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 9,
+                        "Selection mode menu does not expose visible-layer, object, PDF text and vertical-space modes");
                 activateSelection(Tool::SelectRectangle);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
                 require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers,
@@ -6121,8 +6194,66 @@ private:
                 require(state.ink.size() == handInkCount && state.selected == handSelection &&
                                 state.offsetX != handOffsetX && state.offsetY != handOffsetY && !input.active(),
                         "Hand drag did not pan the canvas while retaining its selected objects");
+                const auto lowerFirstBefore = state.ink[0].points;
+                const auto lowerSecondBefore = state.ink[1].points;
+                const auto upperFirstBefore = state.ink[2].points;
+                const auto upperSecondBefore = state.ink[3].points;
+                const auto textBeforeVerticalSpace = state.texts[0];
+                activateSelection(Tool::SelectRectangle);
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 8);
+                require(state.brush.tool == Tool::VerticalSpace &&
+                                gtk_widget_get_visible(selectionModeDropdown) &&
+                                !gtk_widget_get_visible(selectionActions),
+                        "Vertical space did not activate from the selection mode menu");
+                input.setModifiers(false, false, false);
+                const auto verticalStart = state.pageScreenPoint(0, 40, 240);
+                g_signal_emit_by_name(mouse, "drag-begin", verticalStart.x, verticalStart.y);
+                require(state.verticalSpacePreview() && !state.verticalSpacePreview()->moveAbove &&
+                                state.verticalSpacePreview()->inkIndices.empty(),
+                        "Vertical-space drag should start in below-the-line mode with no lower objects selected");
+                gboolean controlHandled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Control_L, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK), &controlHandled);
+                require(controlHandled && state.verticalSpacePreview()->moveAbove &&
+                                state.verticalSpacePreview()->inkIndices == std::vector<size_t>({2, 3}) &&
+                                state.verticalSpacePreview()->textIndices == std::vector<size_t>{0},
+                        "Holding Control during the drag did not switch the preview above the boundary");
+                g_signal_emit_by_name(mouse, "drag-update", 0.0, 20.0 * state.zoom);
+                const double verticalShift = state.verticalSpacePreview()->endY -
+                                             state.verticalSpacePreview()->startY;
+                require(verticalShift > 0, "Vertical-space boundary did not move down");
+                waitForNextPaint();
+                capture("vertical-space-preview");
+                g_signal_emit_by_name(keys, "key-released", GDK_KEY_Control_L, 0u, GdkModifierType(0));
+                require(!state.verticalSpacePreview()->moveAbove && state.verticalSpacePreview()->inkIndices.empty(),
+                        "Releasing Control during the drag did not switch the preview below the boundary");
+                controlHandled = false;
+                g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Control_L, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK), &controlHandled);
+                require(controlHandled && state.verticalSpacePreview()->inkIndices == std::vector<size_t>({2, 3}),
+                        "Pressing Control again did not restore the above-the-line preview");
+                g_signal_emit_by_name(mouse, "drag-end", 0.0, 20.0 * state.zoom);
+                g_signal_emit_by_name(keys, "key-released", GDK_KEY_Control_L, 0u, GdkModifierType(0));
+                require(!state.verticalSpacePreview() && state.ink[0].points == lowerFirstBefore &&
+                                state.ink[1].points == lowerSecondBefore &&
+                                std::abs(state.ink[2].points.front().y - upperFirstBefore.front().y - verticalShift) < 1e-6 &&
+                                std::abs(state.ink[3].points.front().y - upperSecondBefore.front().y - verticalShift) < 1e-6 &&
+                                std::abs(state.texts[0].y - textBeforeVerticalSpace.y - verticalShift) < 1e-6,
+                        "Vertical space did not move only the upper-layer objects selected by its preview");
+                const auto verticalRevision = state.revision();
+                state.undo();
+                require(state.revision() != verticalRevision &&
+                                state.ink[2].points.front().y == upperFirstBefore.front().y &&
+                                state.texts[0].y == textBeforeVerticalSpace.y,
+                        "Undo did not restore the vertical-space edit as one step");
+                state.redo();
+                require(state.revision() == verticalRevision &&
+                                std::abs(state.ink[2].points.front().y - upperFirstBefore.front().y - verticalShift) < 1e-6,
+                        "Redo did not reapply the vertical-space edit");
+                waitForNextPaint();
+                capture("vertical-space-applied");
                 std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Text-tool mouse/stylus move/resize "
-                             "and formatting, "
+                             "and formatting, vertical-space direction/preview/undo, "
                              "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
                              "remembered tool state, and shortcuts\n";
                 closeWindow();
@@ -6370,7 +6501,8 @@ private:
                     require(control(PreferenceKey::Theme) && control(PreferenceKey::StylusButtonOne) &&
                                     control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout) &&
                                     control(PreferenceKey::RotationSnapTolerance) &&
-                                    control(PreferenceKey::SnapRotation),
+                                    control(PreferenceKey::SnapRotation) && control(PreferenceKey::SnapGrid) &&
+                                    control(PreferenceKey::SnapGridSize) && control(PreferenceKey::SnapGridTolerance),
                             "Preferences dialog is missing appearance, stylus or autosave controls");
                     require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Highlighter) &&
@@ -6396,10 +6528,16 @@ private:
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::ZoomStep)), 22.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::RotationSnapTolerance)), 0.45);
                     adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation)), false);
+                    adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapGrid)), false);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridSize)), 24.0);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridTolerance)), 0.4);
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     !importedConfig.settings.pressureSensitivity &&
                                     !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
+                                    !importedConfig.settings.snapGrid && !state.snapGridEnabled &&
+                                    std::abs(state.snapGridSize - 24.0) < 1e-8 &&
+                                    std::abs(state.snapGridTolerance - 0.4) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
@@ -6447,6 +6585,9 @@ private:
                                     importedConfig.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand &&
                                     !importedConfig.settings.pressureSensitivity &&
                                     !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
+                                    !importedConfig.settings.snapGrid && !state.snapGridEnabled &&
+                                    std::abs(state.snapGridSize - 24.0) < 1e-8 &&
+                                    std::abs(state.snapGridTolerance - 0.4) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8,
@@ -6463,6 +6604,12 @@ private:
                     require(!adw_switch_row_get_active(
                                     ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
                             "Preferences dialog did not restore the rotation snapping setting");
+                    require(!adw_switch_row_get_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapGrid))) &&
+                                    std::abs(gtk_spin_button_get_value(
+                                                     GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridSize))) - 24.0) < 1e-8 &&
+                                    std::abs(gtk_spin_button_get_value(
+                                                     GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridTolerance))) - 0.4) < 1e-8,
+                            "Preferences dialog did not restore page-grid snapping values");
                     capture("preferences-reloaded");
                     std::cout << "PASS: GTK 4 preferences survive application restart\n";
                     adw_dialog_close(ADW_DIALOG(preferencesDialog));
@@ -8220,7 +8367,7 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
-    std::array<GtkWidget*, 14> preferenceControls{};
+    std::array<GtkWidget*, 17> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;
