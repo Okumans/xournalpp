@@ -41,13 +41,14 @@ public:
         if (!finitePosition(sample) || state.pinching) {
             return false;
         }
-        if (state.drawingMode == DrawingMode::Spline && !eraserEnd && state.brush.tool != Tool::Eraser && !spaceHeld) {
+        if (state.drawingMode == DrawingMode::Spline && !eraserEnd && state.brush.tool != Tool::Eraser &&
+            state.brush.tool != Tool::Hand && !spaceHeld) {
             return splinePress(device, sample);
         }
         if (owner || state.current) return false;
         pressureMode = state.pressureSensitivity && validPressure(sample.pressure);
         lastPressure = pressureMode ? *sample.pressure : 1;
-        if (spaceHeld || !state.hitPage(sample.x, sample.y)) {
+        if (spaceHeld || state.brush.tool == Tool::Hand || !state.hitPage(sample.x, sample.y)) {
             mode = Mode::Pan;
         } else if ((eraserEnd || state.brush.tool == Tool::Eraser) && state.eraserMode != EraserMode::Whiteout) {
             mode = Mode::Erase;

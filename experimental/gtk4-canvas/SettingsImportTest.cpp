@@ -160,6 +160,12 @@ int main() {
     require(objectToolParsed.ok && objectToolParsed.settings.activeTool == prototype::Tool::SelectObject,
             "The current Select Object tool was not restored from settings.xml");
 
+    const auto handToolParsed = prototype::parseSettingsXml(
+            "<settings><data name=\"tools\"><attribute name=\"current\" type=\"string\" "
+            "value=\"hand\"/></data></settings>");
+    require(handToolParsed.ok && handToolParsed.settings.activeTool == prototype::Tool::Hand,
+            "The current Hand tool was not restored from settings.xml");
+
     // 3. Truncated/malformed XML rolls back transactionally to clean defaults.
     const auto truncated = prototype::parseSettingsXml(
             "<settings><property name=\"themeVariant\" value=\"forceDark\"/><data name=\"tools\">");

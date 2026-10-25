@@ -32,7 +32,7 @@ struct PageHit {
     Point local{};
 };
 
-enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect, Text, SelectObject };
+enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect, Text, SelectObject, Hand };
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
            tool == Tool::SelectObject;
