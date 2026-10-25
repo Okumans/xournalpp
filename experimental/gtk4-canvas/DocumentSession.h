@@ -9,6 +9,7 @@
 #include <gio/gio.h>
 
 #include "DocumentAutosave.h"
+#include "AudioTarget.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
@@ -30,6 +31,7 @@ public:
         std::filesystem::path backgroundPdfPath() const { return directory / "background.pdf"; }
         std::filesystem::path pdfPageMapPath() const { return directory / "pdf-pages.dat"; }
         std::filesystem::path layerStatePath() const { return directory / "layers.dat"; }
+        std::filesystem::path audioTargetPath() const { return directory / "audio-targets.dat"; }
 
         std::vector<std::filesystem::path> layerPreviewPaths() const {
             std::vector<std::filesystem::path> paths;
@@ -43,9 +45,23 @@ public:
             }
             return paths;
         }
+
+        std::vector<std::filesystem::path> audioLayerPreviewPaths() const {
+            std::vector<std::filesystem::path> paths;
+            const auto pages = readLayerTransfer(layerStatePath());
+            size_t count = 0;
+            for (const auto& page: pages) {
+                count = std::max(count, page.initialLayerCount);
+            }
+            for (size_t index = 0; index < count; ++index) {
+                paths.push_back(directory / ("audio-layer-" + std::to_string(index) + ".pdf"));
+            }
+            return paths;
+        }
     };
 
-    DocumentSession(const std::string& worker, const std::string& input) {
+    DocumentSession(const std::string& worker, const std::string& input,
+                    std::filesystem::path audioFolder = {}) : audioFolder(std::move(audioFolder)) {
         GError* error = nullptr;
         auto* directory = g_dir_make_tmp("xournalpp-gtk4-document-XXXXXX", &error);
         if (!directory) {
@@ -56,6 +72,8 @@ public:
         activeDir = path / "rev-0";
         try {
             std::filesystem::create_directories(activeDir);
+            audioDirectory = path / "audio";
+            std::filesystem::create_directories(audioDirectory);
             const bool nativeFile = g_ascii_strcasecmp(fs::path(input).extension().string().c_str(), ".xopp") == 0 &&
                                     fs::is_regular_file(fs::symlink_status(input));
             const auto before = nativeFile ? documentVersion(input).token : std::string{};
@@ -65,14 +83,17 @@ public:
             const auto layers = activeDir / "layers.dat";
             const auto kind = runWorker(worker, {"open", input, snapshotPath().string(), previewPath().string(),
                                                  extracted.string(), extractedTexts.string(), layers.string(),
-                                                 extractedImages.string()});
+                                                 extractedImages.string(), this->audioFolder.string(),
+                                                 audioDirectory.string()});
             initialInk = readTransfer(extracted);
             initialTexts = readTextTransfer(extractedTexts);
             initialImages = readImageTransfer(extractedImages);
             initialLayers = readLayerTransfer(layers);
+            initialAudioTargets = readAudioTargets(StagedRevision{activeDir}.audioTargetPath());
             initialPdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
             pdfPageMap = initialPdfPageMap;
             layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
+            audioLayerPreviewPaths = StagedRevision{activeDir}.audioLayerPreviewPaths();
             std::filesystem::remove(extracted);
             std::filesystem::remove(extractedTexts);
             std::filesystem::remove(extractedImages);
@@ -173,6 +194,8 @@ public:
         activeDir = staged.directory;
         pdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
         layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
+        audioLayerPreviewPaths = StagedRevision{activeDir}.audioLayerPreviewPaths();
+        audioTargets = readAudioTargets(StagedRevision{activeDir}.audioTargetPath());
         if (!previous.empty() && previous != activeDir) {
             std::error_code ec;
             std::filesystem::remove_all(previous, ec);
@@ -191,14 +214,18 @@ public:
     std::vector<StrokePacket> initialInk;
     std::vector<TextItem> initialTexts;
     std::vector<ImagePacket> initialImages;
+    std::vector<AudioTarget> initialAudioTargets;
     LayerDocument initialLayers;
     std::vector<int> initialPdfPageMap;
     std::vector<int> pdfPageMap;
     std::vector<std::filesystem::path> layerPreviewPaths;
+    std::vector<std::filesystem::path> audioLayerPreviewPaths;
+    std::vector<AudioTarget> audioTargets;
 
     std::filesystem::path snapshotPath() const { return activeDir / "snapshot.xopp"; }
     std::filesystem::path previewPath() const { return activeDir / "preview.pdf"; }
     std::filesystem::path backgroundPdfPath() const { return activeDir / "background.pdf"; }
+    const std::filesystem::path& getAudioFolder() const { return audioFolder; }
 
 private:
     StagedRevision stagePageMutation(const std::string& worker, const char* command, int index) {
@@ -206,7 +233,8 @@ private:
         std::filesystem::create_directories(staged.directory);
         try {
             runWorker(worker, {command, snapshotPath().string(), staged.snapshotPath().string(),
-                               staged.previewPath().string(), std::to_string(index)});
+                               staged.previewPath().string(), std::to_string(index), audioFolder.string(),
+                               audioDirectory.string()});
         } catch (...) {
             discardRevision(staged);
             throw;
@@ -267,6 +295,8 @@ private:
     }
 
     std::filesystem::path path;
+    std::filesystem::path audioFolder;
+    std::filesystem::path audioDirectory;
     std::filesystem::path activeDir;
     size_t nextRevisionId = 1;
 };

@@ -19,6 +19,7 @@
 #include "control/xojfile/LoadHandler.h"
 #include "control/xojfile/SaveHandler.h"
 #include "model/BackgroundConfig.h"
+#include "model/AudioContent.h"
 #include "model/Document.h"
 #include "model/DocumentHandler.h"
 #include "model/Layer.h"
@@ -27,6 +28,7 @@
 #include "model/Point.h"
 #include "model/PageType.h"
 #include "model/Stroke.h"
+#include "model/RectangularElement.h"
 #include "model/Text.h"
 #include "model/TextAlignment.h"
 #include "model/Font.h"
@@ -38,6 +40,7 @@
 #include "view/View.h"
 
 #include "DocumentAutosave.h"
+#include "AudioTarget.h"
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
 #include "DocumentTextTransfer.h"
@@ -711,7 +714,7 @@ void createBackgroundPreview(Document& document, const fs::path& output) {
     cairo_surface_destroy(surface);
 }
 
-void createLayerPreview(Document& document, size_t layerIndex, const fs::path& output) {
+void createLayerPreview(Document& document, size_t layerIndex, const fs::path& output, bool fadeNonAudio = false) {
     requireNewTarget(output);
     auto* surface = cairo_pdf_surface_create(output.c_str(), 1, 1);
     auto* cr = cairo_create(surface);
@@ -722,7 +725,10 @@ void createLayerPreview(Document& document, size_t layerIndex, const fs::path& o
             if (layerIndex < page->getLayerCount()) {
                 DocumentView view;
                 view.initDrawing(page, cr, true);
-                const auto context = xoj::view::Context::createDefault(cr);
+                const auto context = fadeNonAudio ?
+                        xoj::view::Context{cr, xoj::view::FADE_OUT_NON_AUDIO_, xoj::view::HIDE_CURRENT_EDITING,
+                                           xoj::view::NORMAL_COLOR} :
+                        xoj::view::Context::createDefault(cr);
                 xoj::view::LayerView(page->getLayersView()[layerIndex]).draw(context);
                 view.finializeDrawing();
             }
@@ -742,7 +748,99 @@ void createLayerPreview(Document& document, size_t layerIndex, const fs::path& o
     cairo_surface_destroy(surface);
 }
 
-void renderPreviewBundle(Document& document, const fs::path& preview, const fs::path& layerState) {
+std::vector<prototype::AudioTarget> renderAudioTargets(Document& document, const fs::path& audioFolder,
+                                                       const fs::path& audioDirectory) {
+    std::vector<prototype::AudioTarget> targets;
+    std::error_code directoryError;
+    fs::create_directories(audioDirectory, directoryError);
+    if (directoryError) {
+        throw std::runtime_error("Cannot create the audio playback cache: " + directoryError.message());
+    }
+
+    for (size_t pageIndex = 0; pageIndex < document.getPageCount(); ++pageIndex) {
+        auto page = document.getPage(pageIndex);
+        for (size_t layerIndex = 0; layerIndex < page->getLayerCount(); ++layerIndex) {
+            const auto& elements = page->getLayersView()[layerIndex]->getElementsView();
+            for (size_t elementIndex = 0; elementIndex < elements.size(); ++elementIndex) {
+                const auto* element = elements[elementIndex];
+                const auto* audio = dynamic_cast<const AudioContent*>(element);
+                if (!audio || audio->getAudioFilename().empty()) {
+                    continue;
+                }
+
+                prototype::AudioTarget target;
+                target.page = static_cast<int>(pageIndex);
+                target.originLayer = layerIndex;
+                target.layerOrder = elementIndex;
+                target.timestampMs = static_cast<uint64_t>(audio->getTimestamp());
+                target.filename = audio->getAudioFilename().string();
+                const auto& bounds = element->getBoundingBox();
+                target.boundsX = bounds.x;
+                target.boundsY = bounds.y;
+                target.boundsWidth = bounds.width;
+                target.boundsHeight = bounds.height;
+
+                fs::path sourcePath = audio->getAudioFilename();
+                bool parentIsRoot = false;
+                if (sourcePath.has_parent_path()) {
+                    std::error_code canonicalError;
+                    parentIsRoot = fs::weakly_canonical(sourcePath.parent_path(), canonicalError) == fs::path("/") &&
+                                   !canonicalError;
+                }
+                if (!sourcePath.has_parent_path() || parentIsRoot) {
+                    sourcePath = audioFolder / sourcePath;
+                }
+                target.filename = sourcePath.string();
+                target.playbackFilename = target.filename;
+
+                if (const auto* stroke = dynamic_cast<const Stroke*>(element)) {
+                    target.shape = prototype::AudioTargetShape::Stroke;
+                    target.strokeWidth = stroke->getWidth();
+                    target.pressureSensitive = stroke->hasPressure();
+                    target.capStyle = static_cast<int>(stroke->getStrokeCapStyle());
+                    target.points.reserve(stroke->getPointVector().size());
+                    for (const auto& point: stroke->getPointVector()) {
+                        target.points.push_back({point.x, point.y, point.z});
+                    }
+                } else if (const auto* rectangle = dynamic_cast<const RectangularElement*>(element)) {
+                    target.shape = prototype::AudioTargetShape::Rectangle;
+                    const auto& matrix = rectangle->getTransformation();
+                    target.xx = matrix.xx;
+                    target.yx = matrix.yx;
+                    target.xy = matrix.xy;
+                    target.yy = matrix.yy;
+                    target.x = matrix.shift.x;
+                    target.y = matrix.shift.y;
+                    const auto& size = rectangle->getNaturalSize();
+                    target.naturalWidth = size.width;
+                    target.naturalHeight = size.height;
+                } else {
+                    continue;
+                }
+                prototype::audio_target_detail::validate(target);
+
+                std::error_code sourceError;
+                if (fs::is_regular_file(fs::status(sourcePath, sourceError)) && !sourceError) {
+                    gchar* digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, sourcePath.string().c_str(), -1);
+                    const auto destination = audioDirectory / (std::string("audio-") + (digest ? digest : "") +
+                                                                sourcePath.extension().string());
+                    g_free(digest);
+                    std::error_code copyError;
+                    if (!fs::exists(destination) && fs::copy_file(sourcePath, destination, copyError)) {
+                        target.playbackFilename = destination.string();
+                    } else if (fs::is_regular_file(destination)) {
+                        target.playbackFilename = destination.string();
+                    }
+                }
+                targets.push_back(std::move(target));
+            }
+        }
+    }
+    return targets;
+}
+
+void renderPreviewBundle(Document& document, const fs::path& preview, const fs::path& layerState,
+                         const fs::path& audioFolder = {}, const fs::path& audioDirectory = {}) {
     createBackgroundPreview(document, preview);
     writePdfTextSource(document, preview.parent_path() / "background.pdf");
     prototype::bridge::writePdfPageMap(preview.parent_path() / "pdf-pages.dat", readPdfPageMap(document));
@@ -752,8 +850,13 @@ void renderPreviewBundle(Document& document, const fs::path& preview, const fs::
     }
     for (size_t layerIndex = 0; layerIndex < maxLayers; ++layerIndex) {
         createLayerPreview(document, layerIndex, preview.parent_path() / ("layer-" + std::to_string(layerIndex) + ".pdf"));
+        createLayerPreview(document, layerIndex,
+                           preview.parent_path() / ("audio-layer-" + std::to_string(layerIndex) + ".pdf"), true);
     }
     prototype::bridge::writeLayerTransfer(layerState, readLayerDocument(document));
+    const auto mediaPath = audioDirectory.empty() ? preview.parent_path() / "audio" : audioDirectory;
+    const auto targets = renderAudioTargets(document, audioFolder, mediaPath);
+    prototype::writeAudioTargets(preview.parent_path() / "audio-targets.dat", targets);
 }
 
 void render(Document& document, const fs::path& output) {
@@ -900,8 +1003,9 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                     "Usage: xournalpp-document-worker inspect INPUT | render INPUT PDF | "
                     "export-pdf INPUT PDF INK [TEXT [LAYERS [IMAGES]]] | "
-                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES]]]] | "
-                    "insert-page INPUT SNAPSHOT PDF AFTER_PAGE | delete-page INPUT SNAPSHOT PDF PAGE_INDEX | "
+                    "open INPUT SNAPSHOT PDF [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [IMAGES [AUDIO_FOLDER [AUDIO_CACHE]]]]]] | "
+                    "insert-page INPUT SNAPSHOT PDF AFTER_PAGE [AUDIO_FOLDER [AUDIO_CACHE]] | "
+                    "delete-page INPUT SNAPSHOT PDF PAGE_INDEX [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES]]] | "
                     "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES]]] | "
                     "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS [IMAGES]]] | version PATH");
@@ -964,7 +1068,7 @@ int main(int argc, char** argv) {
                                             std::vector<prototype::bridge::ImagePacket>{};
             appendLayerAwareObjects(*document, prototype::bridge::readTransfer(argv[4]), texts, images, layers);
             exportPdfDocument(*document, output);
-        } else if (command == "insert-page" && argc == 6) {
+        } else if (command == "insert-page" && (argc == 6 || argc == 8)) {
             const auto afterPage = parsePageIndex(argv[5], document->getPageCount(), "after-page index");
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
@@ -973,8 +1077,10 @@ int main(int argc, char** argv) {
             insertPageAfterInDocument(*document, afterPage);
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
-            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat");
-        } else if (command == "delete-page" && argc == 6) {
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
+                                argc == 8 ? fs::path(argv[6]) : fs::path{},
+                                argc == 8 ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "delete-page" && (argc == 6 || argc == 8)) {
             if (document->getPageCount() <= 1) {
                 throw std::runtime_error("Cannot delete the only remaining page");
             }
@@ -986,8 +1092,10 @@ int main(int argc, char** argv) {
             document->deletePage(pageIndex);
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
-            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat");
-        } else if (command == "open" && (argc >= 5 && argc <= 9)) {
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
+                                argc == 8 ? fs::path(argv[6]) : fs::path{},
+                                argc == 8 ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "open" && (argc >= 5 && argc <= 11)) {
             const bool nativeSave = document->getFilepath() == input && !input.empty() &&
                                     !prototype::bridge::isRecoveryArtifact(input) &&
                                     g_ascii_strcasecmp(input.extension().string().c_str(), ".xopp") == 0;
@@ -1017,7 +1125,9 @@ int main(int argc, char** argv) {
             saveCopy(*document, snapshot);
             document = load(snapshot, snapshotContext);
             if (argc >= 8) {
-                renderPreviewBundle(*document, pdf, fs::absolute(argv[7]));
+                renderPreviewBundle(*document, pdf, fs::absolute(argv[7]),
+                                    argc >= 10 ? fs::path(argv[9]) : fs::path{},
+                                    argc >= 11 ? fs::path(argv[10]) : fs::path{});
             } else {
                 render(*document, pdf);
             }

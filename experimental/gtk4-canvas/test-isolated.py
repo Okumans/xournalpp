@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 import xml.etree.ElementTree as ET
 import zlib
 
@@ -618,8 +619,87 @@ def verify_laser_pointers(args, evidence):
     return report
 
 
+def read_xopp_xml(path):
+    data = path.read_bytes()
+    if data[:2] == b"\x1f\x8b":
+        return ET.fromstring(gzip.decompress(data))
+    with zipfile.ZipFile(path) as archive:
+        return ET.fromstring(archive.read("content.xml"))
+
+
+def verify_play_object(args, evidence):
+    repository = Path(__file__).resolve().parents[2]
+    source = repository / "test/files/packaged_xopp/audioAttachment/new.xopp"
+    output = evidence / "play-object"
+    shutil.rmtree(output, ignore_errors=True)
+    output.mkdir(parents=True, exist_ok=True)
+    fixture = output / "audio-linked.xopp"
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    with zipfile.ZipFile(source) as original:
+        content = ET.fromstring(original.read("content.xml"))
+        layer = content.find("./page/layer")
+        if layer is None:
+            raise RuntimeError("The packaged audio fixture has no foreground layer")
+        ET.SubElement(layer, "stroke", {"tool": "pen", "color": "#e02020ff", "width": "14"}).text = \
+            "40 300 500 300"
+        xml_bytes = ET.tostring(content, encoding="utf-8", xml_declaration=True)
+        with zipfile.ZipFile(fixture, "w") as modified:
+            for item in original.infolist():
+                modified.writestr(item, xml_bytes if item.filename == "content.xml" else original.read(item))
+
+    fixture_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    run_dir = output / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    result = run(
+        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
+         "--smoke-dir", str(run_dir)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PLAY_OBJECT_VERIFY_MODE="1",
+                 XOURNALPP_AUDIO_SINK="fakesink sync=true"),
+    )
+    if "PASS: GTK Play Object hit testing, playback controls, fading, and native save" not in result:
+        raise RuntimeError("Play Object verification did not finish")
+
+    screenshots = [run_dir / f"{name}.png" for name in
+                   ("play-object-faded", "play-object-normal", "play-object-faded-again")]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing Play Object screenshot: {screenshot}")
+
+    source_root = read_xopp_xml(fixture)
+    saved_root = read_xopp_xml(run_dir / "play-object-saved.xopp")
+    source_audio = [(stroke.attrib.get("fn"), stroke.attrib.get("ts"))
+                    for stroke in source_root.findall(".//stroke") if stroke.attrib.get("fn")]
+    saved_audio = [(stroke.attrib.get("fn"), stroke.attrib.get("ts"))
+                   for stroke in saved_root.findall(".//stroke") if stroke.attrib.get("fn")]
+    if len(source_audio) != len(saved_audio) or [timestamp for _, timestamp in source_audio] != \
+            [timestamp for _, timestamp in saved_audio]:
+        raise RuntimeError("Native save lost an audio-linked stroke or its timestamp")
+    if len(saved_root.findall(".//stroke")) != len(source_root.findall(".//stroke")):
+        raise RuntimeError("Play Object selection changed the native stroke content")
+    saved_audio_files = [filename for filename, _ in saved_audio if filename]
+    if len(saved_audio_files) != len(saved_audio) or any(
+            not Path(filename).is_file() or Path(filename).stat().st_size == 0 for filename in saved_audio_files):
+        raise RuntimeError("Native save left an audio-linked object without its recording file")
+    if hashlib.sha256(fixture.read_bytes()).hexdigest() != fixture_hash or \
+            hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
+        raise RuntimeError("Play Object verification modified its source fixture")
+
+    report = {"saved_document": str(run_dir / "play-object-saved.xopp"),
+              "audio_link_count": len(saved_audio), "screenshots": [str(path) for path in screenshots],
+              "playback_sink": "GStreamer fakesink", "rendering": "Private headless Wayland via Cage"}
+    print("PASS: private GTK4 Play Object hit testing, playback controls, fading and native preservation", flush=True)
+    return report
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.play_object_only:
+        play_evidence = verify_play_object(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"play-object": play_evidence}, "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.laser_only:
         laser_evidence = verify_laser_pointers(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -849,6 +929,7 @@ def main():
     parser.add_argument("--pdf-text-selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--link-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--laser-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--play-object-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -859,6 +940,8 @@ def main():
         raise RuntimeError("Native Link tool checks require --worker")
     if args.laser_only and not args.worker:
         raise RuntimeError("Laser pointer document round-trip checks require --worker")
+    if args.play_object_only and not args.worker:
+        raise RuntimeError("Play Object verification requires --worker")
     if args.inside:
         inside(args)
         return
@@ -912,6 +995,8 @@ def main():
             command.append("--link-only")
         if args.laser_only:
             command.append("--laser-only")
+        if args.play_object_only:
+            command.append("--play-object-only")
         if args.preferences_only:
             command.append("--preferences-only")
         output = run(command, env=env, private_group=True)

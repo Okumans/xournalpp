@@ -56,6 +56,9 @@ int main() {
   <property name="autosaveEnabled" value="true"/>
   <property name="autosaveTimeout" value="7"/>
   <property name="laserPointerFadeOutTime" value="750"/>
+  <property name="audioFolder" value="recordings"/>
+  <property name="defaultSeekTime" value="9"/>
+  <property name="disableAudio" value="true"/>
   <property name="colorPalette" value="palettes/xournalpp.gpl"/>
   <data name="buttonConfig">
     <data name="eraser">
@@ -109,6 +112,8 @@ int main() {
                     near(s.laserHighlighterColor[2], 1.0) && near(s.laserHighlighterWidth, 30.0),
             "Laser Pointer Highlighter color or VERY_BIG width mismatch");
     require(s.laserPointerFadeOutTimeMs == 750, "Laser pointer fade delay mismatch");
+    require(s.audioFolder == std::filesystem::path("recordings") && s.defaultSeekTimeSeconds == 9 && s.disableAudio,
+            "Audio playback settings were not imported");
     require(s.pressureSensitivity && near(s.minimumPressure, 0.14) && near(s.pressureMultiplier, 1.35),
             "Pressure settings mismatch");
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");
