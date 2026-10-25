@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -289,6 +290,22 @@ int main() {
                 "function badCoordinate() app.addSplines({splines={{coordinates={1,2,3,4,5,6,'bad',8}}}}) end\n"
                 "function defaultHistory() app.addSplines({splines={{coordinates={0,0,0,10,10,10,10,0}}}}) end\n"
                 "function badUndoPolicy() app.addSplines({splines={}, allowUndoRedoAction='sometimes'}) end\n");
+    const auto zoomApiPlugin = root / "ZoomApiPlugin";
+    writePlugin(zoomApiPlugin,
+                "[about]\ndescription=Read and change view zoom\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read zoom', callback='read'})\n"
+                "  app.registerUi({menu='Set zoom', callback='set'})\n"
+                "  app.registerUi({menu='Clamp zoom', callback='clamp'})\n"
+                "  app.registerUi({menu='Reject nonnumeric zoom', callback='badType'})\n"
+                "  app.registerUi({menu='Reject nonfinite zoom', callback='badNumber'})\n"
+                "end\n"
+                "function read() assert(app.getZoom() == 1.25) end\n"
+                "function set() app.setZoom(2.5); assert(app.getZoom() == 2.5) end\n"
+                "function clamp() app.setZoom(15); assert(app.getZoom() == 8) end\n"
+                "function badType() app.setZoom('not a number') end\n"
+                "function badNumber() app.setZoom(0/0) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -299,9 +316,10 @@ int main() {
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
                                      quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
-                                     imageCreationPlugin.string() + "," + splineCreationPlugin.string(), {});
+                                     imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
+                                     zoomApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 17, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 18, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -349,6 +367,7 @@ int main() {
     std::string changedBackgroundFormat;
     std::string changedBackgroundConfig;
     std::vector<std::string> activatedActions;
+    double zoomValue = 1.25;
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -372,6 +391,11 @@ int main() {
         } else {
             strokeCount = std::get<std::int64_t>(value);
         }
+        return true;
+    };
+    host.getZoom = [&] { return zoomValue; };
+    host.setZoom = [&](double zoom, std::string&) {
+        zoomValue = std::clamp(zoom, 0.1, 8.0);
         return true;
     };
     host.getStrokes = [](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
@@ -553,6 +577,9 @@ int main() {
     require(loadedSplineCreationPlugin && loadedSplineCreationPlugin->loaded &&
                     loadedSplineCreationPlugin->menuItems == 6,
             "Plugin using spline creation did not load its callbacks");
+    const auto loadedZoomApiPlugin = runtime.findPlugin("ZoomApiPlugin");
+    require(loadedZoomApiPlugin && loadedZoomApiPlugin->loaded && loadedZoomApiPlugin->menuItems == 5,
+            "Plugin using zoom read and write APIs did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -571,6 +598,18 @@ int main() {
     require(runtime.invokeMenu("ColorCycle", 0), "Registered plugin menu callback did not execute");
     require(changedColor == 0x123456 && changedTool == "pen" && changedSelection && changedMode == 7,
             "Lua app API arguments did not reach the GTK4 host callback");
+    require(runtime.invokeMenu("ZoomApiPlugin", 0) && zoomValue == 1.25,
+            "app.getZoom did not return the current view zoom");
+    require(runtime.invokeMenu("ZoomApiPlugin", 1) && zoomValue == 2.5,
+            "app.setZoom did not update the current view zoom");
+    require(runtime.invokeMenu("ZoomApiPlugin", 2) && zoomValue == 8.0,
+            "app.setZoom did not clamp the zoom to the GTK4 view range");
+    require(!runtime.invokeMenu("ZoomApiPlugin", 3) &&
+                    runtime.findPlugin("ZoomApiPlugin")->error.find("expects a number") != std::string::npos,
+            "app.setZoom accepted a nonnumeric value");
+    require(!runtime.invokeMenu("ZoomApiPlugin", 4) &&
+                    runtime.findPlugin("ZoomApiPlugin")->error.find("finite number") != std::string::npos,
+            "app.setZoom accepted a nonfinite value");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -779,8 +818,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 41 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 14,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 46 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 15,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

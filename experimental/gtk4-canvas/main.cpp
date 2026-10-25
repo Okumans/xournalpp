@@ -1557,6 +1557,8 @@ private:
         host.transformSelectedImages = [this](std::int64_t action, std::string& error) {
             return transformSelectedImagesFromPlugin(action, error);
         };
+        host.getZoom = [this] { return state.zoom; };
+        host.setZoom = [this](double value, std::string& error) { return setPluginZoom(value, error); };
         host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
                                  std::string& error) { return getPluginStrokes(type, strokes, error); };
         host.getTexts = [this](std::string_view type, std::vector<prototype::PluginText>& texts,
@@ -2862,6 +2864,25 @@ private:
         return true;
     }
 
+    bool setPluginZoom(double value, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
+            error = "Wait for the current document operation or input gesture to finish before changing zoom";
+            return false;
+        }
+        if (!std::isfinite(value)) {
+            error = "Zoom must be a finite number";
+            return false;
+        }
+        const int width = canvas ? gtk_widget_get_width(canvas) : 0;
+        const int height = canvas ? gtk_widget_get_height(canvas) : 0;
+        if (width <= 0 || height <= 0) {
+            error = "The canvas viewport is not ready for zoom changes";
+            return false;
+        }
+        zoom(std::clamp(value, 0.1, 8.0), width / 2.0, height / 2.0);
+        return true;
+    }
+
     bool setPluginPageSize(double width, double height, bool relative, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving) {
             error = "Wait for the current document operation to finish before changing page size";
@@ -4084,6 +4105,31 @@ private:
 
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto savedZoom = state.zoom;
+        const auto savedOffsetX = state.offsetX;
+        const auto savedOffsetY = state.offsetY;
+        const bool savedFitMode = fitMode;
+        const bool savedFitted = fitted;
+        const double zoomCenterX = gtk_widget_get_width(canvas) / 2.0;
+        const double zoomCenterY = gtk_widget_get_height(canvas) / 2.0;
+        const auto documentPointBeforeZoom = state.documentPoint(zoomCenterX, zoomCenterY);
+        const auto requestedZoom = savedZoom > 4 ? savedZoom * 0.75 : savedZoom * 1.25;
+        std::string zoomError;
+        require(setPluginZoom(requestedZoom, zoomError) && std::abs(state.zoom - requestedZoom) < 1e-9 &&
+                        !fitMode,
+                zoomError.empty() ? "The GTK4 plugin host did not apply app.setZoom or leave fit mode" :
+                                    zoomError.c_str());
+        const auto documentPointAfterZoom = state.documentPoint(zoomCenterX, zoomCenterY);
+        require(std::abs(documentPointBeforeZoom.x - documentPointAfterZoom.x) < 1e-7 &&
+                        std::abs(documentPointBeforeZoom.y - documentPointAfterZoom.y) < 1e-7,
+                "app.setZoom did not keep the viewport center anchored to the same document point");
+        state.zoom = savedZoom;
+        state.offsetX = savedOffsetX;
+        state.offsetY = savedOffsetY;
+        fitMode = savedFitMode;
+        fitted = savedFitted;
+        update();
+
         const auto documentStructure = pluginDocumentStructure();
         require(documentStructure.pages.size() == state.pages.size() &&
                         documentStructure.currentPage == static_cast<std::size_t>(state.page + 1) &&
