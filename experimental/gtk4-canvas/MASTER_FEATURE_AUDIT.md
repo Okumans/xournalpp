@@ -54,7 +54,7 @@ registration in `ToolHandler::initTools`.
 | `laserPointerHighlighter` | Partial | Transient pressure-independent highlighter trails use the master presets and imported fade delay; completed marks share the per-page trail and fade lifecycle without entering save or undo history. Physical stylus routing and exact raster-mask behavior across zoom/visibility changes remain unverified. |
 | `link` | Partial | The Link tool creates and edits native links, renders them underlined, hit-tests them on the active visible layer, opens them with Ctrl-click, and preserves URL/font/layout through save and undo/redo. Match the production editor and scheme choices, verify external launcher behavior, and test physical input routing. |
 | `latex` | Pending | Port LaTeX text creation, rendering, editing, and dependency/error behavior. |
-| `smartSelect` | Partial | Picks editable strokes, text, and images by layer order; opens text editing on ordinary text clicks. Add complete production hit geometry, snapping, and edge-pan behavior. |
+| `smartSelect` | Partial | Picks editable strokes, text, and images by layer order; text clicks open the editor, PDF-text drags delegate to linear PDF selection after the native 10 px threshold, Alt-drag forces that route, and Shift-drag starts rectangle selection. Add complete production hit geometry, grid snapping, edge-pan behavior, and unsupported native object support. |
 
 `DrawingType` also includes `default`, `line`, `rectangle`, `ellipse`,
 `arrow`, `doubleArrow`, `drawCoordinateSystem`, `strokeRecognizer`, and

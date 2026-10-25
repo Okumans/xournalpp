@@ -502,13 +502,14 @@ def verify_pdf_text_selection(args, evidence):
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PDF_TEXT_SELECTION_VERIFY_MODE="1"),
     )
     expected = (
-        "PASS: GTK PDF linear/rectangle/word/line selection, clipboard, marker presets and opacity, "
-        "annotations, undo/redo and native save"
+        "PASS: GTK Smart Select PDF delegation, threshold and modifier routing, linear/rectangle/word/line "
+        "selection, clipboard, marker presets and opacity, annotations, undo/redo and native save"
     )
     if expected not in result:
         raise RuntimeError("GTK PDF text selection verification did not finish")
 
     for name in (
+        "smart-select-pdf-text", "smart-select-shift-rectangle",
         "pdf-text-linear-selection", "pdf-text-rectangle-selection", "pdf-text-word-selection",
         "pdf-text-line-selection", "pdf-text-highlight", "pdf-text-underline", "pdf-text-strikethrough",
         "pdf-text-highlight-presets", "pdf-text-highlight-recolored", "pdf-text-marker-opacity-control",

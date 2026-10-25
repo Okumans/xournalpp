@@ -47,8 +47,13 @@ int main() {
         guint glyphCount = 0;
         require(poppler_page_get_text_layout(page, &glyphs, &glyphCount) && glyphCount > 0,
                 "PDF fixture has no text layout");
-        const guint selectedCount = std::min(glyphCount, 8u);
         const auto firstGlyph = glyphs[0];
+        const double firstGlyphX = (firstGlyph.x1 + firstGlyph.x2) / 2;
+        const double firstGlyphY = (firstGlyph.y1 + firstGlyph.y2) / 2;
+        require(prototype::pdfTextAt(page, firstGlyphX, firstGlyphY),
+                "PDF text hit testing missed a point inside a glyph");
+        require(!prototype::pdfTextAt(page, 0, 0), "PDF text hit testing found text in a blank page margin");
+        const guint selectedCount = std::min(glyphCount, 8u);
         PopplerRectangle area{glyphs[0].x1 - 1, glyphs[0].y1 - 1, glyphs[selectedCount - 1].x2 + 1,
                              glyphs[selectedCount - 1].y2 + 1};
         g_free(glyphs);

@@ -42,6 +42,22 @@ struct PdfTextSelectionResult {
     CairoRegion region;
 };
 
+inline bool pdfTextAt(PopplerPage* page, double x, double y) {
+    if (!page || !std::isfinite(x) || !std::isfinite(y)) {
+        return false;
+    }
+
+    PopplerRectangle* layout = nullptr;
+    guint layoutCount = 0;
+    const bool hasLayout = poppler_page_get_text_layout(page, &layout, &layoutCount);
+    const bool found = hasLayout && layout && std::any_of(layout, layout + layoutCount, [x, y](const auto& rect) {
+        return std::min(rect.x1, rect.x2) <= x && x <= std::max(rect.x1, rect.x2) &&
+               std::min(rect.y1, rect.y2) <= y && y <= std::max(rect.y1, rect.y2);
+    });
+    g_free(layout);
+    return found;
+}
+
 namespace pdf_text_selection_detail {
 
 inline cairo_rectangle_int_t cairoRect(const PopplerRectangle& rect) {
