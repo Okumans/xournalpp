@@ -32,10 +32,25 @@ struct PageHit {
     Point local{};
 };
 
-enum class Tool { Pen, Highlighter, Eraser, SelectRectangle, SelectLasso, SmartSelect, Text, SelectObject, Hand };
+enum class Tool {
+    Pen,
+    Highlighter,
+    Eraser,
+    SelectRectangle,
+    SelectLasso,
+    SmartSelect,
+    Text,
+    SelectObject,
+    Hand,
+    SelectPdfTextLinear,
+    SelectPdfTextRect,
+};
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
-           tool == Tool::SelectObject;
+           tool == Tool::SelectObject || tool == Tool::SelectPdfTextLinear || tool == Tool::SelectPdfTextRect;
+}
+inline bool isPdfTextSelectionTool(Tool tool) {
+    return tool == Tool::SelectPdfTextLinear || tool == Tool::SelectPdfTextRect;
 }
 
 enum class SelectableObjectKind { Stroke, Text, Image };
@@ -72,6 +87,8 @@ struct Ink {
     size_t layerOrder = 0;
     size_t layerId = 1;
     size_t originLayer = newLayerOrigin;
+    int fill = -1;
+    int capStyle = 0;
 };
 
 struct SelectionBox {
@@ -1718,6 +1735,71 @@ public:
             splineTangents.clear();
             splineHover.reset();
         }
+    }
+
+    bool applyInkEdits(std::vector<std::pair<size_t, Ink>> replacements, std::vector<Ink> additions) {
+        if (current || eraseGesture || selectionGesture || (replacements.empty() && additions.empty())) {
+            return false;
+        }
+
+        std::sort(replacements.begin(), replacements.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        for (size_t i = 0; i < replacements.size(); ++i) {
+            const auto index = replacements[i].first;
+            if (index >= ink.size() || (i && replacements[i - 1].first == index)) {
+                return false;
+            }
+            auto& replacement = replacements[i].second;
+            const auto& original = ink[index];
+            if (replacement.page != original.page || replacement.layerId != original.layerId ||
+                replacement.originLayer != original.originLayer || replacement.layerOrder != original.layerOrder ||
+                replacement.points.size() != original.points.size() || replacement.brush.tool != original.brush.tool ||
+                replacement.brush.width != original.brush.width || replacement.fill != original.fill ||
+                replacement.capStyle != original.capStyle) {
+                return false;
+            }
+        }
+
+        std::map<std::pair<int, size_t>, size_t> nextOrders;
+        for (auto& addition: additions) {
+            if (addition.page < 0 || addition.page >= pageCount() || addition.points.size() < 2 ||
+                !std::isfinite(addition.brush.width) || addition.brush.width <= 0 || addition.fill < -1 ||
+                addition.fill > 255 || addition.capStyle < 0 || addition.capStyle > 2 ||
+                (addition.fill >= 0 && addition.brush.tool != Tool::Highlighter)) {
+                return false;
+            }
+            for (const auto& point: addition.points) {
+                if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.pressure) ||
+                    point.pressure <= 0) {
+                    return false;
+                }
+            }
+            for (const auto channel: addition.brush.color) {
+                if (!std::isfinite(channel) || channel < 0 || channel > 1) {
+                    return false;
+                }
+            }
+            addition.layerId = activeLayerId(addition.page);
+            addition.originLayer = activeLayerOrigin(addition.page);
+            const auto key = std::pair{addition.page, addition.originLayer};
+            auto order = nextOrders.try_emplace(key, nextOriginOrder(addition.page, addition.originLayer)).first;
+            addition.layerOrder = order->second++;
+        }
+
+        Edit edit;
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+        edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
+        edit.changes.reserve(replacements.size() + !additions.empty());
+        for (auto& [index, replacement]: replacements) {
+            edit.changes.push_back({index, {ink[index]}, index, {std::move(replacement)}});
+        }
+        if (!additions.empty()) {
+            edit.changes.push_back({ink.size(), {}, ink.size(), std::move(additions)});
+        }
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
     }
 
     bool insertText(TextItem item) {

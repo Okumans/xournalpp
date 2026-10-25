@@ -296,8 +296,8 @@ highlight opacity, text visibility beneath highlighting, and renderer state.
 Transfer serialization, geometric drawing/recognition/spline/stabilizer checks,
 rich-text transfer/rendering, background task/main-context checks, read-only
 `settings.xml` and `.gpl` palette import/fallback checks, CLI rejection checks,
-filesystem backup/publication and autosave/recovery checks bring the standalone
-suite to twenty-one tests.
+filesystem backup/publication, PDF text extraction, and autosave/recovery checks
+bring the standalone CTest suite to twenty-six tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -316,10 +316,16 @@ The focused `--selection-only` GUI check loads a two-layer native document and
 verifies visible-layer rectangle and lasso selection, hidden-layer fallback,
 selection-mode persistence, and the regular rectangle shortcut.
 
+The focused `--pdf-text-selection-only` GUI check uses a PDF-backed native
+document to verify linear and rectangular selection, word/line clicks, copy,
+annotation presets and opacity, annotation undo/redo, and native save. All GUI
+checks run in a private headless renderer; their screenshots and result files
+are kept outside Git.
+
 Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
 rejection, input latency, IME, accessibility, GPU renderers, fractional display
-scaling, Windows, and macOS remain unverified. Rich-text editing does not include
-object selection or transforms; full object-selection behavior, signal-handler
+scaling, Windows, and macOS remain unverified. Unsupported native objects are not
+selectable or editable, and selection coverage remains partial. Signal-handler
 emergency dump, full document undo, plugins, and toolbar configuration import
 remain migration work. Its eraser edits session ink and supported native strokes
 on the active layer; it cannot erase flattened PDF content or unsupported native
@@ -344,8 +350,8 @@ chooser selection remains unverified.
 
 The prototype's full color-chooser dialog is not opened in the isolated test;
 the color button's actual color-change signal is exercised. This is a separate
-native experiment, not an implementation of the main application's annotation
-or toolbar configuration features.
+native experiment, not a full implementation of the main application's general
+annotation or toolbar-configuration features.
 
 ## Drawing tools and stabilization
 
@@ -379,9 +385,17 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of unsupported native objects, mixed and multi-image clipboard actions, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
-Platform packaging, accessibility, hardware input and GPU validation remain
-required before replacing the existing application.
+The experiment is a separate prototype, not a replacement build of Xournal++.
+The remaining work is tracked exhaustively in
+[`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md). The largest open groups
+are unsupported native object editing and full renderer fidelity; text and
+mixed/multi-image clipboard support; paired, horizontal, and grid page layouts;
+page insert/delete undo; native geometric objects and full shape-recognizer
+parity; audio playback, vertical-space insertion, laser tools, links, LaTeX,
+and the general floating toolbox; complete per-device settings and toolbar
+customization; and all 12 bundled plugins. Accessibility, physical input,
+platform packaging, GPU rendering, and platform-specific validation are also
+still required before replacing the existing application.
 
 ## Stroke selection
 
@@ -390,3 +404,19 @@ Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes, t
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
 `Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. A single selected image copies and cuts as editable native data plus PNG, and pastes from native image data or a standard PNG clipboard. Multi-image and mixed-object clipboard actions remain pending; unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+
+## PDF text selection
+
+The selection menu offers **Linear** and **Rectangle** PDF text modes. Drag to
+select text; double-click selects a word and triple-click selects a line. The
+selection action popover can copy the selected text, apply highlight, underline,
+or strikethrough, and change annotation/text colors. Highlight color presets and
+marker opacity follow the GTK 3 defaults, including 60% marker opacity. Text
+extraction uses the original PDF page mapped by the document worker, rather than
+the flattened page preview. Native save keeps the PDF background and the new
+annotation strokes.
+
+This path is partial: the action popover does not yet match the GTK 3 floating
+toolbox's exact placement or dismissal/reopen behavior. GUI checks use the
+private renderer and synthetic controller events; physical input behavior is
+not verified.

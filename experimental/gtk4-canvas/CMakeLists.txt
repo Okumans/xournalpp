@@ -109,6 +109,18 @@ target_compile_options(preferences-store-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(preferences-store-test PRIVATE PkgConfig::UI)
 add_test(NAME preferences-store COMMAND preferences-store-test)
 
+add_executable(pdf-text-selection-test PdfTextSelectionTest.cpp)
+target_compile_features(pdf-text-selection-test PRIVATE cxx_std_20)
+target_compile_options(pdf-text-selection-test PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(pdf-text-selection-test PRIVATE XOURNALPP_REPO_ROOT="${XOURNALPP_REPO_ROOT}")
+target_link_libraries(pdf-text-selection-test PRIVATE PkgConfig::UI)
+add_test(NAME pdf-text-selection COMMAND pdf-text-selection-test)
+
+add_executable(document-pdf-pages-test DocumentPdfPagesTest.cpp)
+target_compile_features(document-pdf-pages-test PRIVATE cxx_std_20)
+target_compile_options(document-pdf-pages-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME document-pdf-pages COMMAND document-pdf-pages-test)
+
 add_test(NAME reject-unknown-option COMMAND xournalpp-gtk4-canvas --unknown-option)
 add_test(NAME reject-invalid-autosave-interval COMMAND xournalpp-gtk4-canvas --autosave-seconds 0)
 add_test(NAME reject-invalid-config-dir COMMAND xournalpp-gtk4-canvas --config-dir ${CMAKE_CURRENT_BINARY_DIR}/missing-config-dir)

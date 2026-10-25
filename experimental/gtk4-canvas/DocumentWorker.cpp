@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,6 +36,7 @@
 
 #include "DocumentAutosave.h"
 #include "DocumentLayers.h"
+#include "DocumentPdfPages.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentPublish.h"
@@ -44,6 +46,7 @@
 #include "util/serializing/ObjectOutputStream.h"
 #include "util/serializing/BinObjectEncoding.h"
 #include "util/Matrix.h"
+#include "util/Util.h"
 
 class GTK4DocumentLayerAccess {
 public:
@@ -89,6 +92,8 @@ void appendStroke(Layer& layer, const prototype::bridge::StrokePacket& packet) {
     stroke->setToolType(packet.whiteout ? StrokeTool::ERASER :
                                           (packet.highlighter ? StrokeTool::HIGHLIGHTER : StrokeTool::PEN));
     stroke->setWidth(packet.width);
+    stroke->setFill(packet.fill);
+    stroke->setStrokeCapStyle(static_cast<StrokeCapStyle::Value>(packet.capStyle));
     if (packet.whiteout) {
         stroke->setColor(Color{255, 255, 255});
     } else {
@@ -296,9 +301,10 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
     }
     const auto& pts = stroke->getPointVector();
     const double width = stroke->getWidth();
-    if (pts.size() < 2 || !std::isfinite(width) || width <= 0.0 || stroke->getFill() != -1 ||
-        stroke->getStrokeCapStyle() != StrokeCapStyle::ROUND || stroke->getLineStyle().hasDashes() ||
-        !stroke->getAudioFilename().empty()) {
+    const int fill = stroke->getFill();
+    const int capStyle = static_cast<int>(stroke->getStrokeCapStyle());
+    if (pts.size() < 2 || !std::isfinite(width) || width <= 0.0 || fill < -1 || fill > 255 || capStyle < 0 ||
+        capStyle > 2 || stroke->getLineStyle().hasDashes() || !stroke->getAudioFilename().empty()) {
         return std::nullopt;
     }
     const StrokeTool tool = stroke->getToolType();
@@ -307,6 +313,9 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
     bool whiteout = false;
     bool pressureSensitive = false;
     if (tool == StrokeTool::PEN) {
+        if (fill != -1) {
+            return std::nullopt;
+        }
         pressureSensitive = stroke->hasPressure();
     } else if (tool == StrokeTool::HIGHLIGHTER) {
         if (stroke->hasPressure()) {
@@ -314,7 +323,7 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
         }
         highlighter = true;
     } else if (tool == StrokeTool::ERASER) {
-        if (rgb != 0xffffffU || stroke->hasPressure()) {
+        if (rgb != 0xffffffU || stroke->hasPressure() || fill != -1) {
             return std::nullopt;
         }
         whiteout = true;
@@ -331,6 +340,8 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
     packet.whiteout = whiteout;
     packet.pressureSensitive = pressureSensitive;
     packet.width = width;
+    packet.fill = fill;
+    packet.capStyle = capStyle;
     packet.color = {static_cast<double>((rgb >> 16U) & 0xffU) / 255.0,
                     static_cast<double>((rgb >> 8U) & 0xffU) / 255.0,
                     static_cast<double>(rgb & 0xffU) / 255.0};
@@ -572,6 +583,35 @@ prototype::bridge::LayerDocument readLayerDocument(const Document& document) {
     return layers;
 }
 
+std::vector<int> readPdfPageMap(const Document& document) {
+    std::vector<int> pages;
+    pages.reserve(document.getPageCount());
+    for (size_t pageIndex = 0; pageIndex < document.getPageCount(); ++pageIndex) {
+        const auto pdfPage = document.getPage(pageIndex)->getPdfPageNr();
+        if (pdfPage == npos) {
+            pages.push_back(-1);
+        } else if (pdfPage > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("PDF background page index is too large");
+        } else {
+            pages.push_back(static_cast<int>(pdfPage));
+        }
+    }
+    return pages;
+}
+
+void writePdfTextSource(Document& document, const fs::path& output) {
+    if (document.getPdfPageCount() == 0) {
+        return;
+    }
+    requireNewTarget(output);
+    GError* error = nullptr;
+    if (!document.getPdfDocument().save(output, &error)) {
+        const std::string message = error ? error->message : "unknown PDF error";
+        g_clear_error(&error);
+        throw std::runtime_error("Cannot save PDF text-selection source: " + message);
+    }
+}
+
 void finishPdfPage(cairo_t* cr, cairo_surface_t* surface) {
     const cairo_status_t contextStatus = cairo_status(cr);
     if (contextStatus != CAIRO_STATUS_SUCCESS) {
@@ -651,6 +691,8 @@ void createLayerPreview(Document& document, size_t layerIndex, const fs::path& o
 
 void renderPreviewBundle(Document& document, const fs::path& preview, const fs::path& layerState) {
     createBackgroundPreview(document, preview);
+    writePdfTextSource(document, preview.parent_path() / "background.pdf");
+    prototype::bridge::writePdfPageMap(preview.parent_path() / "pdf-pages.dat", readPdfPageMap(document));
     size_t maxLayers = 0;
     for (size_t index = 0; index < document.getPageCount(); ++index) {
         maxLayers = std::max(maxLayers, document.getPage(index)->getLayerCount());

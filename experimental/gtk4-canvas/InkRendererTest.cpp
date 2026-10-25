@@ -23,6 +23,13 @@ int main() {
     pass &= pixel(surface, 40, 40) != 0xffff00 && pixel(surface, 40, 40) != 0xffffff;
     // GTK 3 StrokeView uses 0.47 opacity: yellow over white leaves about 135 blue.
     pass &= (pixel(surface, 40, 40) & 0xff) >= 134 && (pixel(surface, 40, 40) & 0xff) <= 136;
+    prototype::Ink pdfHighlight{0, {{20, 70}, {60, 70}},
+                                {prototype::Tool::Highlighter, {1, 1, 0}, 10}};
+    pdfHighlight.fill = 60;
+    pdfHighlight.capStyle = 1;
+    prototype::drawInk(cr, pdfHighlight);
+    pass &= (pixel(surface, 40, 70) & 0xff) >= 194 && (pixel(surface, 40, 70) & 0xff) <= 196;
+    pass &= pixel(surface, 18, 70) == 0xffffff;
     // Highlighting preserves black document text under a stroke.
     cairo_set_source_rgb(cr, 0, 0, 0);
     cairo_rectangle(cr, 150, 30, 10, 20);

@@ -12,6 +12,7 @@
 #include "DocumentTextTransfer.h"
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
+#include "DocumentPdfPages.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
 
@@ -26,6 +27,8 @@ public:
         std::filesystem::path directory;
         std::filesystem::path snapshotPath() const { return directory / "snapshot.xopp"; }
         std::filesystem::path previewPath() const { return directory / "preview.pdf"; }
+        std::filesystem::path backgroundPdfPath() const { return directory / "background.pdf"; }
+        std::filesystem::path pdfPageMapPath() const { return directory / "pdf-pages.dat"; }
         std::filesystem::path layerStatePath() const { return directory / "layers.dat"; }
 
         std::vector<std::filesystem::path> layerPreviewPaths() const {
@@ -67,6 +70,8 @@ public:
             initialTexts = readTextTransfer(extractedTexts);
             initialImages = readImageTransfer(extractedImages);
             initialLayers = readLayerTransfer(layers);
+            initialPdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
+            pdfPageMap = initialPdfPageMap;
             layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
             std::filesystem::remove(extracted);
             std::filesystem::remove(extractedTexts);
@@ -166,6 +171,7 @@ public:
     void commitRevision(const StagedRevision& staged) {
         const auto previous = activeDir;
         activeDir = staged.directory;
+        pdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
         layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
         if (!previous.empty() && previous != activeDir) {
             std::error_code ec;
@@ -186,10 +192,13 @@ public:
     std::vector<TextItem> initialTexts;
     std::vector<ImagePacket> initialImages;
     LayerDocument initialLayers;
+    std::vector<int> initialPdfPageMap;
+    std::vector<int> pdfPageMap;
     std::vector<std::filesystem::path> layerPreviewPaths;
 
     std::filesystem::path snapshotPath() const { return activeDir / "snapshot.xopp"; }
     std::filesystem::path previewPath() const { return activeDir / "preview.pdf"; }
+    std::filesystem::path backgroundPdfPath() const { return activeDir / "background.pdf"; }
 
 private:
     StagedRevision stagePageMutation(const std::string& worker, const char* command, int index) {

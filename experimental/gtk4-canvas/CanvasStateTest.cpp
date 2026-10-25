@@ -582,6 +582,32 @@ static void layerRenameDuplicateReorderAndVisibility() {
     check(state.layersForPage(1) == source, "layer actions should not modify other pages");
 }
 
+static void pdfAnnotationInkHistory() {
+    CanvasState state;
+    state.setPages({{300, 200}});
+    Ink existing{0, {{20, 40}, {80, 40}}, {Tool::Highlighter, {1, 1, 0}, 12}};
+    existing.fill = 60;
+    existing.capStyle = 1;
+    state.ink.push_back(existing);
+
+    auto recolored = existing;
+    recolored.brush.color = {0, 1, 0};
+    Ink added{0, {{20, 80}, {80, 80}}, {Tool::Highlighter, {0, 0, 1}, 1}};
+    added.fill = 230;
+    added.capStyle = 1;
+    check(state.applyInkEdits({{0, recolored}}, {added}), "PDF annotation edit did not commit");
+    check(state.revision() == 1 && state.ink.size() == 2 && state.ink[0].brush.color[1] == 1 &&
+                  state.ink[0].fill == 60 && state.ink[0].capStyle == 1 && state.ink[1].fill == 230 &&
+                  state.ink[1].capStyle == 1,
+          "PDF annotation edit lost opacity, cap style, recolor or insertion");
+    state.undo();
+    check(state.ink.size() == 1 && state.ink[0].brush.color[0] == 1 && state.ink[0].fill == 60,
+          "PDF annotation undo did not restore the prior highlight");
+    state.redo();
+    check(state.ink.size() == 2 && state.ink[0].brush.color[1] == 1 && state.ink[1].fill == 230,
+          "PDF annotation redo did not restore the grouped edit");
+}
+
 int main() {
     try {
         savedHistory();
@@ -593,6 +619,7 @@ int main() {
         continuousMultiPageLayout();
         layerManagement();
         layerRenameDuplicateReorderAndVisibility();
+        pdfAnnotationInkHistory();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
         check(std::abs(behavior::steppedZoom(1, true, false) - 1.1) < 1e-12,
