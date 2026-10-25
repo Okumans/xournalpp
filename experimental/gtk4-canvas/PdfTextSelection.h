@@ -11,7 +11,20 @@
 
 namespace prototype {
 
-enum class PdfTextSelectionStyle { Linear, Rectangle };
+enum class PdfTextSelectionStyle { Linear, Rectangle, Word, Line };
+
+inline PopplerSelectionStyle popplerSelectionStyle(PdfTextSelectionStyle style) {
+    switch (style) {
+        case PdfTextSelectionStyle::Word:
+            return POPPLER_SELECTION_WORD;
+        case PdfTextSelectionStyle::Line:
+            return POPPLER_SELECTION_LINE;
+        case PdfTextSelectionStyle::Linear:
+        case PdfTextSelectionStyle::Rectangle:
+        default:
+            return POPPLER_SELECTION_GLYPH;
+    }
+}
 
 struct CairoRegionDeleter {
     void operator()(cairo_region_t* region) const {
@@ -74,8 +87,8 @@ inline CairoRegion pdfTextSelectionPreview(PopplerPage* page, const PopplerRecta
     if (!page) {
         return CairoRegion(cairo_region_create());
     }
-    if (style == PdfTextSelectionStyle::Linear) {
-        CairoRegion region(poppler_page_get_selected_region(page, 1.0, POPPLER_SELECTION_GLYPH,
+    if (style != PdfTextSelectionStyle::Rectangle) {
+        CairoRegion region(poppler_page_get_selected_region(page, 1.0, popplerSelectionStyle(style),
                                                             const_cast<PopplerRectangle*>(&bounds)));
         return region ? std::move(region) : CairoRegion(cairo_region_create());
     }
@@ -96,13 +109,13 @@ inline PdfTextSelectionResult selectPdfText(PopplerPage* page, const PopplerRect
 
     PopplerRectangle* layout = nullptr;
     guint layoutCount = 0;
-    if (style == PdfTextSelectionStyle::Linear) {
-        result.region.reset(poppler_page_get_selected_region(page, 1.0, POPPLER_SELECTION_GLYPH,
+    if (style != PdfTextSelectionStyle::Rectangle) {
+        result.region.reset(poppler_page_get_selected_region(page, 1.0, popplerSelectionStyle(style),
                                                              const_cast<PopplerRectangle*>(&bounds)));
         if (!result.region) {
             result.region.reset(cairo_region_create());
         }
-        gchar* selected = poppler_page_get_selected_text(page, POPPLER_SELECTION_GLYPH,
+        gchar* selected = poppler_page_get_selected_text(page, popplerSelectionStyle(style),
                                                           const_cast<PopplerRectangle*>(&bounds));
         if (selected) {
             result.text = selected;

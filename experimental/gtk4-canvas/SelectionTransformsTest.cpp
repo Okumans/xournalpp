@@ -49,6 +49,8 @@ int main(int argc, char** argv) {
         auto state = fixture();
         if (argc == 3 && std::string(argv[1]) == "--encode") {
             state.selected = {0, 1};
+            state.ink[1].fill = 60;
+            state.ink[1].capStyle = 1;
             auto bytes = clipboard::encode(state.copySelection());
             std::ofstream(argv[2], std::ios::binary).write(bytes.data(), bytes.size());
             return 0;
@@ -58,8 +60,9 @@ int main(int argc, char** argv) {
             const std::string bytes{std::istreambuf_iterator<char>(stream), {}};
             auto strokes = clipboard::decode(bytes);
             check(strokes.size() == 2 && strokes[0].pressureSensitive && near(strokes[0].points[0].pressure, .25) &&
-                          strokes[1].brush.tool == Tool::Highlighter,
-                  "Native clipboard round trip lost style/pressure");
+                          strokes[1].brush.tool == Tool::Highlighter && strokes[1].fill == 60 &&
+                          strokes[1].capStyle == 1,
+                  "Native clipboard round trip lost style, pressure, PDF marker fill or cap style");
             return 0;
         }
         // Side scaling changes one axis; native width changes by sqrt(|sx*sy|).

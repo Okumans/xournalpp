@@ -161,7 +161,10 @@ inline std::vector<Ink> decode(std::string_view bytes) {
         in.end();
         const auto width = in.number();
         const auto tool = in.value<int>("_i");
-        if (width <= 0 || tool < 0 || tool > 2 || in.value<int>("_i") != -1 || in.value<int>("_i") != 0)
+        const auto fill = in.value<int>("_i");
+        const auto capStyle = in.value<int>("_i");
+        if (width <= 0 || tool < 0 || tool > 2 || fill < -1 || fill > 255 || capStyle < 0 || capStyle > 2 ||
+            (fill >= 0 && tool != 2))
             Reader::fail();
         if (tool == 1 && (argb & 0xffffffU) != 0xffffffU)
             Reader::fail();
@@ -175,6 +178,8 @@ inline std::vector<Ink> decode(std::string_view bytes) {
                                 Tool::Pen,
                     {double((argb >> 16) & 255) / 255, double((argb >> 8) & 255) / 255, double(argb & 255) / 255},
                     width}};
+        stroke.fill = fill;
+        stroke.capStyle = capStyle;
         stroke.points.reserve(length);
         double previous = -1;
         for (size_t p = 0; p < length; ++p) {
@@ -263,8 +268,8 @@ inline std::string encode(const std::vector<Ink>& strokes) {
         out.end();
         out.number(stroke.brush.width);
         out.value<int>("_i", stroke.brush.tool == Tool::Highlighter ? 2 : stroke.brush.tool == Tool::Eraser ? 1 : 0);
-        out.value<int>("_i", -1);
-        out.value<int>("_i", 0);
+        out.value<int>("_i", stroke.fill);
+        out.value<int>("_i", stroke.capStyle);
         out.data(stroke.points.size(), 3 * sizeof(double));
         for (const auto& point: stroke.points) {
             out.raw(point.x);

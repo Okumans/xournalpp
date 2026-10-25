@@ -48,6 +48,7 @@ int main() {
         require(poppler_page_get_text_layout(page, &glyphs, &glyphCount) && glyphCount > 0,
                 "PDF fixture has no text layout");
         const guint selectedCount = std::min(glyphCount, 8u);
+        const auto firstGlyph = glyphs[0];
         PopplerRectangle area{glyphs[0].x1 - 1, glyphs[0].y1 - 1, glyphs[selectedCount - 1].x2 + 1,
                              glyphs[selectedCount - 1].y2 + 1};
         g_free(glyphs);
@@ -61,9 +62,18 @@ int main() {
         const auto preview = prototype::pdfTextSelectionPreview(page, area,
                                                                prototype::PdfTextSelectionStyle::Rectangle);
         require(cairo_region_num_rectangles(preview.get()) > 0, "Rectangular drag preview is empty");
+
+        PopplerRectangle wordBounds{firstGlyph.x1 - 1, firstGlyph.y1 - 1, firstGlyph.x2 + 1, firstGlyph.y2 + 1};
+        auto word = prototype::selectPdfText(page, wordBounds, prototype::PdfTextSelectionStyle::Word);
+        require(!word.text.empty() && !word.textRects.empty() && cairo_region_num_rectangles(word.region.get()) > 0,
+                "Double-click word selection returned no text or geometry");
+        auto line = prototype::selectPdfText(page, wordBounds, prototype::PdfTextSelectionStyle::Line);
+        require(line.text.find("Test PDF for Xournal++") != std::string::npos && !line.textRects.empty() &&
+                        cairo_region_num_rectangles(line.region.get()) > 0,
+                "Triple-click line selection did not expand to the whole PDF line");
         g_object_unref(page);
         g_object_unref(document);
-        std::cout << "PASS: linear and rectangular PDF text extraction, glyph rectangles, and preview regions\n";
+        std::cout << "PASS: linear, rectangular, word and line PDF text extraction, glyph rectangles, and preview regions\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
         return 1;

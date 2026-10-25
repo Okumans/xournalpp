@@ -27,6 +27,7 @@
 #include "DocumentInk.h"
 #include "ImageRenderer.h"
 #include "InkRenderer.h"
+#include "PdfTextSelection.h"
 #include "TextRenderer.h"
 #include "PaletteImport.h"
 #include "SettingsImport.h"
@@ -91,6 +92,40 @@ struct ImageGesture {
     prototype::CanvasImage preview;
     bool changed = false;
 };
+
+struct PdfTextSelectionState {
+    prototype::Device owner = prototype::Device::Mouse;
+    int page = -1;
+    Tool tool = Tool::SelectPdfTextLinear;
+    prototype::PdfTextSelectionStyle style = prototype::PdfTextSelectionStyle::Linear;
+    PopplerRectangle bounds{};
+    bool dragging = false;
+    bool finalized = false;
+    std::string text;
+    std::vector<PopplerRectangle> textRects;
+    prototype::CairoRegion region;
+};
+
+enum class PdfTextAnnotation { Highlight, Underline, Strikethrough };
+
+struct PdfHighlightPreset {
+    const char* name;
+    std::array<double, 3> color;
+};
+
+constexpr std::array<PdfHighlightPreset, 6> pdfHighlightPresets{{
+        {"Yellow", {1.0, 224.0 / 255, 102.0 / 255}},
+        {"Green", {140.0 / 255, 233.0 / 255, 154.0 / 255}},
+        {"Blue", {116.0 / 255, 192.0 / 255, 252.0 / 255}},
+        {"Pink", {250.0 / 255, 162.0 / 255, 193.0 / 255}},
+        {"Orange", {1.0, 192.0 / 255, 120.0 / 255}},
+        {"Purple", {208.0 / 255, 191.0 / 255, 1.0}},
+}};
+
+prototype::PdfTextSelectionStyle pdfSelectionStyleForTool(Tool tool) {
+    return tool == Tool::SelectPdfTextRect ? prototype::PdfTextSelectionStyle::Rectangle :
+                                             prototype::PdfTextSelectionStyle::Linear;
+}
 
 std::string encodeImageForClipboard(const prototype::CanvasImage& image) {
     if (!prototype::validCanvasImage(image) || !image.surface) {
@@ -215,6 +250,7 @@ public:
         if (document) {
             g_object_unref(document);
         }
+        g_clear_object(&pdfTextDocument);
         releaseLayerPreviewPdfs(layerDocuments);
     }
 
@@ -1569,6 +1605,499 @@ private:
         gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), matched ? static_cast<guint>(*matched) : 5u);
     }
 
+    PopplerPage* pdfPageForPage(int page) {
+        PopplerDocument* source = document;
+        int sourcePage = page;
+        if (nativeSession) {
+            if (page < 0 || static_cast<size_t>(page) >= nativeSession->pdfPageMap.size()) {
+                return nullptr;
+            }
+            sourcePage = nativeSession->pdfPageMap[static_cast<size_t>(page)];
+            if (sourcePage < 0) {
+                return nullptr;
+            }
+            const auto textSourcePath = nativeSession->backgroundPdfPath().string();
+            if (textSourcePath != pdfTextDocumentPath) {
+                g_clear_object(&pdfTextDocument);
+                if (std::filesystem::is_regular_file(nativeSession->backgroundPdfPath())) {
+                    std::vector<prototype::PageSize> ignoredSizes;
+                    std::tie(pdfTextDocument, ignoredSizes) = openPreviewPdf(textSourcePath);
+                    pdfTextDocumentPath = textSourcePath;
+                }
+            }
+            source = pdfTextDocument;
+        }
+        if (!source || sourcePage < 0 || sourcePage >= poppler_document_get_n_pages(source)) {
+            return nullptr;
+        }
+        return poppler_document_get_page(source, sourcePage);
+    }
+
+    void updatePdfActionsPosition(bool popup) {
+        if (!pdfActionsPopover || !pdfTextSelection || !pdfTextSelection->finalized ||
+            !pdfTextSelection->region || cairo_region_num_rectangles(pdfTextSelection->region.get()) == 0) {
+            return;
+        }
+        cairo_rectangle_int_t extents{};
+        cairo_region_get_extents(pdfTextSelection->region.get(), &extents);
+        const auto first = state.pageScreenPoint(pdfTextSelection->page, extents.x, extents.y);
+        const auto second = state.pageScreenPoint(pdfTextSelection->page, extents.x + extents.width,
+                                                  extents.y + extents.height);
+        GdkRectangle pointing{static_cast<int>(std::floor(std::min(first.x, second.x))),
+                              static_cast<int>(std::floor(std::min(first.y, second.y))),
+                              std::max(1, static_cast<int>(std::ceil(std::abs(second.x - first.x)))),
+                              std::max(1, static_cast<int>(std::ceil(std::abs(second.y - first.y))))};
+        gtk_popover_set_pointing_to(pdfActionsPopover, &pointing);
+        if (pdfSelectionStyleButton) {
+            const char* label = pdfTextSelection->tool == Tool::SelectPdfTextLinear ? "Rectangle" : "Linear";
+            gtk_button_set_label(GTK_BUTTON(pdfSelectionStyleButton), label);
+        }
+        if (popup) {
+            gtk_popover_popup(pdfActionsPopover);
+        }
+    }
+
+    void clearPdfTextSelection(bool update = true) {
+        pdfTextSelection.reset();
+        if (pdfActionsPopover) {
+            gtk_popover_popdown(pdfActionsPopover);
+        }
+        if (update && canvas) {
+            this->update();
+        }
+    }
+
+    void beginPdfTextSelection(Device device, double x, double y) {
+        clearPdfTextSelection(false);
+        state.clearSelection();
+        selectedImageIndex.reset();
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            update();
+            return;
+        }
+        auto* page = pdfPageForPage(hit->page);
+        if (!page) {
+            update();
+            return;
+        }
+        PdfTextSelectionState selection;
+        selection.owner = device;
+        selection.page = hit->page;
+        selection.tool = state.brush.tool;
+        selection.style = pdfSelectionStyleForTool(selection.tool);
+        selection.bounds = {hit->local.x, hit->local.y, hit->local.x, hit->local.y};
+        selection.dragging = true;
+        selection.region = prototype::pdfTextSelectionPreview(page, selection.bounds, selection.style);
+        g_object_unref(page);
+        pdfTextSelection = std::move(selection);
+        update();
+    }
+
+    void updatePdfTextSelection(Device device, double x, double y) {
+        if (!pdfTextSelection || !pdfTextSelection->dragging || pdfTextSelection->owner != device) {
+            return;
+        }
+        const auto size = state.pageSize(pdfTextSelection->page);
+        const auto local = state.pageLocalPoint(pdfTextSelection->page, x, y);
+        pdfTextSelection->bounds.x2 = std::clamp(local.x, 0.0, size.width);
+        pdfTextSelection->bounds.y2 = std::clamp(local.y, 0.0, size.height);
+        auto* page = pdfPageForPage(pdfTextSelection->page);
+        if (!page) {
+            clearPdfTextSelection(false);
+            update();
+            return;
+        }
+        pdfTextSelection->region = prototype::pdfTextSelectionPreview(page, pdfTextSelection->bounds,
+                                                                       pdfTextSelection->style);
+        g_object_unref(page);
+        update();
+    }
+
+    void finishPdfTextSelection(Device device) {
+        if (!pdfTextSelection || !pdfTextSelection->dragging || pdfTextSelection->owner != device) {
+            return;
+        }
+        pdfTextSelection->dragging = false;
+        auto* page = pdfPageForPage(pdfTextSelection->page);
+        if (!page) {
+            clearPdfTextSelection(false);
+            update();
+            return;
+        }
+        auto result = prototype::selectPdfText(page, pdfTextSelection->bounds, pdfTextSelection->style);
+        g_object_unref(page);
+        if (result.text.empty() || result.textRects.empty()) {
+            clearPdfTextSelection(false);
+            update();
+            return;
+        }
+        pdfTextSelection->text = std::move(result.text);
+        pdfTextSelection->textRects = std::move(result.textRects);
+        pdfTextSelection->region = std::move(result.region);
+        pdfTextSelection->finalized = true;
+        if (auto* primary = gdk_display_get_primary_clipboard(gtk_widget_get_display(canvas))) {
+            gdk_clipboard_set_text(primary, pdfTextSelection->text.c_str());
+        }
+        updatePdfActionsPosition(true);
+        update();
+    }
+
+    void switchPdfTextSelectionStyle() {
+        if (!prototype::isPdfTextSelectionTool(state.brush.tool)) {
+            return;
+        }
+        const Tool next = state.brush.tool == Tool::SelectPdfTextLinear ? Tool::SelectPdfTextRect :
+                                                                          Tool::SelectPdfTextLinear;
+        state.brush.tool = next;
+        selectionTool = next;
+        if (selectionModeDropdown) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), selectionModeIndex(next));
+        }
+        if (pdfTextSelection && pdfTextSelection->finalized) {
+            pdfTextSelection->tool = next;
+            pdfTextSelection->style = pdfSelectionStyleForTool(next);
+            auto* page = pdfPageForPage(pdfTextSelection->page);
+            if (page) {
+                auto result = prototype::selectPdfText(page, pdfTextSelection->bounds,
+                                                       pdfTextSelection->style);
+                g_object_unref(page);
+                pdfTextSelection->text = std::move(result.text);
+                pdfTextSelection->textRects = std::move(result.textRects);
+                pdfTextSelection->region = std::move(result.region);
+                if (pdfTextSelection->text.empty() || pdfTextSelection->textRects.empty()) {
+                    clearPdfTextSelection(false);
+                }
+            }
+        }
+        updatePdfActionsPosition(false);
+        update();
+    }
+
+    void selectPdfTextAtPoint(double x, double y, prototype::PdfTextSelectionStyle style) {
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            clearPdfTextSelection(false);
+            update();
+            return;
+        }
+        auto* page = pdfPageForPage(hit->page);
+        if (!page) {
+            clearPdfTextSelection(false);
+            update();
+            return;
+        }
+
+        constexpr double clickRadius = 1.0;
+        PdfTextSelectionState selection;
+        selection.page = hit->page;
+        selection.tool = state.brush.tool;
+        selection.style = style;
+        selection.bounds = {hit->local.x - clickRadius, hit->local.y - clickRadius,
+                            hit->local.x + clickRadius, hit->local.y + clickRadius};
+        auto result = prototype::selectPdfText(page, selection.bounds, style);
+        g_object_unref(page);
+        if (result.text.empty() || result.textRects.empty()) {
+            clearPdfTextSelection(false);
+            update();
+            return;
+        }
+        selection.text = std::move(result.text);
+        selection.textRects = std::move(result.textRects);
+        selection.region = std::move(result.region);
+        selection.finalized = true;
+        pdfTextSelection = std::move(selection);
+        if (auto* primary = gdk_display_get_primary_clipboard(gtk_widget_get_display(canvas))) {
+            gdk_clipboard_set_text(primary, pdfTextSelection->text.c_str());
+        }
+        updatePdfActionsPosition(true);
+        update();
+    }
+
+    void copyPdfTextSelection() {
+        if (!pdfTextSelection || !pdfTextSelection->finalized || pdfTextSelection->text.empty()) {
+            return;
+        }
+        auto* display = gtk_widget_get_display(canvas);
+        if (auto* clipboard = gdk_display_get_clipboard(display)) {
+            gdk_clipboard_set_text(clipboard, pdfTextSelection->text.c_str());
+        }
+        if (auto* primary = gdk_display_get_primary_clipboard(display)) {
+            gdk_clipboard_set_text(primary, pdfTextSelection->text.c_str());
+        }
+        clearPdfTextSelection(false);
+        update();
+    }
+
+    static bool samePdfHighlight(const Ink& stroke, int page, size_t layerId, size_t originLayer,
+                                 const PopplerRectangle& rect, int fill) {
+        constexpr double tolerance = 1.0;
+        if (stroke.page != page || stroke.layerId != layerId || stroke.originLayer != originLayer ||
+            stroke.brush.tool != Tool::Highlighter || stroke.pressureSensitive || stroke.fill != fill ||
+            stroke.capStyle != 1 || stroke.points.size() != 2) {
+            return false;
+        }
+        const double left = std::min(rect.x1, rect.x2);
+        const double right = std::max(rect.x1, rect.x2);
+        const double top = std::min(rect.y1, rect.y2);
+        const double bottom = std::max(rect.y1, rect.y2);
+        const double y = (top + bottom) / 2;
+        const double width = bottom - top;
+        const double strokeLeft = std::min(stroke.points[0].x, stroke.points[1].x);
+        const double strokeRight = std::max(stroke.points[0].x, stroke.points[1].x);
+        return std::abs(stroke.points[0].y - stroke.points[1].y) <= tolerance &&
+               std::abs(strokeLeft - left) <= tolerance && std::abs(strokeRight - right) <= tolerance &&
+               std::abs(stroke.points[0].y - y) <= tolerance && std::abs(stroke.brush.width - width) <= tolerance;
+    }
+
+    void createPdfTextAnnotation(PdfTextAnnotation annotation) {
+        if (!pdfTextSelection || !pdfTextSelection->finalized || pdfTextSelection->textRects.empty()) {
+            return;
+        }
+        const bool isHighlight = annotation == PdfTextAnnotation::Highlight;
+        const auto color = isHighlight ? highlightBrush.color : pdfTextColor;
+        const int fill = isHighlight ? pdfTextMarkerOpacity : 230;
+        const size_t layerId = state.activeLayerId(pdfTextSelection->page);
+        const size_t originLayer = state.activeLayerOrigin(pdfTextSelection->page);
+        std::vector<std::pair<size_t, Ink>> replacements;
+        std::vector<Ink> additions;
+        std::vector<size_t> used;
+
+        for (const auto& rect: pdfTextSelection->textRects) {
+            const double left = std::min(rect.x1, rect.x2);
+            const double right = std::max(rect.x1, rect.x2);
+            const double top = std::min(rect.y1, rect.y2);
+            const double bottom = std::max(rect.y1, rect.y2);
+            const double height = bottom - top;
+            if (!(right > left) || !(height > 0)) {
+                continue;
+            }
+            const double y = annotation == PdfTextAnnotation::Underline ? bottom : (top + bottom) / 2;
+            Ink stroke{pdfTextSelection->page, {{left, y, 1}, {right, y, 1}},
+                       {Tool::Highlighter, color, isHighlight ? height : 1.0}};
+            stroke.fill = fill;
+            stroke.capStyle = 1;
+
+            bool matched = false;
+            if (isHighlight) {
+                for (size_t i = 0; i < state.ink.size(); ++i) {
+                    if (std::find(used.begin(), used.end(), i) != used.end() ||
+                        !samePdfHighlight(state.ink[i], pdfTextSelection->page, layerId, originLayer, rect, fill)) {
+                        continue;
+                    }
+                    used.push_back(i);
+                    matched = true;
+                    if (state.ink[i].brush.color != color) {
+                        auto replacement = state.ink[i];
+                        replacement.brush.color = color;
+                        replacements.emplace_back(i, std::move(replacement));
+                    }
+                    break;
+                }
+            }
+            if (!matched) {
+                additions.push_back(std::move(stroke));
+            }
+        }
+        if (!replacements.empty() || !additions.empty()) {
+            state.applyInkEdits(std::move(replacements), std::move(additions));
+        }
+        clearPdfTextSelection(false);
+        update();
+    }
+
+    void setPdfHighlightColor(const std::array<double, 3>& color) {
+        highlightBrush.color = color;
+        if (prototype::isPdfTextSelectionTool(state.brush.tool)) {
+            state.brush.color = color;
+        }
+        if (pdfHighlightColorButton) {
+            const GdkRGBA rgba{static_cast<float>(color[0]), static_cast<float>(color[1]),
+                               static_cast<float>(color[2]), 1};
+            gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(pdfHighlightColorButton), &rgba);
+        }
+        update();
+    }
+
+    void createPdfActionsPopover() {
+        pdfActionsPopover = GTK_POPOVER(gtk_popover_new());
+        gtk_popover_set_position(pdfActionsPopover, GTK_POS_TOP);
+        gtk_popover_set_autohide(pdfActionsPopover, false);
+        auto* actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_widget_add_css_class(actions, "toolbar");
+        gtk_widget_add_css_class(actions, "linked");
+        gtk_widget_set_margin_top(actions, 4);
+        gtk_widget_set_margin_bottom(actions, 4);
+        gtk_widget_set_margin_start(actions, 4);
+        gtk_widget_set_margin_end(actions, 4);
+
+        pdfCopyButton = button(
+                "edit-copy-symbolic", "Copy selected PDF text",
+                G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->copyPdfTextSelection(); }));
+        gtk_box_append(GTK_BOX(actions), pdfCopyButton);
+        pdfHighlightButton = button(
+                "format-text-highlight-symbolic", "Highlight selected PDF text",
+                G_CALLBACK((+[](GtkButton*, gpointer data) {
+                    static_cast<Prototype*>(data)->createPdfTextAnnotation(PdfTextAnnotation::Highlight);
+                })));
+        gtk_box_append(GTK_BOX(actions), pdfHighlightButton);
+        pdfUnderlineButton = button(
+                "format-text-underline-symbolic", "Underline selected PDF text",
+                G_CALLBACK((+[](GtkButton*, gpointer data) {
+                    static_cast<Prototype*>(data)->createPdfTextAnnotation(PdfTextAnnotation::Underline);
+                })));
+        gtk_box_append(GTK_BOX(actions), pdfUnderlineButton);
+        pdfStrikethroughButton = button(
+                "format-text-strikethrough-symbolic", "Strikethrough selected PDF text",
+                G_CALLBACK((+[](GtkButton*, gpointer data) {
+                    static_cast<Prototype*>(data)->createPdfTextAnnotation(PdfTextAnnotation::Strikethrough);
+                })));
+        gtk_box_append(GTK_BOX(actions), pdfStrikethroughButton);
+
+        pdfSelectionStyleButton = gtk_button_new_with_label("Rectangle");
+        gtk_widget_set_tooltip_text(pdfSelectionStyleButton, "Switch PDF text selection style");
+        g_signal_connect(pdfSelectionStyleButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->switchPdfTextSelectionStyle();
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(actions), pdfSelectionStyleButton);
+        gtk_box_append(GTK_BOX(actions), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
+
+        auto* markerDialog = gtk_color_dialog_new();
+        gtk_color_dialog_set_with_alpha(markerDialog, false);
+        pdfHighlightColorButton = gtk_color_dialog_button_new(markerDialog);
+        gtk_widget_set_tooltip_text(pdfHighlightColorButton, "PDF highlight color");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(pdfHighlightColorButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "PDF highlight color", -1);
+        const auto& markerColor = highlightBrush.color;
+        const GdkRGBA markerRgba{static_cast<float>(markerColor[0]), static_cast<float>(markerColor[1]),
+                                 static_cast<float>(markerColor[2]), 1};
+        gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(pdfHighlightColorButton), &markerRgba);
+        g_signal_connect(pdfHighlightColorButton, "notify::rgba",
+                         G_CALLBACK((+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto* rgba = gtk_color_dialog_button_get_rgba(
+                                     GTK_COLOR_DIALOG_BUTTON(self->pdfHighlightColorButton));
+                             self->setPdfHighlightColor({rgba->red, rgba->green, rgba->blue});
+                         })),
+                         this);
+        gtk_box_append(GTK_BOX(actions), pdfHighlightColorButton);
+
+        pdfHighlightPaletteButton = gtk_menu_button_new();
+        gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(pdfHighlightPaletteButton), "view-grid-symbolic");
+        gtk_widget_set_tooltip_text(pdfHighlightPaletteButton, "Highlight color presets");
+        auto* presetPopover = gtk_popover_new();
+        auto* presetGrid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(presetGrid), 2);
+        gtk_grid_set_column_spacing(GTK_GRID(presetGrid), 2);
+        gtk_widget_set_margin_top(presetGrid, 6);
+        gtk_widget_set_margin_bottom(presetGrid, 6);
+        gtk_widget_set_margin_start(presetGrid, 6);
+        gtk_widget_set_margin_end(presetGrid, 6);
+        for (size_t index = 0; index < pdfHighlightPresets.size(); ++index) {
+            const auto& preset = pdfHighlightPresets[index];
+            auto* swatch = gtk_button_new();
+            pdfHighlightPresetButtons[index] = swatch;
+            gtk_widget_add_css_class(swatch, "flat");
+            gtk_widget_set_tooltip_text(swatch, preset.name);
+            gtk_accessible_update_property(GTK_ACCESSIBLE(swatch), GTK_ACCESSIBLE_PROPERTY_LABEL, preset.name, -1);
+            auto* dot = gtk_drawing_area_new();
+            gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(dot), 24);
+            gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(dot), 24);
+            auto* color = g_new(GdkRGBA, 1);
+            *color = {static_cast<float>(preset.color[0]), static_cast<float>(preset.color[1]),
+                      static_cast<float>(preset.color[2]), 1};
+            g_object_set_data_full(G_OBJECT(dot), "pdf-highlight-preset-color", color, g_free);
+            gtk_drawing_area_set_draw_func(
+                    GTK_DRAWING_AREA(dot),
+                    +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer) {
+                        auto* rgba = static_cast<GdkRGBA*>(g_object_get_data(
+                                G_OBJECT(area), "pdf-highlight-preset-color"));
+                        if (!rgba) {
+                            return;
+                        }
+                        cairo_arc(cr, width / 2.0, height / 2.0, std::min(width, height) / 2.0 - 2, 0, 2 * G_PI);
+                        gdk_cairo_set_source_rgba(cr, rgba);
+                        cairo_fill_preserve(cr);
+                        cairo_set_source_rgba(cr, 0.3, 0.3, 0.3, 0.75);
+                        cairo_set_line_width(cr, 1);
+                        cairo_stroke(cr);
+                    },
+                    nullptr, nullptr);
+            gtk_button_set_child(GTK_BUTTON(swatch), dot);
+            g_object_set_data(G_OBJECT(swatch), "pdf-highlight-preset-index",
+                              GUINT_TO_POINTER(static_cast<guint>(index + 1)));
+            g_signal_connect(swatch, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 const auto index = static_cast<size_t>(GPOINTER_TO_UINT(
+                                         g_object_get_data(G_OBJECT(button), "pdf-highlight-preset-index")) - 1);
+                                 if (index < pdfHighlightPresets.size()) {
+                                     self->setPdfHighlightColor(pdfHighlightPresets[index].color);
+                                 }
+                                 auto* popover = gtk_menu_button_get_popover(
+                                         GTK_MENU_BUTTON(self->pdfHighlightPaletteButton));
+                                 if (popover) {
+                                     gtk_popover_popdown(GTK_POPOVER(popover));
+                                 }
+                             }), this);
+            gtk_grid_attach(GTK_GRID(presetGrid), swatch, static_cast<int>(index % 3),
+                            static_cast<int>(index / 3), 1, 1);
+        }
+        gtk_popover_set_child(GTK_POPOVER(presetPopover), presetGrid);
+        gtk_menu_button_set_popover(GTK_MENU_BUTTON(pdfHighlightPaletteButton), presetPopover);
+        gtk_box_append(GTK_BOX(actions), pdfHighlightPaletteButton);
+
+        pdfMarkerOpacityButton = gtk_menu_button_new();
+        gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(pdfMarkerOpacityButton), "applications-graphics-symbolic");
+        gtk_widget_set_tooltip_text(pdfMarkerOpacityButton, "PDF highlight marker opacity");
+        auto* opacityPopover = gtk_popover_new();
+        auto* opacityBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        gtk_widget_set_margin_top(opacityBox, 8);
+        gtk_widget_set_margin_bottom(opacityBox, 8);
+        gtk_widget_set_margin_start(opacityBox, 8);
+        gtk_widget_set_margin_end(opacityBox, 8);
+        auto* opacityLabel = gtk_label_new("Marker opacity");
+        gtk_widget_set_halign(opacityLabel, GTK_ALIGN_START);
+        gtk_box_append(GTK_BOX(opacityBox), opacityLabel);
+        pdfMarkerOpacityScale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 255, 1);
+        gtk_widget_set_size_request(pdfMarkerOpacityScale, 160, -1);
+        gtk_scale_set_draw_value(GTK_SCALE(pdfMarkerOpacityScale), true);
+        gtk_range_set_value(GTK_RANGE(pdfMarkerOpacityScale), pdfTextMarkerOpacity);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(pdfMarkerOpacityScale), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "PDF highlight marker opacity", -1);
+        g_signal_connect(pdfMarkerOpacityScale, "value-changed",
+                         G_CALLBACK(+[](GtkRange* range, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             self->pdfTextMarkerOpacity = static_cast<int>(std::lround(gtk_range_get_value(range)));
+                         }), this);
+        gtk_box_append(GTK_BOX(opacityBox), pdfMarkerOpacityScale);
+        gtk_popover_set_child(GTK_POPOVER(opacityPopover), opacityBox);
+        gtk_menu_button_set_popover(GTK_MENU_BUTTON(pdfMarkerOpacityButton), opacityPopover);
+        gtk_box_append(GTK_BOX(actions), pdfMarkerOpacityButton);
+
+        auto* textDialog = gtk_color_dialog_new();
+        gtk_color_dialog_set_with_alpha(textDialog, false);
+        pdfTextColorButton = gtk_color_dialog_button_new(textDialog);
+        gtk_widget_set_tooltip_text(pdfTextColorButton, "PDF underline and strikethrough color");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(pdfTextColorButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "PDF annotation text color", -1);
+        const GdkRGBA textRgba{static_cast<float>(pdfTextColor[0]), static_cast<float>(pdfTextColor[1]),
+                               static_cast<float>(pdfTextColor[2]), 1};
+        gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(pdfTextColorButton), &textRgba);
+        g_signal_connect(pdfTextColorButton, "notify::rgba",
+                         G_CALLBACK((+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto* rgba = gtk_color_dialog_button_get_rgba(
+                                     GTK_COLOR_DIALOG_BUTTON(self->pdfTextColorButton));
+                             self->pdfTextColor = {rgba->red, rgba->green, rgba->blue};
+                         })),
+                         this);
+        gtk_box_append(GTK_BOX(actions), pdfTextColorButton);
+
+        gtk_popover_set_child(pdfActionsPopover, actions);
+        gtk_widget_set_parent(GTK_WIDGET(pdfActionsPopover), canvasOverlay);
+    }
+
     guint selectionModeIndex(Tool tool) const {
         if (state.selectionAcrossLayers && tool == Tool::SelectRectangle) {
             return 3;
@@ -1585,6 +2114,10 @@ private:
                 return 2;
             case Tool::SelectObject:
                 return 5;
+            case Tool::SelectPdfTextLinear:
+                return 6;
+            case Tool::SelectPdfTextRect:
+                return 7;
             default:
                 return 0;
         }
@@ -1980,6 +2513,9 @@ private:
         if (textEditor && textEditor->active()) {
             finishTextEditing();
         }
+        if (!prototype::isPdfTextSelectionTool(tool) && pdfTextSelection) {
+            clearPdfTextSelection(false);
+        }
         if (tool != Tool::SmartSelect && tool != Tool::Hand) {
             selectedImageIndex.reset();
         }
@@ -2011,7 +2547,9 @@ private:
         if (!prototype::isSelectionTool(tool) && tool != Tool::Hand) {
             state.clearSelection();
         }
-        state.brush = tool == Tool::Highlighter ? highlightBrush : (tool == Tool::Eraser ? eraserBrush : penBrush);
+        state.brush = (tool == Tool::Highlighter || prototype::isPdfTextSelectionTool(tool)) ?
+                              highlightBrush :
+                      tool == Tool::Eraser ? eraserBrush : penBrush;
         state.brush.tool = tool;
         if (tool == Tool::Eraser) {
             state.brush.color = prototype::behavior::whiteoutColor;
@@ -2032,8 +2570,12 @@ private:
                                                     tool != Tool::Hand);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown, prototype::isSelectionTool(tool));
-        gtk_widget_set_visible(selectionActions, prototype::isSelectionTool(tool));
+        gtk_widget_set_visible(selectionActions,
+                               prototype::isSelectionTool(tool) && !prototype::isPdfTextSelectionTool(tool));
         gtk_widget_set_tooltip_text(selectionLabel,
+                                    prototype::isPdfTextSelectionTool(tool) ?
+                                            "Drag across selectable PDF text. Choose Linear or Rectangle, then copy "
+                                            "or annotate the selected text." :
                                     tool == Tool::SelectObject ?
                                             "Click the nearest object on the active layer; Shift-click to add. "
                                             "Drag the selected object or its handles to transform it." :
@@ -2057,7 +2599,8 @@ private:
         gtk_widget_set_sensitive(paletteButton, tool != Tool::Eraser);
         gtk_widget_set_visible(eraserModeDropdown, tool == Tool::Eraser);
         if (canvas) {
-            gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" : nullptr);
+            gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" :
+                                                   prototype::isPdfTextSelectionTool(tool) ? "text" : nullptr);
         }
         gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), static_cast<guint>(state.eraserMode));
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));
@@ -2974,7 +3517,8 @@ private:
         gtk_widget_set_tooltip_text(paletteButton, "Quick colors and drawing tools");
 
         const char* selectionModes[] = {"Rectangle", "Lasso", "Smart", "Rectangle: Visible layers",
-                                        "Lasso: Visible layers", "Object", nullptr};
+                                        "Lasso: Visible layers", "Object", "PDF text: Linear",
+                                        "PDF text: Rectangle", nullptr};
         selectionModeDropdown = gtk_drop_down_new_from_strings(selectionModes);
         gtk_widget_set_tooltip_text(selectionModeDropdown,
                                     "Object selects the nearest item in the active layer. Visible-layer modes "
@@ -2987,9 +3531,16 @@ private:
                     const auto selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
                     const auto tool = selected == 1 || selected == 4 ? Tool::SelectLasso :
                                       selected == 2 ? Tool::SmartSelect :
-                                      selected == 5 ? Tool::SelectObject : Tool::SelectRectangle;
+                                      selected == 5 ? Tool::SelectObject :
+                                      selected == 6 ? Tool::SelectPdfTextLinear :
+                                      selected == 7 ? Tool::SelectPdfTextRect : Tool::SelectRectangle;
                     const bool acrossLayers = selected == 3 || selected == 4;
-                    if (prototype::isSelectionTool(self->state.brush.tool) &&
+                    if (prototype::isPdfTextSelectionTool(self->state.brush.tool) &&
+                        prototype::isPdfTextSelectionTool(tool)) {
+                        if (self->state.brush.tool != tool) {
+                            self->switchPdfTextSelectionStyle();
+                        }
+                    } else if (prototype::isSelectionTool(self->state.brush.tool) &&
                         (tool != self->state.brush.tool || acrossLayers != self->state.selectionAcrossLayers)) {
                         self->activateSelection(tool, acrossLayers);
                     }
@@ -3065,6 +3616,7 @@ private:
         gtk_overlay_set_child(GTK_OVERLAY(canvasOverlay), canvas);
         textEditor = std::make_unique<prototype::TextEditorOverlay>(GTK_OVERLAY(canvasOverlay));
         textEditor->setWrap(false);
+        createPdfActionsPopover();
         gtk_drawing_area_set_draw_func(
                 GTK_DRAWING_AREA(canvas),
                 +[](GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
@@ -3205,6 +3757,11 @@ private:
                 selectionVerifyMode = verifyMode;
                 selectionVerifyStep = 0;
             }
+            if (const char* verifyMode = g_getenv("XOURNALPP_PDF_TEXT_SELECTION_VERIFY_MODE");
+                verifyMode && *verifyMode) {
+                pdfTextSelectionVerifyMode = verifyMode;
+                pdfTextSelectionVerifyStep = 0;
+            }
             heartbeatSource = g_timeout_add(10, +[](gpointer data) -> gboolean {
                 auto* self = static_cast<Prototype*>(data);
                 if (self->busy) {
@@ -3231,6 +3788,8 @@ private:
                                     --self->layerVerifyStep;
                                 } else if (!self->selectionVerifyMode.empty()) {
                                     --self->selectionVerifyStep;
+                                } else if (!self->pdfTextSelectionVerifyMode.empty()) {
+                                    --self->pdfTextSelectionVerifyStep;
                                 } else if (self->documentSmokeStep >= 0) {
                                     --self->documentSmokeStep;
                                 } else {
@@ -3267,9 +3826,21 @@ private:
         }
         updateTextEditorPosition();
         updateTitle();
-        gtk_label_set_text(GTK_LABEL(selectionLabel),
-                           state.hasSelection() ? (std::to_string(state.selectionCount()) + " selected").c_str() :
-                           state.brush.tool == Tool::SelectObject ? "Click to select" : "Drag to select");
+        if (selectionLabel) {
+            std::string selectionStatus = state.hasSelection() ?
+                                                  std::to_string(state.selectionCount()) + " selected" :
+                                          pdfTextSelection && pdfTextSelection->finalized ?
+                                                  std::to_string(g_utf8_strlen(pdfTextSelection->text.c_str(), -1)) +
+                                                          " PDF characters selected" :
+                                          pdfTextSelection && pdfTextSelection->dragging ? "Selecting PDF text" :
+                                          state.brush.tool == Tool::SelectObject ? "Click to select" :
+                                                                                   "Drag to select";
+            gtk_label_set_text(GTK_LABEL(selectionLabel), selectionStatus.c_str());
+        }
+        if (pdfTextSelection && pdfTextSelection->finalized && pdfActionsPopover &&
+            gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover))) {
+            updatePdfActionsPosition(false);
+        }
         gtk_widget_set_sensitive(openButton, !options.worker.empty());
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
@@ -3571,6 +4142,14 @@ private:
 
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        if (prototype::isPdfTextSelectionTool(state.brush.tool)) {
+            gtk_widget_grab_focus(canvas);
+            beginPdfTextSelection(device, x, y);
+            return;
+        }
+        if (pdfTextSelection) {
+            clearPdfTextSelection(false);
+        }
         if (beginImageGesture(device, x, y)) {
             gtk_widget_grab_focus(canvas);
             update();
@@ -3617,6 +4196,10 @@ private:
 
     void motion(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                 uint32_t timeMs = 0) {
+        if (pdfTextSelection && pdfTextSelection->dragging && pdfTextSelection->owner == device) {
+            updatePdfTextSelection(device, x, y);
+            return;
+        }
         if (imageGesture && imageGesture->owner == device) {
             updateImageGesture(x, y);
             update();
@@ -3632,6 +4215,10 @@ private:
     }
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt) {
+        if (pdfTextSelection && pdfTextSelection->dragging && pdfTextSelection->owner == device) {
+            finishPdfTextSelection(device);
+            return;
+        }
         if (imageGesture && imageGesture->owner == device) {
             finishImageGesture();
             return;
@@ -3740,8 +4327,14 @@ private:
                                  self->update();
                                  return;
                              }
-                             if (presses != 1) return;
                              const auto tool = self->state.brush.tool;
+                             if (prototype::isPdfTextSelectionTool(tool) && (presses == 2 || presses == 3)) {
+                                 self->selectPdfTextAtPoint(
+                                         x, y, presses == 2 ? prototype::PdfTextSelectionStyle::Word :
+                                                             prototype::PdfTextSelectionStyle::Line);
+                                 return;
+                             }
+                             if (presses != 1) return;
                              if (tool == Tool::Text) {
                                  self->startTextEditing(x, y);
                              } else if (tool == Tool::SmartSelect) {
@@ -4069,10 +4662,20 @@ private:
                     }
                     if (!editingText && !GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_c || key == GDK_KEY_C)) {
-                            self->copySelection(); return true;
+                            if (self->pdfTextSelection && self->pdfTextSelection->finalized) {
+                                self->copyPdfTextSelection();
+                            } else {
+                                self->copySelection();
+                            }
+                            return true;
                         }
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_x || key == GDK_KEY_X)) {
-                            self->copySelection(true); return true;
+                            if (self->pdfTextSelection && self->pdfTextSelection->finalized) {
+                                self->copyPdfTextSelection();
+                            } else {
+                                self->copySelection(true);
+                            }
+                            return true;
                         }
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_v || key == GDK_KEY_V)) {
                             self->pasteSelection(); return true;
@@ -4119,7 +4722,9 @@ private:
                         return true;
                     }
                     if (key == GDK_KEY_Escape) {
-                        if (self->imageGesture) {
+                        if (self->pdfTextSelection) {
+                            self->clearPdfTextSelection(false);
+                        } else if (self->imageGesture) {
                             self->resetInput();
                             self->selectedImageIndex.reset();
                         } else if (self->selectedImageIndex) {
@@ -4496,6 +5101,28 @@ private:
                 state.images[*selectedImageIndex].page == i &&
                 state.layerVisible(i, state.images[*selectedImageIndex].layerId)) {
                 prototype::drawCanvasImageHandles(cr, displayedImage(*selectedImageIndex), state.zoom);
+            }
+            if (pdfTextSelection && pdfTextSelection->page == i && pdfTextSelection->region) {
+                const int rectangleCount = cairo_region_num_rectangles(pdfTextSelection->region.get());
+                if (rectangleCount > 0) {
+                    cairo_save(cr);
+                    cairo_set_source_rgba(cr, 0.22, 0.50, 0.86, 0.30);
+                    for (int rectangleIndex = 0; rectangleIndex < rectangleCount; ++rectangleIndex) {
+                        cairo_rectangle_int_t rectangle{};
+                        cairo_region_get_rectangle(pdfTextSelection->region.get(), rectangleIndex, &rectangle);
+                        cairo_rectangle(cr, rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+                    }
+                    cairo_fill(cr);
+                    if (pdfTextSelection->dragging && pdfTextSelection->tool == Tool::SelectPdfTextRect) {
+                        const auto& bounds = pdfTextSelection->bounds;
+                        cairo_set_source_rgba(cr, 0.16, 0.39, 0.68, 0.95);
+                        cairo_set_line_width(cr, 1.0 / state.zoom);
+                        cairo_rectangle(cr, std::min(bounds.x1, bounds.x2), std::min(bounds.y1, bounds.y2),
+                                        std::abs(bounds.x2 - bounds.x1), std::abs(bounds.y2 - bounds.y1));
+                        cairo_stroke(cr);
+                    }
+                    cairo_restore(cr);
+                }
             }
             cairo_restore(cr);
         }
@@ -4977,8 +5604,8 @@ private:
                                 state.layersForPage(0).layers[0].name == "Lower" &&
                                 state.layersForPage(0).layers[1].name == "Upper",
                         "Visible-layer selection verification requires its native two-layer fixture");
-                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 6,
-                        "Selection mode menu does not expose both visible-layer variants and Select Object");
+                require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 8,
+                        "Selection mode menu does not expose visible-layer, object and PDF text modes");
                 activateSelection(Tool::SelectRectangle);
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
                 require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers,
@@ -5153,6 +5780,225 @@ private:
             }
             default:
                 return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
+    void smokeDragPdfPage(Tool tool) {
+        activateSelection(tool);
+        auto* page = pdfPageForPage(0);
+        require(page != nullptr, "PDF-backed XOPP fixture lost its first PDF page");
+        PopplerRectangle* glyphs = nullptr;
+        guint glyphCount = 0;
+        require(poppler_page_get_text_layout(page, &glyphs, &glyphCount) && glyphCount > 0,
+                "PDF-backed fixture has no selectable text layout");
+        const auto firstGlyph = glyphs[0];
+        double left = std::min(firstGlyph.x1, firstGlyph.x2);
+        double right = std::max(firstGlyph.x1, firstGlyph.x2);
+        double top = std::min(firstGlyph.y1, firstGlyph.y2);
+        double bottom = std::max(firstGlyph.y1, firstGlyph.y2);
+        for (guint index = 1; index < glyphCount; ++index) {
+            const auto& glyph = glyphs[index];
+            if (std::abs(glyph.y1 - firstGlyph.y1) > 1e-5 || std::abs(glyph.y2 - firstGlyph.y2) > 1e-5) {
+                continue;
+            }
+            left = std::min(left, std::min(glyph.x1, glyph.x2));
+            right = std::max(right, std::max(glyph.x1, glyph.x2));
+            top = std::min(top, std::min(glyph.y1, glyph.y2));
+            bottom = std::max(bottom, std::max(glyph.y1, glyph.y2));
+        }
+        g_free(glyphs);
+        g_object_unref(page);
+        const auto start = state.pageScreenPoint(0, left - 1, top - 1);
+        const auto end = state.pageScreenPoint(0, right + 1, bottom + 1);
+        g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+        g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+        g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+    }
+
+    gboolean smokePdfTextSelection() {
+        switch (pdfTextSelectionVerifyStep++) {
+            case 0: {
+                require(nativeSession && document && pageCount >= 1 && state.texts.size() >= 3,
+                        "PDF text selection verification requires a native PDF-backed XOPP fixture");
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                require(pdfTextSelection && pdfTextSelection->finalized &&
+                                pdfTextSelection->text.find("Test PDF for Xournal++") != std::string::npos &&
+                                pdfTextSelection->text.find("テスト") == std::string::npos &&
+                                !pdfTextSelection->textRects.empty(),
+                        "Linear selection did not select text from the PDF background only");
+                capture("pdf-text-linear-selection");
+                break;
+            }
+            case 1: {
+                g_signal_emit_by_name(pdfSelectionStyleButton, "clicked");
+                require(state.brush.tool == Tool::SelectPdfTextRect && pdfTextSelection &&
+                                pdfTextSelection->style == prototype::PdfTextSelectionStyle::Rectangle &&
+                                pdfTextSelection->text.find("Test PDF for Xournal++") != std::string::npos,
+                        "Switching to rectangular PDF selection did not recompute the current selection");
+                capture("pdf-text-rectangle-selection");
+                break;
+            }
+            case 2: {
+                auto* page = pdfPageForPage(0);
+                require(page != nullptr, "PDF-backed XOPP fixture lost its first PDF page");
+                PopplerRectangle* glyphs = nullptr;
+                guint glyphCount = 0;
+                require(poppler_page_get_text_layout(page, &glyphs, &glyphCount) && glyphCount > 0,
+                        "PDF-backed fixture has no selectable text layout");
+                const auto firstGlyph = glyphs[0];
+                g_free(glyphs);
+                g_object_unref(page);
+                const auto click = state.pageScreenPoint(0, (firstGlyph.x1 + firstGlyph.x2) / 2,
+                                                        (firstGlyph.y1 + firstGlyph.y2) / 2);
+                g_signal_emit_by_name(textClick, "released", 2, click.x, click.y);
+                require(pdfTextSelection && pdfTextSelection->finalized &&
+                                pdfTextSelection->style == prototype::PdfTextSelectionStyle::Word &&
+                                !pdfTextSelection->text.empty(),
+                        "Double click did not select a PDF word");
+                capture("pdf-text-word-selection");
+                g_signal_emit_by_name(textClick, "released", 3, click.x, click.y);
+                require(pdfTextSelection && pdfTextSelection->finalized &&
+                                pdfTextSelection->style == prototype::PdfTextSelectionStyle::Line &&
+                                pdfTextSelection->text.find("Test PDF for Xournal++") != std::string::npos,
+                        "Triple click did not select the full PDF text line");
+                capture("pdf-text-line-selection");
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                pdfClipboardExpected = pdfTextSelection->text;
+                g_signal_emit_by_name(pdfCopyButton, "clicked");
+                require(!pdfTextSelection && !gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)),
+                        "Copy did not dismiss the PDF selection actions");
+                auto* clipboard = gdk_display_get_clipboard(gtk_widget_get_display(canvas));
+                gdk_clipboard_read_text_async(
+                        clipboard, nullptr,
+                        +[](GObject* source, GAsyncResult* result, gpointer data) {
+                            auto* self = static_cast<Prototype*>(data);
+                            GError* error = nullptr;
+                            char* text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), result, &error);
+                            self->pdfClipboardReadError = error ? error->message : "";
+                            g_clear_error(&error);
+                            self->pdfClipboardReadText = text ? text : "";
+                            g_free(text);
+                            self->pdfClipboardReadComplete = true;
+                        },
+                        this);
+                break;
+            }
+            case 3: {
+                if (!pdfClipboardReadComplete) {
+                    --pdfTextSelectionVerifyStep;
+                    return G_SOURCE_CONTINUE;
+                }
+                require(pdfClipboardReadError.empty() && pdfClipboardReadText == pdfClipboardExpected,
+                        "PDF Copy did not publish the selected text to the clipboard");
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                const auto oldInkCount = state.ink.size();
+                g_signal_emit_by_name(pdfHighlightButton, "clicked");
+                require(state.ink.size() > oldInkCount && !pdfTextSelection,
+                        "Highlight did not add PDF text annotation strokes");
+                for (size_t index = oldInkCount; index < state.ink.size(); ++index) {
+                    require(state.ink[index].brush.tool == Tool::Highlighter && state.ink[index].fill == 60 &&
+                                    state.ink[index].capStyle == 1,
+                            "PDF highlight did not preserve marker opacity and butt caps");
+                }
+                capture("pdf-text-highlight");
+                break;
+            }
+            case 4: {
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                const auto oldInkCount = state.ink.size();
+                g_signal_emit_by_name(pdfUnderlineButton, "clicked");
+                require(state.ink.size() > oldInkCount && !pdfTextSelection,
+                        "Underline did not add PDF text annotation strokes");
+                for (size_t index = oldInkCount; index < state.ink.size(); ++index) {
+                    require(state.ink[index].fill == 230 && state.ink[index].capStyle == 1,
+                            "PDF underline did not preserve opacity and butt caps");
+                }
+                capture("pdf-text-underline");
+                break;
+            }
+            case 5: {
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                const auto oldInkCount = state.ink.size();
+                g_signal_emit_by_name(pdfStrikethroughButton, "clicked");
+                require(state.ink.size() > oldInkCount && !pdfTextSelection,
+                        "Strikethrough did not add PDF text annotation strokes");
+                for (size_t index = oldInkCount; index < state.ink.size(); ++index) {
+                    require(state.ink[index].fill == 230 && state.ink[index].capStyle == 1,
+                            "PDF strikethrough did not preserve opacity and butt caps");
+                }
+                capture("pdf-text-strikethrough");
+                break;
+            }
+            case 6: {
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                gtk_menu_button_popup(GTK_MENU_BUTTON(pdfHighlightPaletteButton));
+                capture("pdf-text-highlight-presets");
+                g_signal_emit_by_name(pdfHighlightPresetButtons[1], "clicked");
+                require(std::abs(highlightBrush.color[0] - 140.0 / 255) < 1e-6 &&
+                                std::abs(highlightBrush.color[1] - 233.0 / 255) < 1e-6 &&
+                                std::abs(highlightBrush.color[2] - 154.0 / 255) < 1e-6,
+                        "Green PDF highlight preset did not select the production color");
+                const auto oldInkCount = state.ink.size();
+                const auto oldRevision = state.revision();
+                g_signal_emit_by_name(pdfHighlightButton, "clicked");
+                require(state.ink.size() == oldInkCount && state.revision() == oldRevision + 1,
+                        "Reapplying a highlight should recolor existing strokes in one edit");
+                for (size_t index = 0; index < state.ink.size(); ++index) {
+                    if (state.ink[index].fill == 60) {
+                        require(std::abs(state.ink[index].brush.color[1] - 233.0 / 255) < 1e-6,
+                                "Reapplying a PDF highlight did not recolor existing markers");
+                    }
+                }
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(state.revision() == oldRevision && state.ink.size() == oldInkCount &&
+                                std::abs(state.ink.front().brush.color[0] - 1.0) < 1e-6,
+                        "Undo did not restore the prior PDF highlight color");
+                g_signal_emit_by_name(redoButton, "clicked");
+                require(state.revision() == oldRevision + 1 &&
+                                std::abs(state.ink.front().brush.color[1] - 233.0 / 255) < 1e-6,
+                        "Redo did not restore the PDF highlight recolor");
+                capture("pdf-text-highlight-recolored");
+                gtk_menu_button_popup(GTK_MENU_BUTTON(pdfMarkerOpacityButton));
+                capture("pdf-text-marker-opacity-control");
+                gtk_range_set_value(GTK_RANGE(pdfMarkerOpacityScale), 128);
+                require(pdfTextMarkerOpacity == 128, "PDF marker opacity control did not change its value");
+                gtk_menu_button_popdown(GTK_MENU_BUTTON(pdfMarkerOpacityButton));
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                const auto beforeOpacityEdit = state.ink.size();
+                g_signal_emit_by_name(pdfHighlightButton, "clicked");
+                require(state.ink.size() > beforeOpacityEdit,
+                        "Applying a different PDF marker opacity did not create updated annotations");
+                for (size_t index = beforeOpacityEdit; index < state.ink.size(); ++index) {
+                    require(state.ink[index].fill == 128,
+                            "PDF highlight opacity control did not set the annotation fill value");
+                }
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(state.ink.size() == beforeOpacityEdit,
+                        "Undo did not remove highlights created with the changed opacity");
+                gtk_range_set_value(GTK_RANGE(pdfMarkerOpacityScale), 60);
+                require(pdfTextMarkerOpacity == 60, "PDF marker opacity did not restore its default value");
+                break;
+            }
+            case 7: {
+                pdfTextSelectionOutput = (std::filesystem::path(options.smokeDirectory) /
+                                          "pdf-text-annotations.xopp").string();
+                saveCopyTo(pdfTextSelectionOutput, [this] { pdfTextSelectionSaveComplete = true; });
+                require(busy, "Saving PDF text annotations did not start");
+                break;
+            }
+            default: {
+                require(pdfTextSelectionSaveComplete && !modified() &&
+                                std::filesystem::is_regular_file(pdfTextSelectionOutput),
+                        "Native save did not preserve PDF text annotations");
+                std::cout << "PASS: GTK PDF linear/rectangle/word/line selection, clipboard, marker presets and opacity, "
+                             "annotations, undo/redo and native save\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+            }
         }
         update();
         lastSmokePaint = paints;
@@ -5660,6 +6506,9 @@ private:
         }
         if (!selectionVerifyMode.empty()) {
             return smokeSelectionModes();
+        }
+        if (!pdfTextSelectionVerifyMode.empty()) {
+            return smokePdfTextSelection();
         }
         if (!imageVerifyMode.empty()) {
             return smokeImages();
@@ -6833,6 +7682,14 @@ private:
     int imageVerifyStep = -1;
     std::string selectionVerifyMode;
     int selectionVerifyStep = -1;
+    std::string pdfTextSelectionVerifyMode;
+    int pdfTextSelectionVerifyStep = -1;
+    std::string pdfClipboardExpected;
+    std::string pdfClipboardReadText;
+    std::string pdfClipboardReadError;
+    std::string pdfTextSelectionOutput;
+    bool pdfClipboardReadComplete = false;
+    bool pdfTextSelectionSaveComplete = false;
     double selectionVerifyTextX = 0;
     prototype::CanvasImageTransform imageVerifyExpected;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
@@ -6898,7 +7755,10 @@ private:
     prototype::CanvasInput input{state};
     std::optional<size_t> selectedImageIndex;
     std::optional<ImageGesture> imageGesture;
+    std::optional<PdfTextSelectionState> pdfTextSelection;
     PopplerDocument* document = nullptr;
+    PopplerDocument* pdfTextDocument = nullptr;
+    std::string pdfTextDocumentPath;
     std::vector<PopplerDocument*> layerDocuments;
     int pageCount = 1;
     bool syncingPage = false;
@@ -6944,6 +7804,20 @@ private:
     GtkWidget* selectionLabel = nullptr;
     GtkWidget* selectionModeDropdown = nullptr;
     GtkWidget* selectionActions = nullptr;
+    GtkPopover* pdfActionsPopover = nullptr;
+    GtkWidget* pdfCopyButton = nullptr;
+    GtkWidget* pdfHighlightButton = nullptr;
+    GtkWidget* pdfUnderlineButton = nullptr;
+    GtkWidget* pdfStrikethroughButton = nullptr;
+    GtkWidget* pdfSelectionStyleButton = nullptr;
+    GtkWidget* pdfHighlightColorButton = nullptr;
+    GtkWidget* pdfHighlightPaletteButton = nullptr;
+    std::array<GtkWidget*, 6> pdfHighlightPresetButtons{};
+    GtkWidget* pdfMarkerOpacityButton = nullptr;
+    GtkWidget* pdfMarkerOpacityScale = nullptr;
+    GtkWidget* pdfTextColorButton = nullptr;
+    std::array<double, 3> pdfTextColor{0, 0, 0};
+    int pdfTextMarkerOpacity = 60;
     Tool selectionTool = Tool::SelectRectangle;
     GCancellable* clipboardCancellation = nullptr;
     guint clipboardTimer = 0;

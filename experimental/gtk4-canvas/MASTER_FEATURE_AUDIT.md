@@ -44,8 +44,8 @@ registration in `ToolHandler::initTools`.
 | `drawCoordinateSystem` | Partial | Coordinate-axis paths work; match native geometry and production modifiers. |
 | `showFloatingToolbox` | Pending | Port floating toolbox creation, placement, persistence, and interaction. |
 | `drawSpline` | Partial | Knot, tangent, preview, and editing behavior work; verify generated geometry against the production handler. |
-| `selectPdfTextLinear` | Pending | Select PDF text by linear drag and expose the production copy/annotation actions. |
-| `selectPdfTextRect` | Pending | Select PDF text by rectangular drag and expose the production copy/annotation actions. |
+| `selectPdfTextLinear` | Partial | Linear drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
+| `selectPdfTextRect` | Partial | Rectangular drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
 | `laserPointerPen` | Pending | Port timed laser-pen rendering and presentation behavior. |
 | `laserPointerHighlighter` | Pending | Port timed laser-highlighter rendering and presentation behavior. |
 | `link` | Pending | Create, edit, and activate links with production hit testing and persistence. |
@@ -72,6 +72,7 @@ it is not represented by a single `ToolType`.
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, and text; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` stroke and single-image copy/cut/paste works. Images also offer PNG and accept PNG clipboard paste. Multi-image and mixed-object selection clipboard actions, remaining native types, text and SVG selection targets, and cross-process compatibility remain. |
+| PDF text selection and annotation | Partial | Linear and rectangular drag select PDF text; double/triple click selects words/lines. Copy, highlight, underline, and strikethrough work with color controls and marker opacity. The original PDF source is used for text extraction and retained in the native save path. Match GTK 3 floating-toolbox placement and dismissal/reopen behavior. |
 
 ## Built-in plugin inventory
 
@@ -103,7 +104,7 @@ it stays listed because it is part of the master plugin distribution.
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |
-| Native documents | Partial | Supported strokes, text, and image suffixes round-trip. Make unsupported native object types editable without losing preservation. |
+| Native documents | Partial | Supported strokes, text, and image suffixes round-trip. PDF-backed text selection uses the original PDF source and page mapping. Make unsupported native object types editable without losing preservation. |
 | Accessibility and platform behavior | Pending | Port accessibility semantics and verify each supported platform and packaging path. |
 
 ## Explicit exclusions

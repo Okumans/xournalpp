@@ -459,8 +459,79 @@ def verify_selection_modes(args, evidence):
     return str(output)
 
 
+def verify_pdf_text_selection(args, evidence):
+    if not args.worker:
+        raise RuntimeError("PDF text annotation persistence checks require the document worker")
+
+    directory = evidence / "pdf-text-selection"
+    fixture_dir = directory / "fixture"
+    output = directory / "run"
+    shutil.rmtree(directory, ignore_errors=True)
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    source_xopp = repo_root / "test" / "files" / "cjk" / "测试.xopp"
+    source_pdf = repo_root / "test" / "files" / "cjk" / "测试.pdf"
+    fixture = fixture_dir / source_xopp.name
+    pdf = fixture_dir / source_pdf.name
+    shutil.copyfile(source_xopp, fixture)
+    shutil.copyfile(source_pdf, pdf)
+    fixture_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()
+
+    result = run(
+        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
+         "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PDF_TEXT_SELECTION_VERIFY_MODE="1"),
+    )
+    expected = (
+        "PASS: GTK PDF linear/rectangle/word/line selection, clipboard, marker presets and opacity, "
+        "annotations, undo/redo and native save"
+    )
+    if expected not in result:
+        raise RuntimeError("GTK PDF text selection verification did not finish")
+
+    for name in (
+        "pdf-text-linear-selection", "pdf-text-rectangle-selection", "pdf-text-word-selection",
+        "pdf-text-line-selection", "pdf-text-highlight", "pdf-text-underline", "pdf-text-strikethrough",
+        "pdf-text-highlight-presets", "pdf-text-highlight-recolored", "pdf-text-marker-opacity-control",
+    ):
+        screenshot = output / f"{name}.png"
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing PDF text selection screenshot: {screenshot}")
+
+    saved = output / "pdf-text-annotations.xopp"
+    root = ET.fromstring(gzip.decompress(saved.read_bytes()))
+    strokes = root.findall(".//stroke")
+    markers = [stroke for stroke in strokes if stroke.attrib.get("tool") == "highlighter"]
+    if not any(stroke.attrib.get("fill") == "60" and stroke.attrib.get("capStyle") == "butt"
+               for stroke in markers):
+        raise RuntimeError("Saved PDF highlights lost their opacity or butt caps")
+    if not any(stroke.attrib.get("fill") == "230" and stroke.attrib.get("capStyle") == "butt"
+               for stroke in markers):
+        raise RuntimeError("Saved PDF underlines or strikethroughs lost their opacity or butt caps")
+    if len(root.findall("page")) != 2 or len(root.findall(".//text")) != 3:
+        raise RuntimeError("PDF annotation save lost native pages or foreground text")
+    if hashlib.sha256(fixture.read_bytes()).hexdigest() != fixture_hash:
+        raise RuntimeError("PDF text selection verification modified its XOPP fixture")
+    if hashlib.sha256(pdf.read_bytes()).hexdigest() != pdf_hash:
+        raise RuntimeError("PDF text selection verification modified its PDF background")
+
+    print("PASS: private GTK4 PDF selection, actions and native PDF-backed XOPP save", flush=True)
+    return str(output)
+
+
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.pdf_text_selection_only:
+        pdf_evidence = verify_pdf_text_selection(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"pdf-text-selection": pdf_evidence},
+             "fixture": str(evidence / "pdf-text-selection" / "fixture" / "测试.xopp"),
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.selection_only:
         selection_evidence = verify_selection_modes(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -659,9 +730,12 @@ def main():
     parser.add_argument("--layer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--image-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--selection-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--pdf-text-selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
+    if args.pdf_text_selection_only and not args.worker:
+        raise RuntimeError("PDF text annotation persistence checks require --worker")
     if args.inside:
         inside(args)
         return
@@ -709,6 +783,8 @@ def main():
             command.append("--image-only")
         if args.selection_only:
             command.append("--selection-only")
+        if args.pdf_text_selection_only:
+            command.append("--pdf-text-selection-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

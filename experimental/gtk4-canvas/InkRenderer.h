@@ -20,25 +20,41 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
     }
     const auto& color = whiteout ? behavior::whiteoutColor : ink.brush.color;
     cairo_set_source_rgb(cr, color[0], color[1], color[2]);
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    for (size_t i = 0; i < ink.points.size(); ++i) {
-        const auto a = matrix.apply(ink.points[i ? i - 1 : 0]);
-        const auto b = matrix.apply(ink.points[i]);
-        const auto width = ink.brush.width * matrix.widthScale * ((highlight || whiteout) ? 1.0 : (a.pressure + b.pressure) / 2);
-        if (a.x == b.x && a.y == b.y) {
-            cairo_arc(cr, b.x, b.y, width / 2, 0, 6.283185307179586);
-            cairo_fill(cr);
-        } else {
-            cairo_set_line_width(cr, width);
-            cairo_move_to(cr, a.x, a.y);
-            cairo_line_to(cr, b.x, b.y);
-            cairo_stroke(cr);
+    const auto capStyle = ink.capStyle == 1 ? CAIRO_LINE_CAP_BUTT :
+                          ink.capStyle == 2 ? CAIRO_LINE_CAP_SQUARE : CAIRO_LINE_CAP_ROUND;
+    cairo_set_line_cap(cr, capStyle);
+    if (ink.capStyle != 0 && !ink.pressureSensitive && ink.points.size() > 1) {
+        cairo_set_line_width(cr, ink.brush.width * matrix.widthScale);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        const auto start = matrix.apply(ink.points.front());
+        cairo_move_to(cr, start.x, start.y);
+        for (size_t i = 1; i < ink.points.size(); ++i) {
+            const auto point = matrix.apply(ink.points[i]);
+            cairo_line_to(cr, point.x, point.y);
+        }
+        cairo_stroke(cr);
+    } else {
+        for (size_t i = 0; i < ink.points.size(); ++i) {
+            const auto a = matrix.apply(ink.points[i ? i - 1 : 0]);
+            const auto b = matrix.apply(ink.points[i]);
+            const auto width = ink.brush.width * matrix.widthScale *
+                               ((highlight || whiteout) ? 1.0 : (a.pressure + b.pressure) / 2);
+            if (a.x == b.x && a.y == b.y) {
+                cairo_arc(cr, b.x, b.y, width / 2, 0, 6.283185307179586);
+                cairo_fill(cr);
+            } else {
+                cairo_set_line_width(cr, width);
+                cairo_move_to(cr, a.x, a.y);
+                cairo_line_to(cr, b.x, b.y);
+                cairo_stroke(cr);
+            }
         }
     }
     if (highlight) {
         cairo_pop_group_to_source(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_MULTIPLY);
-        cairo_paint_with_alpha(cr, behavior::highlightOpacity);
+        const double opacity = ink.fill >= 0 ? static_cast<double>(ink.fill) / 255.0 : behavior::highlightOpacity;
+        cairo_paint_with_alpha(cr, opacity);
     }
     cairo_restore(cr);
 }
