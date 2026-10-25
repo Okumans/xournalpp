@@ -97,8 +97,11 @@ for session edits and transfers them to the real native model when saving.
   its transform. Both are removed from the native snapshot and written back in
   their original layer groups and order, avoiding duplicate objects. Objects
   preceding a non-editable suffix element, unsupported stroke types, audio-linked
-  text, LaTeX, and images outside the supported suffix remain visible in per-layer
-  previews but cannot yet be edited. Layer visibility, selection, add/delete,
+  text, and images outside the supported suffix remain visible in per-layer
+  previews but cannot yet be edited. Native LaTeX objects in the supported suffix
+  retain their editable source and vector PDF, and can be inserted or edited with
+  the GTK4 LaTeX tool. Formula replacement and native text-to-formula conversion
+  use undoable edits. Layer visibility, selection, add/delete,
   duplicate, rename, reorder, and merge-down are supported. The master layer
   model has no per-layer lock action to port. Visible-layer rectangle and lasso
   selection choose editable strokes, text, and images from the topmost visible

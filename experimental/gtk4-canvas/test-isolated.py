@@ -559,6 +559,40 @@ def verify_layer_actions(args, evidence):
     return str(directory)
 
 
+def verify_latex(args, evidence):
+    directory = evidence / "latex"
+    shutil.rmtree(directory, ignore_errors=True)
+    config = directory / "config"
+    output = directory / "run"
+    config.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+    fixture = args.fixture.resolve()
+    fixture_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    if not args.worker:
+        raise RuntimeError("LaTeX editor checks require --worker")
+    result = run(
+        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+         "--worker", str(args.worker.resolve()), "--document", str(fixture), "--verify-latex"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    expected = "PASS: private GTK4 LaTeX compile, insert, edit, undo/redo and native round trip"
+    if expected not in result:
+        raise RuntimeError("GTK4 LaTeX editor integration did not complete")
+    screenshot = output / "latex-formula-inserted.png"
+    saved = output / "latex-round-trip.xopp"
+    if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+        raise RuntimeError(f"Missing LaTeX insertion screenshot: {screenshot}")
+    if not saved.is_file() or saved.stat().st_size < 1000:
+        raise RuntimeError(f"Missing LaTeX native round-trip document: {saved}")
+    if hashlib.sha256(fixture.read_bytes()).hexdigest() != fixture_hash:
+        raise RuntimeError("LaTeX editor verification modified its source fixture")
+    report = {"fixture": str(fixture), "fixture_sha256": fixture_hash,
+              "saved_document": str(saved), "screenshot": str(screenshot),
+              "rendering": "Private headless Wayland via Cage"}
+    print("PASS: private GTK4 LaTeX editor and vector XOPP round trip", flush=True)
+    return report
+
+
 def make_png(path, width=32, height=24):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data +
@@ -929,6 +963,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.latex_only:
+        latex_evidence = verify_latex(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"latex-editor": latex_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.layer_actions_only:
         layer_actions_evidence = verify_layer_actions(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1190,6 +1231,7 @@ def main():
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--latex-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1203,6 +1245,8 @@ def main():
         raise RuntimeError("Play Object verification requires --worker")
     if args.layer_actions_only and not args.worker:
         raise RuntimeError("LayerActions verification requires --worker")
+    if args.latex_only and not args.worker:
+        raise RuntimeError("LaTeX editor verification requires --worker")
     if args.inside:
         inside(args)
         return
@@ -1266,6 +1310,8 @@ def main():
             command.append("--beamer-only")
         if args.layer_actions_only:
             command.append("--layer-actions-only")
+        if args.latex_only:
+            command.append("--latex-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

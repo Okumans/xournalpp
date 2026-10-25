@@ -26,19 +26,33 @@ struct ImagePacket {
     size_t layerOrder = 0;
     int pixelWidth = 0;
     int pixelHeight = 0;
+    CanvasImageKind kind = CanvasImageKind::Raster;
+    double nativeWidth = 0;
+    double nativeHeight = 0;
     CanvasImageTransform transform;
     std::string encodedData;
+    std::string latexSource;
 };
 
 inline void validate(const ImagePacket& image) {
     const auto& m = image.transform;
     const auto determinant = m.xx * m.yy - m.xy * m.yx;
-    if (image.page < 0 || image.layerId == 0 || image.pixelWidth <= 0 || image.pixelHeight <= 0 ||
-        static_cast<size_t>(image.pixelWidth) > maxCanvasImagePixels / static_cast<size_t>(image.pixelHeight) ||
-        image.encodedData.empty() || image.encodedData.size() > maxCanvasImageBytes ||
-        !std::isfinite(determinant) || std::abs(determinant) <= 1e-10 || !std::isfinite(m.xx) ||
-        !std::isfinite(m.yx) || !std::isfinite(m.xy) || !std::isfinite(m.yy) || !std::isfinite(m.x) ||
-        !std::isfinite(m.y)) {
+    const bool validContent = image.kind == CanvasImageKind::Raster ?
+                                      image.pixelWidth > 0 && image.pixelHeight > 0 &&
+                                              static_cast<size_t>(image.pixelWidth) <=
+                                                      maxCanvasImagePixels / static_cast<size_t>(image.pixelHeight) &&
+                                              image.latexSource.empty() :
+                              image.kind == CanvasImageKind::Latex ?
+                                      (isCanvasTexPdf(image.encodedData) || isCanvasTexPng(image.encodedData)) &&
+                                              image.latexSource.size() <= maxCanvasLatexSourceBytes &&
+                                              std::isfinite(image.nativeWidth) && image.nativeWidth > 0 &&
+                                              image.nativeWidth <= 100000 && std::isfinite(image.nativeHeight) &&
+                                              image.nativeHeight > 0 && image.nativeHeight <= 100000 :
+                                      false;
+    if (image.page < 0 || image.layerId == 0 || !validContent || image.encodedData.empty() ||
+        image.encodedData.size() > maxCanvasImageBytes || !std::isfinite(determinant) ||
+        std::abs(determinant) <= 1e-10 || !std::isfinite(m.xx) || !std::isfinite(m.yx) || !std::isfinite(m.xy) ||
+        !std::isfinite(m.yy) || !std::isfinite(m.x) || !std::isfinite(m.y)) {
         throw std::runtime_error("Invalid transferred image");
     }
 }
@@ -51,8 +65,12 @@ inline ImagePacket imagePacket(const CanvasImage& image) {
     packet.layerOrder = image.layerOrder;
     packet.pixelWidth = image.pixelWidth;
     packet.pixelHeight = image.pixelHeight;
+    packet.kind = image.kind;
+    packet.nativeWidth = image.nativeWidth;
+    packet.nativeHeight = image.nativeHeight;
     packet.transform = image.transform;
     packet.encodedData = image.encodedData;
+    packet.latexSource = image.latexSource;
     validate(packet);
     return packet;
 }
@@ -66,8 +84,12 @@ inline CanvasImage canvasImage(const ImagePacket& packet) {
     image.layerOrder = packet.layerOrder;
     image.pixelWidth = packet.pixelWidth;
     image.pixelHeight = packet.pixelHeight;
+    image.kind = packet.kind;
+    image.nativeWidth = packet.nativeWidth;
+    image.nativeHeight = packet.nativeHeight;
     image.transform = packet.transform;
     image.encodedData = packet.encodedData;
+    image.latexSource = packet.latexSource;
     return image;
 }
 
@@ -128,7 +150,9 @@ inline std::vector<ImagePacket> readImageTransfer(const std::filesystem::path& p
     std::string magic;
     size_t count = 0;
     image_transfer_detail::parseLine(image_transfer_detail::readLine(stream), magic, count);
-    if (magic != "XOURNALPP_GTK4_IMAGES_V1" || count > maxEditableImages) {
+    const bool versionOne = magic == "XOURNALPP_GTK4_IMAGES_V1";
+    const bool versionTwo = magic == "XOURNALPP_GTK4_IMAGES_V2";
+    if ((!versionOne && !versionTwo) || count > maxEditableImages) {
         throw std::runtime_error("Invalid image-transfer header");
     }
     std::vector<ImagePacket> images;
@@ -137,16 +161,39 @@ inline std::vector<ImagePacket> readImageTransfer(const std::filesystem::path& p
     for (size_t i = 0; i < count; ++i) {
         ImagePacket image;
         size_t dataLength = 0;
-        image_transfer_detail::parseLine(image_transfer_detail::readLine(stream), image.page, image.layerId,
-                                        image.originLayer, image.layerOrder, image.pixelWidth, image.pixelHeight,
-                                        image.transform.xx, image.transform.yx, image.transform.xy,
-                                        image.transform.yy, image.transform.x, image.transform.y, dataLength);
-        if (dataLength == 0 || dataLength > maxCanvasImageBytes || dataLength > maxImageTransferFileBytes - bytes) {
+        size_t sourceLength = 0;
+        int kind = 0;
+        if (versionOne) {
+            image_transfer_detail::parseLine(image_transfer_detail::readLine(stream), image.page, image.layerId,
+                                             image.originLayer, image.layerOrder, image.pixelWidth, image.pixelHeight,
+                                             image.transform.xx, image.transform.yx, image.transform.xy,
+                                             image.transform.yy, image.transform.x, image.transform.y, dataLength);
+        } else {
+            image_transfer_detail::parseLine(image_transfer_detail::readLine(stream), image.page, image.layerId,
+                                             image.originLayer, image.layerOrder, kind, image.pixelWidth,
+                                             image.pixelHeight, image.nativeWidth, image.nativeHeight,
+                                             image.transform.xx, image.transform.yx, image.transform.xy,
+                                             image.transform.yy, image.transform.x, image.transform.y, sourceLength,
+                                             dataLength);
+            if (kind < static_cast<int>(CanvasImageKind::Raster) || kind > static_cast<int>(CanvasImageKind::Latex)) {
+                throw std::runtime_error("Invalid image-transfer content kind");
+            }
+            image.kind = static_cast<CanvasImageKind>(kind);
+        }
+        if (dataLength == 0 || dataLength > maxCanvasImageBytes ||
+            sourceLength > maxCanvasLatexSourceBytes || bytes > maxImageTransferFileBytes ||
+            sourceLength > maxImageTransferFileBytes - bytes ||
+            dataLength > maxImageTransferFileBytes - bytes - sourceLength) {
             throw std::runtime_error("Image transfer exceeds its data limit");
+        }
+        if (sourceLength) {
+            image.latexSource = image_transfer_detail::readBytes(stream, sourceLength);
+        } else if (versionTwo) {
+            static_cast<void>(image_transfer_detail::readBytes(stream, 0));
         }
         image.encodedData = image_transfer_detail::readBytes(stream, dataLength);
         validate(image);
-        bytes += dataLength;
+        bytes += sourceLength + dataLength;
         images.push_back(std::move(image));
     }
     stream >> std::ws;
@@ -163,10 +210,11 @@ inline void writeImageTransfer(const std::filesystem::path& path, const std::vec
     size_t bytes = 0;
     for (const auto& image: images) {
         validate(image);
-        if (image.encodedData.size() > maxImageTransferFileBytes - bytes) {
+        if (image.latexSource.size() > maxImageTransferFileBytes - bytes ||
+            image.encodedData.size() > maxImageTransferFileBytes - bytes - image.latexSource.size()) {
             throw std::runtime_error("Image transfer exceeds its data limit");
         }
-        bytes += image.encodedData.size();
+        bytes += image.latexSource.size() + image.encodedData.size();
     }
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
@@ -174,12 +222,16 @@ inline void writeImageTransfer(const std::filesystem::path& path, const std::vec
     }
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_IMAGES_V1 " << images.size() << '\n';
+    stream << "XOURNALPP_GTK4_IMAGES_V2 " << images.size() << '\n';
     for (const auto& image: images) {
         const auto& m = image.transform;
         stream << image.page << ' ' << image.layerId << ' ' << image.originLayer << ' ' << image.layerOrder << ' '
-               << image.pixelWidth << ' ' << image.pixelHeight << ' ' << m.xx << ' ' << m.yx << ' ' << m.xy << ' '
-               << m.yy << ' ' << m.x << ' ' << m.y << ' ' << image.encodedData.size() << '\n';
+               << static_cast<int>(image.kind) << ' ' << image.pixelWidth << ' ' << image.pixelHeight << ' '
+               << image.nativeWidth << ' ' << image.nativeHeight << ' ' << m.xx << ' ' << m.yx << ' ' << m.xy << ' '
+               << m.yy << ' ' << m.x << ' ' << m.y << ' ' << image.latexSource.size() << ' '
+               << image.encodedData.size() << '\n';
+        stream.write(image.latexSource.data(), static_cast<std::streamsize>(image.latexSource.size()));
+        stream.put('\n');
         stream.write(image.encodedData.data(), static_cast<std::streamsize>(image.encodedData.size()));
         stream.put('\n');
     }

@@ -422,6 +422,45 @@ static void editableTextHistory() {
           "undo restores a deleted text item at its original position and selection");
 }
 
+static void latexReplacementHistory() {
+    CanvasState state;
+    TextItem text;
+    text.page = 0;
+    text.text = "plain text";
+    text.x = 36;
+    text.y = 72;
+    check(state.insertText(text), "plain text should be available for LaTeX replacement");
+    const auto textRevision = state.revision();
+
+    CanvasImage formula;
+    formula.page = 0;
+    formula.kind = CanvasImageKind::Latex;
+    formula.nativeWidth = 44;
+    formula.nativeHeight = 18;
+    formula.pixelWidth = 44;
+    formula.pixelHeight = 18;
+    formula.encodedData = "%PDF-1.7\\nLaTeX fixture";
+    formula.latexSource = "\\text{plain text}";
+    formula.transform = {1, 0, 0, 1, text.x, text.y};
+
+    check(state.replaceTextWithImage(0, formula) && state.texts.empty() && state.images.size() == 1 &&
+                  state.images[0].layerOrder == text.layerOrder && state.images[0].transform.x == text.x &&
+                  state.selectedTexts.empty() && state.selectedImages == std::vector<size_t>{0},
+          "text to LaTeX replacement should preserve position and select the new formula");
+    const auto formulaRevision = state.revision();
+    check(formulaRevision != textRevision, "text to LaTeX replacement should create one document revision");
+
+    state.undo();
+    check(state.texts.size() == 1 && state.texts[0].text == "plain text" && state.images.empty() &&
+                  state.selectedTexts == std::vector<size_t>{0} && state.selectedImages.empty() &&
+                  state.revision() == textRevision,
+          "undo should restore the original text and its selection in one step");
+    state.redo();
+    check(state.texts.empty() && state.images.size() == 1 && state.images[0].latexSource == "\\text{plain text}" &&
+                  state.selectedImages == std::vector<size_t>{0} && state.revision() == formulaRevision,
+          "redo should restore the vector formula and select it in one step");
+}
+
 static void selectedTextAppearanceHistory() {
     CanvasState state;
     TextItem item;
@@ -1022,6 +1061,7 @@ int main() {
         verticalSpaceMovement();
         imageRotationGeometry();
         editableTextHistory();
+        latexReplacementHistory();
         selectedTextAppearanceHistory();
         brushAndHistory();
         partialAndWhiteoutEraser();

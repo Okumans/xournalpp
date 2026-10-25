@@ -174,8 +174,8 @@ bool transformCanvasImage(const CanvasImage& image, CanvasImageAction action, do
     error = "ImageActions requires libvips support in this GTK 4 build";
     return false;
 #else
-    if (!validCanvasImage(image) || !std::isfinite(pageWidth) || !std::isfinite(pageHeight) || pageWidth <= 0 ||
-        pageHeight <= 0) {
+    if (!validCanvasImage(image) || image.kind != CanvasImageKind::Raster || !std::isfinite(pageWidth) ||
+        !std::isfinite(pageHeight) || pageWidth <= 0 || pageHeight <= 0) {
         error = "Selected image or page dimensions are invalid";
         return false;
     }

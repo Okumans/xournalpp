@@ -38,6 +38,7 @@
 #include "DocumentSession.h"
 #include "ImageRenderer.h"
 #include "InkRenderer.h"
+#include "LatexEditor.h"
 #include "LuaPluginRuntime.h"
 #include "PaletteImport.h"
 #include "PdfTextSelection.h"
@@ -72,6 +73,7 @@ struct Options {
     bool verifyPlugins = false;
     bool verifyBeamer = false;
     bool verifyLayerActions = false;
+    bool verifyLatex = false;
     int width = 1100;
     int height = 820;
 };
@@ -121,6 +123,11 @@ struct ImageGesture {
     bool changed = false;
 };
 
+struct LatexTarget {
+    std::optional<size_t> imageIndex;
+    std::optional<size_t> textIndex;
+};
+
 struct PdfTextSelectionState {
     prototype::Device owner = prototype::Device::Mouse;
     int page = -1;
@@ -167,7 +174,9 @@ std::string encodeImagesForClipboard(const std::vector<prototype::CanvasImage>& 
         throw std::runtime_error("No images are selected");
     }
     for (const auto& image: images) {
-        if (!prototype::validCanvasImage(image) || !image.surface) {
+        if (!prototype::validCanvasImage(image) ||
+            (image.kind == prototype::CanvasImageKind::Latex && !image.pdfDocument && !image.surface) ||
+            (image.kind == prototype::CanvasImageKind::Raster && !image.surface)) {
             throw std::runtime_error("The selected image cannot be copied");
         }
     }
@@ -280,6 +289,13 @@ public:
         state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
         input.setStabilizerConfig(importedConfig.settings.stabilizer);
         penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth};
+        latexBrush = {Tool::Latex, importedConfig.settings.latexColor, importedConfig.settings.penWidth};
+        latexTemplatePath = importedConfig.settings.latexTemplatePath;
+        if (latexTemplatePath.empty()) {
+#ifdef GTK4_CANVAS_RESOURCE_DIR
+            latexTemplatePath = std::filesystem::path(GTK4_CANVAS_RESOURCE_DIR) / "default_template.tex";
+#endif
+        }
         highlightBrush = {Tool::Highlighter, importedConfig.settings.highlighterColor,
                           importedConfig.settings.highlighterWidth};
         laserPenBrush = {Tool::LaserPointerPen, importedConfig.settings.laserPenColor,
@@ -292,6 +308,7 @@ public:
                       importedConfig.settings.activeTool == Tool::Eraser ? eraserBrush :
                       importedConfig.settings.activeTool == Tool::LaserPointerPen ? laserPenBrush :
                       importedConfig.settings.activeTool == Tool::LaserPointerHighlighter ? laserHighlighterBrush :
+                      importedConfig.settings.activeTool == Tool::Latex ? latexBrush :
                                                                                            penBrush;
         effectiveAutosaveSeconds =
                 this->options.autosaveSecondsOverride.value_or(importedConfig.settings.effectiveAutosaveSeconds());
@@ -351,6 +368,10 @@ public:
             g_clear_object(&pluginManagerWindow);
         }
         g_clear_object(&preferencesDialog);
+        if (latexEditor) {
+            auto editor = std::move(latexEditor);
+            editor->cancel();
+        }
         audioPlayback.reset();
         if (paintClock) {
             g_signal_handlers_disconnect_by_data(paintClock, this);
@@ -1648,6 +1669,8 @@ private:
             return Tool::Link;
         if (normalized == "playobject")
             return Tool::PlayObject;
+        if (normalized == "latex")
+            return Tool::Latex;
         if (normalized == "verticalspace")
             return Tool::VerticalSpace;
         if (normalized == "showfloatingtoolbox")
@@ -1686,6 +1709,8 @@ private:
             laserHighlighterBrush.color = rgb;
         } else if (colorTool == Tool::Text) {
             state.textColor = rgb;
+        } else if (colorTool == Tool::Latex) {
+            latexBrush.color = rgb;
         } else {
             error = "The selected tool does not support color changes";
             return false;
@@ -2332,14 +2357,8 @@ private:
                         const auto imagePackets = prototype::bridge::readImageTransfer(staged->editableImagesPath());
                         hydratedImages.reserve(imagePackets.size());
                         for (const auto& packet: imagePackets) {
-                            auto image = prototype::bridge::canvasImage(packet);
-                            int width = 0;
-                            int height = 0;
-                            image.surface = prototype::decodeCanvasImage(image.encodedData, width, height);
-                            if (width != image.pixelWidth || height != image.pixelHeight) {
-                                throw std::runtime_error("Transferred image dimensions changed during cloning");
-                            }
-                            hydratedImages.push_back(std::move(image));
+                            hydratedImages.push_back(prototype::hydrateCanvasImage(
+                                    prototype::bridge::canvasImage(packet)));
                         }
                         if (sizes.size() != static_cast<size_t>(pageCount) || layerState.size() != sizes.size() ||
                             currentPage + 1 >= static_cast<int>(sizes.size())) {
@@ -3666,6 +3685,108 @@ private:
                      "native reopen\n";
     }
 
+    void verifyLatexIntegration() {
+        require(nativeSession != nullptr, "LaTeX verification requires a native XOPP document");
+        require(!latexEditor, "LaTeX editor should not already be open");
+
+        constexpr int page = 0;
+        state.selectActivePage(page);
+        const auto pageSize = state.pageSize(page);
+        prototype::Point insertionPoint{};
+        bool foundEmptyPoint = false;
+        for (double y = 48; y < pageSize.height - 48 && !foundEmptyPoint; y += 48) {
+            for (double x = 48; x < pageSize.width - 48; x += 48) {
+                if (!latexTargetAt(page, {x, y}).imageIndex && !latexTargetAt(page, {x, y}).textIndex) {
+                    insertionPoint = {x, y};
+                    foundEmptyPoint = true;
+                    break;
+                }
+            }
+        }
+        require(foundEmptyPoint, "LaTeX verification could not find an unused insertion point");
+
+        const auto originalImageCount = state.images.size();
+        const auto expectedSource = importedConfig.settings.latexDefaultText;
+        selectTool(Tool::Latex);
+        const auto screenPoint = state.pageScreenPoint(page, insertionPoint.x, insertionPoint.y);
+        openLatexEditorAt(screenPoint.x, screenPoint.y);
+        require(latexEditor != nullptr, "The LaTeX tool did not open its editor");
+
+        const gint64 deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+        while (latexEditor && !latexEditor->readyForInsertion() && g_get_monotonic_time() < deadline) {
+            while (g_main_context_iteration(nullptr, false)) {
+            }
+            g_usleep(1000);
+        }
+        require(latexEditor && latexEditor->readyForInsertion(),
+                "LaTeX did not compile successfully within 30 seconds");
+        latexEditor->activateInsert();
+        require(!latexEditor && state.images.size() == originalImageCount + 1,
+                "Inserting a compiled formula did not create one editable image");
+
+        const size_t insertedIndex = state.images.size() - 1;
+        const auto insertedFormula = state.images[insertedIndex];
+        require(insertedFormula.kind == prototype::CanvasImageKind::Latex &&
+                        insertedFormula.latexSource == expectedSource,
+                "Inserted LaTeX image lost its editable source");
+        require(prototype::isCanvasTexPdf(insertedFormula.encodedData),
+                "Inserted LaTeX image did not retain a vector PDF");
+        require(insertedFormula.nativeWidth > 0 && insertedFormula.nativeHeight > 0,
+                "Inserted LaTeX image has invalid vector dimensions");
+        require(std::abs(insertedFormula.transform.x - insertionPoint.x) < 1e-6 &&
+                        std::abs(insertedFormula.transform.y - insertionPoint.y) < 1e-6,
+                "Inserted LaTeX image moved away from the click position");
+        waitForNextWindowFrame();
+        capture("latex-formula-inserted");
+
+        selectTool(Tool::Latex);
+        const auto center = prototype::canvasImageCenter(insertedFormula);
+        const auto editPoint = state.pageScreenPoint(page, center.x, center.y);
+        openLatexEditorAt(editPoint.x, editPoint.y);
+        require(latexEditor && latexEditor->readyForInsertion(),
+                "The LaTeX tool did not reopen the inserted formula for editing");
+        latexEditor->activateInsert();
+        require(!latexEditor && state.images.size() == originalImageCount + 1 &&
+                        state.images[insertedIndex].latexSource == insertedFormula.latexSource &&
+                        state.images[insertedIndex].transform.x == insertedFormula.transform.x &&
+                        state.images[insertedIndex].transform.y == insertedFormula.transform.y,
+                "Editing an existing formula changed its placement or editable source");
+
+        state.undo();
+        require(state.images.size() == originalImageCount + 1 &&
+                        state.images[insertedIndex].encodedData == insertedFormula.encodedData && state.canUndo(),
+                "Undo did not restore the formula before its in-place edit");
+        state.undo();
+        require(state.images.size() == originalImageCount && state.canRedo(),
+                "A second undo did not remove the inserted LaTeX formula");
+        state.redo();
+        state.redo();
+        require(state.images.size() == originalImageCount + 1 &&
+                        state.images[insertedIndex].latexSource == expectedSource,
+                "Redo did not restore the inserted LaTeX formula");
+
+        const auto roundTripPath = (std::filesystem::path(options.smokeDirectory) / "latex-round-trip.xopp").string();
+        nativeSession->saveCopy(options.worker, roundTripPath,
+                                prototype::bridge::transferInk(state.committedInk()), state.texts,
+                                prototype::bridge::transferImages(state.images), state.pageLayers,
+                                currentPageSizes(state));
+        const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
+        const auto reopenedFormula = std::find_if(
+                reopened.initialImages.begin(), reopened.initialImages.end(),
+                [&expectedSource, &insertedFormula, page](const prototype::bridge::ImagePacket& image) {
+                    return image.kind == prototype::CanvasImageKind::Latex && image.latexSource == expectedSource &&
+                           image.page == page &&
+                           std::abs(image.transform.x - insertedFormula.transform.x) < 1e-3 &&
+                           std::abs(image.transform.y - insertedFormula.transform.y) < 1e-3;
+                });
+        require(reopenedFormula != reopened.initialImages.end() &&
+                        prototype::isCanvasTexPdf(reopenedFormula->encodedData) &&
+                        std::abs(reopenedFormula->nativeWidth - insertedFormula.nativeWidth) < 1e-3 &&
+                        std::abs(reopenedFormula->nativeHeight - insertedFormula.nativeHeight) < 1e-3,
+                "Native save/reopen did not preserve the LaTeX source, PDF or geometry");
+        std::cout << "PASS: private GTK4 LaTeX compile, insert, edit, undo/redo and native round trip\n";
+    }
+
     void verifyImageActionsPlugin() {
         require(state.images.empty(), "ImageActions verification expects a clean editable image layer");
         const auto fixture = std::filesystem::path(options.smokeDirectory) / "image-actions-input.png";
@@ -3803,14 +3924,7 @@ private:
                 std::vector<prototype::CanvasImage> images;
                 images.reserve(session->initialImages.size());
                 for (const auto& packet: session->initialImages) {
-                    auto image = prototype::bridge::canvasImage(packet);
-                    int width = 0;
-                    int height = 0;
-                    image.surface = prototype::decodeCanvasImage(image.encodedData, width, height);
-                    if (width != image.pixelWidth || height != image.pixelHeight) {
-                        throw std::runtime_error("Transferred image dimensions changed during decoding");
-                    }
-                    images.push_back(std::move(image));
+                    images.push_back(prototype::hydrateCanvasImage(prototype::bridge::canvasImage(packet)));
                 }
                 return std::pair{std::move(ink), std::move(images)};
             } catch (...) {
@@ -5428,6 +5542,8 @@ private:
             addTool(Tool::SelectObject, "Select object");
         } else if (token == "TEXT") {
             addTool(Tool::Text, "Text");
+        } else if (token == "LATEX") {
+            addTool(Tool::Latex, "LaTeX");
         } else if (token == "LINK") {
             addTool(Tool::Link, "Link");
         } else if (token == "PLAY_OBJECT") {
@@ -6645,6 +6761,9 @@ private:
         if (textButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(textButton), tool == Tool::Text);
         }
+        if (latexButton) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(latexButton), tool == Tool::Latex);
+        }
         if (linkButton) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(linkButton), tool == Tool::Link);
         }
@@ -6668,7 +6787,7 @@ private:
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
         } else if (tool == Tool::Hand) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[4]), true);
-        } else if (tool == Tool::Text || tool == Tool::Link || tool == Tool::PlayObject ||
+        } else if (tool == Tool::Text || tool == Tool::Latex || tool == Tool::Link || tool == Tool::PlayObject ||
                    tool == Tool::FloatingToolbox) {
             for (auto* button: toolButtons) {
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), false);
@@ -6688,6 +6807,8 @@ private:
         } else if (state.brush.tool == Tool::Eraser) {
             eraserBrush = state.brush;
             state.eraserWidth = eraserBrush.width;
+        } else if (state.brush.tool == Tool::Latex) {
+            latexBrush = state.brush;
         } else if (state.brush.tool == Tool::LaserPointerPen) {
             laserPenBrush = state.brush;
         } else if (state.brush.tool == Tool::LaserPointerHighlighter) {
@@ -6709,7 +6830,8 @@ private:
         state.brush = tool == Tool::Highlighter || prototype::isPdfTextSelectionTool(tool) ? highlightBrush :
                       tool == Tool::Eraser ? eraserBrush :
                       tool == Tool::LaserPointerPen ? laserPenBrush :
-                      tool == Tool::LaserPointerHighlighter ? laserHighlighterBrush : penBrush;
+                      tool == Tool::LaserPointerHighlighter ? laserHighlighterBrush :
+                      tool == Tool::Latex ? latexBrush : penBrush;
         state.brush.tool = tool;
         if (tool == Tool::Text) {
             state.brush.color = state.textColor;
@@ -6731,10 +6853,12 @@ private:
                                                 tool != Tool::VerticalSpace &&
                                                 !prototype::isSelectionTool(tool));
         gtk_widget_set_visible(sizeDropdown, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
+                                                     tool != Tool::Latex &&
                                                      tool != Tool::Hand && tool != Tool::VerticalSpace &&
                                                      tool != Tool::Link && tool != Tool::PlayObject &&
                                                      tool != Tool::FloatingToolbox);
         gtk_widget_set_visible(widthButton, !prototype::isSelectionTool(tool) && tool != Tool::Text &&
+                                                    tool != Tool::Latex &&
                                                     tool != Tool::Hand && tool != Tool::VerticalSpace &&
                                                     tool != Tool::Link && tool != Tool::PlayObject &&
                                                     tool != Tool::FloatingToolbox);
@@ -6781,6 +6905,7 @@ private:
         }
         if (canvas) {
             gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand ? "grab" : tool == Tool::Link ? "pointer" :
+                                                   tool == Tool::Latex ? "text" :
                                                    prototype::isPdfTextSelectionTool(tool) ? "text" : nullptr);
         }
         updateTextToolbarVisibility();
@@ -6862,6 +6987,8 @@ private:
                 return toolButtons[2];
             case prototype::MainToolAction::Text:
                 return textButton;
+            case prototype::MainToolAction::Latex:
+                return latexButton;
             case prototype::MainToolAction::Hand:
                 return toolButtons[4];
             case prototype::MainToolAction::Link:
@@ -7625,6 +7752,20 @@ private:
                              }
                          }),
                          this);
+        latexButton = gtk_toggle_button_new();
+        gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(latexButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
+        gtk_button_set_child(GTK_BUTTON(latexButton), gtk_label_new("x²"));
+        gtk_widget_set_tooltip_text(latexButton, "LaTeX formula tool");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(latexButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "LaTeX formula tool", -1);
+        g_signal_connect(latexButton, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (!self->syncingTools &&
+                                 (gtk_toggle_button_get_active(button) || self->state.brush.tool == Tool::Latex)) {
+                                 self->selectTool(Tool::Latex);
+                             }
+                         }),
+                         this);
         linkButton = gtk_toggle_button_new();
         gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(linkButton), GTK_TOGGLE_BUTTON(toolButtons[0]));
         gtk_button_set_child(GTK_BUTTON(linkButton), gtk_image_new_from_icon_name("insert-link-symbolic"));
@@ -8176,7 +8317,7 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifyBeamer || options.verifyLayerActions) {
+        if (options.verifyPlugins || options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
             g_timeout_add(
                     200,
                     +[](gpointer data) -> gboolean {
@@ -8189,11 +8330,14 @@ private:
                                 self->verifyPluginIntegration();
                             } else if (self->options.verifyBeamer) {
                                 self->verifyBeamerIntegration();
-                            } else {
+                            } else if (self->options.verifyLayerActions) {
                                 self->verifyLayerActionsIntegration();
+                            } else {
+                                self->verifyLatexIntegration();
                             }
                         } catch (const std::exception& error) {
-                            std::cerr << "PLUGIN VERIFY FAILED: " << error.what() << '\n';
+                            std::cerr << (self->options.verifyLatex ? "LATEX" : "PLUGIN")
+                                      << " VERIFY FAILED: " << error.what() << '\n';
                             self->failed = true;
                         }
                         g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(self->window))));
@@ -8238,7 +8382,7 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifyBeamer &&
-            !options.verifyLayerActions) {
+            !options.verifyLayerActions && !options.verifyLatex) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
@@ -8364,6 +8508,7 @@ private:
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
         gtk_widget_set_sensitive(exportPdfButton, bool(nativeSession));
         gtk_widget_set_sensitive(textButton, bool(nativeSession));
+        gtk_widget_set_sensitive(latexButton, bool(nativeSession));
         gtk_widget_set_sensitive(playObjectButton, bool(nativeSession));
         gtk_widget_set_sensitive(imageButton, bool(nativeSession));
         gtk_widget_set_sensitive(prevPageButton, state.page > 0);
@@ -8575,8 +8720,8 @@ private:
                 target.yx = source.yx * factor;
                 target.xy = source.xy * factor;
                 target.yy = source.yy * factor;
-                const double anchorX = localCorners[opposite].x * gesture.original.pixelWidth;
-                const double anchorY = localCorners[opposite].y * gesture.original.pixelHeight;
+                const double anchorX = localCorners[opposite].x * prototype::canvasImageWidth(gesture.original);
+                const double anchorY = localCorners[opposite].y * prototype::canvasImageHeight(gesture.original);
                 target.x = anchor.x - target.xx * anchorX - target.xy * anchorY;
                 target.y = anchor.y - target.yx * anchorX - target.yy * anchorY;
             }
@@ -8609,6 +8754,169 @@ private:
             thumbnails.clear();
         }
         update();
+    }
+
+    LatexTarget latexTargetAt(int page, const prototype::Point& point, bool includeText = true) const {
+        LatexTarget target;
+        const auto activeLayer = state.activeLayerId(page);
+        if (!state.layerVisible(page, activeLayer)) {
+            return target;
+        }
+
+        size_t bestOrder = 0;
+        bool found = false;
+        const auto contains = [&point](double xx, double yx, double xy, double yy, double x, double y,
+                                       double width, double height) {
+            const double determinant = xx * yy - xy * yx;
+            if (!std::isfinite(determinant) || std::abs(determinant) < 1e-10) {
+                return false;
+            }
+            const double dx = point.x - x;
+            const double dy = point.y - y;
+            const double localX = (yy * dx - xy * dy) / determinant;
+            const double localY = (-yx * dx + xx * dy) / determinant;
+            return localX >= 0 && localX <= width && localY >= 0 && localY <= height;
+        };
+
+        for (size_t index = 0; index < state.images.size(); ++index) {
+            const auto& image = state.images[index];
+            if (image.page != page || image.layerId != activeLayer ||
+                image.kind != prototype::CanvasImageKind::Latex || !prototype::validCanvasImage(image) ||
+                !contains(image.transform.xx, image.transform.yx, image.transform.xy, image.transform.yy,
+                          image.transform.x, image.transform.y, prototype::canvasImageWidth(image),
+                          prototype::canvasImageHeight(image))) {
+                continue;
+            }
+            if (!found || image.layerOrder >= bestOrder) {
+                target = {index, std::nullopt};
+                bestOrder = image.layerOrder;
+                found = true;
+            }
+        }
+
+        if (includeText) {
+            for (size_t index = 0; index < state.texts.size(); ++index) {
+                const auto& item = state.texts[index];
+                if (item.page != page || item.layerId != activeLayer || item.text.empty() ||
+                    !contains(item.xx, item.yx, item.xy, item.yy, item.x, item.y,
+                              item.layoutWidth, item.layoutHeight)) {
+                    continue;
+                }
+                if (!found || item.layerOrder >= bestOrder) {
+                    target = {std::nullopt, index};
+                    bestOrder = item.layerOrder;
+                    found = true;
+                }
+            }
+        }
+        return target;
+    }
+
+    prototype::Point textTopLeft(const prototype::TextItem& item) const {
+        double width = item.layoutWidth;
+        double height = item.layoutHeight;
+        if (width <= 0 || height <= 0) {
+            const auto natural = prototype::textNaturalSize(item);
+            width = std::max(width, natural.first);
+            height = std::max(height, natural.second);
+        }
+        const std::array<prototype::Point, 4> corners = {
+                prototype::Point{item.x, item.y},
+                prototype::Point{item.x + item.xx * width, item.y + item.yx * width},
+                prototype::Point{item.x + item.xy * height, item.y + item.yy * height},
+                prototype::Point{item.x + item.xx * width + item.xy * height,
+                                 item.y + item.yx * width + item.yy * height},
+        };
+        prototype::Point topLeft{corners[0].x, corners[0].y};
+        for (const auto& corner: corners) {
+            topLeft.x = std::min(topLeft.x, corner.x);
+            topLeft.y = std::min(topLeft.y, corner.y);
+        }
+        return topLeft;
+    }
+
+    void openLatexEditorAt(double x, double y, bool existingLatexOnly = false) {
+        if (!nativeSession || !window || busy || choosingFile || messageDialog || latexEditor) {
+            return;
+        }
+
+        finishTextEditing();
+        const auto hit = state.hitPage(x, y);
+        if (!hit) {
+            return;
+        }
+        const auto target = latexTargetAt(hit->page, hit->local, !existingLatexOnly);
+        if (existingLatexOnly && !target.imageIndex) {
+            return;
+        }
+
+        const int page = hit->page;
+        auto position = hit->local;
+        std::string source = importedConfig.settings.latexDefaultText;
+        std::optional<prototype::CanvasImage> originalImage;
+        std::optional<prototype::TextItem> originalText;
+        if (target.imageIndex) {
+            originalImage = state.images[*target.imageIndex];
+            source = originalImage->latexSource;
+        } else if (target.textIndex) {
+            originalText = state.texts[*target.textIndex];
+            source = "\\text{" + originalText->text + "}";
+            position = textTopLeft(*originalText);
+        }
+
+        resetInput(true);
+        state.selectActivePage(page);
+        const auto documentSession = nativeSession;
+        const auto textIndex = target.textIndex;
+        const auto imageIndex = target.imageIndex;
+        const auto insertedAt = position;
+        const bool selectInitialSource = !originalImage && !originalText;
+        latexEditor = prototype::LatexEditor::create(
+                GTK_WINDOW(window), latexTemplatePath, importedConfig.settings.latexGeneratorCommand,
+                std::move(source), state.brush.color, originalImage, selectInitialSource,
+                [this, documentSession, page, textIndex, imageIndex, originalImage, originalText,
+                 insertedAt](std::optional<prototype::CanvasImage> result) {
+                    latexEditor.reset();
+                    if (!result) {
+                        update();
+                        return;
+                    }
+                    if (nativeSession != documentSession || !nativeSession || page < 0 || page >= state.pageCount()) {
+                        return;
+                    }
+
+                    result->page = page;
+                    size_t insertedIndex = state.images.size();
+                    bool changed = false;
+                    if (imageIndex && originalImage) {
+                        result->transform = originalImage->transform;
+                        result->layerId = originalImage->layerId;
+                        result->layerOrder = originalImage->layerOrder;
+                        result->originLayer = originalImage->originLayer;
+                        changed = state.replaceImage(*imageIndex, std::move(*result));
+                        insertedIndex = *imageIndex;
+                    } else if (textIndex && originalText) {
+                        const auto topLeft = textTopLeft(*originalText);
+                        result->transform = {1, 0, 0, 1, topLeft.x, topLeft.y};
+                        changed = state.replaceTextWithImage(*textIndex, std::move(*result));
+                        insertedIndex = state.images.empty() ? 0 : state.images.size() - 1;
+                    } else {
+                        result->transform = {1, 0, 0, 1, insertedAt.x, insertedAt.y};
+                        changed = state.insertImage(std::move(*result));
+                        insertedIndex = state.images.empty() ? 0 : state.images.size() - 1;
+                    }
+
+                    if (!changed) {
+                        showError("The LaTeX formula could not be added to the active page.");
+                        update();
+                        return;
+                    }
+                    thumbnails.clear();
+                    activateSelection(Tool::SmartSelect);
+                    selectedImageIndex = insertedIndex;
+                    update();
+                });
+        latexEditor->present();
     }
 
     void insertImageFromPath(const std::string& path) {
@@ -8810,6 +9118,16 @@ private:
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
         trackPointerPosition(x, y);
+        if (state.brush.tool == Tool::Latex) {
+            gtk_widget_grab_focus(canvas);
+            if (device == Device::Mouse) {
+                return;
+            }
+            if (device != Device::Stylus || (!eraserEnd && activeStylusAction == prototype::ButtonToolAction::None)) {
+                openLatexEditorAt(x, y);
+                return;
+            }
+        }
         if (state.brush.tool == Tool::FloatingToolbox ||
             (device == Device::Stylus && !eraserEnd &&
              activeStylusAction == prototype::ButtonToolAction::FloatingToolbox)) {
@@ -9168,6 +9486,25 @@ private:
                                          x, y, presses == 2 ? prototype::PdfTextSelectionStyle::Word :
                                                              prototype::PdfTextSelectionStyle::Line);
                                  return;
+                             }
+                             if (tool == Tool::Latex) {
+                                 if (presses == 1) {
+                                     self->openLatexEditorAt(x, y);
+                                 }
+                                 return;
+                             }
+                             if (tool == Tool::SmartSelect && presses == 2) {
+                                 const auto hit = self->state.hitPage(x, y);
+                                 if (hit) {
+                                     const auto object = self->state.pickSelectableObject(hit->page, hit->local);
+                                     if (object && object->kind == prototype::SelectableObjectKind::Image &&
+                                         self->state.images[object->index].kind == prototype::CanvasImageKind::Latex) {
+                                         self->selectTool(Tool::Latex);
+                                         self->openLatexEditorAt(x, y, true);
+                                         self->update();
+                                         return;
+                                     }
+                                 }
                              }
                              if (presses != 1) return;
                              if (tool == Tool::Text) {
@@ -13883,6 +14220,9 @@ private:
     GtkWidget* audioStopButton = nullptr;
     std::unique_ptr<prototype::AudioPlayback> audioPlayback;
     GtkWidget* imageButton = nullptr;
+    GtkWidget* latexButton = nullptr;
+    std::shared_ptr<prototype::LatexEditor> latexEditor;
+    std::filesystem::path latexTemplatePath;
     GtkWidget* linkInfoPopover = nullptr;
     GtkWidget* linkInfoLabel = nullptr;
     std::optional<size_t> linkInfoIndex;
@@ -13973,6 +14313,7 @@ private:
     int layerPanelPage = -1;
     std::optional<prototype::PageLayers> layerPanelSnapshot;
     prototype::Brush penBrush;
+    prototype::Brush latexBrush{Tool::Latex, {0, 0, 0}, 1};
     prototype::Brush highlightBrush{
             Tool::Highlighter,
             prototype::behavior::defaultHighlighterColor,
@@ -14066,6 +14407,8 @@ int main(int argc, char** argv) {
                 options.verifyBeamer = true;
             } else if (argument == "--verify-layer-actions") {
                 options.verifyLayerActions = true;
+            } else if (argument == "--verify-latex") {
+                options.verifyLatex = true;
             } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
                         argument == "--smoke-dir") &&
                        i + 1 < argc) {
@@ -14084,7 +14427,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-beamer] "
-                                         "[--verify-layer-actions] "
+                                         "[--verify-layer-actions] [--verify-latex] "
                                          "[--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
             }
@@ -14103,6 +14446,10 @@ int main(int argc, char** argv) {
         }
         if (options.verifyLayerActions && options.smokeDirectory.empty()) {
             throw std::runtime_error("LayerActions verification requires --smoke-dir DIRECTORY");
+        }
+        if (options.verifyLatex && (options.smokeDirectory.empty() || options.nativeDocument.empty() ||
+                                    options.worker.empty())) {
+            throw std::runtime_error("LaTeX verification requires --smoke-dir, --document and --worker");
         }
         Prototype app(std::move(options));
         return app.run();

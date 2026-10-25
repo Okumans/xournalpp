@@ -33,6 +33,13 @@ remain in the selection-mode menu. Dark mode uses a dotted charcoal canvas
 surround while pages stay white. Sidebar visibility, color scheme, main rail
 order, and floating-toolbox rows remain configurable.
 
+LaTeX is available from More tools by default. Click an empty page area to create
+a formula, click existing text or a formula to replace it, and double-click a
+formula with Smart Select to edit it. The live editor uses the configured legacy
+generator and template, and native saves retain both the editable source and the
+vector PDF. Legacy LaTeX settings are imported read-only; editing generator,
+template, and source-editor preferences remains future work.
+
 The Plugins menu discovers bundled plugins plus folders supplied through
 `--plugin-dir` and the configuration directory. The plugin manager displays each
 manifest and persists enable/disable choices in `gtk4-canvas.ini`; changes take
@@ -362,6 +369,11 @@ Use `--layer-actions-only` with `--worker` for the LayerActions check. It verifi
 the annotated-page confirmation, PDF-page clone, document-wide layer visibility,
 per-page top-layer creation and undo/redo, and native save/reopen in Cage.
 
+Use `--latex-only` with `--worker` and `--fixture test/files/benchmark/latex.xopp`
+for the LaTeX check. It compiles with the configured generator in Cage, inserts
+and reopens a formula, checks undo/redo, and verifies its editable source, vector
+PDF, and geometry through native save/reopen.
+
 The harness:
 
 1. Removes inherited display, compositor, and session-bus connections.
@@ -514,10 +526,11 @@ are unsupported native object editing and full renderer fidelity; text and
 mixed-object clipboard support; paired, horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
 parity; audio recording/device preferences and media lifecycle, vertical-space
-insertion, LaTeX, and the general floating toolbox; complete per-device settings and toolbar
-customization; and the remaining bundled plugin actions. Accessibility, physical input,
-platform packaging, GPU rendering, and platform-specific validation are also
-still required before replacing the existing application.
+insertion, LaTeX settings and external-editor preferences, and the general
+floating toolbox; complete per-device settings and toolbar customization; and
+the remaining bundled plugin actions. Accessibility, physical input, platform
+packaging, GPU rendering, and platform-specific validation are also still
+required before replacing the existing application.
 
 ## Stroke selection
 

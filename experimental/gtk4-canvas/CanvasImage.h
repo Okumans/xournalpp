@@ -6,17 +6,29 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "CanvasLayers.h"
 #include "CanvasDrawing.h"
 
 typedef struct _cairo_surface cairo_surface_t;
+typedef struct _PopplerDocument PopplerDocument;
 
 namespace prototype {
 
 inline constexpr size_t maxCanvasImageBytes = 64 * 1024 * 1024;
 inline constexpr size_t maxCanvasImagePixels = 32 * 1024 * 1024;
 inline constexpr size_t maxCanvasImageObjects = 4096;
+inline constexpr size_t maxCanvasLatexSourceBytes = 1024 * 1024;
+
+enum class CanvasImageKind { Raster, Latex };
+
+inline bool isCanvasTexPdf(std::string_view bytes) { return bytes.starts_with("%PDF-"); }
+
+inline bool isCanvasTexPng(std::string_view bytes) {
+    static constexpr std::string_view signature{"\x89PNG\r\n\x1a\n", 8};
+    return bytes.starts_with(signature);
+}
 
 struct CanvasImageTransform {
     double xx = 1;
@@ -34,9 +46,14 @@ struct CanvasImage {
     size_t originLayer = newLayerOrigin;
     int pixelWidth = 0;
     int pixelHeight = 0;
+    CanvasImageKind kind = CanvasImageKind::Raster;
+    double nativeWidth = 0;
+    double nativeHeight = 0;
     CanvasImageTransform transform;
     std::string encodedData;
+    std::string latexSource;
     std::shared_ptr<cairo_surface_t> surface;
+    std::shared_ptr<PopplerDocument> pdfDocument;
 };
 
 struct CanvasImageBounds {
@@ -50,12 +67,29 @@ struct CanvasImageBounds {
 inline bool validCanvasImage(const CanvasImage& image) {
     const auto& m = image.transform;
     const double determinant = m.xx * m.yy - m.xy * m.yx;
-    return image.page >= 0 && image.layerId != 0 && image.pixelWidth > 0 && image.pixelHeight > 0 &&
-           static_cast<size_t>(image.pixelWidth) <= maxCanvasImagePixels / static_cast<size_t>(image.pixelHeight) &&
-           !image.encodedData.empty() && image.encodedData.size() <= maxCanvasImageBytes &&
-           std::isfinite(determinant) && std::abs(determinant) > 1e-10 &&
-           std::isfinite(m.xx) && std::isfinite(m.yx) && std::isfinite(m.xy) && std::isfinite(m.yy) &&
-           std::isfinite(m.x) && std::isfinite(m.y);
+    const bool validContent = image.kind == CanvasImageKind::Raster ?
+                                      image.pixelWidth > 0 && image.pixelHeight > 0 &&
+                                              static_cast<size_t>(image.pixelWidth) <=
+                                                      maxCanvasImagePixels / static_cast<size_t>(image.pixelHeight) :
+                              image.kind == CanvasImageKind::Latex ?
+                                      (isCanvasTexPdf(image.encodedData) || isCanvasTexPng(image.encodedData)) &&
+                                              image.latexSource.size() <= maxCanvasLatexSourceBytes &&
+                                              std::isfinite(image.nativeWidth) && image.nativeWidth > 0 &&
+                                              image.nativeWidth <= 100000 && std::isfinite(image.nativeHeight) &&
+                                              image.nativeHeight > 0 && image.nativeHeight <= 100000 :
+                                      false;
+    return image.page >= 0 && image.layerId != 0 && validContent && !image.encodedData.empty() &&
+           image.encodedData.size() <= maxCanvasImageBytes && std::isfinite(determinant) &&
+           std::abs(determinant) > 1e-10 && std::isfinite(m.xx) && std::isfinite(m.yx) &&
+           std::isfinite(m.xy) && std::isfinite(m.yy) && std::isfinite(m.x) && std::isfinite(m.y);
+}
+
+inline double canvasImageWidth(const CanvasImage& image) {
+    return image.kind == CanvasImageKind::Latex ? image.nativeWidth : static_cast<double>(image.pixelWidth);
+}
+
+inline double canvasImageHeight(const CanvasImage& image) {
+    return image.kind == CanvasImageKind::Latex ? image.nativeHeight : static_cast<double>(image.pixelHeight);
 }
 
 inline Point canvasImagePoint(const CanvasImage& image, double x, double y) {
@@ -64,8 +98,8 @@ inline Point canvasImagePoint(const CanvasImage& image, double x, double y) {
 }
 
 inline std::array<Point, 4> canvasImageCorners(const CanvasImage& image) {
-    const auto width = static_cast<double>(image.pixelWidth);
-    const auto height = static_cast<double>(image.pixelHeight);
+    const auto width = canvasImageWidth(image);
+    const auto height = canvasImageHeight(image);
     return {canvasImagePoint(image, 0, 0), canvasImagePoint(image, width, 0),
             canvasImagePoint(image, width, height), canvasImagePoint(image, 0, height)};
 }
@@ -85,7 +119,7 @@ inline Point canvasImageRotationHandle(const CanvasImage& image, double zoom, do
 }
 
 inline Point canvasImageCenter(const CanvasImage& image) {
-    return canvasImagePoint(image, image.pixelWidth / 2.0, image.pixelHeight / 2.0);
+    return canvasImagePoint(image, canvasImageWidth(image) / 2.0, canvasImageHeight(image) / 2.0);
 }
 
 inline double snapCanvasImageRotation(double radians, double tolerance) {
@@ -122,8 +156,10 @@ inline bool rotateCanvasImage(CanvasImage& image, double radians) {
     rotated.xy = cosine * source.xy - sine * source.yy;
     rotated.yx = sine * source.xx + cosine * source.yx;
     rotated.yy = sine * source.xy + cosine * source.yy;
-    rotated.x = center.x - rotated.xx * image.pixelWidth / 2.0 - rotated.xy * image.pixelHeight / 2.0;
-    rotated.y = center.y - rotated.yx * image.pixelWidth / 2.0 - rotated.yy * image.pixelHeight / 2.0;
+    rotated.x = center.x - rotated.xx * canvasImageWidth(image) / 2.0 -
+                rotated.xy * canvasImageHeight(image) / 2.0;
+    rotated.y = center.y - rotated.yx * canvasImageWidth(image) / 2.0 -
+                rotated.yy * canvasImageHeight(image) / 2.0;
 
     const double determinant = rotated.xx * rotated.yy - rotated.xy * rotated.yx;
     if (!std::isfinite(rotated.xx) || !std::isfinite(rotated.xy) || !std::isfinite(rotated.yx) ||

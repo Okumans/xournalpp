@@ -220,6 +220,21 @@ int main() {
     require(handToolParsed.ok && handToolParsed.settings.activeTool == prototype::Tool::Hand,
             "The current Hand tool was not restored from settings.xml");
 
+    const auto latexSettingsParsed = prototype::parseSettingsXml(
+            "<settings><property name=\"latexSettings.defaultText\" value=\"\\alpha\"/>"
+            "<property name=\"latexSettings.globalTemplatePath\" value=\"/tmp/formula.tex\"/>"
+            "<property name=\"latexSettings.genCmd\" value=\"tectonic '{}'\"/>"
+            "<data name=\"tools\"><attribute name=\"current\" type=\"string\" value=\"latex\"/></data>"
+            "<data name=\"latex\"><attribute name=\"color\" type=\"hex\" value=\"ff123456\"/>"
+            "</data></settings>");
+    require(latexSettingsParsed.ok && latexSettingsParsed.settings.activeTool == prototype::Tool::Latex &&
+                    latexSettingsParsed.settings.latexDefaultText == "\\alpha" &&
+                    latexSettingsParsed.settings.latexTemplatePath == "/tmp/formula.tex" &&
+                    latexSettingsParsed.settings.latexGeneratorCommand == "tectonic '{}'" &&
+                    latexSettingsParsed.settings.latexColor == std::array<double, 3>{0x12 / 255.0, 0x34 / 255.0,
+                                                                                    0x56 / 255.0},
+            "LaTeX tool, generator, template, default source or color settings were not imported");
+
     // 3. Truncated/malformed XML rolls back transactionally to clean defaults.
     const auto truncated = prototype::parseSettingsXml(
             "<settings><property name=\"themeVariant\" value=\"forceDark\"/><data name=\"tools\">");

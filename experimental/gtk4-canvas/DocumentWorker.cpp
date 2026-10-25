@@ -36,6 +36,7 @@
 #include "model/Stroke.h"
 #include "model/Text.h"
 #include "model/TextAlignment.h"
+#include "model/TexImage.h"
 #include "model/XojPage.h"
 #include "pdf/base/XojCairoPdfExport.h"
 #include "util/Matrix.h"
@@ -163,10 +164,27 @@ void appendText(Layer& layer, const prototype::TextItem& item) {
 }
 
 void appendImage(Layer& layer, const prototype::bridge::ImagePacket& packet) {
-    auto image = std::make_unique<Image>();
-    image->setImage(packet.encodedData);
-    if (const auto error = image->renderBuffer()) {
-        throw std::runtime_error("Cannot decode transferred image: " + *error);
+    std::unique_ptr<RectangularElement> image;
+    if (packet.kind == prototype::CanvasImageKind::Latex) {
+        auto texImage = std::make_unique<TexImage>();
+        GError* error = nullptr;
+        auto bytes = packet.encodedData;
+        const bool loaded = texImage->loadData(std::move(bytes), &error);
+        if (!loaded || (!texImage->getPdf() && !texImage->getImage())) {
+            const std::string detail = error ? error->message : "Invalid LaTeX image data";
+            g_clear_error(&error);
+            throw std::runtime_error("Cannot decode transferred LaTeX image: " + detail);
+        }
+        g_clear_error(&error);
+        texImage->setText(packet.latexSource);
+        image = std::move(texImage);
+    } else {
+        auto rasterImage = std::make_unique<Image>();
+        rasterImage->setImage(packet.encodedData);
+        if (const auto error = rasterImage->renderBuffer()) {
+            throw std::runtime_error("Cannot decode transferred image: " + *error);
+        }
+        image = std::move(rasterImage);
     }
     const auto& m = packet.transform;
     image->setTransformation(xoj::util::Matrix{m.xx, m.yx, m.xy, m.yy, {m.x, m.y}});
@@ -485,28 +503,47 @@ struct EditableSuffixItem {
 
 std::optional<prototype::bridge::ImagePacket> toEditableImagePacket(const Element& element, int page, size_t layerId,
                                                                      size_t originLayer, size_t order) {
-    if (element.getType() != ELEMENT_IMAGE) {
-        return std::nullopt;
-    }
-    const auto* image = dynamic_cast<const Image*>(&element);
-    if (!image || !image->hasData() || image->getBinaryData().empty() ||
-        image->getBinaryData().size() > prototype::maxCanvasImageBytes) {
-        return std::nullopt;
-    }
-    if (image->renderBuffer()) {
-        return std::nullopt;
-    }
-    const auto size = image->getNaturalSize();
     prototype::bridge::ImagePacket packet;
     packet.page = page;
     packet.layerId = layerId;
     packet.originLayer = originLayer;
     packet.layerOrder = order;
-    packet.pixelWidth = static_cast<int>(std::lround(size.width));
-    packet.pixelHeight = static_cast<int>(std::lround(size.height));
-    const auto& matrix = image->getTransformation();
-    packet.transform = {matrix.xx, matrix.yx, matrix.xy, matrix.yy, matrix.shift.x, matrix.shift.y};
-    packet.encodedData = image->getBinaryData();
+    if (element.getType() == ELEMENT_TEXIMAGE) {
+        const auto* texImage = dynamic_cast<const TexImage*>(&element);
+        if (!texImage || (!texImage->getPdf() && !texImage->getImage()) || texImage->getBinaryData().empty() ||
+            texImage->getBinaryData().size() > prototype::maxCanvasImageBytes ||
+            texImage->getText().size() > prototype::maxCanvasLatexSourceBytes) {
+            return std::nullopt;
+        }
+        const auto size = texImage->getNativeSize();
+        if (!std::isfinite(size.width) || !std::isfinite(size.height) || size.width <= 0 || size.height <= 0 ||
+            size.width > 100000 || size.height > 100000) {
+            return std::nullopt;
+        }
+        packet.kind = prototype::CanvasImageKind::Latex;
+        packet.nativeWidth = size.width;
+        packet.nativeHeight = size.height;
+        packet.pixelWidth = static_cast<int>(std::ceil(size.width));
+        packet.pixelHeight = static_cast<int>(std::ceil(size.height));
+        packet.latexSource = texImage->getText();
+        packet.encodedData = texImage->getBinaryData();
+        const auto& matrix = texImage->getTransformation();
+        packet.transform = {matrix.xx, matrix.yx, matrix.xy, matrix.yy, matrix.shift.x, matrix.shift.y};
+    } else if (element.getType() == ELEMENT_IMAGE) {
+        const auto* image = dynamic_cast<const Image*>(&element);
+        if (!image || !image->hasData() || image->getBinaryData().empty() ||
+            image->getBinaryData().size() > prototype::maxCanvasImageBytes || image->renderBuffer()) {
+            return std::nullopt;
+        }
+        const auto size = image->getNaturalSize();
+        packet.pixelWidth = static_cast<int>(std::lround(size.width));
+        packet.pixelHeight = static_cast<int>(std::lround(size.height));
+        packet.encodedData = image->getBinaryData();
+        const auto& matrix = image->getTransformation();
+        packet.transform = {matrix.xx, matrix.yx, matrix.xy, matrix.yy, matrix.shift.x, matrix.shift.y};
+    } else {
+        return std::nullopt;
+    }
     try {
         prototype::bridge::validate(packet);
     } catch (const std::exception&) {
@@ -556,13 +593,17 @@ std::vector<prototype::bridge::StrokePacket> extractEditableInk(Document& docume
                     } else if (extractedImages) {
                         candidate.image = toEditableImagePacket(*elements[suffixStart - 1], static_cast<int>(pageIndex),
                                                                 layerIndex + 1, layerIndex, suffixStart - 1);
+                        const size_t payloadSize = candidate.image ?
+                                                           candidate.image->encodedData.size() +
+                                                                   candidate.image->latexSource.size() :
+                                                           0;
                         if (!candidate.image || totalImages >= prototype::bridge::maxEditableImages ||
-                            candidate.image->encodedData.size() >
-                                    prototype::bridge::maxImageTransferFileBytes - totalImageBytes) {
+                            totalImageBytes > prototype::bridge::maxImageTransferFileBytes ||
+                            payloadSize > prototype::bridge::maxImageTransferFileBytes - totalImageBytes) {
                             break;
                         }
                         ++totalImages;
-                        totalImageBytes += candidate.image->encodedData.size();
+                        totalImageBytes += payloadSize;
                     } else {
                         break;
                     }

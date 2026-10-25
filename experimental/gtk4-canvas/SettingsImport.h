@@ -65,6 +65,10 @@ struct ImportedSettings {
     double edgePanMaxMultiplier = 5.0;
     std::string textFontName = "Sans";
     double textFontSize = 12;
+    std::array<double, 3> latexColor{0, 0, 0};
+    std::filesystem::path latexTemplatePath;
+    std::string latexGeneratorCommand{"pdflatex -halt-on-error -interaction=nonstopmode '{}'"};
+    std::string latexDefaultText{"x^2"};
     double shapeRecognizerMinSize = 40;
     bool snapRotation = true;
     double snapRotationTolerance = 0.30;
@@ -221,7 +225,19 @@ struct XmlState {
 };
 
 inline void applyProperty(ImportedSettings& out, std::string_view name, std::string_view value) {
-    if (name == "presureSensitivity" || name == "pressureSensitivity") {
+    if (name == "latexSettings.defaultText") {
+        if (value.size() <= maxCanvasLatexSourceBytes) {
+            out.latexDefaultText = value;
+        }
+    } else if (name == "latexSettings.globalTemplatePath") {
+        if (value.size() <= 4096) {
+            out.latexTemplatePath = std::filesystem::path(std::string(value));
+        }
+    } else if (name == "latexSettings.genCmd") {
+        if (!value.empty() && value.size() <= 16384) {
+            out.latexGeneratorCommand = value;
+        }
+    } else if (name == "presureSensitivity" || name == "pressureSensitivity") {
         out.pressureSensitivity = (value == "true");
     } else if (name == "minimumPressure") {
         if (const auto v = parseAsciiDouble(value)) {
@@ -376,6 +392,14 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
 
 inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::string>& dataStack, std::string_view name,
                                std::string_view type, std::string_view value) {
+    if (dataStack.size() == 1 && dataStack[0] == "latex") {
+        if (name == "color") {
+            if (const auto color = parsePackedColor(type, value)) {
+                out.latexColor = *color;
+            }
+        }
+        return;
+    }
     if (dataStack.empty() || dataStack[0] != "tools") {
         return;
     }
@@ -399,6 +423,8 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.activeTool = Tool::PlayObject;
             } else if (value == "showFloatingToolbox") {
                 out.activeTool = Tool::FloatingToolbox;
+            } else if (value == "latex") {
+                out.activeTool = Tool::Latex;
             }
         }
         return;
@@ -460,6 +486,12 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.eraserMode = EraserMode::Whiteout;
             } else {
                 out.eraserMode = EraserMode::Standard;
+            }
+        }
+    } else if (toolName == "latex") {
+        if (name == "color") {
+            if (const auto color = parsePackedColor(type, value)) {
+                out.latexColor = *color;
             }
         }
     }

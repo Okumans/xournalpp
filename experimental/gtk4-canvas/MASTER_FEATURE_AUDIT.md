@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **53 task areas — 42 Partial, 3 Pending, 8 Covered, and 0
+Current ledger count: **53 task areas — 43 Partial, 1 Pending, 9 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -66,7 +66,7 @@ registration in `ToolHandler::initTools`.
 | `laserPointerPen` | Partial | Transient pressure-aware laser trails use the master presets and imported fade delay; completed marks fade after the 500 ms default delay in 50 ms steps of 25/255 alpha, resume at full alpha when another stroke starts, and never enter save or undo history. Physical stylus routing and exact raster-mask behavior across zoom/visibility changes remain unverified. |
 | `laserPointerHighlighter` | Partial | Transient pressure-independent highlighter trails use the master presets and imported fade delay; completed marks share the per-page trail and fade lifecycle without entering save or undo history. Physical stylus routing and exact raster-mask behavior across zoom/visibility changes remain unverified. |
 | `link` | Partial | The Link tool creates and edits native links, renders them underlined, hit-tests them on the active visible layer, opens them with Ctrl-click, and preserves URL/font/layout through save and undo/redo. Match the production editor and scheme choices, verify external launcher behavior, and test physical input routing. |
-| `latex` | Pending | Port LaTeX text creation, rendering, editing, and dependency/error behavior. |
+| `latex` | Partial | The GTK4 LaTeX tool opens a live editor, compiles the imported default source with the configured generator/template, previews vector PDF output, inserts formulas, edits formulas and plain text in place, and preserves PDF bytes, source, native dimensions, transform, and one-step undo/redo through XOPP save/reopen. Smart Select double-click also opens a formula. The default rail keeps LaTeX under More tools. Remaining: expose generator/template/default-source and editor preferences, port the external editor and source-highlighting options, test missing-generator/invalid-source recovery, and validate physical stylus routing. |
 | `smartSelect` | Partial | Picks editable strokes, text, and images within the native 0.5-point action radius using stroke caps/joins and transformed rectangular bounds; text clicks open the editor, PDF-text drags delegate to linear PDF selection after the native 10 px threshold, Alt-drag forces that route, Shift-drag starts rectangle selection, moves snap the nearest bounds corner to the page grid, resize handles snap the moving edge axes, and both honor the Alt override. Dragging a selection past the viewport edge pans at the configured legacy rate and multiplier. After a committed rotation, the handle frame remains axis-aligned and later resizes use the accumulated rotation for their scale axes; undo and redo preserve this state. Unsupported native object support and physical input validation remain. |
 
 `DrawingType` also includes `default`, `line`, `rectangle`, `ellipse`,

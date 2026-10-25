@@ -12,6 +12,7 @@
 #include <cairo.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <gio/gio.h>
+#include <poppler.h>
 
 #include "CanvasImage.h"
 
@@ -145,7 +146,87 @@ inline CanvasImage readCanvasImageFile(const std::filesystem::path& path) {
     return image;
 }
 
+inline std::shared_ptr<PopplerDocument> decodeCanvasLatexPdf(std::string_view bytes, double& width, double& height) {
+    if (bytes.size() < 5 || !bytes.starts_with("%PDF-")) {
+        throw std::runtime_error("LaTeX data is not a PDF document");
+    }
+
+    GBytes* pdfBytes = g_bytes_new(bytes.data(), bytes.size());
+    GError* error = nullptr;
+    PopplerDocument* rawDocument = poppler_document_new_from_bytes(pdfBytes, nullptr, &error);
+    g_bytes_unref(pdfBytes);
+    if (!rawDocument) {
+        const std::string message = error ? error->message : "Cannot open LaTeX PDF";
+        g_clear_error(&error);
+        throw std::runtime_error(message);
+    }
+    std::shared_ptr<PopplerDocument> document(rawDocument, [](PopplerDocument* value) { g_object_unref(value); });
+    if (poppler_document_get_n_pages(document.get()) < 1) {
+        throw std::runtime_error("LaTeX PDF has no pages");
+    }
+    PopplerPage* page = poppler_document_get_page(document.get(), 0);
+    if (!page) {
+        throw std::runtime_error("Cannot read the first page of the LaTeX PDF");
+    }
+    poppler_page_get_size(page, &width, &height);
+    g_object_unref(page);
+    if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0 || width > 100000 ||
+        height > 100000) {
+        throw std::runtime_error("LaTeX PDF page has invalid dimensions");
+    }
+    return document;
+}
+
+inline CanvasImage hydrateCanvasImage(CanvasImage image) {
+    if (!validCanvasImage(image)) {
+        throw std::runtime_error("Transferred image metadata is invalid");
+    }
+    if (image.kind == CanvasImageKind::Latex) {
+        if (isCanvasTexPdf(image.encodedData)) {
+            double width = 0;
+            double height = 0;
+            image.pdfDocument = decodeCanvasLatexPdf(image.encodedData, width, height);
+            if (std::abs(width - image.nativeWidth) > 0.01 || std::abs(height - image.nativeHeight) > 0.01) {
+                throw std::runtime_error("LaTeX PDF dimensions changed during transfer");
+            }
+        } else {
+            int width = 0;
+            int height = 0;
+            image.surface = decodeCanvasImage(image.encodedData, width, height);
+            if (std::abs(width - image.nativeWidth) > 0.01 || std::abs(height - image.nativeHeight) > 0.01) {
+                throw std::runtime_error("Legacy LaTeX image dimensions changed during transfer");
+            }
+        }
+        return image;
+    }
+
+    int width = 0;
+    int height = 0;
+    image.surface = decodeCanvasImage(image.encodedData, width, height);
+    if (width != image.pixelWidth || height != image.pixelHeight) {
+        throw std::runtime_error("Transferred image dimensions changed during decoding");
+    }
+    return image;
+}
+
 inline void drawCanvasImage(cairo_t* cr, const CanvasImage& image) {
+    if (image.kind == CanvasImageKind::Latex) {
+        if (image.pdfDocument) {
+            PopplerPage* page = poppler_document_get_page(image.pdfDocument.get(), 0);
+            if (!page) {
+                return;
+            }
+            const auto& m = image.transform;
+            const cairo_matrix_t matrix{m.xx, m.yx, m.xy, m.yy, m.x, m.y};
+            cairo_save(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+            cairo_transform(cr, &matrix);
+            poppler_page_render(page, cr);
+            cairo_restore(cr);
+            g_object_unref(page);
+            return;
+        }
+    }
     if (!image.surface) {
         return;
     }
