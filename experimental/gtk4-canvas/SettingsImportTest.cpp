@@ -55,6 +55,7 @@ int main() {
   <property name="themeVariant" value="forceDark"/>
   <property name="autosaveEnabled" value="true"/>
   <property name="autosaveTimeout" value="7"/>
+  <property name="laserPointerFadeOutTime" value="750"/>
   <property name="colorPalette" value="palettes/xournalpp.gpl"/>
   <data name="buttonConfig">
     <data name="eraser">
@@ -77,6 +78,14 @@ int main() {
       <attribute name="size" type="string" value="THIN"/>
       <attribute name="type" type="string" value="deleteStroke"/>
     </data>
+    <data name="laserPointerPen">
+      <attribute name="color" type="hex" value="ffff7f00"/>
+      <attribute name="size" type="string" value="VERY_FINE"/>
+    </data>
+    <data name="laserPointerHighlighter">
+      <attribute name="color" type="int" value="255"/>
+      <attribute name="size" type="string" value="VERY_BIG"/>
+    </data>
   </data>
 </settings>
 )xml");
@@ -93,6 +102,13 @@ int main() {
     require(near(s.highlighterWidth, 30.0), "VERY_BIG highlighter preset should map to 30.0pt");
     require(near(s.eraserWidth, 2.83) && s.eraserMode == prototype::EraserMode::DeleteStroke,
             "Eraser THIN width or deleteStroke mode mismatch (or collided with buttonConfig)");
+    require(near(s.laserPenColor[0], 1.0) && near(s.laserPenColor[1], 0x7f / 255.0) &&
+                    near(s.laserPenColor[2], 0.0) && near(s.laserPenWidth, 0.7),
+            "Laser Pointer Pen color or VERY_FINE width mismatch");
+    require(near(s.laserHighlighterColor[0], 0.0) && near(s.laserHighlighterColor[1], 0.0) &&
+                    near(s.laserHighlighterColor[2], 1.0) && near(s.laserHighlighterWidth, 30.0),
+            "Laser Pointer Highlighter color or VERY_BIG width mismatch");
+    require(s.laserPointerFadeOutTimeMs == 750, "Laser pointer fade delay mismatch");
     require(s.pressureSensitivity && near(s.minimumPressure, 0.14) && near(s.pressureMultiplier, 1.35),
             "Pressure settings mismatch");
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");
@@ -113,6 +129,13 @@ int main() {
     require(near(importedState.shapeRecognizerMinSize, 32), "Shape recognizer minimum size was not applied to canvas state");
     require(near(importedState.snapRotationTolerance, 0.65), "Rotation tolerance was not applied to canvas state");
     require(!importedState.snapRotationEnabled, "Rotation snapping setting was not applied to canvas state");
+    require(importedState.laserFadeOutTimeMs == 750, "Laser pointer fade delay was not applied to canvas state");
+
+    const auto laserActive = prototype::parseSettingsXml(R"xml(<settings><data name="tools">
+  <attribute name="current" type="string" value="laserPointerHighlighter"/>
+</data></settings>)xml");
+    require(laserActive.ok && laserActive.settings.activeTool == prototype::Tool::LaserPointerHighlighter,
+            "Active Laser Pointer Highlighter setting was not imported");
     require(!importedState.snapGridEnabled && near(importedState.snapGridSize, 28.5) &&
                     near(importedState.snapGridTolerance, 0.25),
             "Page-grid snapping preferences were not applied to canvas state");

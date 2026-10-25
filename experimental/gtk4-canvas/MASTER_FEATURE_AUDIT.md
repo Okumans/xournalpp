@@ -5,7 +5,7 @@ the separate GTK 4/libadwaita prototype. Source snapshot: `upstream/master`
 `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`, fetched on 2026-10-25. Update the
 status and source reference as each migration slice lands.
 
-Current ledger count: **52 task areas — 34 Partial, 18 Pending, 0 Covered, and 0
+Current ledger count: **52 task areas — 36 Partial, 16 Pending, 0 Covered, and 0
 Obsolete.** Partial means working code exists with parity gaps listed below;
 it does not mean the task is complete.
 
@@ -50,8 +50,8 @@ registration in `ToolHandler::initTools`.
 | `drawSpline` | Partial | Knot, tangent, preview, and editing behavior work; verify generated geometry against the production handler. |
 | `selectPdfTextLinear` | Partial | Linear drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
 | `selectPdfTextRect` | Partial | Rectangular drag, word/line click selection, copy, and PDF annotation actions work against the original PDF source. Match the GTK 3 floating toolbox placement and dismissal/reopen behavior. |
-| `laserPointerPen` | Pending | Port timed laser-pen rendering and presentation behavior. |
-| `laserPointerHighlighter` | Pending | Port timed laser-highlighter rendering and presentation behavior. |
+| `laserPointerPen` | Partial | Transient pressure-aware laser trails use the master presets and imported fade delay; completed marks fade after the 500 ms default delay in 50 ms steps of 25/255 alpha, resume at full alpha when another stroke starts, and never enter save or undo history. Physical stylus routing and exact raster-mask behavior across zoom/visibility changes remain unverified. |
+| `laserPointerHighlighter` | Partial | Transient pressure-independent highlighter trails use the master presets and imported fade delay; completed marks share the per-page trail and fade lifecycle without entering save or undo history. Physical stylus routing and exact raster-mask behavior across zoom/visibility changes remain unverified. |
 | `link` | Partial | The Link tool creates and edits native links, renders them underlined, hit-tests them on the active visible layer, opens them with Ctrl-click, and preserves URL/font/layout through save and undo/redo. Match the production editor and scheme choices, verify external launcher behavior, and test physical input routing. |
 | `latex` | Pending | Port LaTeX text creation, rendering, editing, and dependency/error behavior. |
 | `smartSelect` | Partial | Picks editable strokes, text, and images by layer order; opens text editing on ordinary text clicks. Add complete production hit geometry, snapping, and edge-pan behavior. |
@@ -104,7 +104,7 @@ it stays listed because it is part of the master plugin distribution.
 
 | Area | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, spacing, and tolerance. Audit every user-facing setting, per-device `deviceClasses`, and `toolbar.ini` customization. |
+| Preferences and legacy settings | Partial | Existing settings import read-only and supported controls persist separately, including page-grid snapping, spacing, tolerance, laser tool colors/sizes, and laser fade delay. Audit every user-facing setting, per-device `deviceClasses`, and `toolbar.ini` customization. |
 | Page layout | Partial | Continuous vertical pages work. Port paired, horizontal, grid, and other configured layouts. |
 | Page editing history | Partial | Insert/delete pages and document edits work; page insert/delete are not undoable. |
 | Input devices | Partial | Synthetic mouse/stylus paths work. Port production device identity, physical stylus, touch drawing, hand gestures, and platform-specific routing. |

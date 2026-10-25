@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -43,6 +44,12 @@ struct ImportedSettings {
     double penWidth = behavior::penWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
     std::array<double, 3> highlighterColor = behavior::defaultHighlighterColor;
     double highlighterWidth = behavior::highlighterWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    std::array<double, 3> laserPenColor = behavior::laserPointerColor;
+    double laserPenWidth = behavior::laserPenWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    std::array<double, 3> laserHighlighterColor = behavior::laserPointerColor;
+    double laserHighlighterWidth =
+            behavior::laserHighlighterWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    unsigned int laserPointerFadeOutTimeMs = behavior::laserPointerFadeOutTimeMs;
     double eraserWidth = behavior::eraserWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
     EraserMode eraserMode = EraserMode::Standard;
 
@@ -291,6 +298,11 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         if (const auto minutes = parseAsciiInt(value)) {
             out.autosaveTimeoutMinutes = static_cast<int>(std::clamp<long long>(*minutes, 0LL, 1440LL));
         }
+    } else if (name == "laserPointerFadeOutTime") {
+        if (const auto milliseconds = parseAsciiInt(value); milliseconds && *milliseconds >= 0 &&
+            static_cast<unsigned long long>(*milliseconds) <= std::numeric_limits<unsigned int>::max()) {
+            out.laserPointerFadeOutTimeMs = static_cast<unsigned int>(*milliseconds);
+        }
     } else if (name == "colorPalette") {
         if (!value.empty()) {
             out.colorPalettePath = std::filesystem::path(std::string(value));
@@ -315,6 +327,10 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.activeTool = Tool::SelectObject;
             } else if (value == "hand") {
                 out.activeTool = Tool::Hand;
+            } else if (value == "laserPointerPen") {
+                out.activeTool = Tool::LaserPointerPen;
+            } else if (value == "laserPointerHighlighter") {
+                out.activeTool = Tool::LaserPointerHighlighter;
             }
         }
         return;
@@ -342,6 +358,26 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
         } else if (name == "size" && type == "string") {
             if (const auto sz = parseToolSizeName(value)) {
                 out.highlighterWidth = behavior::highlighterWidths[static_cast<size_t>(*sz)];
+            }
+        }
+    } else if (toolName == "laserPointerPen") {
+        if (name == "color") {
+            if (const auto color = parsePackedColor(type, value)) {
+                out.laserPenColor = *color;
+            }
+        } else if (name == "size" && type == "string") {
+            if (const auto sz = parseToolSizeName(value)) {
+                out.laserPenWidth = behavior::laserPenWidths[static_cast<size_t>(*sz)];
+            }
+        }
+    } else if (toolName == "laserPointerHighlighter") {
+        if (name == "color") {
+            if (const auto color = parsePackedColor(type, value)) {
+                out.laserHighlighterColor = *color;
+            }
+        } else if (name == "size" && type == "string") {
+            if (const auto sz = parseToolSizeName(value)) {
+                out.laserHighlighterWidth = behavior::laserHighlighterWidths[static_cast<size_t>(*sz)];
             }
         }
     } else if (toolName == "eraser") {
@@ -559,6 +595,7 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.snapGridTolerance = settings.snapGridTolerance;
     state.zoomStep = settings.zoomStep;
     state.scrollZoomStep = settings.scrollZoomStep;
+    state.laserFadeOutTimeMs = settings.laserPointerFadeOutTimeMs;
     state.eraserMode = settings.eraserMode;
     state.eraserWidth = settings.eraserWidth;
     state.textFontName = settings.textFontName;

@@ -17,7 +17,8 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
         return;
     }
     cairo_save(cr);
-    const bool highlight = ink.brush.tool == Tool::Highlighter;
+    const bool highlight = ink.brush.tool == Tool::Highlighter ||
+                           ink.brush.tool == Tool::LaserPointerHighlighter;
     const bool whiteout = ink.brush.tool == Tool::Eraser;
     if (highlight) {
         // Composite a stroke once so overlapping segments have uniform opacity.
@@ -66,6 +67,25 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
 
 inline void drawInkPreview(cairo_t* cr, const CanvasState& state, size_t index) {
     drawInk(cr, state.ink.at(index), state.selectionMatrix(index));
+}
+
+inline void drawLaserPointer(cairo_t* cr, const CanvasState& state, int page) {
+    for (const auto& trail: state.laserTrails) {
+        if (trail.page != page || trail.alpha == 0 || trail.strokes.empty()) {
+            continue;
+        }
+        cairo_save(cr);
+        cairo_push_group(cr);
+        for (const auto& stroke: trail.strokes) {
+            drawInk(cr, stroke);
+        }
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, static_cast<double>(trail.alpha) / 255.0);
+        cairo_restore(cr);
+    }
+    if (state.currentLaser && state.currentLaser->page == page) {
+        drawInk(cr, *state.currentLaser);
+    }
 }
 
 inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
