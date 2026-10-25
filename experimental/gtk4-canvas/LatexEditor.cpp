@@ -10,11 +10,18 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <adwaita.h>
 #include <gio/gio.h>
 #include <poppler.h>
+#ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
+#include <gtksourceview/gtksource.h>
+#endif
+#ifdef G_OS_UNIX
+#include <signal.h>
+#endif
 
 #include "ImageRenderer.h"
 
@@ -122,17 +129,100 @@ struct StrvDeleter {
     void operator()(gchar** value) const { g_strfreev(value); }
 };
 
+std::filesystem::path createTempDirectory() {
+    GError* error = nullptr;
+    gchar* directory = g_dir_make_tmp("xournalpp-gtk4-latex-XXXXXX", &error);
+    if (!directory) {
+        const std::string detail = error ? error->message : "Cannot create a temporary directory";
+        g_clear_error(&error);
+        throw std::runtime_error(detail);
+    }
+    std::filesystem::path result(directory);
+    g_free(directory);
+    return result;
+}
+
+GSubprocess* spawnGenerator(const std::filesystem::path& tempDirectory, const std::string& command,
+                            const std::string& texContents) {
+    const auto texPath = tempDirectory / "tex.tex";
+    GError* error = nullptr;
+    if (!g_file_set_contents(texPath.c_str(), texContents.data(), static_cast<gssize>(texContents.size()), &error)) {
+        const std::string detail = error ? error->message : "Cannot write the temporary TeX source";
+        g_clear_error(&error);
+        throw std::runtime_error(detail);
+    }
+
+    std::string expandedCommand = command;
+    const auto texFilename = texPath.string();
+    for (auto position = expandedCommand.find("{}"); position != std::string::npos;
+         position = expandedCommand.find("{}", position + texFilename.size())) {
+        expandedCommand.replace(position, 2, texFilename);
+    }
+
+    gint argc = 0;
+    gchar** argvRaw = nullptr;
+    if (!g_shell_parse_argv(expandedCommand.c_str(), &argc, &argvRaw, &error)) {
+        const std::string detail = error ? error->message : "Invalid LaTeX generator command";
+        g_clear_error(&error);
+        throw std::runtime_error("Failed to parse LaTeX generator command: " + detail);
+    }
+    std::unique_ptr<gchar*, StrvDeleter> argv(argvRaw);
+    if (argc < 1 || !argv.get()[0] || !argv.get()[0][0]) {
+        throw std::runtime_error("The LaTeX generator command is empty");
+    }
+    gchar* executable = g_find_program_in_path(argv.get()[0]);
+    if (!executable) {
+        throw std::runtime_error("Cannot find LaTeX generator in PATH: " + std::string(argv.get()[0]));
+    }
+    g_free(argv.get()[0]);
+    argv.get()[0] = executable;
+
+    constexpr auto flags = static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                                        G_SUBPROCESS_FLAGS_STDERR_MERGE);
+    GSubprocessLauncher* launcher = g_subprocess_launcher_new(flags);
+    g_subprocess_launcher_set_cwd(launcher, tempDirectory.c_str());
+    GSubprocess* process = g_subprocess_launcher_spawnv(launcher, argv.get(), &error);
+    g_object_unref(launcher);
+    if (!process) {
+        const std::string detail = error ? error->message : "Cannot start the LaTeX generator";
+        g_clear_error(&error);
+        throw std::runtime_error(detail);
+    }
+    return process;
+}
+
+std::string quotedCssString(std::string_view value) {
+    std::string result{"\""};
+    for (const char character: value) {
+        if (character == '\\' || character == '"') {
+            result.push_back('\\');
+        }
+        if (character == '\n' || character == '\r') {
+            continue;
+        }
+        result.push_back(character);
+    }
+    result.push_back('"');
+    return result;
+}
+
+struct SetupTestContext {
+    std::filesystem::path tempDirectory;
+    LatexEditor::SetupTestCompletion completion;
+};
+
 }  // namespace
 
 std::shared_ptr<LatexEditor> LatexEditor::create(GtkWindow* parent, std::filesystem::path templatePath,
                                                  std::string generatorCommand, std::string initialSource,
                                                  std::array<double, 3> textColor,
                                                  std::optional<CanvasImage> initialImage, bool selectInitialSource,
-                                                 Completion completion) {
+                                                 LatexEditorPreferences preferences, Completion completion) {
     auto editor = std::shared_ptr<LatexEditor>(new LatexEditor(parent, std::move(templatePath),
                                                                std::move(generatorCommand),
                                                                std::move(initialSource), textColor,
                                                                std::move(initialImage), selectInitialSource,
+                                                               std::move(preferences),
                                                                std::move(completion)));
     editor->buildWindow();
     return editor;
@@ -140,10 +230,93 @@ std::shared_ptr<LatexEditor> LatexEditor::create(GtkWindow* parent, std::filesys
 
 LatexEditor::LatexEditor(GtkWindow* parent, std::filesystem::path templatePath, std::string generatorCommand,
                          std::string initialSource, std::array<double, 3> textColor,
-                         std::optional<CanvasImage> initialImage, bool selectInitialSource, Completion completion):
+                         std::optional<CanvasImage> initialImage, bool selectInitialSource,
+                         LatexEditorPreferences preferences, Completion completion):
         parent(parent), templatePath(std::move(templatePath)), generatorCommand(std::move(generatorCommand)),
-        initialSource(std::move(initialSource)), textColor(textColor), currentImage(std::move(initialImage)),
-        completion(std::move(completion)), selectInitialSource(selectInitialSource) {}
+        initialSource(std::move(initialSource)), textColor(textColor), preferences(std::move(preferences)),
+        currentImage(std::move(initialImage)), completion(std::move(completion)),
+        selectInitialSource(selectInitialSource) {}
+
+void LatexEditor::testConfiguration(std::filesystem::path templatePath, std::string generatorCommand,
+                                    std::string source, std::array<double, 3> textColor,
+                                    SetupTestCompletion completion) {
+    std::filesystem::path tempDirectory;
+    try {
+        if (source.size() > maxCanvasLatexSourceBytes) {
+            throw std::runtime_error("LaTeX source exceeds the 1 MiB limit");
+        }
+        const auto templateContents = readTemplate(templatePath);
+        tempDirectory = createTempDirectory();
+        const auto texContents = instantiateTemplate(source, templateContents, textColor);
+        auto* process = spawnGenerator(tempDirectory, generatorCommand, texContents);
+        auto* context = new SetupTestContext{std::move(tempDirectory), std::move(completion)};
+        g_subprocess_communicate_utf8_async(process, nullptr, nullptr, setupTestComplete, context);
+        g_object_unref(process);
+    } catch (const std::exception& error) {
+        if (!tempDirectory.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove_all(tempDirectory, ignored);
+        }
+        completion(false, error.what());
+    }
+}
+
+void LatexEditor::setupTestComplete(GObject* sourceObject, GAsyncResult* result, gpointer data) {
+    std::unique_ptr<SetupTestContext> context(static_cast<SetupTestContext*>(data));
+    auto* process = G_SUBPROCESS(sourceObject);
+    GError* error = nullptr;
+    gchar* output = nullptr;
+    const gboolean communicated = g_subprocess_communicate_utf8_finish(process, result, &output, nullptr, &error);
+    const std::string compilerOutput = output ? output : "";
+    g_free(output);
+
+    std::string message;
+    bool succeeded = false;
+    if (!communicated || error || !g_subprocess_get_successful(process)) {
+        message = error ? error->message : "The LaTeX generator returned an error";
+        g_clear_error(&error);
+        if (!compilerOutput.empty()) {
+            message += "\n\n" + compilerOutput.substr(0, 8192);
+        }
+    } else {
+        try {
+            const auto pdfPath = context->tempDirectory / "tex.pdf";
+            std::error_code fileError;
+            const auto length = std::filesystem::file_size(pdfPath, fileError);
+            if (fileError || length == 0 || length > maxCanvasImageBytes) {
+                throw std::runtime_error("The generated PDF is missing, empty or exceeds the 64 MiB limit");
+            }
+            std::ifstream stream(pdfPath, std::ios::binary);
+            if (!stream) {
+                throw std::runtime_error("Cannot read the generated LaTeX PDF");
+            }
+            std::string bytes(static_cast<std::size_t>(length), '\0');
+            if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+                throw std::runtime_error("Cannot read the generated LaTeX PDF");
+            }
+            double width = 0;
+            double height = 0;
+            const auto document = decodeCanvasLatexPdf(bytes, width, height);
+            if (!document || width <= 0 || height <= 0) {
+                throw std::runtime_error("The generated LaTeX PDF has invalid page dimensions");
+            }
+            message = "The template and TeX generator compiled the sample formula successfully.";
+            succeeded = true;
+            if (!compilerOutput.empty()) {
+                message += "\n\n" + compilerOutput.substr(0, 8192);
+            }
+        } catch (const std::exception& failure) {
+            message = failure.what();
+            if (!compilerOutput.empty()) {
+                message += "\n\n" + compilerOutput.substr(0, 8192);
+            }
+        }
+    }
+
+    std::error_code ignored;
+    std::filesystem::remove_all(context->tempDirectory, ignored);
+    context->completion(succeeded, std::move(message));
+}
 
 LatexEditor::~LatexEditor() {
     if (cancellable) {
@@ -154,6 +327,19 @@ LatexEditor::~LatexEditor() {
         g_clear_object(&process);
     }
     g_clear_object(&cancellable);
+    if (externalEditorCancellable) {
+        g_cancellable_cancel(externalEditorCancellable);
+    }
+    if (externalEditorProcess) {
+#ifdef G_OS_UNIX
+        g_subprocess_send_signal(externalEditorProcess, SIGTERM);
+#else
+        g_subprocess_force_exit(externalEditorProcess);
+#endif
+        g_clear_object(&externalEditorProcess);
+    }
+    g_clear_object(&externalEditorCancellable);
+    g_clear_object(&sourceCssProvider);
     if (!tempDirectory.empty()) {
         std::error_code ignored;
         std::filesystem::remove_all(tempDirectory, ignored);
@@ -184,19 +370,63 @@ void LatexEditor::buildWindow() {
     gtk_widget_set_margin_bottom(panes, 12);
 
     auto* sourceColumn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_box_append(GTK_BOX(sourceColumn), gtk_label_new("Formula"));
-    auto* sourceScroll = gtk_scrolled_window_new();
+    gtk_box_append(GTK_BOX(sourceColumn), gtk_label_new(preferences.useExternalEditor ? "External editor" : "Formula"));
+    sourceScroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sourceScroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_size_request(sourceScroll, 300, 300);
+#ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
+    sourceView = GTK_TEXT_VIEW(gtk_source_view_new());
+#else
     sourceView = GTK_TEXT_VIEW(gtk_text_view_new());
+#endif
     sourceBuffer = gtk_text_view_get_buffer(sourceView);
-    gtk_text_view_set_monospace(sourceView, true);
-    gtk_text_view_set_wrap_mode(sourceView, GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_monospace(sourceView, !preferences.useCustomEditorFont);
+    gtk_text_view_set_wrap_mode(sourceView, preferences.editorWordWrap ? GTK_WRAP_WORD_CHAR : GTK_WRAP_NONE);
     gtk_text_view_set_left_margin(sourceView, 12);
     gtk_text_view_set_right_margin(sourceView, 12);
     gtk_text_view_set_top_margin(sourceView, 10);
     gtk_text_view_set_bottom_margin(sourceView, 10);
     gtk_accessible_update_property(GTK_ACCESSIBLE(sourceView), GTK_ACCESSIBLE_PROPERTY_LABEL, "LaTeX source", -1);
+#ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
+    auto* sourceManager = gtk_source_language_manager_get_default();
+    if (preferences.sourceViewSyntaxHighlight) {
+        auto* language = gtk_source_language_manager_get_language(sourceManager, "latex");
+        gtk_source_buffer_set_language(GTK_SOURCE_BUFFER(sourceBuffer), language);
+    }
+    auto* schemeManager = gtk_source_style_scheme_manager_get_default();
+    if (!preferences.sourceViewThemeId.empty()) {
+        auto* scheme = gtk_source_style_scheme_manager_get_scheme(schemeManager,
+                                                                  preferences.sourceViewThemeId.c_str());
+        if (scheme) {
+            gtk_source_buffer_set_style_scheme(GTK_SOURCE_BUFFER(sourceBuffer), scheme);
+        }
+    }
+    gtk_source_view_set_auto_indent(GTK_SOURCE_VIEW(sourceView), preferences.sourceViewAutoIndent);
+    gtk_source_view_set_indent_on_tab(GTK_SOURCE_VIEW(sourceView), preferences.sourceViewAutoIndent);
+    gtk_source_view_set_show_line_numbers(GTK_SOURCE_VIEW(sourceView), preferences.sourceViewShowLineNumbers);
+#endif
+    if (preferences.useCustomEditorFont) {
+        PangoFontDescription* description = pango_font_description_from_string(preferences.editorFont.c_str());
+        const char* family = pango_font_description_get_family(description);
+        const auto size = pango_font_description_get_size(description);
+        if (family && size > 0) {
+            const auto sizeUnit = pango_font_description_get_size_is_absolute(description) ? "px" : "pt";
+            const auto sizeValue = static_cast<double>(size) / PANGO_SCALE;
+            std::ostringstream css;
+            css << ".latex-source-view { font-family: " << quotedCssString(family) << "; font-size: "
+                << sizeValue << sizeUnit << "; font-weight: "
+                << pango_font_description_get_weight(description) << "; font-style: "
+                << (pango_font_description_get_style(description) == PANGO_STYLE_ITALIC ? "italic" : "normal")
+                << "; }";
+            sourceCssProvider = gtk_css_provider_new();
+            gtk_css_provider_load_from_data(sourceCssProvider, css.str().c_str(), -1);
+            gtk_widget_add_css_class(GTK_WIDGET(sourceView), "latex-source-view");
+            gtk_style_context_add_provider(gtk_widget_get_style_context(GTK_WIDGET(sourceView)),
+                                           GTK_STYLE_PROVIDER(sourceCssProvider),
+                                           GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+        pango_font_description_free(description);
+    }
     gtk_text_buffer_set_text(sourceBuffer, initialSource.c_str(), static_cast<int>(initialSource.size()));
     if (selectInitialSource) {
         GtkTextIter start;
@@ -205,7 +435,34 @@ void LatexEditor::buildWindow() {
         gtk_text_buffer_select_range(sourceBuffer, &start, &end);
     }
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sourceScroll), GTK_WIDGET(sourceView));
-    gtk_box_append(GTK_BOX(sourceColumn), sourceScroll);
+    if (preferences.useExternalEditor) {
+        gtk_widget_set_visible(sourceScroll, false);
+        externalEditorPanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+        gtk_widget_set_vexpand(externalEditorPanel, true);
+        gtk_widget_set_valign(externalEditorPanel, GTK_ALIGN_CENTER);
+        auto* externalEditorMessage = gtk_label_new(
+                "The formula source opens in your external editor. The preview updates when that editor closes.");
+        gtk_label_set_wrap(GTK_LABEL(externalEditorMessage), true);
+        gtk_label_set_justify(GTK_LABEL(externalEditorMessage), GTK_JUSTIFY_CENTER);
+        gtk_widget_set_halign(externalEditorMessage, GTK_ALIGN_CENTER);
+        gtk_box_append(GTK_BOX(externalEditorPanel), externalEditorMessage);
+        externalEditorStatus = GTK_LABEL(gtk_label_new("Ready to open the source"));
+        gtk_widget_add_css_class(GTK_WIDGET(externalEditorStatus), "dim-label");
+        gtk_box_append(GTK_BOX(externalEditorPanel), GTK_WIDGET(externalEditorStatus));
+        externalEditorButton = gtk_button_new_with_label("Open external editor");
+        gtk_widget_add_css_class(externalEditorButton, "pill");
+        gtk_widget_set_halign(externalEditorButton, GTK_ALIGN_CENTER);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(externalEditorButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "Open the LaTeX source in the external editor", -1);
+        g_signal_connect(externalEditorButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<LatexEditor*>(data)->launchExternalEditor();
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(externalEditorPanel), externalEditorButton);
+        gtk_box_append(GTK_BOX(sourceColumn), externalEditorPanel);
+    } else {
+        gtk_box_append(GTK_BOX(sourceColumn), sourceScroll);
+    }
     gtk_paned_set_start_child(GTK_PANED(panes), sourceColumn);
 
     auto* previewColumn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -291,7 +548,12 @@ void LatexEditor::present() {
         compileCurrentSource();
     }
     gtk_window_present(window);
-    gtk_widget_grab_focus(GTK_WIDGET(sourceView));
+    if (preferences.useExternalEditor) {
+        gtk_widget_grab_focus(externalEditorButton);
+        launchExternalEditor();
+    } else {
+        gtk_widget_grab_focus(GTK_WIDGET(sourceView));
+    }
 }
 
 bool LatexEditor::readyForInsertion() const {
@@ -301,6 +563,179 @@ bool LatexEditor::readyForInsertion() const {
 void LatexEditor::activateInsert() {
     if (readyForInsertion()) {
         g_signal_emit_by_name(insertButton, "clicked");
+    }
+}
+
+void LatexEditor::ensureTempDirectory() {
+    if (tempDirectory.empty()) {
+        tempDirectory = createTempDirectory();
+    }
+}
+
+void LatexEditor::launchExternalEditor() {
+    if (closed || !preferences.useExternalEditor || externalEditorOpen) {
+        return;
+    }
+
+    const auto& extension = preferences.temporaryFileExtension;
+    if (extension.size() > 64 || extension.find('/') != std::string::npos ||
+        extension.find('\\') != std::string::npos ||
+        std::any_of(extension.begin(), extension.end(), [](unsigned char value) { return value < 0x20; })) {
+        const std::string message = "The temporary LaTeX file extension must be a filename suffix";
+        gtk_text_buffer_set_text(outputBuffer, message.c_str(), -1);
+        if (externalEditorStatus) {
+            gtk_label_set_text(externalEditorStatus, message.c_str());
+        }
+        setStatus(message);
+        return;
+    }
+
+    try {
+        ensureTempDirectory();
+        externalEditorFile = tempDirectory / ("edit." + extension);
+        const auto source = sourceText();
+        if (source.size() > maxCanvasLatexSourceBytes) {
+            throw std::runtime_error("LaTeX source exceeds the 1 MiB limit");
+        }
+        GError* error = nullptr;
+        if (!g_file_set_contents(externalEditorFile.c_str(), source.data(), static_cast<gssize>(source.size()), &error)) {
+            const std::string detail = error ? error->message : "Cannot write the temporary LaTeX source";
+            g_clear_error(&error);
+            throw std::runtime_error(detail);
+        }
+
+        std::string command = preferences.externalEditorCommand;
+        if (command.empty()) {
+            const char* editor = g_getenv("EDITOR");
+            if (!editor || !*editor) {
+                throw std::runtime_error(
+                        "No external editor is configured and $EDITOR is unset. Set an editor command in LaTeX "
+                        "preferences or turn off external editing.");
+            }
+            command = editor;
+        }
+        gchar* quotedPath = g_shell_quote(externalEditorFile.string().c_str());
+        command.push_back(' ');
+        command += quotedPath;
+        g_free(quotedPath);
+
+        gint argc = 0;
+        gchar** argvRaw = nullptr;
+        if (!g_shell_parse_argv(command.c_str(), &argc, &argvRaw, &error)) {
+            const std::string detail = error ? error->message : "Invalid external editor command";
+            g_clear_error(&error);
+            throw std::runtime_error("Failed to parse external editor command: " + detail);
+        }
+        std::unique_ptr<gchar*, StrvDeleter> argv(argvRaw);
+        if (argc < 1 || !argv.get()[0] || !argv.get()[0][0]) {
+            throw std::runtime_error("The external editor command is empty");
+        }
+
+        GSubprocessLauncher* launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_NONE);
+        const auto color = hexColor(textColor);
+        g_subprocess_launcher_setenv(launcher, "XPP_TEXT_COLOR", color.c_str(), true);
+        externalEditorProcess = g_subprocess_launcher_spawnv(launcher, argv.get(), &error);
+        g_object_unref(launcher);
+        if (!externalEditorProcess) {
+            const std::string detail = error ? error->message : "Cannot start the external editor";
+            g_clear_error(&error);
+            throw std::runtime_error("Could not start external editor: " + detail);
+        }
+
+        g_clear_object(&externalEditorCancellable);
+        externalEditorCancellable = g_cancellable_new();
+        externalEditorOpen = true;
+        externalEditorCompleted = false;
+        gtk_widget_set_sensitive(externalEditorButton, false);
+        if (externalEditorStatus) {
+            gtk_label_set_text(externalEditorStatus, "Waiting for the external editor to close…");
+        }
+        setStatus("Waiting for external editor…");
+        auto* context = new std::weak_ptr<LatexEditor>(shared_from_this());
+        g_subprocess_wait_async(externalEditorProcess, externalEditorCancellable, externalEditorComplete, context);
+    } catch (const std::exception& error) {
+        const std::string message = error.what();
+        gtk_text_buffer_set_text(outputBuffer, message.c_str(), -1);
+        if (externalEditorStatus) {
+            gtk_label_set_text(externalEditorStatus, message.c_str());
+        }
+        gtk_widget_set_sensitive(externalEditorButton, true);
+        setStatus(message);
+    }
+}
+
+void LatexEditor::externalEditorComplete(GObject* sourceObject, GAsyncResult* result, gpointer data) {
+    std::unique_ptr<std::weak_ptr<LatexEditor>> context(static_cast<std::weak_ptr<LatexEditor>*>(data));
+    if (auto editor = context->lock()) {
+        editor->finishExternalEditor(G_SUBPROCESS(sourceObject), result);
+    }
+}
+
+void LatexEditor::finishExternalEditor(GSubprocess* completedProcess, GAsyncResult* result) {
+    GError* error = nullptr;
+    const gboolean waited = g_subprocess_wait_finish(completedProcess, result, &error);
+    g_clear_object(&externalEditorProcess);
+    g_clear_object(&externalEditorCancellable);
+    externalEditorOpen = false;
+    if (closed || g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+        g_clear_error(&error);
+        return;
+    }
+    if (!waited || !g_subprocess_get_successful(completedProcess)) {
+        const std::string detail = error ? error->message : "The external editor exited with an error";
+        g_clear_error(&error);
+        gtk_text_buffer_set_text(outputBuffer, detail.c_str(), -1);
+        if (externalEditorStatus) {
+            gtk_label_set_text(externalEditorStatus, detail.c_str());
+        }
+        gtk_widget_set_sensitive(externalEditorButton, true);
+        setStatus(detail);
+        return;
+    }
+
+    try {
+        std::error_code fileError;
+        const auto status = std::filesystem::symlink_status(externalEditorFile, fileError);
+        if (fileError || !std::filesystem::is_regular_file(status)) {
+            throw std::runtime_error("The external editor did not leave a regular source file");
+        }
+        const auto length = std::filesystem::file_size(externalEditorFile, fileError);
+        if (fileError || length > maxCanvasLatexSourceBytes) {
+            throw std::runtime_error("LaTeX source exceeds the 1 MiB limit");
+        }
+        std::ifstream stream(externalEditorFile, std::ios::binary);
+        if (!stream) {
+            throw std::runtime_error("Cannot read the source returned by the external editor");
+        }
+        std::string source(static_cast<std::size_t>(length), '\0');
+        if (!stream.read(source.data(), static_cast<std::streamsize>(source.size()))) {
+            throw std::runtime_error("Cannot read the source returned by the external editor");
+        }
+        if (!g_utf8_validate(source.data(), static_cast<gssize>(source.size()), nullptr)) {
+            throw std::runtime_error("The external editor returned text that is not valid UTF-8");
+        }
+        if (!source.empty() && source.back() == '\n') {
+            source.pop_back();
+        }
+
+        const auto previousSource = sourceText();
+        externalEditorCompleted = true;
+        if (externalEditorStatus) {
+            gtk_label_set_text(externalEditorStatus, "Source loaded from the external editor");
+        }
+        gtk_widget_set_sensitive(externalEditorButton, true);
+        gtk_text_buffer_set_text(sourceBuffer, source.c_str(), static_cast<int>(source.size()));
+        if (source == previousSource) {
+            compileCurrentSource();
+        }
+    } catch (const std::exception& failure) {
+        const std::string detail = failure.what();
+        gtk_text_buffer_set_text(outputBuffer, detail.c_str(), -1);
+        if (externalEditorStatus) {
+            gtk_label_set_text(externalEditorStatus, detail.c_str());
+        }
+        gtk_widget_set_sensitive(externalEditorButton, true);
+        setStatus(detail);
     }
 }
 
@@ -333,64 +768,11 @@ void LatexEditor::startCompile(std::string source, std::uint64_t revision) {
         if (templateText.empty()) {
             templateText = readTemplate(templatePath);
         }
-        if (tempDirectory.empty()) {
-            GError* error = nullptr;
-            gchar* directory = g_dir_make_tmp("xournalpp-gtk4-latex-XXXXXX", &error);
-            if (!directory) {
-                const std::string detail = error ? error->message : "Cannot create a temporary directory";
-                g_clear_error(&error);
-                throw std::runtime_error(detail);
-            }
-            tempDirectory = directory;
-            g_free(directory);
-        }
-
-        const auto texPath = tempDirectory / "tex.tex";
+        ensureTempDirectory();
         const auto texContents = instantiateTemplate(source, templateText, textColor);
-        GError* error = nullptr;
-        if (!g_file_set_contents(texPath.c_str(), texContents.data(), static_cast<gssize>(texContents.size()), &error)) {
-            const std::string detail = error ? error->message : "Cannot write the temporary TeX source";
-            g_clear_error(&error);
-            throw std::runtime_error(detail);
-        }
-
-        std::string command = generatorCommand;
-        const auto texFilename = texPath.string();
-        for (auto position = command.find("{}"); position != std::string::npos;
-             position = command.find("{}", position + texFilename.size())) {
-            command.replace(position, 2, texFilename);
-        }
-        gint argc = 0;
-        gchar** argvRaw = nullptr;
-        if (!g_shell_parse_argv(command.c_str(), &argc, &argvRaw, &error)) {
-            const std::string detail = error ? error->message : "Invalid LaTeX generator command";
-            g_clear_error(&error);
-            throw std::runtime_error("Failed to parse LaTeX generator command: " + detail);
-        }
-        std::unique_ptr<gchar*, StrvDeleter> argv(argvRaw);
-        if (argc < 1 || !argv.get()[0] || !argv.get()[0][0]) {
-            throw std::runtime_error("The LaTeX generator command is empty");
-        }
-        gchar* executable = g_find_program_in_path(argv.get()[0]);
-        if (!executable) {
-            throw std::runtime_error("Cannot find LaTeX generator in PATH: " + std::string(argv.get()[0]));
-        }
-        g_free(argv.get()[0]);
-        argv.get()[0] = executable;
-
+        process = spawnGenerator(tempDirectory, generatorCommand, texContents);
         g_clear_object(&cancellable);
         cancellable = g_cancellable_new();
-        const auto flags = static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-                                                        G_SUBPROCESS_FLAGS_STDERR_MERGE);
-        GSubprocessLauncher* launcher = g_subprocess_launcher_new(flags);
-        g_subprocess_launcher_set_cwd(launcher, tempDirectory.c_str());
-        process = g_subprocess_launcher_spawnv(launcher, argv.get(), &error);
-        g_object_unref(launcher);
-        if (!process) {
-            const std::string detail = error ? error->message : "Cannot start the LaTeX generator";
-            g_clear_error(&error);
-            throw std::runtime_error(detail);
-        }
         compileRunning = true;
         const auto weak = std::weak_ptr<LatexEditor>(shared_from_this());
         auto* context = new std::pair<std::weak_ptr<LatexEditor>, std::pair<std::uint64_t, std::string>>(
@@ -482,6 +864,9 @@ void LatexEditor::finishCompile(GSubprocess* completedProcess, GAsyncResult* res
         gtk_text_buffer_set_text(outputBuffer, compilerOutput.c_str(), -1);
         gtk_widget_queue_draw(GTK_WIDGET(previewArea));
         setStatus("Formula compiled", true);
+        if (preferences.useExternalEditor && preferences.externalEditorAutoConfirm && externalEditorCompleted) {
+            accept();
+        }
     } catch (const std::exception& failure) {
         gtk_text_buffer_set_text(outputBuffer, compilerOutput.c_str(), -1);
         setStatus(failure.what());
@@ -553,6 +938,18 @@ void LatexEditor::closeWindow() {
         g_clear_object(&process);
     }
     g_clear_object(&cancellable);
+    if (externalEditorCancellable) {
+        g_cancellable_cancel(externalEditorCancellable);
+    }
+    if (externalEditorProcess) {
+#ifdef G_OS_UNIX
+        g_subprocess_send_signal(externalEditorProcess, SIGTERM);
+#else
+        g_subprocess_force_exit(externalEditorProcess);
+#endif
+        g_clear_object(&externalEditorProcess);
+    }
+    g_clear_object(&externalEditorCancellable);
     if (window) {
         auto* closingWindow = window;
         window = nullptr;

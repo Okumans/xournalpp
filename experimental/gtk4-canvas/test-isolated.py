@@ -335,8 +335,12 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
     for mode in ("edit", "reload"):
         output = directory / mode
         output.mkdir(parents=True, exist_ok=True)
+        command = [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output)]
+        if os.environ.get("XOURNALPP_PROTOTYPE_GDB"):
+            command = ["gdb", "--batch", "--return-child-result", "-ex", "run", "-ex", "bt", "--args",
+                       *command]
         result = run(
-            [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output)],
+            command,
             env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PREFERENCES_VERIFY_MODE=mode),
         )
         expected = "PASS: Adw Preferences editing" if mode == "edit" else "PASS: GTK 4 preferences survive application restart"
@@ -347,7 +351,7 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
             raise RuntimeError("GTK 4 Preferences modified settings.xml or the imported toolbar.ini")
 
     for name in (
-            "main-tool-rail-default", "preferences-dialog", "preferences-input", "preferences-behavior", "preferences-toolbar",
+            "main-tool-rail-default", "preferences-dialog", "preferences-latex", "preferences-input", "preferences-behavior", "preferences-toolbar",
             "preferences-edited", "preferences-reloaded"):
         path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
         if not path.is_file() or path.stat().st_size < 1000:
@@ -359,7 +363,9 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
                      "[Pointer Highlight]", "enabled=true", "fill-color=2131899478", "radius=17",
                      "border-color=3232484847", "border-width=2",
                      "main-tool-rail=SMART_SELECT,TEXT,PEN,HAND", "row-1=SMART_SELECT,PEN",
-                     "row-2=ZOOM_SLIDER", "row-3=FINE", "row-4=DRAW_ARROW"):
+                     "row-2=ZOOM_SLIDER", "row-3=FINE", "row-4=DRAW_ARROW",
+                     "[LaTeX]", "auto-check-dependencies=false", "use-external-editor=true",
+                     "external-editor-auto-confirm=true", "temporary-file-extension=tex"):
         if expected not in stored:
             raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
     print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)
@@ -589,6 +595,53 @@ def verify_latex(args, evidence):
     report = {"fixture": str(fixture), "fixture_sha256": fixture_hash,
               "saved_document": str(saved), "screenshot": str(screenshot),
               "rendering": "Private headless Wayland via Cage"}
+
+    external_directory = directory / "external-editor"
+    external_config = external_directory / "config"
+    external_output = external_directory / "run"
+    external_config.mkdir(parents=True, exist_ok=True)
+    external_output.mkdir(parents=True, exist_ok=True)
+    fake_editor = external_directory / "fake latex editor"
+    marker = external_directory / "editor-invocations.txt"
+    fake_editor.write_text(r"""#!/bin/sh
+for source do
+    :
+done
+[ -f "$source" ] || exit 2
+case "$source" in
+    *.tex) ;;
+    *) exit 3 ;;
+esac
+printf '\\frac{1}{2}\n' > "$source"
+printf '%s\n' "$source" >> "$XOURNALPP_LATEX_EDITOR_MARKER"
+""", encoding="utf-8")
+    fake_editor.chmod(0o755)
+    (external_config / "gtk4-canvas.ini").write_text(
+        "[LaTeX]\n"
+        "use-external-editor=true\n"
+        f"external-editor-command='{fake_editor}' --wait\n"
+        "external-editor-auto-confirm=false\n"
+        "temporary-file-extension=tex\n",
+        encoding="utf-8",
+    )
+    external_result = run(
+        [str(args.binary.resolve()), "--config-dir", str(external_config), "--smoke-dir", str(external_output),
+         "--worker", str(args.worker.resolve()), "--document", str(fixture), "--verify-latex"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_LATEX_EDITOR_MARKER=str(marker)),
+    )
+    if expected not in external_result:
+        raise RuntimeError("GTK4 external-editor LaTeX integration did not complete")
+    invocations = marker.read_text(encoding="utf-8").splitlines() if marker.is_file() else []
+    if len(invocations) != 2 or any(Path(path).name != "edit.tex" for path in invocations):
+        raise RuntimeError(f"External editor did not receive the expected temporary source twice: {invocations}")
+    external_saved = external_output / "latex-round-trip.xopp"
+    if not external_saved.is_file() or external_saved.stat().st_size < 1000:
+        raise RuntimeError("External-editor LaTeX round-trip document is missing")
+    report["external_editor"] = {
+        "invocations": len(invocations),
+        "temporary_extension": ".tex",
+        "saved_document": str(external_saved),
+    }
     print("PASS: private GTK4 LaTeX editor and vector XOPP round trip", flush=True)
     return report
 

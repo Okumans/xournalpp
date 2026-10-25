@@ -19,7 +19,11 @@
 #include <vector>
 
 #include <adwaita.h>
+#include <pango/pangocairo.h>
 #include <poppler.h>
+#ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
+#include <gtksourceview/gtksource.h>
+#endif
 
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/wayland/gdkwayland.h>
@@ -702,6 +706,21 @@ private:
         CursorHighlightRadius,
         CursorHighlightBorderColor,
         CursorHighlightBorderWidth,
+        LatexAutoCheckDependencies,
+        LatexDefaultText,
+        LatexTemplatePath,
+        LatexGeneratorCommand,
+        LatexSourceViewTheme,
+        LatexSourceViewAutoIndent,
+        LatexSourceViewSyntaxHighlight,
+        LatexSourceViewShowLineNumbers,
+        LatexEditorFont,
+        LatexUseCustomEditorFont,
+        LatexEditorWordWrap,
+        LatexUseExternalEditor,
+        LatexExternalEditorAutoConfirm,
+        LatexExternalEditorCommand,
+        LatexTemporaryFileExtension,
         Count,
     };
 
@@ -821,8 +840,114 @@ private:
         adw_action_row_add_suffix(row, entry);
         adw_action_row_set_activatable_widget(row, entry);
         preferenceControls[static_cast<size_t>(key)] = entry;
+        if (key == PreferenceKey::LatexDefaultText || key == PreferenceKey::LatexGeneratorCommand ||
+            key == PreferenceKey::LatexExternalEditorCommand ||
+            key == PreferenceKey::LatexTemporaryFileExtension) {
+            g_signal_connect(entry, "changed", G_CALLBACK(+[](GtkEditable*, gpointer data) {
+                                 static_cast<Prototype*>(data)->markLatexTextPreferencesPending();
+                             }), this);
+        }
         adw_preferences_group_add(group, GTK_WIDGET(row));
         return entry;
+    }
+
+    GtkWidget* preferenceTemplatePath(AdwPreferencesGroup* group, const std::string& value) {
+        auto* row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "TeX template");
+        adw_action_row_set_subtitle(row, "Leave empty to use the bundled template");
+        auto* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        auto* entry = gtk_entry_new();
+        gtk_editable_set_text(GTK_EDITABLE(entry), value.c_str());
+        gtk_editable_set_width_chars(GTK_EDITABLE(entry), 28);
+        gtk_widget_set_size_request(entry, 240, -1);
+        gtk_widget_set_hexpand(entry, true);
+        latexTemplatePathEntry = entry;
+        g_signal_connect(entry, "changed", G_CALLBACK(+[](GtkEditable*, gpointer data) {
+                             static_cast<Prototype*>(data)->markLatexTextPreferencesPending();
+                         }), this);
+        gtk_box_append(GTK_BOX(box), entry);
+        auto* browse = gtk_button_new_with_label("Browse…");
+        gtk_widget_set_valign(browse, GTK_ALIGN_CENTER);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(browse), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "Choose a LaTeX template file", -1);
+        g_signal_connect(browse, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->chooseLatexTemplate();
+                         }), this);
+        gtk_box_append(GTK_BOX(box), browse);
+        adw_action_row_add_suffix(row, box);
+        adw_action_row_set_activatable_widget(row, entry);
+        preferenceControls[static_cast<size_t>(PreferenceKey::LatexTemplatePath)] = entry;
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return entry;
+    }
+
+    GtkWidget* preferenceFont(AdwPreferencesGroup* group, const char* title, const char* subtitle,
+                              const std::string& value) {
+        auto* row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        adw_action_row_set_subtitle(row, subtitle);
+        auto* dialog = gtk_font_dialog_new();
+        gtk_font_dialog_set_font_map(dialog, pango_cairo_font_map_get_default());
+        auto* button = GTK_FONT_DIALOG_BUTTON(gtk_font_dialog_button_new(dialog));
+        gtk_font_dialog_button_set_level(button, GTK_FONT_LEVEL_FONT);
+        PangoFontDescription* description = pango_font_description_from_string(value.c_str());
+        gtk_font_dialog_button_set_font_desc(button, description);
+        pango_font_description_free(description);
+        adw_action_row_add_suffix(row, GTK_WIDGET(button));
+        adw_action_row_set_activatable_widget(row, GTK_WIDGET(button));
+        g_signal_connect(button, "notify::font-desc", G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                             static_cast<Prototype*>(data)->changePreference(PreferenceKey::LatexEditorFont,
+                                                                             GTK_WIDGET(object));
+                         }), this);
+        preferenceControls[static_cast<size_t>(PreferenceKey::LatexEditorFont)] = GTK_WIDGET(button);
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return GTK_WIDGET(button);
+    }
+
+    GtkWidget* preferenceLatexTheme(AdwPreferencesGroup* group, const std::string& selectedTheme) {
+        auto* row = ADW_COMBO_ROW(adw_combo_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Syntax color scheme");
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Choose colors for LaTeX source highlighting");
+        auto* model = gtk_string_list_new(nullptr);
+        gtk_string_list_append(model, "System default");
+        latexSourceViewThemeIds.clear();
+        latexSourceViewThemeIds.emplace_back();
+        guint selectedIndex = 0;
+#ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
+        auto* manager = gtk_source_style_scheme_manager_get_default();
+        const char* const* ids = gtk_source_style_scheme_manager_get_scheme_ids(manager);
+        if (ids) {
+            for (const char* const* id = ids; *id; ++id) {
+                auto* scheme = gtk_source_style_scheme_manager_get_scheme(manager, *id);
+                if (!scheme) {
+                    continue;
+                }
+                const auto index = static_cast<guint>(latexSourceViewThemeIds.size());
+                latexSourceViewThemeIds.emplace_back(*id);
+                gtk_string_list_append(model, gtk_source_style_scheme_get_name(scheme));
+                if (selectedTheme == *id) {
+                    selectedIndex = index;
+                }
+            }
+        }
+#else
+        (void)selectedTheme;
+        gtk_widget_set_sensitive(GTK_WIDGET(row), false);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "GtkSourceView was unavailable when this build was made");
+#endif
+        adw_combo_row_set_model(row, G_LIST_MODEL(model));
+        g_object_unref(model);
+        adw_combo_row_set_selected(row, selectedIndex);
+        g_object_set_data(G_OBJECT(row), "gtk4-preference-key",
+                          GUINT_TO_POINTER(static_cast<guint>(PreferenceKey::LatexSourceViewTheme)));
+        g_signal_connect(row, "notify::selected",
+                         G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             self->changePreference(PreferenceKey::LatexSourceViewTheme, GTK_WIDGET(object));
+                         }), this);
+        preferenceControls[static_cast<size_t>(PreferenceKey::LatexSourceViewTheme)] = GTK_WIDGET(row);
+        adw_preferences_group_add(group, GTK_WIDGET(row));
+        return GTK_WIDGET(row);
     }
 
     bool applyFloatingToolboxRows() {
@@ -925,6 +1050,51 @@ private:
             case PreferenceKey::CursorHighlightBorderWidth:
                 settings.cursorHighlightBorderWidth = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
+            case PreferenceKey::LatexAutoCheckDependencies:
+                settings.latexAutoCheckDependencies = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LatexSourceViewTheme: {
+                const auto selected = adw_combo_row_get_selected(ADW_COMBO_ROW(control));
+                if (selected >= latexSourceViewThemeIds.size()) {
+                    return;
+                }
+                settings.latexSourceViewThemeId = latexSourceViewThemeIds[selected];
+                break;
+            }
+            case PreferenceKey::LatexSourceViewAutoIndent:
+                settings.latexSourceViewAutoIndent = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LatexSourceViewSyntaxHighlight:
+                settings.latexSourceViewSyntaxHighlight = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LatexSourceViewShowLineNumbers:
+                settings.latexSourceViewShowLineNumbers = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LatexEditorFont: {
+                PangoFontDescription* description =
+                        gtk_font_dialog_button_get_font_desc(GTK_FONT_DIALOG_BUTTON(control));
+                if (description) {
+                    gchar* value = pango_font_description_to_string(description);
+                    settings.latexEditorFont = value ? value : "Monospace 12";
+                    g_free(value);
+                    pango_font_description_free(description);
+                }
+                break;
+            }
+            case PreferenceKey::LatexUseCustomEditorFont:
+                settings.latexUseCustomEditorFont = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                updateLatexPreferenceSensitivity();
+                break;
+            case PreferenceKey::LatexEditorWordWrap:
+                settings.latexEditorWordWrap = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LatexUseExternalEditor:
+                settings.latexUseExternalEditor = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                updateLatexPreferenceSensitivity();
+                break;
+            case PreferenceKey::LatexExternalEditorAutoConfirm:
+                settings.latexExternalEditorAutoConfirm = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
             case PreferenceKey::MinimumPressure:
                 settings.minimumPressure = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
@@ -978,6 +1148,11 @@ private:
             case PreferenceKey::FloatingToolboxRow3:
             case PreferenceKey::FloatingToolboxRow4:
             case PreferenceKey::MainToolRail:
+            case PreferenceKey::LatexDefaultText:
+            case PreferenceKey::LatexTemplatePath:
+            case PreferenceKey::LatexGeneratorCommand:
+            case PreferenceKey::LatexExternalEditorCommand:
+            case PreferenceKey::LatexTemporaryFileExtension:
             case PreferenceKey::Count:
                 return;
         }
@@ -1000,6 +1175,166 @@ private:
             showAlert("Could not save preferences", error);
         }
         update();
+    }
+
+    void chooseLatexTemplate() {
+        auto* dialog = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(dialog, "Choose a TeX template");
+        const char* currentPath = gtk_editable_get_text(GTK_EDITABLE(latexTemplatePathEntry));
+        if (currentPath && *currentPath) {
+            GFile* currentFile = g_file_new_for_path(currentPath);
+            gtk_file_dialog_set_initial_file(dialog, currentFile);
+            g_object_unref(currentFile);
+        }
+
+        using DialogContext = std::pair<Prototype*, GtkFileDialog*>;
+        auto* context = new DialogContext(this, dialog);
+        gtk_file_dialog_open(dialog, GTK_WINDOW(window), nullptr,
+                             +[](GObject*, GAsyncResult* result, gpointer data) {
+                                 std::unique_ptr<DialogContext> context(static_cast<DialogContext*>(data));
+                                 GError* error = nullptr;
+                                 GFile* file = gtk_file_dialog_open_finish(context->second, result, &error);
+                                 if (file) {
+                                     gchar* path = g_file_get_path(file);
+                                     if (path) {
+                                         gtk_editable_set_text(GTK_EDITABLE(context->first->latexTemplatePathEntry),
+                                                               path);
+                                         g_free(path);
+                                     } else {
+                                         context->first->showAlert(
+                                                 "Template must be a local file",
+                                                 "Choose a template stored on this device.");
+                                     }
+                                     g_object_unref(file);
+                                 }
+                                 g_clear_error(&error);
+                                 g_object_unref(context->second);
+                             },
+                             context);
+    }
+
+    bool applyLatexPreferences() {
+        auto entryText = [this](PreferenceKey key) {
+            auto* entry = preferenceControls[static_cast<size_t>(key)];
+            const char* text = entry ? gtk_editable_get_text(GTK_EDITABLE(entry)) : "";
+            return std::string(text ? text : "");
+        };
+        const auto defaultText = entryText(PreferenceKey::LatexDefaultText);
+        const auto templatePathText = entryText(PreferenceKey::LatexTemplatePath);
+        const auto generatorCommand = entryText(PreferenceKey::LatexGeneratorCommand);
+        const auto externalEditorCommand = entryText(PreferenceKey::LatexExternalEditorCommand);
+        const auto temporaryFileExtension = entryText(PreferenceKey::LatexTemporaryFileExtension);
+        if (defaultText.size() > prototype::maxCanvasLatexSourceBytes || templatePathText.size() > 4096 ||
+            generatorCommand.size() > 16384 || externalEditorCommand.size() > 16384 ||
+            temporaryFileExtension.size() > 64 || temporaryFileExtension.find('/') != std::string::npos ||
+            temporaryFileExtension.find('\\') != std::string::npos ||
+            std::any_of(temporaryFileExtension.begin(), temporaryFileExtension.end(),
+                        [](unsigned char value) { return value < 0x20; })) {
+            showAlert("LaTeX settings could not be applied",
+                      "Check the formula size, command lengths, template path, and temporary file suffix.");
+            return false;
+        }
+
+        auto& settings = importedConfig.settings;
+        const auto oldDefaultText = settings.latexDefaultText;
+        const auto oldTemplatePath = settings.latexTemplatePath;
+        const auto oldGeneratorCommand = settings.latexGeneratorCommand;
+        const auto oldExternalEditorCommand = settings.latexExternalEditorCommand;
+        const auto oldTemporaryFileExtension = settings.latexTemporaryFileExtension;
+        settings.latexDefaultText = defaultText;
+        settings.latexTemplatePath = templatePathText.empty() ? std::filesystem::path{} :
+                                                               prototype::preferences_detail::pathFromUtf8(
+                                                                       templatePathText);
+        settings.latexGeneratorCommand = generatorCommand;
+        settings.latexExternalEditorCommand = externalEditorCommand;
+        settings.latexTemporaryFileExtension = temporaryFileExtension;
+
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, settings, error)) {
+            settings.latexDefaultText = oldDefaultText;
+            settings.latexTemplatePath = oldTemplatePath;
+            settings.latexGeneratorCommand = oldGeneratorCommand;
+            settings.latexExternalEditorCommand = oldExternalEditorCommand;
+            settings.latexTemporaryFileExtension = oldTemporaryFileExtension;
+            showAlert("Could not save LaTeX preferences", error);
+            return false;
+        }
+
+        latexTemplatePath = settings.latexTemplatePath;
+        if (latexTemplatePath.empty()) {
+#ifdef GTK4_CANVAS_RESOURCE_DIR
+            latexTemplatePath = std::filesystem::path(GTK4_CANVAS_RESOURCE_DIR) / "default_template.tex";
+#endif
+        }
+        updateLatexPreferenceSensitivity();
+        if (latexSettingsApplyStatus) {
+            gtk_label_set_text(GTK_LABEL(latexSettingsApplyStatus), "Saved");
+            gtk_widget_add_css_class(latexSettingsApplyStatus, "success");
+            gtk_widget_remove_css_class(latexSettingsApplyStatus, "error");
+            gtk_widget_remove_css_class(latexSettingsApplyStatus, "dim-label");
+        }
+        return true;
+    }
+
+    void markLatexTextPreferencesPending() {
+        if (!latexSettingsApplyStatus) {
+            return;
+        }
+        gtk_label_set_text(GTK_LABEL(latexSettingsApplyStatus), "Unsaved changes");
+        gtk_widget_add_css_class(latexSettingsApplyStatus, "dim-label");
+        gtk_widget_remove_css_class(latexSettingsApplyStatus, "success");
+        gtk_widget_remove_css_class(latexSettingsApplyStatus, "error");
+    }
+
+    void updateLatexPreferenceSensitivity() {
+        const auto& settings = importedConfig.settings;
+        const bool sourceEditorEnabled = !settings.latexUseExternalEditor;
+        const auto setSensitive = [this](PreferenceKey key, bool sensitive) {
+            if (auto* control = preferenceControls[static_cast<size_t>(key)]) {
+                gtk_widget_set_sensitive(control, sensitive);
+            }
+        };
+        setSensitive(PreferenceKey::LatexEditorFont,
+                     settings.latexUseCustomEditorFont && sourceEditorEnabled);
+        setSensitive(PreferenceKey::LatexExternalEditorAutoConfirm, settings.latexUseExternalEditor);
+        setSensitive(PreferenceKey::LatexExternalEditorCommand, settings.latexUseExternalEditor);
+        setSensitive(PreferenceKey::LatexTemporaryFileExtension, settings.latexUseExternalEditor);
+        setSensitive(PreferenceKey::LatexSourceViewTheme, sourceEditorEnabled);
+        setSensitive(PreferenceKey::LatexSourceViewAutoIndent, sourceEditorEnabled);
+        setSensitive(PreferenceKey::LatexSourceViewSyntaxHighlight, sourceEditorEnabled);
+        setSensitive(PreferenceKey::LatexSourceViewShowLineNumbers, sourceEditorEnabled);
+        setSensitive(PreferenceKey::LatexEditorWordWrap, sourceEditorEnabled);
+#ifndef GTK4_CANVAS_HAVE_SOURCEVIEW
+        setSensitive(PreferenceKey::LatexSourceViewTheme, false);
+        setSensitive(PreferenceKey::LatexSourceViewAutoIndent, false);
+        setSensitive(PreferenceKey::LatexSourceViewSyntaxHighlight, false);
+        setSensitive(PreferenceKey::LatexSourceViewShowLineNumbers, false);
+#endif
+    }
+
+    void testLatexSetup() {
+        if (!applyLatexPreferences()) {
+            return;
+        }
+        if (latexTemplatePath.empty()) {
+            showAlert("Choose a TeX template", "Select a template file before checking the LaTeX setup.");
+            return;
+        }
+        gtk_widget_set_sensitive(latexSetupTestButton, false);
+        gtk_label_set_text(GTK_LABEL(latexSetupTestStatus), "Compiling the sample formula…");
+        gtk_widget_remove_css_class(latexSetupTestStatus, "success");
+        gtk_widget_remove_css_class(latexSetupTestStatus, "error");
+        const auto& settings = importedConfig.settings;
+        prototype::LatexEditor::testConfiguration(
+                latexTemplatePath, settings.latexGeneratorCommand, settings.latexDefaultText, latexBrush.color,
+                [this](bool success, std::string message) {
+                    gtk_widget_set_sensitive(latexSetupTestButton, true);
+                    gtk_label_set_text(GTK_LABEL(latexSetupTestStatus), success ?
+                                                                                     "LaTeX setup is ready" :
+                                                                                     "LaTeX setup needs attention");
+                    gtk_widget_add_css_class(latexSetupTestStatus, success ? "success" : "error");
+                    showAlert(success ? "LaTeX setup works" : "LaTeX setup failed", message);
+                });
     }
 
     void initializePlugins() {
@@ -2622,6 +2957,121 @@ private:
         adw_preferences_page_add(appearance, appearanceGroup);
         adw_preferences_dialog_add(preferencesDialog, appearance);
 
+        auto* latexPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+        adw_preferences_page_set_name(latexPage, "latex");
+        adw_preferences_page_set_title(latexPage, "LaTeX");
+        adw_preferences_page_set_icon_name(latexPage, "accessories-text-editor-symbolic");
+        auto* latexGenerationGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(latexGenerationGroup, "Formula generation");
+        adw_preferences_group_set_description(
+                latexGenerationGroup,
+                "Set the source, template and TeX command used when you insert a formula.");
+        preferenceSwitch(latexGenerationGroup, "Check LaTeX dependencies automatically",
+                         "Preserve the legacy setting; compiler errors are reported by the configured generator",
+                         importedConfig.settings.latexAutoCheckDependencies,
+                         PreferenceKey::LatexAutoCheckDependencies);
+        preferenceTextEntry(latexGenerationGroup, "Default formula",
+                            "Selected when you click an empty page with the LaTeX tool",
+                            importedConfig.settings.latexDefaultText, PreferenceKey::LatexDefaultText);
+        preferenceTemplatePath(latexGenerationGroup,
+                               prototype::preferences_detail::pathToUtf8(importedConfig.settings.latexTemplatePath));
+        preferenceTextEntry(latexGenerationGroup, "Generator command",
+                            "Use {} where the temporary .tex path belongs",
+                            importedConfig.settings.latexGeneratorCommand, PreferenceKey::LatexGeneratorCommand);
+        auto* latexTestRow = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(latexTestRow), "Test the template and compiler");
+        adw_action_row_set_subtitle(latexTestRow, "Compile the default formula without changing the document");
+        latexSetupTestStatus = gtk_label_new("");
+        gtk_widget_add_css_class(latexSetupTestStatus, "dim-label");
+        gtk_widget_set_margin_end(latexSetupTestStatus, 8);
+        adw_action_row_add_suffix(latexTestRow, latexSetupTestStatus);
+        latexSetupTestButton = gtk_button_new_with_label("Test setup");
+        g_signal_connect(latexSetupTestButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->testLatexSetup();
+                         }), this);
+        adw_action_row_add_suffix(latexTestRow, latexSetupTestButton);
+        adw_preferences_group_add(latexGenerationGroup, GTK_WIDGET(latexTestRow));
+        adw_preferences_page_add(latexPage, latexGenerationGroup);
+
+        auto* sourceEditorGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(sourceEditorGroup, "In-app source editor");
+#ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
+        adw_preferences_group_set_description(sourceEditorGroup,
+                                              "Tune the editor used when external editing is turned off.");
+#else
+        adw_preferences_group_set_description(
+                sourceEditorGroup,
+                "GtkSourceView was unavailable when this build was made. Source highlighting and indentation "
+                "options are disabled.");
+#endif
+        preferenceSwitch(sourceEditorGroup, "Use a custom editor font", "Choose a font for LaTeX source",
+                         importedConfig.settings.latexUseCustomEditorFont,
+                         PreferenceKey::LatexUseCustomEditorFont);
+        preferenceFont(sourceEditorGroup, "Editor font", "Set the family, style and size for the source editor",
+                       importedConfig.settings.latexEditorFont);
+        preferenceSwitch(sourceEditorGroup, "Wrap long lines", "Keep long formulas inside the editor width",
+                         importedConfig.settings.latexEditorWordWrap, PreferenceKey::LatexEditorWordWrap);
+        preferenceSwitch(sourceEditorGroup, "Indent automatically", "Indent new lines to match the current formula",
+                         importedConfig.settings.latexSourceViewAutoIndent,
+                         PreferenceKey::LatexSourceViewAutoIndent);
+        preferenceSwitch(sourceEditorGroup, "Highlight LaTeX syntax", "Color LaTeX commands and comments",
+                         importedConfig.settings.latexSourceViewSyntaxHighlight,
+                         PreferenceKey::LatexSourceViewSyntaxHighlight);
+        preferenceSwitch(sourceEditorGroup, "Show line numbers", "Number each line in the source editor",
+                         importedConfig.settings.latexSourceViewShowLineNumbers,
+                         PreferenceKey::LatexSourceViewShowLineNumbers);
+        preferenceLatexTheme(sourceEditorGroup, importedConfig.settings.latexSourceViewThemeId);
+        adw_preferences_page_add(latexPage, sourceEditorGroup);
+
+        auto* externalEditorGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(externalEditorGroup, "External editor");
+        adw_preferences_group_set_description(
+                externalEditorGroup,
+                "Open the temporary source in another app. The preview updates when that app closes.");
+        preferenceSwitch(externalEditorGroup, "Use an external editor", "Open LaTeX source outside Xournal++",
+                         importedConfig.settings.latexUseExternalEditor, PreferenceKey::LatexUseExternalEditor);
+        preferenceTextEntry(externalEditorGroup, "Editor command",
+                            "Leave empty to use the editor from $EDITOR",
+                            importedConfig.settings.latexExternalEditorCommand,
+                            PreferenceKey::LatexExternalEditorCommand);
+        preferenceTextEntry(externalEditorGroup, "Temporary file extension",
+                            "The source file extension passed to the external editor",
+                            importedConfig.settings.latexTemporaryFileExtension,
+                            PreferenceKey::LatexTemporaryFileExtension);
+        preferenceSwitch(externalEditorGroup, "Insert automatically when valid",
+                         "Insert the result after the external editor closes and compilation succeeds",
+                         importedConfig.settings.latexExternalEditorAutoConfirm,
+                         PreferenceKey::LatexExternalEditorAutoConfirm);
+        adw_preferences_page_add(latexPage, externalEditorGroup);
+
+        auto* latexSaveGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(latexSaveGroup, "Pending text settings");
+        adw_preferences_group_set_description(
+                latexSaveGroup,
+                "Apply the formula, template and editor command fields above.");
+        auto* latexSaveRow = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(latexSaveRow), "Save LaTeX settings");
+        adw_action_row_set_subtitle(latexSaveRow, "Switches and selectors save as you change them");
+        latexSettingsApplyStatus = gtk_label_new("");
+        gtk_widget_add_css_class(latexSettingsApplyStatus, "dim-label");
+        gtk_widget_set_margin_end(latexSettingsApplyStatus, 8);
+        adw_action_row_add_suffix(latexSaveRow, latexSettingsApplyStatus);
+        latexSettingsApplyButton = gtk_button_new_with_label("Apply");
+        g_signal_connect(latexSettingsApplyButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->applyLatexPreferences()) {
+                                 gtk_label_set_text(GTK_LABEL(self->latexSettingsApplyStatus), "Saved");
+                                 gtk_widget_add_css_class(self->latexSettingsApplyStatus, "success");
+                                 gtk_widget_remove_css_class(self->latexSettingsApplyStatus, "error");
+                             }
+                         }), this);
+        adw_action_row_add_suffix(latexSaveRow, latexSettingsApplyButton);
+        adw_preferences_group_add(latexSaveGroup, GTK_WIDGET(latexSaveRow));
+        adw_preferences_page_add(latexPage, latexSaveGroup);
+
+        adw_preferences_dialog_add(preferencesDialog, latexPage);
+        updateLatexPreferenceSensitivity();
+
         auto* inputPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
         adw_preferences_page_set_name(inputPage, "input");
         adw_preferences_page_set_title(inputPage, "Input");
@@ -3706,7 +4156,9 @@ private:
         require(foundEmptyPoint, "LaTeX verification could not find an unused insertion point");
 
         const auto originalImageCount = state.images.size();
-        const auto expectedSource = importedConfig.settings.latexDefaultText;
+        const auto expectedSource = importedConfig.settings.latexUseExternalEditor ?
+                                            std::string("\\frac{1}{2}") :
+                                            importedConfig.settings.latexDefaultText;
         selectTool(Tool::Latex);
         const auto screenPoint = state.pageScreenPoint(page, insertionPoint.x, insertionPoint.y);
         openLatexEditorAt(screenPoint.x, screenPoint.y);
@@ -3743,6 +4195,12 @@ private:
         const auto center = prototype::canvasImageCenter(insertedFormula);
         const auto editPoint = state.pageScreenPoint(page, center.x, center.y);
         openLatexEditorAt(editPoint.x, editPoint.y);
+        const gint64 editDeadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+        while (latexEditor && !latexEditor->readyForInsertion() && g_get_monotonic_time() < editDeadline) {
+            while (g_main_context_iteration(nullptr, false)) {
+            }
+            g_usleep(1000);
+        }
         require(latexEditor && latexEditor->readyForInsertion(),
                 "The LaTeX tool did not reopen the inserted formula for editing");
         latexEditor->activateInsert();
@@ -8440,6 +8898,8 @@ private:
                             if (++self->snapshotWaits < 60) {
                                 if (!self->settingsVerifyMode.empty()) {
                                     --self->settingsVerifyStep;
+                                } else if (!self->preferencesVerifyMode.empty()) {
+                                    --self->preferencesVerifyStep;
                                 } else if (!self->imageVerifyMode.empty()) {
                                     --self->imageVerifyStep;
                                 } else if (!self->layerVerifyMode.empty()) {
@@ -8871,9 +9331,23 @@ private:
         const auto imageIndex = target.imageIndex;
         const auto insertedAt = position;
         const bool selectInitialSource = !originalImage && !originalText;
+        const auto& latexSettings = importedConfig.settings;
+        prototype::LatexEditorPreferences editorPreferences;
+        editorPreferences.sourceViewThemeId = latexSettings.latexSourceViewThemeId;
+        editorPreferences.sourceViewAutoIndent = latexSettings.latexSourceViewAutoIndent;
+        editorPreferences.sourceViewSyntaxHighlight = latexSettings.latexSourceViewSyntaxHighlight;
+        editorPreferences.sourceViewShowLineNumbers = latexSettings.latexSourceViewShowLineNumbers;
+        editorPreferences.editorFont = latexSettings.latexEditorFont;
+        editorPreferences.useCustomEditorFont = latexSettings.latexUseCustomEditorFont;
+        editorPreferences.editorWordWrap = latexSettings.latexEditorWordWrap;
+        editorPreferences.useExternalEditor = latexSettings.latexUseExternalEditor;
+        editorPreferences.externalEditorAutoConfirm = latexSettings.latexExternalEditorAutoConfirm;
+        editorPreferences.externalEditorCommand = latexSettings.latexExternalEditorCommand;
+        editorPreferences.temporaryFileExtension = latexSettings.latexTemporaryFileExtension;
         latexEditor = prototype::LatexEditor::create(
                 GTK_WINDOW(window), latexTemplatePath, importedConfig.settings.latexGeneratorCommand,
                 std::move(source), state.brush.color, originalImage, selectInitialSource,
+                std::move(editorPreferences),
                 [this, documentSession, page, textIndex, imageIndex, originalImage, originalText,
                  insertedAt](std::optional<prototype::CanvasImage> result) {
                     latexEditor.reset();
@@ -10405,8 +10879,37 @@ private:
         ++frames;
     }
 
-    void capture(const std::string& name, GtkWidget* target = nullptr) {
+    void capture(const std::string& name, GtkWidget* target = nullptr, bool captureTargetDirectly = false) {
         waitForNextWindowFrame();
+        graphene_rect_t targetBounds;
+        if (target && (captureTargetDirectly || !gtk_widget_compute_bounds(target, window, &targetBounds))) {
+            const int targetWidth = gtk_widget_get_width(target);
+            const int targetHeight = gtk_widget_get_height(target);
+            if (targetWidth <= 0 || targetHeight <= 0) {
+                throw SnapshotPending{};
+            }
+            auto* targetPaintable = gtk_widget_paintable_new(target);
+            auto* targetSnapshot = gtk_snapshot_new();
+            gdk_paintable_snapshot(GDK_PAINTABLE(targetPaintable), GDK_SNAPSHOT(targetSnapshot),
+                                   targetWidth, targetHeight);
+            auto* targetNode = gtk_snapshot_free_to_node(targetSnapshot);
+            g_object_unref(targetPaintable);
+            if (!targetNode) {
+                throw SnapshotPending{};
+            }
+            const graphene_rect_t targetRenderBounds{
+                    {0, 0}, {static_cast<float>(targetWidth), static_cast<float>(targetHeight)}};
+            auto* targetTexture = gsk_renderer_render_texture(
+                    gtk_native_get_renderer(GTK_NATIVE(window)), targetNode, &targetRenderBounds);
+            const auto targetPath = options.smokeDirectory + "/" + name + ".png";
+            const bool targetSaved = gdk_texture_save_to_png(targetTexture, targetPath.c_str());
+            g_object_unref(targetTexture);
+            gsk_render_node_unref(targetNode);
+            if (!targetSaved) {
+                throw std::runtime_error("Cannot write screenshot");
+            }
+            return;
+        }
         // Snapshot the window so a crop retains ancestor backgrounds and styling.
         auto* paintable = GDK_PAINTABLE(g_object_ref(windowPaintable));
         auto* snapshot = gtk_snapshot_new();
@@ -11811,6 +12314,23 @@ private:
                                     control(PreferenceKey::FloatingToolboxRow3) &&
                                     control(PreferenceKey::FloatingToolboxRow4) && floatingToolboxApplyButton,
                             "Preferences dialog is missing the four floating toolbox rows");
+                    require(control(PreferenceKey::LatexAutoCheckDependencies) &&
+                                    control(PreferenceKey::LatexDefaultText) &&
+                                    control(PreferenceKey::LatexTemplatePath) &&
+                                    control(PreferenceKey::LatexGeneratorCommand) &&
+                                    control(PreferenceKey::LatexSourceViewTheme) &&
+                                    control(PreferenceKey::LatexSourceViewAutoIndent) &&
+                                    control(PreferenceKey::LatexSourceViewSyntaxHighlight) &&
+                                    control(PreferenceKey::LatexSourceViewShowLineNumbers) &&
+                                    control(PreferenceKey::LatexEditorFont) &&
+                                    control(PreferenceKey::LatexUseCustomEditorFont) &&
+                                    control(PreferenceKey::LatexEditorWordWrap) &&
+                                    control(PreferenceKey::LatexUseExternalEditor) &&
+                                    control(PreferenceKey::LatexExternalEditorAutoConfirm) &&
+                                    control(PreferenceKey::LatexExternalEditorCommand) &&
+                                    control(PreferenceKey::LatexTemporaryFileExtension) &&
+                                    latexSettingsApplyButton && latexSetupTestButton,
+                            "LaTeX Preferences page is missing an imported setting or editor control");
                     require(control(PreferenceKey::MainToolRail) && mainToolRailApplyButton &&
                                     std::string(gtk_editable_get_text(GTK_EDITABLE(
                                             control(PreferenceKey::MainToolRail)))) ==
@@ -11831,7 +12351,11 @@ private:
                     require(adw_switch_row_get_active(
                                     ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
                             "Rotation snapping should be enabled by default in Preferences");
-                    capture("preferences-dialog");
+                    capture("preferences-dialog", GTK_WIDGET(preferencesDialog), true);
+                    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "latex");
+                    require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "latex",
+                            "Preferences dialog did not open the LaTeX page");
+                    capture("preferences-latex", GTK_WIDGET(preferencesDialog), true);
                     adw_preferences_dialog_set_visible_page_name(preferencesDialog, "toolbar");
                     require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "toolbar",
                             "Preferences dialog did not switch to the Toolbar page");
@@ -11871,6 +12395,59 @@ private:
                     adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapGrid)), false);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridSize)), 24.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::SnapGridTolerance)), 0.4);
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::LatexDefaultText)),
+                                          "\\frac{\\alpha}{2}");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::LatexTemplatePath)),
+                                          "/tmp/template with spaces.tex");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::LatexGeneratorCommand)),
+                                          "pdflatex -halt-on-error -interaction=nonstopmode '{}'");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::LatexExternalEditorCommand)),
+                                          "'/tmp/fake latex editor' --wait");
+                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::LatexTemporaryFileExtension)), "tex");
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexAutoCheckDependencies)), false);
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexUseCustomEditorFont)), true);
+                    require(gtk_widget_get_sensitive(control(PreferenceKey::LatexEditorFont)),
+                            "Enabling the custom LaTeX font did not enable its font selector");
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexEditorWordWrap)), false);
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexSourceViewAutoIndent)), false);
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexSourceViewSyntaxHighlight)), false);
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexSourceViewShowLineNumbers)), true);
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexUseExternalEditor)), true);
+                    adw_switch_row_set_active(
+                            ADW_SWITCH_ROW(control(PreferenceKey::LatexExternalEditorAutoConfirm)), true);
+                    require(!gtk_widget_get_sensitive(control(PreferenceKey::LatexEditorFont)) &&
+                                    !gtk_widget_get_sensitive(control(PreferenceKey::LatexSourceViewTheme)) &&
+                                    gtk_widget_get_sensitive(control(PreferenceKey::LatexExternalEditorCommand)) &&
+                                    gtk_widget_get_sensitive(
+                                            control(PreferenceKey::LatexExternalEditorAutoConfirm)),
+                            "LaTeX preference sensitivity did not follow custom font and external-editor settings");
+                    g_signal_emit_by_name(latexSettingsApplyButton, "clicked");
+                    require(importedConfig.settings.latexDefaultText == "\\frac{\\alpha}{2}" &&
+                                    prototype::preferences_detail::pathToUtf8(
+                                            importedConfig.settings.latexTemplatePath) ==
+                                            "/tmp/template with spaces.tex" &&
+                                    importedConfig.settings.latexGeneratorCommand ==
+                                            "pdflatex -halt-on-error -interaction=nonstopmode '{}'" &&
+                                    importedConfig.settings.latexExternalEditorCommand ==
+                                            "'/tmp/fake latex editor' --wait" &&
+                                    !importedConfig.settings.latexAutoCheckDependencies &&
+                                    importedConfig.settings.latexUseCustomEditorFont &&
+                                    !importedConfig.settings.latexEditorWordWrap &&
+                                    !importedConfig.settings.latexSourceViewAutoIndent &&
+                                    !importedConfig.settings.latexSourceViewSyntaxHighlight &&
+                                    importedConfig.settings.latexSourceViewShowLineNumbers &&
+                                    importedConfig.settings.latexUseExternalEditor &&
+                                    importedConfig.settings.latexExternalEditorAutoConfirm &&
+                                    importedConfig.settings.latexTemporaryFileExtension == "tex" &&
+                                    std::string(gtk_label_get_text(GTK_LABEL(latexSettingsApplyStatus))) == "Saved",
+                            "Applying LaTeX preferences did not persist the text fields and editor options");
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanSpeed)), 31.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier)), 3.5);
                     gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow1)),
@@ -11959,6 +12536,23 @@ private:
                                             std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
                                     importedConfig.settings.floatingToolboxRows[3] ==
                                             std::vector<std::string>({"DRAW_ARROW"}) &&
+                                    importedConfig.settings.latexDefaultText == "\\frac{\\alpha}{2}" &&
+                                    prototype::preferences_detail::pathToUtf8(
+                                            importedConfig.settings.latexTemplatePath) ==
+                                            "/tmp/template with spaces.tex" &&
+                                    importedConfig.settings.latexGeneratorCommand ==
+                                            "pdflatex -halt-on-error -interaction=nonstopmode '{}'" &&
+                                    importedConfig.settings.latexExternalEditorCommand ==
+                                            "'/tmp/fake latex editor' --wait" &&
+                                    !importedConfig.settings.latexAutoCheckDependencies &&
+                                    importedConfig.settings.latexUseCustomEditorFont &&
+                                    !importedConfig.settings.latexEditorWordWrap &&
+                                    !importedConfig.settings.latexSourceViewAutoIndent &&
+                                    !importedConfig.settings.latexSourceViewSyntaxHighlight &&
+                                    importedConfig.settings.latexSourceViewShowLineNumbers &&
+                                    importedConfig.settings.latexUseExternalEditor &&
+                                    importedConfig.settings.latexExternalEditorAutoConfirm &&
+                                    importedConfig.settings.latexTemporaryFileExtension == "tex" &&
                                     importedConfig.settings.mainToolRail ==
                                             std::vector<prototype::MainToolAction>({
                                                     prototype::MainToolAction::SmartSelect,
@@ -12131,6 +12725,37 @@ private:
                                              GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier))) - 3.5) <
                                             1e-8,
                             "Preferences dialog did not restore selection edge-pan values");
+                    require(std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                                    control(PreferenceKey::LatexDefaultText)))) ==
+                                            "\\frac{\\alpha}{2}" &&
+                                    prototype::preferences_detail::pathToUtf8(
+                                            importedConfig.settings.latexTemplatePath) ==
+                                            "/tmp/template with spaces.tex" &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::LatexGeneratorCommand)))) ==
+                                            "pdflatex -halt-on-error -interaction=nonstopmode '{}'" &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::LatexExternalEditorCommand)))) ==
+                                            "'/tmp/fake latex editor' --wait" &&
+                                    !adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexAutoCheckDependencies))) &&
+                                    adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexUseCustomEditorFont))) &&
+                                    !adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexEditorWordWrap))) &&
+                                    !adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexSourceViewAutoIndent))) &&
+                                    !adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexSourceViewSyntaxHighlight))) &&
+                                    adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexSourceViewShowLineNumbers))) &&
+                                    adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexUseExternalEditor))) &&
+                                    adw_switch_row_get_active(ADW_SWITCH_ROW(
+                                            control(PreferenceKey::LatexExternalEditorAutoConfirm))) &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::LatexTemporaryFileExtension)))) == "tex",
+                            "Preferences dialog did not restore LaTeX settings and editor options");
                     capture("preferences-reloaded");
                     std::cout << "PASS: GTK 4 preferences survive application restart\n";
                     adw_dialog_close(ADW_DIALOG(preferencesDialog));
@@ -14289,6 +14914,12 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
+    GtkWidget* latexTemplatePathEntry = nullptr;
+    GtkWidget* latexSetupTestButton = nullptr;
+    GtkWidget* latexSetupTestStatus = nullptr;
+    GtkWidget* latexSettingsApplyButton = nullptr;
+    GtkWidget* latexSettingsApplyStatus = nullptr;
+    std::vector<std::string> latexSourceViewThemeIds;
     GtkWindow* pluginManagerWindow = nullptr;
     GtkWidget* pluginManagerList = nullptr;
     GtkWidget* pluginManagerApplyButton = nullptr;

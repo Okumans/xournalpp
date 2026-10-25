@@ -37,8 +37,16 @@ LaTeX is available from More tools by default. Click an empty page area to creat
 a formula, click existing text or a formula to replace it, and double-click a
 formula with Smart Select to edit it. The live editor uses the configured legacy
 generator and template, and native saves retain both the editable source and the
-vector PDF. Legacy LaTeX settings are imported read-only; editing generator,
-template, and source-editor preferences remains future work.
+vector PDF. Preferences expose the default formula, template, generator command,
+source-editor theme, indentation, syntax highlighting, line numbers, font, and
+wrapping options. The editor uses GtkSourceView 5 when available and falls back
+to GTK's text view otherwise. External-editor mode opens the temporary source
+with the configured command or `$EDITOR`, waits for it to close, and compiles
+the returned text; automatic insertion after a successful compile is optional.
+Text fields use Apply, while switches and selectors save immediately. The setup
+check compiles the default formula without changing the document. Legacy
+settings remain read-only in `settings.xml`; GTK 4 edits are stored in
+`gtk4-canvas.ini`.
 
 The Plugins menu discovers bundled plugins plus folders supplied through
 `--plugin-dir` and the configuration directory. The plugin manager displays each
@@ -228,7 +236,9 @@ PDF rasterization runs synchronously on the prototype's UI thread.
 ## Build
 
 Requirements: CMake 3.20+, a C++20 compiler, pkg-config, GTK 4.10+, libadwaita
-1.5+, and Poppler GLib development libraries. This initial build targets Linux.
+1.5+, and Poppler GLib development libraries. GtkSourceView 5 is optional; when
+it is unavailable, the in-app LaTeX source editor uses GTK's plain text view.
+This initial build targets Linux.
 
 From this worktree's root:
 
@@ -372,7 +382,9 @@ per-page top-layer creation and undo/redo, and native save/reopen in Cage.
 Use `--latex-only` with `--worker` and `--fixture test/files/benchmark/latex.xopp`
 for the LaTeX check. It compiles with the configured generator in Cage, inserts
 and reopens a formula, checks undo/redo, and verifies its editable source, vector
-PDF, and geometry through native save/reopen.
+PDF, and geometry through native save/reopen. It also runs a fake external editor
+whose command path contains spaces, then checks the temporary `.tex` handoff,
+returned source, compilation, and native round trip.
 
 The harness:
 
@@ -409,7 +421,7 @@ Transfer serialization, geometric drawing/recognition/spline/stabilizer checks,
 rich-text transfer/rendering, background task/main-context checks, read-only
 `settings.xml` and `.gpl` palette import/fallback checks, CLI rejection checks,
 filesystem backup/publication, PDF text extraction, and autosave/recovery checks
-bring the standalone CTest suite to thirty-four tests.
+bring the standalone CTest suite to thirty-six tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -526,8 +538,8 @@ are unsupported native object editing and full renderer fidelity; text and
 mixed-object clipboard support; paired, horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
 parity; audio recording/device preferences and media lifecycle, vertical-space
-insertion, LaTeX settings and external-editor preferences, and the general
-floating toolbox; complete per-device settings and toolbar customization; and
+insertion, LaTeX dependency-check semantics and invalid-source recovery, and the
+general floating toolbox; complete per-device settings and toolbar customization; and
 the remaining bundled plugin actions. Accessibility, physical input, platform
 packaging, GPU rendering, and platform-specific validation are also still
 required before replacing the existing application.
