@@ -457,7 +457,7 @@ def verify_selection_modes(args, evidence):
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_SELECTION_VERIFY_MODE="visible-layers"),
     )
     if ("PASS: GTK visible-layer rectangle/lasso selection, Smart Select edge hit, grid snap, "
-            "resize snap and edge-pan, "
+            "resize snap, rotation-aware resize and edge-pan, "
             "Text-tool mouse/stylus move/resize "
             "and formatting, vertical-space direction/preview/undo, "
             "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
@@ -467,6 +467,7 @@ def verify_selection_modes(args, evidence):
     for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",
                  "selection-hidden-layer-fallback", "smart-select-edge-hit", "smart-select-grid-snapped",
                  "smart-select-edge-pan",
+                 "smart-select-rotated-frame", "smart-select-rotated-resize",
                  "selection-text-object", "selection-text-moved",
                  "text-tool-edited", "text-tool-moved", "text-tool-resized", "text-tool-stylus-moved",
                  "vertical-space-preview", "vertical-space-applied"):
