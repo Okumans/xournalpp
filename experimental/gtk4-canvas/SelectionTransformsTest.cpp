@@ -443,7 +443,7 @@ int main(int argc, char** argv) {
         check(copy.size() == 2 && copy[0].points[1].pressure == .75 && copy[1].brush.width == 14,
               "Clipboard lost pressure/style");
         const auto payload = clipboard::decodePayload(bytes);
-        check(payload.strokes.size() == 2 && !payload.image,
+        check(payload.strokes.size() == 2 && payload.images.empty(),
               "Native stroke clipboard payload decoded with the wrong object type");
         CanvasImage clipboardImage;
         clipboardImage.pixelWidth = 320;
@@ -457,7 +457,7 @@ int main(int argc, char** argv) {
                       near(imageCopy.transform.xx, 0.75) && near(imageCopy.transform.yx, 0.25) &&
                       near(imageCopy.transform.xy, -0.25) && near(imageCopy.transform.yy, 0.75) &&
                       near(imageCopy.transform.x, 122) && near(imageCopy.transform.y, 86) &&
-                      imageCopy.encodedData == clipboardImage.encodedData && imagePayload.image &&
+                      imageCopy.encodedData == clipboardImage.encodedData && imagePayload.images.size() == 1 &&
                       imagePayload.strokes.empty(),
               "Native image clipboard round trip lost its raster data or transform");
         for (size_t length = 0; length < imageBytes.size(); ++length) {
@@ -468,6 +468,48 @@ int main(int argc, char** argv) {
                 rejectedImage = true;
             }
             check(rejectedImage, "A truncated native image clipboard was accepted");
+        }
+        auto secondClipboardImage = clipboardImage;
+        secondClipboardImage.transform.x += 72;
+        secondClipboardImage.transform.y -= 18;
+        secondClipboardImage.transform.xx = 1.25;
+        const std::vector<CanvasImage> clipboardImages{clipboardImage, secondClipboardImage};
+        const auto imagesBytes = clipboard::encodeImages(clipboardImages);
+        const auto imagesCopy = clipboard::decodeImages(imagesBytes);
+        const auto imagesPayload = clipboard::decodePayload(imagesBytes);
+        check(imagesCopy.size() == 2 && imagesPayload.images.size() == 2 &&
+                      imagesCopy[0].encodedData == clipboardImage.encodedData &&
+                      imagesCopy[1].encodedData == secondClipboardImage.encodedData &&
+                      near(imagesCopy[1].transform.xx, 1.25) && near(imagesCopy[1].transform.x, 194) &&
+                      near(imagesCopy[1].transform.y, 68),
+              "Native multi-image clipboard round trip lost image order, data or relative transforms");
+        bool rejectedSingleDecode = false;
+        try {
+            clipboard::decodeImage(imagesBytes);
+        } catch (const std::exception&) {
+            rejectedSingleDecode = true;
+        }
+        check(rejectedSingleDecode, "Single-image clipboard decoder accepted multiple images");
+        auto excessiveImageCount = imagesBytes;
+        const auto imageCountTag = excessiveImageCount.find("_i");
+        check(imageCountTag != std::string::npos, "Native image clipboard did not contain its object count");
+        const int excessiveCount = static_cast<int>(clipboard::maxClipboardImages + 1);
+        std::memcpy(excessiveImageCount.data() + imageCountTag + 2, &excessiveCount, sizeof(excessiveCount));
+        bool rejectedExcessiveImageCount = false;
+        try {
+            clipboard::decodeImages(excessiveImageCount);
+        } catch (const std::exception&) {
+            rejectedExcessiveImageCount = true;
+        }
+        check(rejectedExcessiveImageCount, "Clipboard decoder accepted too many image objects");
+        for (size_t length = 0; length < imagesBytes.size(); ++length) {
+            bool rejectedImages = false;
+            try {
+                clipboard::decodeImages(std::string_view(imagesBytes).substr(0, length));
+            } catch (const std::exception&) {
+                rejectedImages = true;
+            }
+            check(rejectedImages, "A truncated multi-image clipboard was accepted");
         }
         for (size_t length = 0; length < bytes.size(); ++length) {
             bool rejected = false;

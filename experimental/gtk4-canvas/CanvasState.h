@@ -2410,6 +2410,72 @@ public:
         return true;
     }
 
+    bool pasteImages(std::vector<CanvasImage> pasted, int targetPage, Point center) {
+        if (pasted.empty() || pasted.size() > maxCanvasImageObjects || targetPage < 0 ||
+            targetPage >= pageCount() || current || eraseGesture || selectionGesture ||
+            !std::isfinite(center.x) || !std::isfinite(center.y)) {
+            return false;
+        }
+
+        auto bounds = canvasImageBounds(pasted.front());
+        if (!validCanvasImage(pasted.front())) {
+            return false;
+        }
+        for (const auto& image: pasted) {
+            if (!validCanvasImage(image)) {
+                return false;
+            }
+            for (const auto& point: canvasImageCorners(image)) {
+                if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+                    return false;
+                }
+                bounds.x0 = std::min(bounds.x0, point.x);
+                bounds.y0 = std::min(bounds.y0, point.y);
+                bounds.x1 = std::max(bounds.x1, point.x);
+                bounds.y1 = std::max(bounds.y1, point.y);
+            }
+        }
+        if (!std::isfinite(bounds.x1 - bounds.x0) || !std::isfinite(bounds.y1 - bounds.y0)) {
+            return false;
+        }
+        const double dx = center.x - (bounds.x0 / 2.0 + bounds.x1 / 2.0);
+        const double dy = center.y - (bounds.y0 / 2.0 + bounds.y1 / 2.0);
+        if (!std::isfinite(dx) || !std::isfinite(dy)) {
+            return false;
+        }
+
+        const auto layerId = activeLayerId(targetPage);
+        const auto originLayer = activeLayerOrigin(targetPage);
+        auto layerOrder = nextOriginOrder(targetPage, originLayer);
+        for (auto& image: pasted) {
+            image.page = targetPage;
+            image.layerId = layerId;
+            image.originLayer = originLayer;
+            image.layerOrder = layerOrder++;
+            image.transform.x += dx;
+            image.transform.y += dy;
+            if (!validCanvasImage(image) || !std::isfinite(image.transform.x) ||
+                !std::isfinite(image.transform.y)) {
+                return false;
+            }
+        }
+
+        Edit edit;
+        edit.imageChanges.push_back({images.size(), {}, images.size(), std::move(pasted)});
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
+        for (size_t index = 0; index < edit.imageChanges.front().after.size(); ++index) {
+            edit.imageSelectionAfter->push_back(images.size() + index);
+        }
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
     bool replaceImage(size_t index, CanvasImage image) {
         if (index >= images.size() || !validCanvasImage(image) || current || eraseGesture || selectionGesture ||
             image.page != images[index].page) {

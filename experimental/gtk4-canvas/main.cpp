@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -139,27 +140,53 @@ prototype::PdfTextSelectionStyle pdfSelectionStyleForTool(Tool tool) {
                                              prototype::PdfTextSelectionStyle::Linear;
 }
 
-std::string encodeImageForClipboard(const prototype::CanvasImage& image) {
-    if (!prototype::validCanvasImage(image) || !image.surface) {
-        throw std::runtime_error("The selected image cannot be copied");
+std::string encodeImagesForClipboard(const std::vector<prototype::CanvasImage>& images) {
+    if (images.empty()) {
+        throw std::runtime_error("No images are selected");
+    }
+    for (const auto& image: images) {
+        if (!prototype::validCanvasImage(image) || !image.surface) {
+            throw std::runtime_error("The selected image cannot be copied");
+        }
     }
 
-    const auto bounds = prototype::canvasImageBounds(image);
-    const auto& transform = image.transform;
-    const double scaleX = std::hypot(transform.xx, transform.yx);
-    const double scaleY = std::hypot(transform.xy, transform.yy);
-    const double smallestScale = std::min(scaleX, scaleY);
-    double pixelsPerPoint = smallestScale > 1e-10 ? std::max(1.0, 1.0 / smallestScale) : 1.0;
-    double width = std::ceil((bounds.x1 - bounds.x0) * pixelsPerPoint);
-    double height = std::ceil((bounds.y1 - bounds.y0) * pixelsPerPoint);
-    if (!std::isfinite(width) || !std::isfinite(height) || width < 1 || height < 1) {
-        throw std::runtime_error("The selected image has invalid clipboard dimensions");
+    auto bounds = prototype::canvasImageBounds(images.front());
+    double pixelsPerPoint = 1.0;
+    for (const auto& image: images) {
+        for (const auto& point: prototype::canvasImageCorners(image)) {
+            bounds.x0 = std::min(bounds.x0, point.x);
+            bounds.y0 = std::min(bounds.y0, point.y);
+            bounds.x1 = std::max(bounds.x1, point.x);
+            bounds.y1 = std::max(bounds.y1, point.y);
+        }
+        const auto& transform = image.transform;
+        const double scaleX = std::hypot(transform.xx, transform.yx);
+        const double scaleY = std::hypot(transform.xy, transform.yy);
+        const double smallestScale = std::min(scaleX, scaleY);
+        if (smallestScale > 1e-10) {
+            pixelsPerPoint = std::max(pixelsPerPoint, 1.0 / smallestScale);
+        }
     }
-    const double area = width * height;
-    if (area > static_cast<double>(prototype::maxCanvasImagePixels)) {
-        pixelsPerPoint *= std::sqrt(static_cast<double>(prototype::maxCanvasImagePixels) / area);
-        width = std::max(1.0, std::floor((bounds.x1 - bounds.x0) * pixelsPerPoint));
-        height = std::max(1.0, std::floor((bounds.y1 - bounds.y0) * pixelsPerPoint));
+
+    const double boundsWidth = bounds.x1 - bounds.x0;
+    const double boundsHeight = bounds.y1 - bounds.y0;
+    if (!std::isfinite(boundsWidth) || !std::isfinite(boundsHeight)) {
+        throw std::runtime_error("The selected images have invalid clipboard dimensions");
+    }
+    double width = std::ceil(boundsWidth * pixelsPerPoint);
+    double height = std::ceil(boundsHeight * pixelsPerPoint);
+    if (!std::isfinite(width) || !std::isfinite(height) || width < 1 || height < 1) {
+        throw std::runtime_error("The selected images have invalid clipboard dimensions");
+    }
+    if (!std::isfinite(width * height) || width * height > static_cast<double>(prototype::maxCanvasImagePixels)) {
+        const double scaleFactor = std::sqrt(static_cast<double>(prototype::maxCanvasImagePixels)) /
+                                   std::sqrt(width) / std::sqrt(height);
+        if (!std::isfinite(scaleFactor) || scaleFactor <= 0) {
+            throw std::runtime_error("The selected images have invalid clipboard dimensions");
+        }
+        pixelsPerPoint *= scaleFactor;
+        width = std::max(1.0, std::floor(boundsWidth * pixelsPerPoint));
+        height = std::max(1.0, std::floor(boundsHeight * pixelsPerPoint));
         while (width * height > static_cast<double>(prototype::maxCanvasImagePixels)) {
             if (width >= height) {
                 --width;
@@ -168,13 +195,16 @@ std::string encodeImageForClipboard(const prototype::CanvasImage& image) {
             }
         }
     }
+    if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
+        throw std::runtime_error("The selected images have invalid clipboard dimensions");
+    }
     const auto pixelWidth = static_cast<int>(width);
     const auto pixelHeight = static_cast<int>(height);
     auto* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pixelWidth, pixelHeight);
     if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
         const std::string message = cairo_status_to_string(cairo_surface_status(surface));
         cairo_surface_destroy(surface);
-        throw std::runtime_error("Cannot render the image for the clipboard: " + message);
+        throw std::runtime_error("Cannot render the images for the clipboard: " + message);
     }
 
     auto* context = cairo_create(surface);
@@ -184,7 +214,9 @@ std::string encodeImageForClipboard(const prototype::CanvasImage& image) {
     cairo_set_operator(context, CAIRO_OPERATOR_OVER);
     cairo_translate(context, -bounds.x0, -bounds.y0);
     cairo_scale(context, pixelsPerPoint, pixelsPerPoint);
-    prototype::drawCanvasImage(context, image);
+    for (const auto& image: images) {
+        prototype::drawCanvasImage(context, image);
+    }
     cairo_destroy(context);
 
     std::string png;
@@ -199,9 +231,13 @@ std::string encodeImageForClipboard(const prototype::CanvasImage& image) {
     const auto status = cairo_surface_write_to_png_stream(surface, write, &png);
     cairo_surface_destroy(surface);
     if (status != CAIRO_STATUS_SUCCESS || png.empty()) {
-        throw std::runtime_error("Cannot encode the selected image as PNG");
+        throw std::runtime_error("Cannot encode the selected images as PNG");
     }
     return png;
+}
+
+std::string encodeImageForClipboard(const prototype::CanvasImage& image) {
+    return encodeImagesForClipboard({image});
 }
 
 class Prototype {
@@ -2832,25 +2868,30 @@ private:
         selectTool(tool);
     }
 
+    void copyImagesToClipboard(const std::vector<prototype::CanvasImage>& images) {
+        const auto native = prototype::clipboard::encodeImages(images);
+        const auto png = encodeImagesForClipboard(images);
+        auto* nativeBytes = g_bytes_new(native.data(), native.size());
+        auto* pngBytes = g_bytes_new(png.data(), png.size());
+        GdkContentProvider* providers[] = {
+                gdk_content_provider_new_for_bytes(prototype::clipboard::mime, nativeBytes),
+                gdk_content_provider_new_for_bytes("image/png", pngBytes)};
+        g_bytes_unref(nativeBytes);
+        g_bytes_unref(pngBytes);
+        auto* provider = gdk_content_provider_new_union(providers, G_N_ELEMENTS(providers));
+        const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), provider);
+        g_object_unref(provider);
+        if (!copied) {
+            throw std::runtime_error("Cannot claim the clipboard");
+        }
+    }
+
     void copySelection(bool cut = false) {
         if (busy) return;
         resetInput(true);
         try {
             if (selectedImageIndex && *selectedImageIndex < state.images.size()) {
-                const auto& image = state.images[*selectedImageIndex];
-                const auto native = prototype::clipboard::encodeImage(image);
-                const auto png = encodeImageForClipboard(image);
-                auto* nativeBytes = g_bytes_new(native.data(), native.size());
-                auto* pngBytes = g_bytes_new(png.data(), png.size());
-                GdkContentProvider* providers[] = {
-                        gdk_content_provider_new_for_bytes(prototype::clipboard::mime, nativeBytes),
-                        gdk_content_provider_new_for_bytes("image/png", pngBytes)};
-                g_bytes_unref(nativeBytes);
-                g_bytes_unref(pngBytes);
-                auto* provider = gdk_content_provider_new_union(providers, G_N_ELEMENTS(providers));
-                const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), provider);
-                g_object_unref(provider);
-                if (!copied) throw std::runtime_error("Cannot claim the clipboard");
+                copyImagesToClipboard({state.images[*selectedImageIndex]});
                 if (cut) {
                     state.deleteImage(*selectedImageIndex);
                     selectedImageIndex.reset();
@@ -2863,23 +2904,15 @@ private:
                 throw std::runtime_error("Copying text selections is not supported yet");
             }
             if (!state.selectedImages.empty()) {
-                if (state.selectedImages.size() != 1 || !state.selected.empty()) {
-                    throw std::runtime_error("Copying multiple or mixed image selections is not supported yet");
+                if (!state.selected.empty()) {
+                    throw std::runtime_error("Copying mixed image and stroke selections is not supported yet");
                 }
-                const auto& image = state.images.at(state.selectedImages.front());
-                const auto native = prototype::clipboard::encodeImage(image);
-                const auto png = encodeImageForClipboard(image);
-                auto* nativeBytes = g_bytes_new(native.data(), native.size());
-                auto* pngBytes = g_bytes_new(png.data(), png.size());
-                GdkContentProvider* providers[] = {
-                        gdk_content_provider_new_for_bytes(prototype::clipboard::mime, nativeBytes),
-                        gdk_content_provider_new_for_bytes("image/png", pngBytes)};
-                g_bytes_unref(nativeBytes);
-                g_bytes_unref(pngBytes);
-                auto* provider = gdk_content_provider_new_union(providers, G_N_ELEMENTS(providers));
-                const bool copied = gdk_clipboard_set_content(gtk_widget_get_clipboard(canvas), provider);
-                g_object_unref(provider);
-                if (!copied) throw std::runtime_error("Cannot claim the clipboard");
+                std::vector<prototype::CanvasImage> images;
+                images.reserve(state.selectedImages.size());
+                for (const auto index: state.selectedImages) {
+                    images.push_back(state.images.at(index));
+                }
+                copyImagesToClipboard(images);
                 if (cut) state.deleteSelection();
                 update();
                 return;
@@ -2902,11 +2935,14 @@ private:
         if (busy) return;
         resetInput(true);
         if (selectedImageIndex && *selectedImageIndex < state.images.size()) {
-            auto duplicate = state.images[*selectedImageIndex];
-            duplicate.transform.x += 20;
-            duplicate.transform.y += 20;
+            const auto duplicate = state.images[*selectedImageIndex];
+            const auto bounds = prototype::canvasImageBounds(duplicate);
             selectedImageIndex.reset();
-            state.insertImage(std::move(duplicate));
+            if (!state.pasteImages({duplicate}, duplicate.page,
+                                   {(bounds.x0 / 2.0 + bounds.x1 / 2.0) + 20,
+                                    (bounds.y0 / 2.0 + bounds.y1 / 2.0) + 20})) {
+                showError("Cannot duplicate the selected image");
+            }
             update();
             return;
         }
@@ -2916,14 +2952,22 @@ private:
             return;
         }
         if (!state.selectedImages.empty()) {
-            if (state.selectedImages.size() != 1 || !state.selected.empty()) {
-                showError("Duplicating multiple or mixed image selections is not supported yet");
+            if (!state.selected.empty()) {
+                showError("Duplicating mixed image and stroke selections is not supported yet");
                 return;
             }
-            auto duplicate = state.images.at(state.selectedImages.front());
-            duplicate.transform.x += 20;
-            duplicate.transform.y += 20;
-            state.insertImage(std::move(duplicate));
+            const auto bounds = state.selectionBox();
+            std::vector<prototype::CanvasImage> images;
+            images.reserve(state.selectedImages.size());
+            for (const auto index: state.selectedImages) {
+                images.push_back(state.images.at(index));
+            }
+            if (!bounds || !state.pasteImages(std::move(images), bounds->page,
+                                              {(bounds->x0 / 2.0 + bounds->x1 / 2.0) + 20,
+                                               (bounds->y0 / 2.0 + bounds->y1 / 2.0) + 20})) {
+                showError("Cannot duplicate the selected images");
+                return;
+            }
             update();
             return;
         }
@@ -2944,24 +2988,26 @@ private:
         g_application_release(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
     }
 
-    bool placePastedImage(prototype::CanvasImage image) {
+    bool placePastedImages(std::vector<prototype::CanvasImage> images) {
+        if (images.empty()) {
+            return false;
+        }
         const auto pageSize = state.pageSize(state.page);
         auto center = state.pageLocalPoint(state.page, gtk_widget_get_width(canvas) / 2.0,
                                            gtk_widget_get_height(canvas) / 2.0);
         center.x = std::clamp(center.x, 0.0, pageSize.width);
         center.y = std::clamp(center.y, 0.0, pageSize.height);
-        const auto bounds = prototype::canvasImageBounds(image);
-        image.transform.x += center.x - (bounds.x0 + bounds.x1) / 2.0;
-        image.transform.y += center.y - (bounds.y0 + bounds.y1) / 2.0;
-        image.page = state.page;
 
-        state.clearSelection();
         selectedImageIndex.reset();
-        if (!state.insertImage(std::move(image))) {
+        if (!state.pasteImages(std::move(images), state.page, center)) {
             return false;
         }
         activateSelection(Tool::SmartSelect);
         return true;
+    }
+
+    bool placePastedImage(prototype::CanvasImage image) {
+        return placePastedImages({std::move(image)});
     }
 
     void pasteExternalImage() {
@@ -3072,8 +3118,7 @@ private:
                     bytes.append(buffer, size_t(read));
                 }
                 *decoded = prototype::clipboard::decodePayload(bytes);
-                if (decoded->image) {
-                    auto& image = *decoded->image;
+                for (auto& image: decoded->images) {
                     const int expectedWidth = image.pixelWidth;
                     const int expectedHeight = image.pixelHeight;
                     int width = 0;
@@ -3091,9 +3136,9 @@ private:
             }, [self, decoded](const std::string& error) {
                 std::string failure = error;
                 if (failure.empty()) {
-                    if (decoded->image) {
-                        if (!self->placePastedImage(std::move(*decoded->image)))
-                            failure = "Cannot place clipboard image";
+                    if (!decoded->images.empty()) {
+                        if (!self->placePastedImages(std::move(decoded->images)))
+                            failure = "Cannot place clipboard images";
                     } else {
                         self->selectedImageIndex.reset();
                         const auto sz = self->state.pageSize(self->state.page);
@@ -8682,18 +8727,75 @@ private:
                     require(busy, "PNG clipboard paste did not begin its asynchronous read");
                     break;
                 }
-                require(imageVerifyStep == 11 && state.images.size() == 1 &&
-                                state.selectedImages == std::vector<size_t>{0} &&
-                                prototype::validCanvasImage(state.images[0]),
-                        "A standard PNG clipboard image was not pasted as an editable object");
+                if (imageVerifyStep == 11) {
+                    require(state.images.size() == 1 && state.selectedImages == std::vector<size_t>{0} &&
+                                    prototype::validCanvasImage(state.images[0]),
+                            "A standard PNG clipboard image was not pasted as an editable object");
+                    state.undo();
+                    selectedImageIndex.reset();
+                    require(state.images.empty(), "Undo did not remove the PNG-pasted image");
+                    state.redo();
+                    require(state.images.size() == 1, "Redo did not restore the PNG-pasted image");
+                    capture("image-png-pasted");
+
+                    duplicateSelection();
+                    require(state.images.size() == 2 && state.selectedImages == std::vector<size_t>{1},
+                            "Single-image duplicate did not add an editable image");
+                    state.undo();
+                    require(state.images.size() == 1, "Undo did not remove the image duplicate");
+                    state.redo();
+                    require(state.images.size() == 2, "Redo did not restore the image duplicate");
+
+                    state.clearSelection();
+                    state.selectedImages = {0, 1};
+                    imageVerifyMultiDeltaX = state.images[1].transform.x - state.images[0].transform.x;
+                    imageVerifyMultiDeltaY = state.images[1].transform.y - state.images[0].transform.y;
+                    duplicateSelection();
+                    require(state.images.size() == 4 && state.selectedImages == std::vector<size_t>{2, 3} &&
+                                    std::abs(state.images[3].transform.x - state.images[2].transform.x -
+                                             imageVerifyMultiDeltaX) < 1e-6 &&
+                                    std::abs(state.images[3].transform.y - state.images[2].transform.y -
+                                             imageVerifyMultiDeltaY) < 1e-6,
+                            "Duplicating a multi-image selection should preserve its relative layout");
+                    state.undo();
+                    require(state.images.size() == 2, "One undo did not remove the complete image duplicate group");
+                    state.redo();
+                    require(state.images.size() == 4 && state.selectedImages == std::vector<size_t>{2, 3},
+                            "Redo did not restore the complete image duplicate group");
+
+                    state.clearSelection();
+                    state.selectedImages = {0, 1};
+                    copySelection(true);
+                    require(state.images.size() == 2 && state.selectedImages.empty(),
+                            "Cut did not remove the selected images as one operation");
+                    auto* clipboard = gtk_widget_get_clipboard(canvas);
+                    auto* formats = gdk_clipboard_get_formats(clipboard);
+                    require(gdk_content_formats_contain_mime_type(formats, prototype::clipboard::mime) &&
+                                    gdk_content_formats_contain_mime_type(formats, "image/png"),
+                            "Multi-image copy did not offer native objects and a composite PNG");
+                    state.undo();
+                    require(state.images.size() == 4, "One undo did not restore the complete image cut group");
+                    state.redo();
+                    require(state.images.size() == 2, "Redo did not remove the complete image cut group");
+                    pasteSelection();
+                    require(busy, "Multi-image clipboard paste did not begin its asynchronous read");
+                    break;
+                }
+                require(imageVerifyStep == 12 && state.images.size() == 4 &&
+                                state.selectedImages == std::vector<size_t>{2, 3} &&
+                                std::abs(state.images[3].transform.x - state.images[2].transform.x -
+                                         imageVerifyMultiDeltaX) < 1e-6 &&
+                                std::abs(state.images[3].transform.y - state.images[2].transform.y -
+                                         imageVerifyMultiDeltaY) < 1e-6,
+                        "Native multi-image clipboard paste did not preserve both images and their relative layout");
                 state.undo();
-                selectedImageIndex.reset();
-                require(state.images.empty(), "Undo did not remove the PNG-pasted image");
+                require(state.images.size() == 2, "One undo did not remove the complete image paste group");
                 state.redo();
-                require(state.images.size() == 1, "Redo did not restore the PNG-pasted image");
-                capture("image-png-pasted");
-                std::cout << "PASS: image insertion, resize, move, rotate, native save/reopen, PDF export, "
-                             "editable native image cut/paste, PNG paste and undo/redo\n";
+                require(state.images.size() == 4 && state.selectedImages == std::vector<size_t>{2, 3},
+                        "Redo did not restore the complete image paste group");
+                capture("image-multi-pasted");
+                std::cout << "PASS: image insertion, resize, move, rotate, native save/reopen, PDF export, PNG "
+                             "paste, and multi-image native copy/cut/paste, duplicate and grouped undo/redo\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -10361,6 +10463,8 @@ private:
     bool pdfTextSelectionSaveComplete = false;
     double selectionVerifyTextX = 0;
     prototype::CanvasImageTransform imageVerifyExpected;
+    double imageVerifyMultiDeltaX = 0;
+    double imageVerifyMultiDeltaY = 0;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;
     std::string savedCopyPath;

@@ -2,7 +2,6 @@
 
 #include <cstring>
 #include <limits>
-#include <optional>
 #include <span>
 #include <string_view>
 
@@ -13,6 +12,7 @@ namespace prototype::clipboard {
 
 inline constexpr const char* mime = "application/xournal";
 inline constexpr size_t maxBytes = 64 * 1024 * 1024;
+inline constexpr size_t maxClipboardImages = maxCanvasImageObjects;
 
 // XojStrm1 is the native, host-ABI clipboard protocol. Keep it separate from
 // files: all lengths are checked against remaining bytes before allocation.
@@ -289,7 +289,7 @@ inline std::string encode(const std::vector<Ink>& strokes) {
     return std::move(out.bytes);
 }
 
-inline CanvasImage decodeImage(std::string_view bytes) {
+inline std::vector<CanvasImage> decodeImages(std::string_view bytes) {
     Reader in(bytes);
     if (in.string() != "XojStrm1:")
         Reader::fail();
@@ -300,57 +300,100 @@ inline CanvasImage decodeImage(std::string_view bytes) {
     for (int n = 0; n < 11; ++n) in.number();
     in.end();
     in.end();
-    if (in.value<int>("_i") != 1)
+    const auto count = in.value<int>("_i");
+    if (count <= 0 || static_cast<size_t>(count) > maxClipboardImages)
         Reader::fail();
 
-    in.object("Image");
-    in.object("RectangularElement");
-    in.object("Element");
-    in.value<uint32_t>("_u");
-    in.end();
-    CanvasImage image;
-    image.transform.xx = in.number();
-    image.transform.yx = in.number();
-    image.transform.xy = in.number();
-    image.transform.yy = in.number();
-    image.transform.x = in.number();
-    image.transform.y = in.number();
-    const double naturalWidth = in.number();
-    const double naturalHeight = in.number();
-    in.end();
-    const auto imageBytes = in.image();
-    in.end();
-    if (!in.done() || naturalWidth <= 0 || naturalHeight <= 0 || naturalWidth > maxCanvasImagePixels ||
-        naturalHeight > maxCanvasImagePixels || std::floor(naturalWidth) != naturalWidth ||
-        std::floor(naturalHeight) != naturalHeight) {
-        Reader::fail();
+    std::vector<CanvasImage> images;
+    images.reserve(static_cast<size_t>(count));
+    size_t totalImageBytes = 0;
+    for (int n = 0; n < count; ++n) {
+        in.object("Image");
+        in.object("RectangularElement");
+        in.object("Element");
+        in.value<uint32_t>("_u");
+        in.end();
+        CanvasImage image;
+        image.transform.xx = in.number();
+        image.transform.yx = in.number();
+        image.transform.xy = in.number();
+        image.transform.yy = in.number();
+        image.transform.x = in.number();
+        image.transform.y = in.number();
+        const double naturalWidth = in.number();
+        const double naturalHeight = in.number();
+        in.end();
+        const auto imageBytes = in.image();
+        if (imageBytes.size() > maxBytes - totalImageBytes) {
+            Reader::fail();
+        }
+        totalImageBytes += imageBytes.size();
+        in.end();
+        if (naturalWidth <= 0 || naturalHeight <= 0 || naturalWidth > maxCanvasImagePixels ||
+            naturalHeight > maxCanvasImagePixels || std::floor(naturalWidth) != naturalWidth ||
+            std::floor(naturalHeight) != naturalHeight) {
+            Reader::fail();
+        }
+        image.pixelWidth = static_cast<int>(naturalWidth);
+        image.pixelHeight = static_cast<int>(naturalHeight);
+        image.encodedData.assign(imageBytes);
+        if (!validCanvasImage(image)) {
+            Reader::fail();
+        }
+        images.push_back(std::move(image));
     }
-    image.pixelWidth = static_cast<int>(naturalWidth);
-    image.pixelHeight = static_cast<int>(naturalHeight);
-    image.encodedData.assign(imageBytes);
-    if (!validCanvasImage(image))
+    if (!in.done())
         Reader::fail();
-    return image;
+    return images;
+}
+
+inline CanvasImage decodeImage(std::string_view bytes) {
+    auto images = decodeImages(bytes);
+    if (images.size() != 1)
+        Reader::fail();
+    return std::move(images.front());
 }
 
 struct DecodedPayload {
     std::vector<Ink> strokes;
-    std::optional<CanvasImage> image;
+    std::vector<CanvasImage> images;
 };
 
 inline DecodedPayload decodePayload(std::string_view bytes) {
     try {
-        return {{}, decodeImage(bytes)};
+        return {{}, decodeImages(bytes)};
     } catch (const std::exception&) {
-        return {decode(bytes), std::nullopt};
+        return {decode(bytes), {}};
     }
 }
 
-inline std::string encodeImage(const CanvasImage& image) {
-    if (!validCanvasImage(image))
+inline std::string encodeImages(const std::vector<CanvasImage>& images) {
+    if (images.empty() || images.size() > maxClipboardImages)
         Reader::fail();
-    const auto bounds = canvasImageBounds(image);
-    const double rectangle[] = {bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0};
+    auto corners = canvasImageCorners(images.front());
+    if (!validCanvasImage(images.front()))
+        Reader::fail();
+    double x0 = corners.front().x, y0 = corners.front().y;
+    double x1 = x0, y1 = y0;
+    size_t totalImageBytes = 0;
+    for (const auto& image: images) {
+        if (!validCanvasImage(image) || image.page != images.front().page ||
+            image.encodedData.size() > maxBytes - totalImageBytes) {
+            Reader::fail();
+        }
+        totalImageBytes += image.encodedData.size();
+        for (const auto& point: canvasImageCorners(image)) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y))
+                Reader::fail();
+            x0 = std::min(x0, point.x);
+            y0 = std::min(y0, point.y);
+            x1 = std::max(x1, point.x);
+            y1 = std::max(y1, point.y);
+        }
+    }
+    if (!std::isfinite(x1 - x0) || !std::isfinite(y1 - y0))
+        Reader::fail();
+    const double rectangle[] = {x0, y0, x1 - x0, y1 - y0};
 
     Writer out;
     out.string("XojStrm1:");
@@ -365,26 +408,32 @@ inline std::string encodeImage(const CanvasImage& image) {
     for (int n = 0; n < 3; ++n) out.number(0);
     out.end();
     out.end();
-    out.value<int>("_i", 1);
-    out.object("Image");
-    out.object("RectangularElement");
-    out.object("Element");
-    out.value<uint32_t>("_u", 0xff000000U);
-    out.end();
-    out.number(image.transform.xx);
-    out.number(image.transform.yx);
-    out.number(image.transform.xy);
-    out.number(image.transform.yy);
-    out.number(image.transform.x);
-    out.number(image.transform.y);
-    out.number(image.pixelWidth);
-    out.number(image.pixelHeight);
-    out.end();
-    out.image(image.encodedData);
-    out.end();
+    out.value<int>("_i", static_cast<int>(images.size()));
+    for (const auto& image: images) {
+        out.object("Image");
+        out.object("RectangularElement");
+        out.object("Element");
+        out.value<uint32_t>("_u", 0xff000000U);
+        out.end();
+        out.number(image.transform.xx);
+        out.number(image.transform.yx);
+        out.number(image.transform.xy);
+        out.number(image.transform.yy);
+        out.number(image.transform.x);
+        out.number(image.transform.y);
+        out.number(image.pixelWidth);
+        out.number(image.pixelHeight);
+        out.end();
+        out.image(image.encodedData);
+        out.end();
+    }
     if (out.bytes.size() > maxBytes)
         Reader::fail();
     return std::move(out.bytes);
+}
+
+inline std::string encodeImage(const CanvasImage& image) {
+    return encodeImages({image});
 }
 
 }  // namespace prototype::clipboard
