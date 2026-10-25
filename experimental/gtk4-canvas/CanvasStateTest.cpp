@@ -185,8 +185,9 @@ static void editableTextHistory() {
     first.y = 80;
     check(state.insertText(first), "text insertion should create an editable item");
     const auto insertedRevision = state.revision();
-    check(state.texts.size() == 1 && state.texts[0].layerOrder == 0 && state.texts[0].text == "héllo",
-          "new text should append to the page layer order");
+    check(state.texts.size() == 1 && state.texts[0].layerOrder == 0 && state.texts[0].text == "héllo" &&
+                  state.selectedTexts == std::vector<size_t>{0},
+          "new text should append to the page layer order and remain selected for immediate transforms");
 
     auto changed = state.texts[0];
     changed.text = "edited";
@@ -197,8 +198,9 @@ static void editableTextHistory() {
     check(editedRevision != insertedRevision, "a text edit should create a new document revision");
     state.undo();
     check(state.texts[0].text == "héllo" && state.texts[0].styleRuns.empty() &&
+                  state.selectedTexts == std::vector<size_t>{0} &&
                   state.revision() == insertedRevision,
-          "undo should restore text content and inline styles");
+          "undo should restore text content, inline styles and selection");
     state.redo();
     check(state.texts[0].text == "edited" && state.texts[0].styleRuns.size() == 1 &&
                   state.revision() == editedRevision,
@@ -207,8 +209,9 @@ static void editableTextHistory() {
     TextItem second;
     second.page = 1;
     second.text = "later page";
-    check(state.insertText(second) && state.texts[1].layerOrder == 0,
-          "layer order is tracked independently for each page");
+    check(state.insertText(second) && state.texts[1].layerOrder == 0 &&
+                  state.selectedTexts == std::vector<size_t>{1},
+          "layer order is tracked independently and the inserted text remains selected");
     state.insertPageAfter(0, {595, 842});
     check(state.texts[0].page == 0 && state.texts[1].page == 2,
           "inserting a page shifts text on later pages");
@@ -218,11 +221,50 @@ static void editableTextHistory() {
     state.redo();
     check(state.texts.size() == 2 && state.texts[1].page == 2,
           "text history remains redoable after an earlier page is inserted");
-    check(state.deleteText(0) && state.texts.size() == 1 && state.texts[0].text == "later page",
-          "text deletion removes only the requested item");
+    check(state.deleteText(0) && state.texts.size() == 1 && state.texts[0].text == "later page" &&
+                  state.selectedTexts == std::vector<size_t>{0},
+          "text deletion removes only the requested item and repairs remaining selection indices");
     state.undo();
-    check(state.texts.size() == 2 && state.texts[0].text == "edited",
-          "undo restores a deleted text item at its original position");
+    check(state.texts.size() == 2 && state.texts[0].text == "edited" &&
+                  state.selectedTexts == std::vector<size_t>{1},
+          "undo restores a deleted text item at its original position and selection");
+}
+
+static void selectedTextAppearanceHistory() {
+    CanvasState state;
+    TextItem item;
+    item.page = 0;
+    item.text = "styled";
+    item.layoutWidth = 42;
+    item.layoutHeight = 14;
+    item.styleRuns = {{0, 6, "Sans Bold", 12, 0xff102030U, 1U}};
+    check(state.insertText(item) && state.selectedTexts == std::vector<size_t>{0},
+          "text insertion should expose the new object to toolbar formatting");
+
+    const auto original = state.texts[0];
+    check(state.recolorSelectedTexts(0xff405060U) && state.texts[0].color == 0xff405060U &&
+                  state.texts[0].styleRuns[0].color == 0xff405060U && state.selectedTexts == std::vector<size_t>{0},
+          "text color should apply to the selected object while preserving selection");
+    state.undo();
+    check(state.texts[0] == original && state.selectedTexts == std::vector<size_t>{0},
+          "text color undo should restore base and inline colors");
+    state.redo();
+    check(state.texts[0].color == 0xff405060U && state.texts[0].styleRuns[0].color == 0xff405060U,
+          "text color redo should restore base and inline colors");
+
+    check(state.updateSelectedTexts([](TextItem& selected) {
+              selected.fontSize = 18;
+              selected.layoutWidth = 64;
+              selected.layoutHeight = 21;
+          }) && state.texts[0].fontSize == 18 && state.texts[0].layoutWidth == 64,
+          "font controls should update a selected text item as one edit");
+    state.undo();
+    check(state.texts[0].fontSize == 12 && state.texts[0].layoutWidth == 42 &&
+                  state.texts[0].color == 0xff405060U,
+          "font control undo should leave earlier color formatting intact");
+    state.redo();
+    check(state.texts[0].fontSize == 18 && state.texts[0].layoutHeight == 21,
+          "font control redo should restore text geometry metadata");
 }
 
 static void partialAndWhiteoutEraser() {
@@ -614,6 +656,7 @@ int main() {
         editableImageHistory();
         imageRotationGeometry();
         editableTextHistory();
+        selectedTextAppearanceHistory();
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();

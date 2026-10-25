@@ -132,6 +132,7 @@ public:
     double scrollZoomStep = behavior::scrollZoomStep;
     std::string textFontName = "Sans";
     double textFontSize = 12;
+    std::array<double, 3> textColor{0, 0, 0};
     std::vector<Ink> ink;
     std::vector<TextItem> texts;
     std::vector<CanvasImage> images;
@@ -567,6 +568,8 @@ public:
     }
 
     bool selecting() const { return selectionGesture.has_value(); }
+
+    bool movingSelection() const { return selectionGesture && selectionGesture->moving; }
 
     const std::vector<Ink>& committedInk() const { return ink; }
 
@@ -1810,7 +1813,14 @@ public:
         item.originLayer = activeLayerOrigin(item.page);
         item.layerOrder = nextOriginOrder(item.page, item.originLayer);
         Edit edit;
-        edit.textChanges.push_back({texts.size(), {}, texts.size(), {std::move(item)}});
+        const auto index = texts.size();
+        edit.textChanges.push_back({index, {}, index, {std::move(item)}});
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{index};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
         apply(edit, true);
         record(std::move(edit));
         return true;
@@ -1826,9 +1836,60 @@ public:
         item.originLayer = texts[index].originLayer;
         Edit edit;
         edit.textChanges.push_back({index, {texts[index]}, index, {std::move(item)}});
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{index};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
         apply(edit, true);
         record(std::move(edit));
         return true;
+    }
+
+    template <typename Update>
+    bool updateSelectedTexts(Update&& update) {
+        if (selectedTexts.empty() || current || eraseGesture || selectionGesture) {
+            return false;
+        }
+
+        auto indices = selectedTexts;
+        std::sort(indices.begin(), indices.end());
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+
+        Edit edit;
+        edit.selectionBefore = edit.selectionAfter = selected;
+        edit.textSelectionBefore = edit.textSelectionAfter = selectedTexts;
+        edit.imageSelectionBefore = edit.imageSelectionAfter = selectedImages;
+        for (const auto index: indices) {
+            if (index >= texts.size()) {
+                return false;
+            }
+            auto replacement = texts[index];
+            update(replacement);
+            if (!validTextPage(replacement) || replacement.page != texts[index].page) {
+                return false;
+            }
+            if (replacement != texts[index]) {
+                edit.textChanges.push_back({index, {texts[index]}, index, {std::move(replacement)}});
+            }
+        }
+        if (edit.textChanges.empty()) {
+            return false;
+        }
+
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
+    bool recolorSelectedTexts(uint32_t color) {
+        return updateSelectedTexts([color](TextItem& item) {
+            item.color = color;
+            for (auto& run: item.styleRuns) {
+                run.color = color;
+            }
+        });
     }
 
     bool deleteText(size_t index) {
@@ -1837,6 +1898,19 @@ public:
         }
         Edit edit;
         edit.textChanges.push_back({index, {texts[index]}, index, {}});
+        edit.selectionBefore = selected;
+        edit.selectionAfter = selected;
+        edit.textSelectionBefore = selectedTexts;
+        auto remainingTexts = selectedTexts;
+        std::erase(remainingTexts, index);
+        for (auto& selectedIndex: remainingTexts) {
+            if (selectedIndex > index) {
+                --selectedIndex;
+            }
+        }
+        edit.textSelectionAfter = std::move(remainingTexts);
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = selectedImages;
         apply(edit, true);
         record(std::move(edit));
         return true;

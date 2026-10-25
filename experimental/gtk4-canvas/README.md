@@ -91,10 +91,14 @@ inserting it, and leaves ink unchanged on malformed input.
 
 With the worker, eligible native text in a foreground layer's editable suffix
 opens in the canvas and stays in native z-order with strokes. Select the Text
-tool and click to create text; Smart Select click edits an existing text item. The inline
-GTK text editor preserves UTF-8 content and formatting runs, including bold,
-italic, underline, strikethrough, superscript, and subscript. Font family and size
-can be set from the toolbar. Text creation, edits, and deletion join undo/redo,
+tool and click to create text; Smart Select click edits an existing text item.
+The Text tool can drag an existing item to move it and drag its selection handles
+to resize or rotate it. Finishing text creation or editing leaves the item
+selected so it can be transformed immediately. The inline GTK text editor
+preserves UTF-8 content and formatting runs, including bold, italic, underline,
+strikethrough, superscript, and subscript. Font family, size, style, and color
+controls are available in the toolbar and apply to selected text or the active
+editing range. Text creation, edits, transforms, and deletion join undo/redo,
 and Save, autosave, and PDF export retain the text content and style ranges.
 Rectangle and lasso selection include native text with strokes on the active
 visible layer; visible-layer mode stops at the first matching visible layer.

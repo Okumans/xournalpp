@@ -444,12 +444,15 @@ def verify_selection_modes(args, evidence):
          "--smoke-dir", str(output)],
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_SELECTION_VERIFY_MODE="visible-layers"),
     )
-    if ("PASS: GTK visible-layer rectangle/lasso selection, Select Object and Hand modes, selection-preserving pan, "
-            "hidden-layer fallback, remembered tool state, and shortcuts"
+    if ("PASS: GTK visible-layer rectangle/lasso selection, Text-tool mouse/stylus move/resize "
+            "and formatting, "
+            "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
+            "remembered tool state, and shortcuts"
             not in result):
         raise RuntimeError("GTK visible-layer selection mode verification did not finish")
     for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",
-                 "selection-hidden-layer-fallback", "selection-text-object", "selection-text-moved"):
+                 "selection-hidden-layer-fallback", "selection-text-object", "selection-text-moved",
+                 "text-tool-edited", "text-tool-moved", "text-tool-resized", "text-tool-stylus-moved"):
         screenshot = output / f"{name}.png"
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty visible-layer selection screenshot: {screenshot}")
