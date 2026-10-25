@@ -384,6 +384,7 @@ int luaOpenApp(lua_State* state) {
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
             {"getFolder", LuaPluginRuntime::luaGetFolder},
             {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
+            {"getPageLabel", LuaPluginRuntime::luaGetPageLabel},
             {"getZoom", LuaPluginRuntime::luaGetZoom},
             {"setZoom", LuaPluginRuntime::luaSetZoom},
             {"getStrokes", LuaPluginRuntime::luaGetStrokes},
@@ -954,6 +955,14 @@ bool LuaPluginRuntime::getDisplayDpi(int& dpi, std::string& error) const {
     return true;
 }
 
+bool LuaPluginRuntime::getPageLabel(std::size_t pageNumber, std::string& label, std::string& error) const {
+    if (!host.getPageLabel) {
+        error = "PDF page labels are unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getPageLabel(pageNumber, label, error);
+}
+
 bool LuaPluginRuntime::getZoom(double& zoom, std::string& error) const {
     if (!host.getZoom) {
         error = "Zoom queries are unavailable in this GTK 4 host";
@@ -1438,6 +1447,24 @@ int LuaPluginRuntime::luaGetDisplayDpi(lua_State* state) {
         return luaL_error(state, "%s", error.empty() ? "Reading display DPI failed" : error.c_str());
     }
     lua_pushinteger(state, dpi);
+    return 1;
+}
+
+int LuaPluginRuntime::luaGetPageLabel(lua_State* state) {
+    const auto pageNumber = static_cast<std::size_t>(luaL_checkinteger(state, 1)) - 1;
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    std::string label;
+    std::string error;
+    if (!plugin->runtime->getPageLabel(pageNumber, label, error)) {
+        lua_pushnil(state);
+        lua_pushlstring(state, error.data(), error.size());
+        return 2;
+    }
+    lua_pushlstring(state, label.data(), label.size());
     return 1;
 }
 

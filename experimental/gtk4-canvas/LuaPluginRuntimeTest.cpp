@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 
 #include <unistd.h>
@@ -355,6 +356,34 @@ int main() {
                 "function lastPage() app.setCurrentPage(9) end\n"
                 "function negativePage() app.setCurrentPage(-2) end\n"
                 "function fractionalPage() app.setCurrentPage(1.5) end\n");
+    const auto pageLabelApiPlugin = root / "PageLabelApiPlugin";
+    const auto zeroPageLabelError = "page nr " + std::to_string(std::numeric_limits<std::size_t>::max()) +
+                                    " is out of range";
+    writePlugin(pageLabelApiPlugin,
+                "[about]\ndescription=Read PDF page labels\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read PDF page label', callback='readLabel'})\n"
+                "  app.registerUi({menu='Read missing PDF page label', callback='missingLabel'})\n"
+                "  app.registerUi({menu='Read page zero label', callback='zeroLabel'})\n"
+                "  app.registerUi({menu='Reject fractional PDF page', callback='fractionalPage'})\n"
+                "end\n"
+                "function readLabel()\n"
+                "  local label = app.getPageLabel(2)\n"
+                "  assert(label == 'iv')\n"
+                "  app.changeActionState('page-label', label)\n"
+                "end\n"
+                "function missingLabel()\n"
+                "  local label, message = app.getPageLabel(9)\n"
+                "  assert(label == nil and message == 'page nr 8 is out of range')\n"
+                "  app.changeActionState('page-label', message)\n"
+                "end\n"
+                "function zeroLabel()\n"
+                "  local label, message = app.getPageLabel(0)\n"
+                "  assert(label == nil and message == '" + zeroPageLabelError + "')\n"
+                "  app.changeActionState('page-label', message)\n"
+                "end\n"
+                "function fractionalPage() app.getPageLabel(1.5) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -367,9 +396,9 @@ int main() {
                                      quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
                                      imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
                                      zoomApiPlugin.string() + "," + folderApiPlugin.string() + "," +
-                                     currentPageApiPlugin.string(), {});
+                                     currentPageApiPlugin.string() + "," + pageLabelApiPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 20, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 21, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -417,6 +446,7 @@ int main() {
     std::string changedBackgroundFormat;
     std::string changedBackgroundConfig;
     std::string pluginFolderPaths;
+    std::string pageLabelResult;
     std::vector<std::string> activatedActions;
     double zoomValue = 1.25;
     std::size_t currentPageNumber = 2;
@@ -430,6 +460,13 @@ int main() {
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
+        if (action == "page-label") {
+            if (!std::holds_alternative<std::string>(value)) {
+                return false;
+            }
+            pageLabelResult = std::get<std::string>(value);
+            return true;
+        }
         if (action == "plugin-folder-paths") {
             if (!std::holds_alternative<std::string>(value)) {
                 return false;
@@ -459,6 +496,15 @@ int main() {
         return true;
     };
     host.getDisplayDpi = [] { return 144; };
+    const std::vector<std::string> testPageLabels{"i", "iv", "7"};
+    host.getPageLabel = [&](std::size_t pageNumber, std::string& label, std::string& error) {
+        if (pageNumber >= testPageLabels.size()) {
+            error = "page nr " + std::to_string(pageNumber) + " is out of range";
+            return false;
+        }
+        label = testPageLabels[pageNumber];
+        return true;
+    };
     host.setCurrentPage = [&](std::size_t pageNumber, std::string&) {
         currentPageNumber = std::clamp(pageNumber, std::size_t{1}, testPageCount);
         return true;
@@ -652,6 +698,10 @@ int main() {
     require(loadedCurrentPageApiPlugin && loadedCurrentPageApiPlugin->loaded &&
                     loadedCurrentPageApiPlugin->menuItems == 5,
             "Plugin using current-page selection did not load its callbacks");
+    const auto loadedPageLabelApiPlugin = runtime.findPlugin("PageLabelApiPlugin");
+    require(loadedPageLabelApiPlugin && loadedPageLabelApiPlugin->loaded &&
+                    loadedPageLabelApiPlugin->menuItems == 4,
+            "Plugin using PDF page labels did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -712,6 +762,18 @@ int main() {
     require(!runtime.invokeMenu("CurrentPageApiPlugin", 4) &&
                     runtime.findPlugin("CurrentPageApiPlugin")->error.find("integer") != std::string::npos,
             "app.setCurrentPage accepted a fractional page number");
+    require(runtime.invokeMenu("PageLabelApiPlugin", 0) && pageLabelResult == "iv",
+            "app.getPageLabel did not return the requested PDF page label");
+    require(runtime.invokeMenu("PageLabelApiPlugin", 1) &&
+                    pageLabelResult == "page nr 8 is out of range",
+            "app.getPageLabel did not return nil and a compatible message for an out-of-range page");
+    require(runtime.invokeMenu("PageLabelApiPlugin", 2) &&
+                    pageLabelResult == zeroPageLabelError,
+            "app.getPageLabel changed the master's zero-page out-of-range behavior");
+    require(!runtime.invokeMenu("PageLabelApiPlugin", 3) &&
+                    runtime.findPlugin("PageLabelApiPlugin")->error.find("number has no integer representation") !=
+                            std::string::npos,
+            "app.getPageLabel accepted a fractional page number");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -920,8 +982,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 54 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 17,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 58 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 18,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
