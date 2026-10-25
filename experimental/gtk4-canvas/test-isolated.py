@@ -346,8 +346,9 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
                 hashlib.sha256((config / "toolbar.ini").read_bytes()).hexdigest() != toolbar_hash):
             raise RuntimeError("GTK 4 Preferences modified settings.xml or the imported toolbar.ini")
 
-    for name in ("preferences-dialog", "preferences-behavior", "preferences-toolbar", "preferences-edited",
-                 "preferences-reloaded"):
+    for name in (
+            "main-tool-rail-default", "preferences-dialog", "preferences-behavior", "preferences-toolbar",
+            "preferences-edited", "preferences-reloaded"):
         path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing GTK 4 Preferences screenshot: {path}")
@@ -355,7 +356,8 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
     for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
                      "rotation-snap-tolerance=0.45", "snap-rotation=false", "snap-grid=false",
                      "snap-grid-size=24", "snap-grid-tolerance=0.4", "button-one=1", "button-two=5",
-                     "row-1=SMART_SELECT,PEN", "row-2=ZOOM_SLIDER", "row-3=FINE", "row-4=DRAW_ARROW"):
+                     "main-tool-rail=SMART_SELECT,TEXT,PEN,HAND", "row-1=SMART_SELECT,PEN",
+                     "row-2=ZOOM_SLIDER", "row-3=FINE", "row-4=DRAW_ARROW"):
         if expected not in stored:
             raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
     print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)

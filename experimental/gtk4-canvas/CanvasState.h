@@ -1006,7 +1006,10 @@ public:
     }
 
     bool beginSelection(double x, double y, bool forceRectangle = false) {
-        const auto hit = hitPage(x, y);
+        auto hit = hitPage(x, y);
+        if (!hit && !forceRectangle) {
+            hit = hitSelectionHandle(x, y);
+        }
         if (!hit || current || eraseGesture || selectionGesture || pinching) {
             return false;
         }
@@ -1720,6 +1723,21 @@ public:
                 return std::nullopt;
             }
             top += sz.height + pageGap;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<PageHit> hitSelectionHandle(double x, double y) const {
+        const auto bounds = selectionBox();
+        if (!bounds || bounds->page < 0 || bounds->page >= pageCount()) {
+            return std::nullopt;
+        }
+        const auto local = pageLocalPoint(bounds->page, x, y);
+        const double radius = 5 / std::max(0.1, zoom);
+        for (const auto& handle: selectionHandles()) {
+            if (std::hypot(handle.x - local.x, handle.y - local.y) <= radius) {
+                return PageHit{bounds->page, local};
+            }
         }
         return std::nullopt;
     }

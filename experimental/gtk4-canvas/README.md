@@ -24,6 +24,15 @@ writes a flattened PDF including live session ink, text, and images without clea
 legacy files requiring conversion, symlink inputs and blank notebooks use Save As
 for their first save. Without a worker, ink remains temporary.
 
+The fresh desktop layout follows the reference workspace: a dark Adwaita window,
+the page sidebar closed, one tool-and-page control strip, and a narrow left rail
+with canvas tools and imported color swatches. The rail pins Smart Select, Pen,
+Highlighter, Eraser, Text, and Hand by default. Smart Select is the primary
+selection button; Rectangle, Lasso, Object, visible-layer, and PDF-text modes
+remain in the selection-mode menu. Dark mode uses a dotted charcoal canvas
+surround while pages stay white. Sidebar visibility, color scheme, main rail
+order, and floating-toolbox rows remain configurable.
+
 With a document worker, the header's Insert Image action opens a local image
 chooser. The image is placed at the center of the active page, scaled to fit
 within 60% of the page, and selected in Smart Select. Drag the image to move it,
@@ -54,26 +63,36 @@ Undo/redo stores value-semantic stroke slice deltas across insertions, whole-str
 deletions, and multi-sample partial splits while retaining session history. Thumbnails
 include session ink, with up to 16 small PDF backgrounds cached at a time.
 
+The fresh desktop layout follows the reference workspace: a dark Adwaita window,
+the page sidebar closed, one tool-and-page control strip, and a narrow left rail
+with canvas tools and the imported color swatches. The rail pins Smart Select,
+Pen, Highlighter, Eraser, Text, and Hand by default. Smart Select is the primary
+selection button; Rectangle, Lasso, Object, visible-layer, and PDF-text modes
+remain in the selection-mode menu. A dotted charcoal canvas surround appears in
+dark mode while pages stay white. The sidebar, color scheme, rail order, and
+floating-toolbox rows remain configurable.
+
 The header's Preferences button opens an `AdwPreferencesDialog` with Appearance,
 Input, Behavior, and Toolbar pages. Color scheme, page-sidebar visibility,
 pressure thresholds, stylus side-button actions, autosave cadence, and
 keyboard/wheel zoom steps save immediately to `gtk4-canvas.ini` in the selected
 configuration directory. These values take precedence over imported GTK 3
-settings. The four floating-toolbox rows import read-only from `toolbar.ini` and
-can be edited on Preferences > Toolbar; applying them saves the rows in
-`gtk4-canvas.ini` without changing `settings.xml` or `toolbar.ini`. Common
-actions such as Pen, Highlighter, Laser Pointer, PDF selection, Undo, zoom,
-drawing modes, and palette colors work in these rows. `TOOL_FILL` and unknown
-tokens are visible but disabled until their behavior is ported. Stylus side
-buttons can temporarily select Pen, Highlighter, Eraser, or Hand while held;
-releasing a mapped button restores the toolbar tool. A Floating Toolbox mapping
-opens the panel at the pointer without changing the active tool. Smart Select
-stays pinned in the panel header and secondary tools are under More tools. The
-panel closes when the pointer leaves or a tool is chosen. Mouse-button mappings,
-stroke-filter tap triggers, and the legacy drag/drop configuration mode remain
-unported. The Hand toolbar button pans with a primary-button drag across the
-canvas and keeps the current selection. Space-drag, middle-mouse, and touch
-panning remain available.
+settings. Preferences > Toolbar edits the main rail order and the four floating
+toolbox rows. Smart Select must remain in the rail; omitted actions stay under
+More tools. Floating-toolbox rows import read-only from `toolbar.ini` and both
+customization paths save only to `gtk4-canvas.ini`, without changing
+`settings.xml` or `toolbar.ini`. Common actions such as Pen, Highlighter, Laser
+Pointer, PDF selection, Undo, zoom, drawing modes, and palette colors work in
+the floating rows. `TOOL_FILL` and unknown tokens are visible but disabled until
+their behavior is ported. Stylus side buttons can temporarily select Pen,
+Highlighter, Eraser, or Hand while held; releasing a mapped button restores the
+toolbar tool. A Floating Toolbox mapping opens the panel at the pointer without
+changing the active tool. Secondary tools stay under More tools. The panel closes
+when the pointer leaves or a tool is chosen. Mouse-button mappings, stroke-filter
+tap triggers, and the legacy drag/drop configuration mode remain unported. The
+Hand toolbar button pans with a primary-button drag across the canvas and keeps
+the current selection. Space-drag, middle-mouse, and touch panning remain
+available.
 
 The **Play Object** toolbar mode plays audio-linked strokes and rectangular
 objects on the active layer when the pointer is within 15 document points.
@@ -322,7 +341,7 @@ Transfer serialization, geometric drawing/recognition/spline/stabilizer checks,
 rich-text transfer/rendering, background task/main-context checks, read-only
 `settings.xml` and `.gpl` palette import/fallback checks, CLI rejection checks,
 filesystem backup/publication, PDF text extraction, and autosave/recovery checks
-bring the standalone CTest suite to twenty-nine tests.
+bring the standalone CTest suite to thirty-one tests.
 
 The graphical test runs actual GTK/libadwaita rendering with a real exported
 document. It invokes controller **signals**, rather than injecting hardware
@@ -337,11 +356,11 @@ path. It explicitly renders a 2x raster cache
 and checks its dimensions. This is **not** a compositor-at-2x or physical HiDPI display test;
 the headless compositor reports device scale 1.
 
-The focused `--preferences-only` GUI check verifies Adw Preferences editing and
-restart persistence, including imported legacy toolbar rows and custom GTK 4
-row edits. It opens the toolbox through canvas mode and the stylus mapping,
-checks that the drawing tool stays active, and captures the panel in the private
-renderer.
+The focused `--preferences-only` GUI check verifies the canvas-first defaults,
+the pinned Smart Select action and palette swatches, main rail ordering and
+More tools fallback, Adw Preferences editing, and restart persistence. It also
+checks imported legacy floating-toolbox rows, opens the toolbox through canvas
+mode and the stylus mapping, and captures the panel in the private renderer.
 
 The focused `--selection-only` GUI check loads a two-layer native document and
 verifies visible-layer rectangle and lasso selection, hidden-layer fallback,

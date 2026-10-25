@@ -61,6 +61,8 @@ int main() {
     saved.autosaveTimeoutMinutes = 11;
     saved.stylusButtonOne = prototype::ButtonToolAction::Eraser;
     saved.stylusButtonTwo = prototype::ButtonToolAction::FloatingToolbox;
+    saved.mainToolRail = {prototype::MainToolAction::Pen, prototype::MainToolAction::SmartSelect,
+                          prototype::MainToolAction::Text, prototype::MainToolAction::Hand};
     saved.floatingToolboxRows = {{{"SMART_SELECT", "PEN"}, {}, {"COLOR(8)", "DRAW_ARROW"}, {"UNDO"}}};
     std::string error;
     require(prototype::saveGtk4Preferences(directory, saved, error), "GTK 4 preferences could not be saved");
@@ -80,6 +82,7 @@ int main() {
                     loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
                     loaded.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox &&
+                    loaded.mainToolRail == saved.mainToolRail &&
                     loaded.floatingToolboxRows == saved.floatingToolboxRows,
             "Saved GTK 4 preference values did not roundtrip");
 
@@ -94,6 +97,20 @@ int main() {
     error.clear();
     require(!prototype::saveGtk4Preferences(directory, saved, error) && !error.empty(),
             "Saving must refuse to replace a symlink preferences file");
+
+    std::filesystem::remove_all(directory);
+
+    std::filesystem::create_directories(directory);
+    {
+        std::ofstream invalidRail(directory / "gtk4-canvas.ini");
+        invalidRail << "[Toolbar]\nmain-tool-rail=pen,unknown\n";
+    }
+    prototype::ImportedSettings invalidLayout;
+    const auto invalidLayoutResult = prototype::loadGtk4Preferences(directory, invalidLayout);
+    require(invalidLayoutResult.found && invalidLayoutResult.warning.empty() &&
+                    invalidLayout.mainToolRail == std::vector<prototype::MainToolAction>(
+                            prototype::defaultMainToolRail.begin(), prototype::defaultMainToolRail.end()),
+            "Invalid main tool rail preferences should leave the default layout intact");
 
     std::filesystem::remove_all(directory);
     return 0;

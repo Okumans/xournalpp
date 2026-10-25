@@ -21,6 +21,7 @@
 #include "CanvasState.h"
 #include "CanvasStabilizer.h"
 #include "FloatingToolboxConfig.h"
+#include "MainToolRail.h"
 #include "PaletteImport.h"
 
 namespace prototype {
@@ -72,8 +73,8 @@ struct ImportedSettings {
     double snapGridTolerance = behavior::snapGridTolerance;
     StabilizerConfig stabilizer;
 
-    bool showSidebar = true;
-    ThemeVariant themeVariant = ThemeVariant::UseSystem;
+    bool showSidebar = false;
+    ThemeVariant themeVariant = ThemeVariant::ForceDark;
     bool autosaveEnabled = true;
     int autosaveTimeoutMinutes = 3;
     std::filesystem::path colorPalettePath;
@@ -82,6 +83,8 @@ struct ImportedSettings {
     bool disableAudio = false;
     ButtonToolAction stylusButtonOne = ButtonToolAction::None;
     ButtonToolAction stylusButtonTwo = ButtonToolAction::None;
+    std::vector<MainToolAction> mainToolRail =
+            std::vector<MainToolAction>(defaultMainToolRail.begin(), defaultMainToolRail.end());
     FloatingToolboxRows floatingToolboxRows = defaultFloatingToolboxRows();
 
     int effectiveAutosaveSeconds() const {
