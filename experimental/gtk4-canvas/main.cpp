@@ -1558,6 +1558,9 @@ private:
             return transformSelectedImagesFromPlugin(action, error);
         };
         host.getDisplayDpi = [this] { return pluginDisplayDpi(); };
+        host.getPageLabel = [this](std::size_t pageNumber, std::string& label, std::string& error) {
+            return getPluginPageLabel(pageNumber, label, error);
+        };
         host.getZoom = [this] { return state.zoom; };
         host.setZoom = [this](double value, std::string& error) { return setPluginZoom(value, error); };
         host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
@@ -2890,6 +2893,15 @@ private:
         return static_cast<int>(std::lround(std::clamp(detectedDpi, 36.0, 720.0)));
     }
 
+    bool getPluginPageLabel(std::size_t pageNumber, std::string& label, std::string& error) const {
+        if (!nativeSession || pageNumber >= nativeSession->pdfPageLabels.size()) {
+            error = "page nr " + std::to_string(pageNumber) + " is out of range";
+            return false;
+        }
+        label = nativeSession->pdfPageLabels[pageNumber];
+        return true;
+    }
+
     bool setPluginZoom(double value, std::string& error) {
         if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
             error = "Wait for the current document operation or input gesture to finish before changing zoom";
@@ -4154,6 +4166,18 @@ private:
         const int displayDpi = pluginDisplayDpi();
         require(displayDpi >= 36 && displayDpi <= 720,
                 "app.getDisplayDpi did not return a bounded monitor DPI value or fallback");
+        require(nativeSession && !nativeSession->pdfPageLabels.empty(),
+                "Plugin integration fixture has no PDF page labels");
+        std::string firstPdfPageLabel;
+        std::string pageLabelError;
+        require(getPluginPageLabel(0, firstPdfPageLabel, pageLabelError) &&
+                        firstPdfPageLabel == nativeSession->pdfPageLabels.front(),
+                pageLabelError.empty() ? "app.getPageLabel did not return the first PDF page label" :
+                                         pageLabelError.c_str());
+        require(!getPluginPageLabel(nativeSession->pdfPageLabels.size(), firstPdfPageLabel, pageLabelError) &&
+                        pageLabelError == "page nr " + std::to_string(nativeSession->pdfPageLabels.size()) +
+                                                  " is out of range",
+                "app.getPageLabel did not return the master-compatible out-of-range result");
         const auto savedZoom = state.zoom;
         const auto savedOffsetX = state.offsetX;
         const auto savedOffsetY = state.offsetY;
