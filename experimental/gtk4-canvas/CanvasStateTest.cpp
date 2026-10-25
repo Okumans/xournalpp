@@ -136,6 +136,47 @@ static void editableImageHistory() {
           "image deletion should restore image bytes and transform");
 }
 
+static void multiImagePasteHistory() {
+    CanvasState state;
+    state.setPages({{300, 400}});
+    CanvasImage first;
+    first.page = 0;
+    first.pixelWidth = 40;
+    first.pixelHeight = 20;
+    first.transform = {1, 0, 0, 1, 20, 30};
+    first.encodedData = "first image bytes";
+    CanvasImage second = first;
+    second.transform = {0, 1, -1, 0, 90, 60};
+    second.encodedData = "second image bytes";
+    const double relativeX = second.transform.x - first.transform.x;
+    const double relativeY = second.transform.y - first.transform.y;
+
+    check(state.pasteImages({first, second}, 0, {160, 180}) && state.images.size() == 2 &&
+                  state.selectedImages == std::vector<size_t>{0, 1},
+          "Pasting multiple images should insert and select the group in one edit");
+    check(state.images[1].transform.x - state.images[0].transform.x == relativeX &&
+                  state.images[1].transform.y - state.images[0].transform.y == relativeY,
+          "Pasting multiple images should preserve their relative placement");
+    state.undo();
+    check(state.images.empty(), "One undo should remove the complete multi-image paste");
+    state.redo();
+    check(state.images.size() == 2 && state.selectedImages == std::vector<size_t>{0, 1},
+          "Redo should restore every pasted image and its selection");
+
+    const auto bounds = state.selectionBox();
+    check(bounds.has_value(), "Pasted images should have a group selection bound");
+    auto duplicates = state.images;
+    check(state.pasteImages(std::move(duplicates), bounds->page,
+                            {bounds->x0 / 2 + bounds->x1 / 2 + 20,
+                             bounds->y0 / 2 + bounds->y1 / 2 + 20}) && state.images.size() == 4,
+          "Duplicating multiple images should add the group as one edit");
+    state.undo();
+    check(state.images.size() == 2, "One undo should remove the complete multi-image duplicate");
+    state.redo();
+    check(state.images.size() == 4 && state.selectedImages == std::vector<size_t>{2, 3},
+          "Redo should restore every duplicated image and its selection");
+}
+
 static void verticalSpaceMovement() {
     CanvasState state;
     state.setPages({{200, 300}});
@@ -762,6 +803,7 @@ int main() {
     try {
         savedHistory();
         editableImageHistory();
+        multiImagePasteHistory();
         verticalSpaceMovement();
         imageRotationGeometry();
         editableTextHistory();

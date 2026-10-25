@@ -42,7 +42,7 @@ registration in `ToolHandler::initTools`.
 | `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work; reproduce all production hit geometry and renderer interactions. |
 | `highlighter` | Partial | Core opacity and native serialization work; reproduce production stroke geometry and blend behavior. |
 | `text` | Partial | Rich editing, toolbar font/size/style/color controls, direct Text-tool drag-to-move and handle transforms, rectangle/lasso selection, and cross-page transfer work. Add text clipboard targets, transform-following editor placement, IME, and accessibility. |
-| `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Standard PNG clipboard images can be pasted. Add multi-image and mixed-object clipboard operations and unsupported native object editing. |
+| `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Multi-image copy/cut/paste and duplicate preserve relative transforms; PNG clipboard data carries the rendered image group. Mixed-object clipboard operations and unsupported native object editing remain. |
 | `selectRect` | Partial | Selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |
 | `selectRegion` | Partial | Lasso-selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |
 | `selectMultiLayerRect` | Partial | Selects editable strokes, text, and images from the topmost visible foreground layer with matches; unsupported native objects are not included. |
@@ -85,7 +85,7 @@ it is not represented by a single `ToolType`.
 | Text editing | Partial | Inline rich-text editing and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, and newly created or edited text remains selected. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
-| Clipboard | Partial | Bounded `application/xournal` stroke and single-image copy/cut/paste works. Images also offer PNG and accept PNG clipboard paste. Multi-image and mixed-object selection clipboard actions, remaining native types, text and SVG selection targets, and cross-process compatibility remain. |
+| Clipboard | Partial | Bounded `application/xournal` stroke and multi-image copy/cut/paste works; multi-image duplicate is one undoable edit. Images also offer PNG and accept PNG clipboard paste. Mixed-object selection actions, remaining native types, text and SVG selection targets, and cross-process compatibility remain. |
 | PDF text selection and annotation | Partial | Linear and rectangular drag select PDF text; double/triple click selects words/lines. Copy, highlight, underline, and strikethrough work with color controls and marker opacity. The original PDF source is used for text extraction and retained in the native save path. Match GTK 3 floating-toolbox placement and dismissal/reopen behavior. |
 
 ## Built-in plugin inventory

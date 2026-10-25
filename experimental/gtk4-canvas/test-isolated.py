@@ -398,10 +398,11 @@ def verify_images(args, evidence):
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_IMAGE_VERIFY_MODE="insert-resize-save-reopen",
                  XOURNALPP_IMAGE_VERIFY_SOURCE=str(image)),
     )
-    if ("PASS: image insertion, resize, move, rotate, native save/reopen, PDF export, "
-            "editable native image cut/paste, PNG paste and undo/redo" not in result):
+    if ("PASS: image insertion, resize, move, rotate, native save/reopen, PDF export, PNG "
+            "paste, and multi-image native copy/cut/paste, duplicate and grouped undo/redo" not in result):
         raise RuntimeError("GTK image insertion verification did not finish")
-    for name in ("image-inserted", "image-resized", "image-rotated", "image-reopened", "image-png-pasted"):
+    for name in ("image-inserted", "image-resized", "image-rotated", "image-reopened", "image-png-pasted",
+                 "image-multi-pasted"):
         screenshot = output / f"{name}.png"
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty image insertion screenshot: {screenshot}")
@@ -421,7 +422,7 @@ def verify_images(args, evidence):
     image_list = run(["pdfimages", "-list", str(exported)])
     if not any(re.match(r"^\s*\d+\s+\d+\s+image\s", line) for line in image_list.splitlines()):
         raise RuntimeError("Exported PDF does not contain the inserted image")
-    print("PASS: private GTK4 image insertion, resize, move, rotate, native persistence and PDF export", flush=True)
+    print("PASS: private GTK4 image editing, native and PNG clipboard, multi-image actions and PDF export", flush=True)
     return str(output)
 
 

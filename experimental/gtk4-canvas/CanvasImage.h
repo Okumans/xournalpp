@@ -16,6 +16,7 @@ namespace prototype {
 
 inline constexpr size_t maxCanvasImageBytes = 64 * 1024 * 1024;
 inline constexpr size_t maxCanvasImagePixels = 32 * 1024 * 1024;
+inline constexpr size_t maxCanvasImageObjects = 4096;
 
 struct CanvasImageTransform {
     double xx = 1;
