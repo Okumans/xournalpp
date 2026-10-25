@@ -163,6 +163,9 @@ inline void drawCanvasImage(cairo_t* cr, const CanvasImage& image) {
 inline void drawCanvasImageHandles(cairo_t* cr, const CanvasImage& image, double zoom) {
     const auto corners = canvasImageCorners(image);
     const double handle = 6.0 / zoom;
+    const auto rotationHandle = canvasImageRotationHandle(image, zoom);
+    const auto rotationStem = Point{(corners[0].x + corners[1].x) / 2,
+                                    (corners[0].y + corners[1].y) / 2};
     cairo_save(cr);
     cairo_set_source_rgba(cr, 0.12, 0.42, 0.86, 0.95);
     cairo_set_line_width(cr, 1.5 / zoom);
@@ -175,6 +178,14 @@ inline void drawCanvasImageHandles(cairo_t* cr, const CanvasImage& image, double
     for (const auto& corner: corners) {
         cairo_rectangle(cr, corner.x - handle / 2, corner.y - handle / 2, handle, handle);
     }
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 0.12, 0.42, 0.86, 0.95);
+    cairo_stroke(cr);
+    cairo_move_to(cr, rotationStem.x, rotationStem.y);
+    cairo_line_to(cr, rotationHandle.x, rotationHandle.y);
+    cairo_stroke(cr);
+    cairo_arc(cr, rotationHandle.x, rotationHandle.y, handle * 0.65, 0, 2 * G_PI);
     cairo_set_source_rgb(cr, 1, 1, 1);
     cairo_fill_preserve(cr);
     cairo_set_source_rgba(cr, 0.12, 0.42, 0.86, 0.95);

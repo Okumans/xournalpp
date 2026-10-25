@@ -54,6 +54,8 @@ struct ImportedSettings {
     std::string textFontName = "Sans";
     double textFontSize = 12;
     double shapeRecognizerMinSize = 40;
+    bool snapRotation = true;
+    double snapRotationTolerance = 0.30;
     StabilizerConfig stabilizer;
 
     bool showSidebar = true;
@@ -209,6 +211,16 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         // Settings.cpp stores zoomStepScroll in percent (default 2.0 -> 0.02).
         if (const auto pct = parseAsciiDouble(value); pct && *pct > 0.0) {
             out.scrollZoomStep = std::clamp(*pct / 100.0, 0.005, 2.0);
+        }
+    } else if (name == "snapRotation") {
+        if (value == "true") {
+            out.snapRotation = true;
+        } else if (value == "false") {
+            out.snapRotation = false;
+        }
+    } else if (name == "snapRotationTolerance") {
+        if (const auto v = parseAsciiDouble(value)) {
+            out.snapRotationTolerance = std::clamp(*v, 0.0, 1.0);
         }
     } else if (name == "strokeRecognizerMinSize") {
         if (const auto v = parseAsciiDouble(value); v && *v > 0) {
@@ -519,6 +531,8 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.minimumPressure = settings.minimumPressure;
     state.pressureMultiplier = settings.pressureMultiplier;
     state.shapeRecognizerMinSize = settings.shapeRecognizerMinSize;
+    state.snapRotationEnabled = settings.snapRotation;
+    state.snapRotationTolerance = settings.snapRotationTolerance;
     state.zoomStep = settings.zoomStep;
     state.scrollZoomStep = settings.scrollZoomStep;
     state.eraserMode = settings.eraserMode;

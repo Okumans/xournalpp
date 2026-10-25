@@ -48,6 +48,8 @@ int main() {
     saved.pressureMultiplier = 1.75;
     saved.zoomStep = 0.22;
     saved.scrollZoomStep = 0.035;
+    saved.snapRotation = false;
+    saved.snapRotationTolerance = 0.45;
     saved.autosaveEnabled = true;
     saved.autosaveTimeoutMinutes = 11;
     saved.stylusButtonOne = prototype::ButtonToolAction::Eraser;
@@ -62,7 +64,9 @@ int main() {
     require(loaded.themeVariant == prototype::ThemeVariant::ForceDark && !loaded.showSidebar &&
                     !loaded.pressureSensitivity && near(loaded.minimumPressure, 0.17) &&
                     near(loaded.pressureMultiplier, 1.75) && near(loaded.zoomStep, 0.22) &&
-                    near(loaded.scrollZoomStep, 0.035) && loaded.autosaveTimeoutMinutes == 11 &&
+                    near(loaded.scrollZoomStep, 0.035) && !loaded.snapRotation &&
+                    near(loaded.snapRotationTolerance, 0.45) &&
+                    loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
                     loaded.stylusButtonTwo == prototype::ButtonToolAction::Pen,
             "Saved GTK 4 preference values did not roundtrip");

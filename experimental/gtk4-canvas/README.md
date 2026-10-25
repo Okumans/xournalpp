@@ -26,13 +26,16 @@ for their first save. Without a worker, ink remains temporary.
 
 With a document worker, the header's Insert Image action opens a local image
 chooser. The image is placed at the center of the active page, scaled to fit
-within 60% of the page, and selected in Smart Select. Drag the image to move it
-or drag a corner handle to resize it proportionally. Delete removes the selected
-image, and insertion, move, resize, and deletion share the native undo history.
+within 60% of the page, and selected in Smart Select. Drag the image to move it,
+drag a corner handle to resize it proportionally, or drag the top rotation handle
+to rotate around its center. Rotation snapping follows imported and editable
+`snapRotation` and `snapRotationTolerance` settings; holding Alt temporarily
+reverses the snapping setting. Delete removes the selected image, and insertion,
+move, resize, rotation, and deletion share the native undo history.
 Embedded image orientation is honored, and images larger than 32 megapixels are
 scaled down for display. The original encoded bytes and transforms survive
 `.xopp` save, autosave, reopen, and PDF export. The current image workflow does
-not provide rotation, crop, or image clipboard support.
+not provide image clipboard operations.
 
 Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
 settings are remembered separately during a session, initialized from read-only
@@ -366,13 +369,13 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of unsupported native objects, layer rename/reorder/lock, multi-column/paired-page layout modes, page-level undo/redo, image rotation/cropping and image clipboard support, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
+The experiment still needs editing of unsupported native objects, multi-layer selection, multi-column/paired-page layout modes, page-level undo/redo, image clipboard support, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
 ## Stroke selection
 
-Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes from the active visible foreground layer. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select (`S`) picks the topmost stroke by path distance or an editable image by its bounds. Selected images can be moved and resized from a corner handle while preserving aspect ratio. Hold Shift to add a rectangle to an existing selection.
+Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes from the active visible foreground layer. Rectangle and lasso selection require every point in a stroke to be inside the selection; paths within one point of a page edge extend to that edge. Lasso uses winding containment, while Smart Select (`S`) picks the topmost stroke by path distance or an editable image by its bounds. Selected images can be moved, resized from a corner handle while preserving aspect ratio, or rotated around the center from the top handle. Hold Shift to add a rectangle to an existing selection.
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 

@@ -2,7 +2,8 @@
 
 The existing application is the behavior reference. UI modernization must not
 silently replace its tool semantics. This experiment is not yet a drop-in GTK 4
-version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
+version of Xournal++. The initial source inspection was commit `83c0deb9b`;
+the current upstream audit target is `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`.
 
 ## Source-grounded defaults
 
@@ -43,12 +44,12 @@ version of Xournal++. The baseline source inspected is commit `83c0deb9b`.
 | Crash recovery | `XournalMain::checkForEmergencySave`: `emergencysave.xopp` (`Delete file` / `Restore file`, unnamed & dirty) | Matched for `emergencysave.xopp`; extended to also prompt on dead-PID cache autosaves and `.name.autosave.xopp` sidecars |
 | Layer management | `XojPage` layers and `LayerView`; `LayerController` rename, duplicate, move, show-all, and hide-all actions | The per-page sidebar selects foreground layers, toggles background/foreground visibility, adds, deletes, duplicates, renames, reorders, and merges layers, and shows or hides all foreground layers. Layer changes participate in undo/redo and save as native layer groups. The master layer model has no per-layer lock state or action to port. |
 | Native files | `LoadHandler`, `SaveHandler`, `DocumentView`, `XojCairoPdfExport` | Reused in a separate worker; supported stroke, text, and image suffixes from every foreground layer are extracted for editing and saved back into their layer groups in order. Remaining native objects stay in the document snapshot and render in per-layer previews. |
-| Native images | `ImageHandler`, `Image`, `XojCairoPdfExport` | Insert Image opens a local file chooser and places the image centered, scaled to fit within 60% of the page. Smart Select picks editable images from the active visible layer; drag the body to move and a corner handle to resize proportionally. Insert, move, resize, and delete use shared undo/redo; encoded bytes and transforms survive native save, autosave, reopen, and PDF export. Rotation, crop, and clipboard support remain pending. |
+| Native images | `ImageHandler`, `Image`, `XojCairoPdfExport` | Insert Image opens a local file chooser and places the image centered, scaled to fit within 60% of the page. Smart Select picks editable images from the active visible layer; drag the body to move, a corner handle to resize proportionally, or the top rotation handle to rotate around the image center. Rotation snapping follows the imported/editable `snapRotation` toggle and `snapRotationTolerance`; Alt temporarily reverses the toggle, matching the master modifier behavior. Insert, move, resize, rotate, and delete use shared undo/redo; encoded bytes and transforms survive native save, autosave, reopen, and PDF export. Image clipboard support remains pending. |
 | Native rich text | `Text`, `TextView`, `TextEditor`, `UndoRedoHandler` | Eligible non-audio native text loads into a Pango renderer and inline `GtkTextView`; UTF-8, font, color, wrap, alignment, transform, and supported style runs round-trip. Text tool creates items; Smart Select click edits them. Bold, italic, underline, strikethrough, superscript, and subscript work on selected text and join shared undo/redo. Text is not yet movable or resizable with object selection, and the editor overlay does not follow rotated/scaled transforms. |
-| Preferences (`settings.xml` + `gtk4-canvas.ini`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure, zoom, sidebar, theme, autosave, palette, and `stylus`/`stylus2` mappings; editable Adw Preferences write only `gtk4-canvas.ini`, which overlays imported values. Existing GTK 3 settings are never changed. |
+| Preferences (`settings.xml` + `gtk4-canvas.ini`) | `Settings::load` + `ToolHandler::loadSettings`: `<XDG_CONFIG_HOME>/xournalpp/settings.xml` | Read-only import (`--config-dir` override) of active tool, per-tool `hex`/`int` colors & discrete sizes, eraser mode, pressure, rotation snapping and tolerance, zoom, sidebar, theme, autosave, palette, and `stylus`/`stylus2` mappings; editable Adw Preferences write only `gtk4-canvas.ini`, which overlays imported values. Existing GTK 3 settings are never changed. |
 | Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
 | Stroke selection | `Selector.cpp`, `LassoSelector.cpp`, `SmartSelect.cpp`, and `Stroke::isInSelection`: all-point rectangle/lasso winding containment with 1 pt page-edge extension; object picking follows stroke path distance | Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), Smart Select (`S`), Shift-add rectangle, active-page `Ctrl+A`, Delete and Escape. Selects editable strokes from the active visible foreground layer. |
-| Selection transforms | `EditSelection.cpp` affine transform, eight resize handles and rotation anchor; `Stroke::scale` applies geometric-mean width scaling | Strokes support move, axis-side resize, aspect-preserving corner resize, mirror, rotate and cross-page transfer. Selected images support move and aspect-preserving corner resize. Previews leave committed autosave geometry unchanged; release records one undo step. |
+| Selection transforms | `EditSelection.cpp` affine transform, eight resize handles and rotation anchor; `Stroke::scale` applies geometric-mean width scaling | Strokes support move, axis-side resize, aspect-preserving corner resize, mirror, rotate and cross-page transfer. Selected images support move, aspect-preserving corner resize, and center-anchored rotation with legacy angle snapping. Previews leave committed autosave geometry unchanged; release records one undo step. |
 | Selection clipboard | `ClipboardHandler.cpp`: native `application/xournal` object stream, plus text/SVG/PNG targets | Bounded strict decoder and native encoder support editable pen, highlighter and opaque whiteout strokes. GDK Copy/Cut/Paste and duplicate append as one undoable group. Unsupported native objects, custom caps, fill, dash, audio and alpha are rejected atomically; SVG/PNG export, text/image clipboard and editable non-stroke objects remain pending. |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
@@ -60,8 +61,8 @@ events. Configurable stylus side-button mappings are implemented; the legacy
 `deviceClasses` per-device identity table and physical tablet delivery remain
 unverified.
 
-Core tool presets, colors, zoom steps, pressure thresholds, shape-recognition
-threshold, stabilizer settings, theme, autosave cadence, `.gpl` palettes, and
+Core tool presets, colors, zoom steps, pressure thresholds, rotation snap
+tolerance, shape-recognition threshold, stabilizer settings, theme, autosave cadence, `.gpl` palettes, and
 legacy stylus mappings are imported without modifying GTK 3 configuration
 files. The interactive `AdwPreferencesDialog` stores supported edits separately
 in `gtk4-canvas.ini`. Per-device `deviceClasses` mappings and `toolbar.ini`
@@ -89,8 +90,10 @@ for session edits and transfers them to the real native model when saving.
   their original layer groups and order, avoiding duplicate objects. Objects
   preceding a non-editable suffix element, unsupported stroke types, audio-linked
   text, LaTeX, and images outside the supported suffix remain visible in per-layer
-  previews but cannot yet be edited. Layer visibility, selection, add/delete, and merge-down are supported;
-  rename, reorder, lock, and merge into the background are not.
+  previews but cannot yet be edited. Layer visibility, selection, add/delete,
+  duplicate, rename, reorder, and merge-down are supported. The master layer
+  model has no per-layer lock action to port; multi-layer selection remains
+  pending.
   Text can be created and edited, but is not part of rectangle/lasso selection
   and cannot yet be moved or transformed in the canvas.
 - The prototype renders a continuous single-column vertical multi-page layout
@@ -137,6 +140,6 @@ file semantics remain migration work.
 
 ## Selection scope
 
-Rectangle and lasso selection apply to editable standard strokes in the active visible foreground layer. Smart Select picks the topmost editable stroke by path distance or an editable image by its bounds; eligible native text opens for editing. Selected images can be moved or resized by dragging a corner handle, and Delete removes the selected image. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
+Rectangle and lasso selection apply to editable standard strokes in the active visible foreground layer. Smart Select picks the topmost editable stroke by path distance or an editable image by its bounds; eligible native text opens for editing. Selected images can be moved, resized by dragging a corner handle, rotated around their center, and deleted. The native clipboard encoder/decoder supports pen, highlighter and opaque whiteout strokes in bounded `application/xournal` streams; it validates records before allocation/insertion and rejects unsupported elements as a whole.
 
-Stroke move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Images support move and aspect-preserving corner resize. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text can be edited but cannot yet be selected, moved, resized, or rotated; unsupported native objects cannot be selected or edited; other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.
+Stroke move, side/corner resize, mirroring, rotation and cross-page transfer preserve pressure/style and commit as one undoable edit. Images support move, aspect-preserving corner resize, and center-anchored rotation with legacy snapping tolerance. Preview geometry is separate from the committed autosave snapshot. Cross-page strokes append above existing destination ink. Finite points outside page bounds remain editable and round-trip through the native document worker, matching transform freedom in the original model. After stroke selection rotation, the prototype returns to an axis-aligned handle frame; it does not yet retain the native selection angle or grid snapping/edge-pan behavior. Text can be edited but cannot yet be selected, moved, resized, or rotated; unsupported native objects cannot be selected or edited; other clipboard targets, physical input, and cross-process clipboard exchange remain unverified or pending.

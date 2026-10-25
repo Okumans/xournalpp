@@ -76,13 +76,16 @@ struct PageCacheEntry {
 };
 
 struct ImageGesture {
-    enum class Mode { Move, Resize };
+    enum class Mode { Move, Resize, Rotate };
 
     prototype::Device owner = prototype::Device::Mouse;
     Mode mode = Mode::Move;
     size_t index = 0;
     size_t corner = 0;
     prototype::Point start;
+    prototype::Point center;
+    double startAngle = 0;
+    double rotationDelta = 0;
     prototype::CanvasImage original;
     prototype::CanvasImage preview;
     bool changed = false;
@@ -410,6 +413,8 @@ private:
         AutosaveTimeout,
         ZoomStep,
         ScrollZoomStep,
+        RotationSnapTolerance,
+        SnapRotation,
     };
 
     GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
@@ -537,6 +542,12 @@ private:
             case PreferenceKey::ScrollZoomStep:
                 settings.scrollZoomStep = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control)) / 100.0;
                 break;
+            case PreferenceKey::RotationSnapTolerance:
+                settings.snapRotationTolerance = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
+                break;
+            case PreferenceKey::SnapRotation:
+                settings.snapRotation = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
         }
 
         prototype::applyImportedSettingsToCanvas(state, settings);
@@ -629,6 +640,16 @@ private:
                        importedConfig.settings.scrollZoomStep * 100.0, 0.5, 200.0, 0.5, 1, "%",
                        PreferenceKey::ScrollZoomStep);
         adw_preferences_page_add(behavior, navigationGroup);
+        auto* selectionGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(selectionGroup, "Selection");
+        preferenceSwitch(selectionGroup, "Snap image rotation",
+                         "Snap to 15° increments; hold Alt to temporarily reverse this setting",
+                         importedConfig.settings.snapRotation, PreferenceKey::SnapRotation);
+        preferenceSpin(selectionGroup, "Rotation snap tolerance",
+                       "Snap image rotation to 15° increments near a match",
+                       importedConfig.settings.snapRotationTolerance, 0.0, 1.0, 0.05, 2, "",
+                       PreferenceKey::RotationSnapTolerance);
+        adw_preferences_page_add(behavior, selectionGroup);
         adw_preferences_dialog_add(preferencesDialog, behavior);
         adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
     }
@@ -3023,6 +3044,10 @@ private:
                 return index;
             }
         }
+        const auto rotationHandle = prototype::canvasImageRotationHandle(image, state.zoom);
+        if (std::hypot(rotationHandle.x - point.x, rotationHandle.y - point.y) <= radius) {
+            return corners.size();
+        }
         return std::nullopt;
     }
 
@@ -3066,9 +3091,12 @@ private:
         ImageGesture gesture;
         gesture.owner = device;
         gesture.index = *picked;
-        gesture.mode = handle ? ImageGesture::Mode::Resize : ImageGesture::Mode::Move;
+        gesture.mode = !handle ? ImageGesture::Mode::Move :
+                       *handle == 4 ? ImageGesture::Mode::Rotate : ImageGesture::Mode::Resize;
         gesture.corner = handle.value_or(0);
         gesture.start = hit->local;
+        gesture.center = prototype::canvasImageCenter(image);
+        gesture.startAngle = std::atan2(hit->local.y - gesture.center.y, hit->local.x - gesture.center.x);
         gesture.original = image;
         gesture.preview = image;
         imageGesture = std::move(gesture);
@@ -3084,6 +3112,11 @@ private:
         if (gesture.mode == ImageGesture::Mode::Move) {
             gesture.preview.transform.x = gesture.original.transform.x + point.x - gesture.start.x;
             gesture.preview.transform.y = gesture.original.transform.y + point.y - gesture.start.y;
+        } else if (gesture.mode == ImageGesture::Mode::Rotate) {
+            const double currentAngle = std::atan2(point.y - gesture.center.y, point.x - gesture.center.x);
+            const double angle = std::remainder(currentAngle - gesture.startAngle, 2 * G_PI);
+            gesture.rotationDelta = angle;
+            prototype::rotateCanvasImage(gesture.preview, angle);
         } else {
             constexpr std::array<prototype::Point, 4> localCorners = {
                     prototype::Point{0, 0}, prototype::Point{1, 0}, prototype::Point{1, 1},
@@ -3122,6 +3155,17 @@ private:
         }
         auto gesture = std::move(*imageGesture);
         imageGesture.reset();
+        if (gesture.mode == ImageGesture::Mode::Rotate) {
+            gesture.preview = gesture.original;
+            const double angle = prototype::canvasImageRotationDelta(
+                    gesture.startAngle, gesture.startAngle + gesture.rotationDelta,
+                    state.snapRotationEnabled != input.altHeld, state.snapRotationTolerance);
+            prototype::rotateCanvasImage(gesture.preview, angle);
+            const auto& before = gesture.original.transform;
+            const auto& after = gesture.preview.transform;
+            gesture.changed = before.xx != after.xx || before.yx != after.yx || before.xy != after.xy ||
+                              before.yy != after.yy || before.x != after.x || before.y != after.y;
+        }
         if (gesture.changed && state.replaceImage(gesture.index, std::move(gesture.preview))) {
             selectedImageIndex = gesture.index;
             thumbnails.clear();
@@ -4599,27 +4643,43 @@ private:
                             "Legacy stylus mappings were not imported before opening Preferences");
                     openPreferences();
                     break;
-                case 1:
+                case 1: {
                     require(control(PreferenceKey::Theme) && control(PreferenceKey::StylusButtonOne) &&
-                                    control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout),
+                                    control(PreferenceKey::StylusButtonTwo) && control(PreferenceKey::AutosaveTimeout) &&
+                                    control(PreferenceKey::RotationSnapTolerance) &&
+                                    control(PreferenceKey::SnapRotation),
                             "Preferences dialog is missing appearance, stylus or autosave controls");
                     require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Highlighter) &&
                                     adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonTwo))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Hand),
                             "Preferences rows did not show imported stylus mappings");
+                    require(adw_switch_row_get_active(
+                                    ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
+                            "Rotation snapping should be enabled by default in Preferences");
                     capture("preferences-dialog");
+                    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "behavior");
+                    require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "behavior",
+                            "Preferences dialog did not switch to the Behavior page");
+                    break;
+                }
+                case 2: {
+                    capture("preferences-behavior");
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
                     adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne)),
                                                static_cast<guint>(prototype::ButtonToolAction::Pen));
                     adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity)), false);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::AutosaveTimeout)), 9);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::ZoomStep)), 22.0);
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::RotationSnapTolerance)), 0.45);
+                    adw_switch_row_set_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation)), false);
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     !importedConfig.settings.pressureSensitivity &&
+                                    !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
+                                    std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
                                     std::filesystem::is_regular_file(preferencesConfigDir / "gtk4-canvas.ini"),
                             "Changing preferences did not immediately save and apply the edited values");
                     {
@@ -4648,6 +4708,7 @@ private:
                                 "The stylus Hand mapping did not pan without changing the toolbar tool");
                     }
                     break;
+                }
                 default:
                     capture("preferences-edited");
                     std::cout << "PASS: Adw Preferences editing, legacy stylus mapping import and persistent GTK 4 settings\n";
@@ -4662,8 +4723,10 @@ private:
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     importedConfig.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand &&
                                     !importedConfig.settings.pressureSensitivity &&
+                                    !importedConfig.settings.snapRotation && !state.snapRotationEnabled &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
-                                    std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8,
+                                    std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
+                                    std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8,
                             "GTK 4 preference edits were not restored at next startup");
                     openPreferences();
                     break;
@@ -4674,6 +4737,9 @@ private:
                                     !adw_switch_row_get_active(
                                             ADW_SWITCH_ROW(control(PreferenceKey::PressureSensitivity))),
                             "Preferences dialog did not display restored values");
+                    require(!adw_switch_row_get_active(
+                                    ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
+                            "Preferences dialog did not restore the rotation snapping setting");
                     capture("preferences-reloaded");
                     std::cout << "PASS: GTK 4 preferences survive application restart\n";
                     adw_dialog_close(ADW_DIALOG(preferencesDialog));
@@ -4748,6 +4814,72 @@ private:
                 require(std::abs(state.images[0].transform.x - originalX - 24) < 1e-6 &&
                                 std::abs(state.images[0].transform.y - originalY - 19) < 1e-6,
                         "Dragging an image body did not move the image");
+                const auto movedTransform = state.images[0].transform;
+                const auto centerBeforeRotation = prototype::canvasImageCenter(state.images[0]);
+                const auto rotationHandle = prototype::canvasImageRotationHandle(state.images[0], state.zoom);
+                const double handleRadius = std::hypot(rotationHandle.x - centerBeforeRotation.x,
+                                                       rotationHandle.y - centerBeforeRotation.y);
+                const double startAngle = std::atan2(rotationHandle.y - centerBeforeRotation.y,
+                                                     rotationHandle.x - centerBeforeRotation.x);
+                const double targetAngle = startAngle + G_PI / 6.0 + 0.01;
+                const prototype::Point rotatedHandle{centerBeforeRotation.x + handleRadius * std::cos(targetAngle),
+                                                     centerBeforeRotation.y + handleRadius * std::sin(targetAngle)};
+                const auto rotationStart = state.pageScreenPoint(state.images[0].page, rotationHandle.x,
+                                                                 rotationHandle.y);
+                const auto rotationEnd = state.pageScreenPoint(state.images[0].page, rotatedHandle.x,
+                                                               rotatedHandle.y);
+                begin(Device::Mouse, rotationStart.x, rotationStart.y);
+                motion(Device::Mouse, rotationEnd.x, rotationEnd.y);
+                finish(Device::Mouse);
+                require(std::abs(state.images[0].transform.xy) > 1e-6 &&
+                                std::abs(state.images[0].transform.yx) > 1e-6 &&
+                                std::abs(std::atan2(state.images[0].transform.yx, state.images[0].transform.xx) -
+                                         G_PI / 6.0) < 1e-6 &&
+                                std::hypot(prototype::canvasImageCenter(state.images[0]).x - centerBeforeRotation.x,
+                                           prototype::canvasImageCenter(state.images[0]).y - centerBeforeRotation.y) < 1e-6,
+                        "Image rotation should snap to 30 degrees around its center");
+                const auto snappedTransform = state.images[0].transform;
+                const auto snappedHandle = prototype::canvasImageRotationHandle(state.images[0], state.zoom);
+                const double snappedHandleAngle = std::atan2(snappedHandle.y - centerBeforeRotation.y,
+                                                             snappedHandle.x - centerBeforeRotation.x);
+                const prototype::Point unsnappedHandle{
+                        centerBeforeRotation.x + handleRadius * std::cos(snappedHandleAngle + 2 * G_PI / 180.0),
+                        centerBeforeRotation.y + handleRadius * std::sin(snappedHandleAngle + 2 * G_PI / 180.0)};
+                const auto unsnappedStart = state.pageScreenPoint(state.images[0].page, snappedHandle.x,
+                                                                   snappedHandle.y);
+                const auto unsnappedEnd = state.pageScreenPoint(state.images[0].page, unsnappedHandle.x,
+                                                                 unsnappedHandle.y);
+                input.setModifiers(false, false, true);
+                begin(Device::Mouse, unsnappedStart.x, unsnappedStart.y);
+                motion(Device::Mouse, unsnappedEnd.x, unsnappedEnd.y);
+                finish(Device::Mouse);
+                input.setModifiers(false, false, false);
+                require(std::abs(std::atan2(state.images[0].transform.yx, state.images[0].transform.xx) -
+                                         (G_PI / 6.0 + 2 * G_PI / 180.0)) < 1e-6,
+                        "Holding Alt should temporarily disable rotation snapping");
+                const auto rotatedTransform = state.images[0].transform;
+                state.undo();
+                require(std::abs(state.images[0].transform.xx - snappedTransform.xx) < 1e-9 &&
+                                std::abs(state.images[0].transform.xy - snappedTransform.xy) < 1e-9 &&
+                                std::abs(state.images[0].transform.yx - snappedTransform.yx) < 1e-9 &&
+                                std::abs(state.images[0].transform.yy - snappedTransform.yy) < 1e-9,
+                        "Undo should restore the snapped image rotation after an Alt rotation");
+                state.undo();
+                require(std::abs(state.images[0].transform.xx - movedTransform.xx) < 1e-9 &&
+                                std::abs(state.images[0].transform.xy - movedTransform.xy) < 1e-9 &&
+                                std::abs(state.images[0].transform.yx - movedTransform.yx) < 1e-9 &&
+                                std::abs(state.images[0].transform.yy - movedTransform.yy) < 1e-9,
+                        "Undo should restore the image transform from before rotation");
+                state.redo();
+                require(std::abs(state.images[0].transform.xx - snappedTransform.xx) < 1e-9 &&
+                                std::abs(state.images[0].transform.xy - snappedTransform.xy) < 1e-9 &&
+                                std::abs(state.images[0].transform.yx - snappedTransform.yx) < 1e-9 &&
+                                std::abs(state.images[0].transform.yy - snappedTransform.yy) < 1e-9,
+                        "Redo should restore the snapped image rotation");
+                state.redo();
+                require(std::abs(state.images[0].transform.xy - rotatedTransform.xy) < 1e-9 &&
+                                std::abs(state.images[0].transform.yx - rotatedTransform.yx) < 1e-9,
+                        "Redo should restore the unsnapped Alt image rotation");
                 imageVerifyExpected = state.images[0].transform;
                 saveCopyTo((std::filesystem::path(options.smokeDirectory) / "image-saved.xopp").string());
                 break;
@@ -4761,15 +4893,18 @@ private:
                 require(!modified(), "Saving a document with an edited image left it modified");
                 require(savedCopyPath == path, "Saving an image copy did not update its destination");
                 require(std::filesystem::is_regular_file(path), "Saving an image copy did not create the file");
+                capture("image-rotated");
                 requestOpenDocument(path);
                 break;
             }
             case 7: {
                 require(state.images.size() == 1 && state.images[0].encodedData.size() > 0 &&
-                                std::abs(state.images[0].transform.xx - imageVerifyExpected.xx) < 1e-9 &&
-                                std::abs(state.images[0].transform.yy - imageVerifyExpected.yy) < 1e-9 &&
-                                std::abs(state.images[0].transform.x - imageVerifyExpected.x) < 1e-6 &&
-                                std::abs(state.images[0].transform.y - imageVerifyExpected.y) < 1e-6,
+                                std::abs(state.images[0].transform.xx - imageVerifyExpected.xx) < 1e-4 &&
+                                std::abs(state.images[0].transform.yx - imageVerifyExpected.yx) < 1e-4 &&
+                                std::abs(state.images[0].transform.xy - imageVerifyExpected.xy) < 1e-4 &&
+                                std::abs(state.images[0].transform.yy - imageVerifyExpected.yy) < 1e-4 &&
+                                std::abs(state.images[0].transform.x - imageVerifyExpected.x) < 1e-4 &&
+                                std::abs(state.images[0].transform.y - imageVerifyExpected.y) < 1e-4,
                         "Saving and reopening changed the native image or its resized placement");
                 capture("image-reopened");
                 const auto pdf = (std::filesystem::path(options.smokeDirectory) / "image-exported.pdf").string();
@@ -4780,7 +4915,7 @@ private:
                 const auto pdf = (std::filesystem::path(options.smokeDirectory) / "image-exported.pdf").string();
                 require(exportedPdfPath == pdf && std::filesystem::is_regular_file(pdf),
                         "Exporting the image document did not create a PDF");
-                std::cout << "PASS: GTK image insertion, resize, move, native save/reopen and PDF export\n";
+                std::cout << "PASS: GTK image insertion, resize, move, rotate, native save/reopen and PDF export\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -4814,6 +4949,9 @@ private:
                         "Valid settings.xml or .gpl unexpectedly fell back to defaults");
                 require(bool(adw_style_manager_get_dark(adw_style_manager_get_default())) == expectDark,
                         "Imported themeVariant did not set libadwaita light/dark scheme");
+                require(std::abs(importedConfig.settings.snapRotationTolerance - 0.55) < 1e-8 &&
+                                std::abs(state.snapRotationTolerance - 0.55) < 1e-8,
+                        "Imported snapRotationTolerance did not reach the canvas state");
                 require(autosaveSource == 0, "autosaveEnabled=false in settings.xml must disable autosave timer");
                 require(state.brush.tool == Tool::Highlighter && std::abs(state.brush.width - 30.0) < 1e-6 &&
                                 gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 4u &&
@@ -6211,7 +6349,7 @@ private:
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
     AdwPreferencesDialog* preferencesDialog = nullptr;
-    std::array<GtkWidget*, 12> preferenceControls{};
+    std::array<GtkWidget*, 14> preferenceControls{};
     GtkListBox* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;

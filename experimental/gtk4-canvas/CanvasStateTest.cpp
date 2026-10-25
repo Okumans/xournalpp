@@ -135,6 +135,45 @@ static void editableImageHistory() {
           "image deletion should restore image bytes and transform");
 }
 
+static void imageRotationGeometry() {
+    CanvasImage image;
+    image.page = 0;
+    image.pixelWidth = 40;
+    image.pixelHeight = 20;
+    image.transform = {2, 0, 0, 1, 10, 20};
+    image.encodedData = "bounded image bytes";
+
+    const auto beforeCenter = canvasImageCenter(image);
+    const auto rotationHandle = canvasImageRotationHandle(image, 2);
+    check(std::abs(rotationHandle.x - 50) < 1e-9 && std::abs(rotationHandle.y - 11) < 1e-9,
+          "the image rotation handle should sit above the transformed top edge");
+    const double snappedAngle = snapCanvasImageRotation(std::acos(-1.0) / 6.0 + 0.01, 0.30);
+    check(std::abs(snappedAngle - std::acos(-1.0) / 6.0) < 1e-9,
+          "image rotation should snap to the nearest 15-degree angle within tolerance");
+    const double startAngle = -80 * std::acos(-1.0) / 180.0;
+    const double currentAngle = -62 * std::acos(-1.0) / 180.0;
+    check(std::abs(canvasImageRotationDelta(startAngle, currentAngle, true, 0.30) -
+                   20 * std::acos(-1.0) / 180.0) < 1e-9,
+          "rotation snapping should align the resulting image angle to a global 15-degree increment");
+    check(std::abs(canvasImageRotationDelta(startAngle, currentAngle, false, 0.30) -
+                   18 * std::acos(-1.0) / 180.0) < 1e-9,
+          "disabled rotation snapping should preserve the unrounded pointer angle");
+    check(rotateCanvasImage(image, std::acos(-1.0) / 2), "a finite rotation should update a valid image");
+    const auto afterCenter = canvasImageCenter(image);
+    check(std::abs(afterCenter.x - beforeCenter.x) < 1e-9 && std::abs(afterCenter.y - beforeCenter.y) < 1e-9,
+          "rotating an image should keep its center anchored");
+    check(std::abs(image.transform.xx) < 1e-9 && std::abs(image.transform.xy + 1) < 1e-9 &&
+                  std::abs(image.transform.yx - 2) < 1e-9 && std::abs(image.transform.yy) < 1e-9,
+          "image rotation should compose with the existing affine transform");
+
+    const auto savedTransform = image.transform;
+    check(!rotateCanvasImage(image, std::numeric_limits<double>::infinity()) &&
+                  image.transform.xx == savedTransform.xx && image.transform.xy == savedTransform.xy &&
+                  image.transform.yx == savedTransform.yx && image.transform.yy == savedTransform.yy &&
+                  image.transform.x == savedTransform.x && image.transform.y == savedTransform.y,
+          "an invalid rotation should leave the original image transform unchanged");
+}
+
 static void editableTextHistory() {
     CanvasState state;
     state.setPages({{595, 842}, {595, 842}});
@@ -547,6 +586,7 @@ int main() {
     try {
         savedHistory();
         editableImageHistory();
+        imageRotationGeometry();
         editableTextHistory();
         brushAndHistory();
         partialAndWhiteoutEraser();
