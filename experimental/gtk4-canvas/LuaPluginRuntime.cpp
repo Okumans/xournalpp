@@ -152,6 +152,7 @@ int luaOpenApp(lua_State* state) {
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
             {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
+            {"getStrokes", LuaPluginRuntime::luaGetStrokes},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
@@ -683,6 +684,14 @@ bool LuaPluginRuntime::transformSelectedImages(std::int64_t action, std::string&
     return host.transformSelectedImages(action, error);
 }
 
+bool LuaPluginRuntime::getStrokes(std::string_view type, std::vector<PluginStroke>& strokes, std::string& error) {
+    if (!host.getStrokes) {
+        error = "Stroke access is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getStrokes(type, strokes, error);
+}
+
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
                                   const std::vector<PluginDialogButton>& buttons, bool isError,
                                   std::string_view callback, std::string& error) {
@@ -983,6 +992,78 @@ int LuaPluginRuntime::luaTransformSelectedImages(lua_State* state) {
         return luaL_error(state, "%s", error.empty() ? "Image action failed" : error.c_str());
     }
     return 0;
+}
+
+int LuaPluginRuntime::luaGetStrokes(lua_State* state) {
+    const char* type = luaL_checkstring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginStroke> strokes;
+        std::string hostError;
+        if (!plugin->runtime->getStrokes(type, strokes, hostError)) {
+            std::snprintf(error, sizeof(error), "%s",
+                          hostError.empty() ? "Stroke access is unavailable" : hostError.c_str());
+        } else {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(strokes.size(),
+                                                                          std::numeric_limits<int>::max())), 0);
+            lua_Integer strokeIndex = 0;
+            for (const auto& stroke: strokes) {
+                lua_createtable(state, 0, 10);
+
+                const auto pushCoordinates = [state](const char* field, const std::vector<double>& values) {
+                    lua_createtable(state, static_cast<int>(std::min<std::size_t>(values.size(),
+                                                                                 std::numeric_limits<int>::max())),
+                                    0);
+                    lua_Integer pointIndex = 0;
+                    for (const double value: values) {
+                        lua_pushnumber(state, value);
+                        lua_rawseti(state, -2, ++pointIndex);
+                    }
+                    lua_setfield(state, -2, field);
+                };
+                pushCoordinates("x", stroke.x);
+                pushCoordinates("y", stroke.y);
+                if (!stroke.pressure.empty()) {
+                    pushCoordinates("pressure", stroke.pressure);
+                }
+
+                lua_pushlstring(state, stroke.tool.data(), stroke.tool.size());
+                lua_setfield(state, -2, "tool");
+                lua_pushnumber(state, stroke.width);
+                lua_setfield(state, -2, "width");
+                lua_pushinteger(state, static_cast<lua_Integer>(stroke.color));
+                lua_setfield(state, -2, "color");
+                lua_pushinteger(state, stroke.fill);
+                lua_setfield(state, -2, "fill");
+                lua_pushlstring(state, stroke.lineStyle.data(), stroke.lineStyle.size());
+                lua_setfield(state, -2, "lineStyle");
+                if (stroke.reference != 0) {
+                    lua_pushlightuserdata(state, reinterpret_cast<void*>(stroke.reference));
+                    lua_setfield(state, -2, "ref");
+                }
+                if (stroke.page) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*stroke.page));
+                    lua_setfield(state, -2, "page");
+                }
+                if (stroke.layer) {
+                    lua_pushinteger(state, static_cast<lua_Integer>(*stroke.layer));
+                    lua_setfield(state, -2, "layer");
+                }
+
+                lua_rawseti(state, -2, ++strokeIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
 }
 
 int LuaPluginRuntime::luaOpenDialog(lua_State* state) {

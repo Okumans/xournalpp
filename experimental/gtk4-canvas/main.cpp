@@ -979,6 +979,8 @@ private:
         host.transformSelectedImages = [this](std::int64_t action, std::string& error) {
             return transformSelectedImagesFromPlugin(action, error);
         };
+        host.getStrokes = [this](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
+                                 std::string& error) { return getPluginStrokes(type, strokes, error); };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -1293,6 +1295,108 @@ private:
             syncingBrush = false;
         }
         update();
+        return true;
+    }
+
+    bool getPluginStrokes(std::string_view type, std::vector<prototype::PluginStroke>& strokes, std::string& error) {
+        if (type != "selection" && type != "layer" && type != "page" && type != "all") {
+            error = "Unknown argument (" + std::string(type) + ") for getting selection";
+            return false;
+        }
+        if (type == "selection" && !state.hasSelection()) {
+            error = "There is no selection";
+            return false;
+        }
+
+        if (type != "selection" && state.hasSelection()) {
+            state.clearSelection();
+            update();
+        }
+
+        const auto appendStroke = [this, &strokes](size_t index, bool includePage, bool includeLayer) {
+            if (index >= state.ink.size()) {
+                return;
+            }
+            const auto& ink = state.ink[index];
+            prototype::PluginStroke stroke;
+            stroke.x.reserve(ink.points.size());
+            stroke.y.reserve(ink.points.size());
+            if (ink.pressureSensitive) {
+                stroke.pressure.reserve(ink.points.size());
+            }
+            for (const auto& point: ink.points) {
+                stroke.x.push_back(point.x);
+                stroke.y.push_back(point.y);
+                if (ink.pressureSensitive) {
+                    stroke.pressure.push_back(point.pressure);
+                }
+            }
+            switch (ink.brush.tool) {
+                case Tool::Highlighter:
+                case Tool::LaserPointerHighlighter:
+                    stroke.tool = "highlighter";
+                    break;
+                case Tool::Eraser:
+                    stroke.tool = "eraser";
+                    break;
+                default:
+                    stroke.tool = "pen";
+                    break;
+            }
+            stroke.width = ink.brush.width;
+            const auto channel = [](double value) {
+                return static_cast<std::uint32_t>(std::clamp(std::lround(value * 255.0), 0L, 255L));
+            };
+            stroke.color = (channel(ink.brush.color[0]) << 16U) | (channel(ink.brush.color[1]) << 8U) |
+                           channel(ink.brush.color[2]);
+            stroke.fill = ink.fill;
+            stroke.lineStyle = "plain";
+            stroke.reference = reinterpret_cast<std::uintptr_t>(&ink);
+            if (includePage) {
+                stroke.page = static_cast<std::size_t>(ink.page + 1);
+            }
+            if (includeLayer) {
+                stroke.layer = ink.layerId;
+            }
+            strokes.push_back(std::move(stroke));
+        };
+
+        if (type == "selection") {
+            for (const auto index: state.selected) {
+                appendStroke(index, false, false);
+            }
+            return true;
+        }
+
+        const auto appendLayer = [this, &appendStroke](int page, size_t layer, bool includePage,
+                                                       bool includeLayer) {
+            std::vector<size_t> indices;
+            for (size_t index = 0; index < state.ink.size(); ++index) {
+                const auto& ink = state.ink[index];
+                if (ink.page == page && ink.layerId == layer) {
+                    indices.push_back(index);
+                }
+            }
+            std::stable_sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
+                return state.ink[a].layerOrder < state.ink[b].layerOrder;
+            });
+            for (const auto index: indices) {
+                appendStroke(index, includePage, includeLayer);
+            }
+        };
+
+        if (type == "layer") {
+            appendLayer(state.page, state.activeLayerId(state.page), false, false);
+            return true;
+        }
+        const int firstPage = type == "all" ? 0 : state.page;
+        const int lastPage = type == "all" ? state.pageCount() : state.page + 1;
+        for (int page = firstPage; page < lastPage; ++page) {
+            const auto& layers = state.layersForPage(page).layers;
+            for (size_t layer = 1; layer <= layers.size(); ++layer) {
+                appendLayer(page, layer, type == "all", true);
+            }
+        }
         return true;
     }
 
@@ -2294,6 +2398,59 @@ private:
 
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
+        const auto savedInkSize = state.ink.size();
+        const auto savedSelection = state.selected;
+        const auto savedTextSelection = state.selectedTexts;
+        const auto savedImageSelection = state.selectedImages;
+        prototype::Ink sample;
+        sample.page = state.page;
+        sample.points = {{10, 20, 0.25}, {12.5, 24.5, 0.75}};
+        sample.brush = {Tool::Pen, {0x12 / 255.0, 0x34 / 255.0, 0x56 / 255.0}, 2.25};
+        sample.pressureSensitive = true;
+        sample.layerId = state.activeLayerId(state.page);
+        sample.layerOrder = 999999;
+        state.ink.push_back(sample);
+
+        std::vector<prototype::PluginStroke> allStrokes;
+        std::string strokeError;
+        require(getPluginStrokes("all", allStrokes, strokeError) && allStrokes.size() == savedInkSize + 1,
+                "app.getStrokes('all') did not enumerate every editable stroke");
+        const auto sampleOutput = std::find_if(allStrokes.begin(), allStrokes.end(), [&](const auto& stroke) {
+            return stroke.reference == reinterpret_cast<std::uintptr_t>(&state.ink.back());
+        });
+        require(sampleOutput != allStrokes.end() && sampleOutput->x == std::vector<double>({10, 12.5}) &&
+                        sampleOutput->y == std::vector<double>({20, 24.5}) &&
+                        sampleOutput->pressure == std::vector<double>({0.25, 0.75}) &&
+                        sampleOutput->tool == "pen" && std::abs(sampleOutput->width - 2.25) < 1e-9 &&
+                        sampleOutput->color == 0x123456 && sampleOutput->page == static_cast<size_t>(state.page + 1) &&
+                        sampleOutput->layer == state.activeLayerId(state.page),
+                "app.getStrokes('all') did not preserve native point, pressure, style, or index values");
+        for (const auto& stroke: allStrokes) {
+            require(!stroke.x.empty() && stroke.x.size() == stroke.y.size() && stroke.reference != 0 &&
+                            stroke.page && stroke.layer && *stroke.page >= 1 && *stroke.page <= state.pages.size() &&
+                            *stroke.layer >= 1 &&
+                            *stroke.layer <= state.layersForPage(static_cast<int>(*stroke.page - 1)).layers.size(),
+                    "app.getStrokes('all') lost stroke geometry, references, or 1-based page/layer indices");
+        }
+        state.selected = {state.ink.size() - 1};
+        state.selectedTexts.clear();
+        state.selectedImages.clear();
+        std::vector<prototype::PluginStroke> selectedStrokes;
+        require(getPluginStrokes("selection", selectedStrokes, strokeError) && selectedStrokes.size() == 1 &&
+                        !selectedStrokes.front().page && !selectedStrokes.front().layer,
+                "app.getStrokes('selection') did not return the selected stroke without page metadata");
+        std::vector<prototype::PluginStroke> pageStrokes;
+        require(getPluginStrokes("page", pageStrokes, strokeError) && !state.hasSelection(),
+                "app.getStrokes('page') did not clear the current selection");
+        require(std::all_of(pageStrokes.begin(), pageStrokes.end(), [](const auto& stroke) {
+                    return !stroke.page && stroke.layer.has_value();
+                }),
+                "app.getStrokes('page') returned the wrong page/layer metadata");
+        state.ink.resize(savedInkSize);
+        state.selected = savedSelection;
+        state.selectedTexts = savedTextSelection;
+        state.selectedImages = savedImageSelection;
+        update();
         const auto plugins = pluginRuntime->plugins();
         require(plugins.size() >= 12, "Bundled plugin discovery did not find the full master plugin set");
         const auto colorCycle = pluginRuntime->findPlugin("ColorCycle");

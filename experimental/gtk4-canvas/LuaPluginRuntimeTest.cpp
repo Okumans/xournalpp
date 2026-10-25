@@ -94,13 +94,33 @@ int main() {
                 "[about]\ndescription=Layer operations\n[default]\nenabled=false\n"
                 "[plugin]\nmainfile=main.lua\n",
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/LayerActions/main.lua"));
+    const auto strokeApiPlugin = root / "StrokeApiPlugin";
+    writePlugin(strokeApiPlugin,
+                "[about]\ndescription=Read editable strokes\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read strokes', callback='readStrokes'})\n"
+                "  app.registerUi({menu='Read selection', callback='readSelection'})\n"
+                "end\n"
+                "function readStrokes()\n"
+                "  local strokes = app.getStrokes('all')\n"
+                "  assert(#strokes == 2)\n"
+                "  assert(strokes[1].x[2] == 12.5 and strokes[1].y[2] == 24.5)\n"
+                "  assert(strokes[1].pressure[2] == 0.75 and strokes[1].tool == 'pen')\n"
+                "  assert(strokes[1].width == 2.25 and strokes[1].color == 0x123456)\n"
+                "  assert(strokes[1].fill == -1 and strokes[1].lineStyle == 'plain')\n"
+                "  assert(strokes[1].ref ~= nil and strokes[1].page == 2 and strokes[1].layer == 3)\n"
+                "  assert(strokes[2].pressure == nil and strokes[2].page == 1 and strokes[2].layer == 1)\n"
+                "  app.changeActionState('stroke-count', #strokes)\n"
+                "end\n"
+                "function readSelection() app.getStrokes('selection') end\n");
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 9, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 10, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -115,6 +135,7 @@ int main() {
     bool changedSelection = false;
     std::string changedTool;
     std::int64_t changedMode = -1;
+    std::int64_t strokeCount = -1;
     std::string dialogPluginName;
     std::string dialogMessage;
     std::vector<prototype::PluginDialogButton> dialogButtons;
@@ -132,10 +153,31 @@ int main() {
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
-        if (action != "test-mode" || !std::holds_alternative<std::int64_t>(value)) {
+        if ((action != "test-mode" && action != "stroke-count") ||
+            !std::holds_alternative<std::int64_t>(value)) {
             return false;
         }
-        changedMode = std::get<std::int64_t>(value);
+        if (action == "test-mode") {
+            changedMode = std::get<std::int64_t>(value);
+        } else {
+            strokeCount = std::get<std::int64_t>(value);
+        }
+        return true;
+    };
+    host.getStrokes = [](std::string_view type, std::vector<prototype::PluginStroke>& strokes,
+                         std::string& error) {
+        if (type == "selection") {
+            error = "There is no selection";
+            return false;
+        }
+        if (type != "all") {
+            error = "Unexpected stroke query type";
+            return false;
+        }
+        strokes = {
+                {{10, 12.5}, {22, 24.5}, {0.25, 0.75}, "pen", 2.25, 0x123456, -1, "plain", 0x42, 2, 3},
+                {{31, 40}, {42, 51}, {}, "highlighter", 8.5, 0xffcc00, -1, "plain", 0x43, 1, 1},
+        };
         return true;
     };
     host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
@@ -173,6 +215,9 @@ int main() {
     const auto loadedDialogPlugin = runtime.findPlugin("DialogPlugin");
     require(loadedDialogPlugin && loadedDialogPlugin->loaded && loadedDialogPlugin->menuItems == 2,
             "Plugin using app.openDialog did not load and register its menu callback");
+    const auto loadedStrokeApiPlugin = runtime.findPlugin("StrokeApiPlugin");
+    require(loadedStrokeApiPlugin && loadedStrokeApiPlugin->loaded && loadedStrokeApiPlugin->menuItems == 2,
+            "Plugin using app.getStrokes did not load and register its menu callbacks");
     require(!runtime.findPlugin("InvalidMain")->loaded, "Invalid plugin mainfile unexpectedly loaded");
     const auto loadedInvalidApi = runtime.findPlugin("InvalidApi");
     require(loadedInvalidApi && !loadedInvalidApi->loaded &&
@@ -190,6 +235,11 @@ int main() {
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
+    require(runtime.invokeMenu("StrokeApiPlugin", 0) && strokeCount == 2,
+            "app.getStrokes did not preserve point arrays, pressure, style fields, references, and page/layer data");
+    require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
+                    runtime.findPlugin("StrokeApiPlugin")->error.find("There is no selection") != std::string::npos,
+            "app.getStrokes selection errors were not reported to the plugin");
     require(runtime.invokeMenu("BeamerPresentation", 0) && activatedActions == std::vector<std::string>{"beamer-next"},
             "Beamer +1 did not dispatch the next-animation host action");
     require(runtime.invokeMenu("BeamerPresentation", 1) &&
@@ -227,8 +277,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 11 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 6,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 13 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 7,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
