@@ -150,6 +150,33 @@ int main(int argc, char** argv) {
         const auto copy = clipboard::decode(bytes);
         check(copy.size() == 2 && copy[0].points[1].pressure == .75 && copy[1].brush.width == 14,
               "Clipboard lost pressure/style");
+        const auto payload = clipboard::decodePayload(bytes);
+        check(payload.strokes.size() == 2 && !payload.image,
+              "Native stroke clipboard payload decoded with the wrong object type");
+        CanvasImage clipboardImage;
+        clipboardImage.pixelWidth = 320;
+        clipboardImage.pixelHeight = 180;
+        clipboardImage.transform = {0.75, 0.25, -0.25, 0.75, 122, 86};
+        clipboardImage.encodedData = "bounded image bytes";
+        const auto imageBytes = clipboard::encodeImage(clipboardImage);
+        const auto imageCopy = clipboard::decodeImage(imageBytes);
+        const auto imagePayload = clipboard::decodePayload(imageBytes);
+        check(imageCopy.pixelWidth == 320 && imageCopy.pixelHeight == 180 &&
+                      near(imageCopy.transform.xx, 0.75) && near(imageCopy.transform.yx, 0.25) &&
+                      near(imageCopy.transform.xy, -0.25) && near(imageCopy.transform.yy, 0.75) &&
+                      near(imageCopy.transform.x, 122) && near(imageCopy.transform.y, 86) &&
+                      imageCopy.encodedData == clipboardImage.encodedData && imagePayload.image &&
+                      imagePayload.strokes.empty(),
+              "Native image clipboard round trip lost its raster data or transform");
+        for (size_t length = 0; length < imageBytes.size(); ++length) {
+            bool rejectedImage = false;
+            try {
+                clipboard::decodeImage(std::string_view(imageBytes).substr(0, length));
+            } catch (const std::exception&) {
+                rejectedImage = true;
+            }
+            check(rejectedImage, "A truncated native image clipboard was accepted");
+        }
         for (size_t length = 0; length < bytes.size(); ++length) {
             bool rejected = false;
             try {
@@ -197,7 +224,7 @@ int main(int argc, char** argv) {
         check(std::isfinite(state.ink[0].brush.width) && state.ink[0].brush.width > 0,
               "Degenerate dot resize broke width");
         std::cout << "PASS: affine geometry/width, mirror, rotate, cross-page order/undo, Smart Select, lasso, "
-                     "Shift-add, bounded native clipboard and paste undo\n";
+                     "Shift-add, bounded native stroke/image clipboard and paste undo\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

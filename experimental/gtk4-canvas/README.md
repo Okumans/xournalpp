@@ -34,8 +34,9 @@ reverses the snapping setting. Delete removes the selected image, and insertion,
 move, resize, rotation, and deletion share the native undo history.
 Embedded image orientation is honored, and images larger than 32 megapixels are
 scaled down for display. The original encoded bytes and transforms survive
-`.xopp` save, autosave, reopen, and PDF export. The current image workflow does
-not provide image clipboard operations.
+`.xopp` save, autosave, reopen, and PDF export. Copy and cut preserve editable
+image data and transforms through the native clipboard format while also
+offering PNG; paste accepts either the native image or a standard PNG image.
 
 Each stroke retains its own tool, color, and width. Pen, highlighter, and eraser
 settings are remembered separately during a session, initialized from read-only
@@ -369,7 +370,7 @@ still unverified.
 
 ## Remaining migration work
 
-The experiment still needs editing of unsupported native objects, multi-layer selection, multi-column/paired-page layout modes, page-level undo/redo, image clipboard support, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
+The experiment still needs editing of unsupported native objects, multi-layer selection, multi-column/paired-page layout modes, page-level undo/redo, other clipboard formats and dialogs, IME, device-class-specific mappings, plugins and configurable toolbars. Native geometric objects and the full recognizer/grid-snap behavior also remain outside this stroke-path implementation.
 Platform packaging, accessibility, hardware input and GPU validation remain
 required before replacing the existing application.
 
@@ -379,4 +380,4 @@ Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes fr
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter and opaque whiteout strokes through bounded `application/xournal` streams. Selected images copy and cut as editable native objects plus PNG, and paste from either native image data or a standard PNG clipboard. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects the active page, Delete/Backspace removes selected strokes, and Escape clears selection. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. The committed rotation resets the handles to an axis-aligned frame; grid snapping, edge auto-pan, other clipboard formats and native object transforms remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.

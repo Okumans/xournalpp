@@ -2,9 +2,11 @@
 
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 
+#include "CanvasImage.h"
 #include "DocumentInk.h"
 
 namespace prototype::clipboard {
@@ -21,7 +23,7 @@ public:
             fail();
     }
 
-    [[noreturn]] static void fail() { throw std::runtime_error("Unsupported or malformed Xournal stroke clipboard"); }
+    [[noreturn]] static void fail() { throw std::runtime_error("Unsupported or malformed Xournal clipboard"); }
 
     template <typename T>
     T raw() {
@@ -58,6 +60,16 @@ public:
         if (length > bytes.size() - position || length > 4096)
             fail();
         auto result = bytes.substr(position, length);
+        position += length;
+        return result;
+    }
+
+    std::string_view image() {
+        tag("_m");
+        const auto length = raw<size_t>();
+        if (length == 0 || length > maxCanvasImageBytes || length > bytes.size() - position)
+            fail();
+        const auto result = bytes.substr(position, length);
         position += length;
         return result;
     }
@@ -107,6 +119,11 @@ public:
         string(name);
     }
     void end() { bytes += "_}"; }
+    void image(std::string_view bytes) {
+        this->bytes += "_m";
+        raw(bytes.size());
+        this->bytes.append(bytes);
+    }
     void data(size_t count, size_t width) {
         bytes += "_b";
         raw(count);
@@ -262,6 +279,104 @@ inline std::string encode(const std::vector<Ink>& strokes) {
         out.end();
         out.end();
     }
+    if (out.bytes.size() > maxBytes)
+        Reader::fail();
+    return std::move(out.bytes);
+}
+
+inline CanvasImage decodeImage(std::string_view bytes) {
+    Reader in(bytes);
+    if (in.string() != "XojStrm1:")
+        Reader::fail();
+    in.string();
+    in.object("EditSelection");
+    for (int n = 0; n < 9; ++n) in.number();
+    in.object("EditSelectionContents");
+    for (int n = 0; n < 11; ++n) in.number();
+    in.end();
+    in.end();
+    if (in.value<int>("_i") != 1)
+        Reader::fail();
+
+    in.object("Image");
+    in.object("RectangularElement");
+    in.object("Element");
+    in.value<uint32_t>("_u");
+    in.end();
+    CanvasImage image;
+    image.transform.xx = in.number();
+    image.transform.yx = in.number();
+    image.transform.xy = in.number();
+    image.transform.yy = in.number();
+    image.transform.x = in.number();
+    image.transform.y = in.number();
+    const double naturalWidth = in.number();
+    const double naturalHeight = in.number();
+    in.end();
+    const auto imageBytes = in.image();
+    in.end();
+    if (!in.done() || naturalWidth <= 0 || naturalHeight <= 0 || naturalWidth > maxCanvasImagePixels ||
+        naturalHeight > maxCanvasImagePixels || std::floor(naturalWidth) != naturalWidth ||
+        std::floor(naturalHeight) != naturalHeight) {
+        Reader::fail();
+    }
+    image.pixelWidth = static_cast<int>(naturalWidth);
+    image.pixelHeight = static_cast<int>(naturalHeight);
+    image.encodedData.assign(imageBytes);
+    if (!validCanvasImage(image))
+        Reader::fail();
+    return image;
+}
+
+struct DecodedPayload {
+    std::vector<Ink> strokes;
+    std::optional<CanvasImage> image;
+};
+
+inline DecodedPayload decodePayload(std::string_view bytes) {
+    try {
+        return {{}, decodeImage(bytes)};
+    } catch (const std::exception&) {
+        return {decode(bytes), std::nullopt};
+    }
+}
+
+inline std::string encodeImage(const CanvasImage& image) {
+    if (!validCanvasImage(image))
+        Reader::fail();
+    const auto bounds = canvasImageBounds(image);
+    const double rectangle[] = {bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0};
+
+    Writer out;
+    out.string("XojStrm1:");
+    out.string("Xournal++ GTK 4 migration");
+    out.object("EditSelection");
+    for (int n = 0; n < 2; ++n)
+        for (auto value: rectangle) out.number(value);
+    out.number(0);
+    out.object("EditSelectionContents");
+    for (int n = 0; n < 2; ++n)
+        for (auto value: rectangle) out.number(value);
+    for (int n = 0; n < 3; ++n) out.number(0);
+    out.end();
+    out.end();
+    out.value<int>("_i", 1);
+    out.object("Image");
+    out.object("RectangularElement");
+    out.object("Element");
+    out.value<uint32_t>("_u", 0xff000000U);
+    out.end();
+    out.number(image.transform.xx);
+    out.number(image.transform.yx);
+    out.number(image.transform.xy);
+    out.number(image.transform.yy);
+    out.number(image.transform.x);
+    out.number(image.transform.y);
+    out.number(image.pixelWidth);
+    out.number(image.pixelHeight);
+    out.end();
+    out.image(image.encodedData);
+    out.end();
     if (out.bytes.size() > maxBytes)
         Reader::fail();
     return std::move(out.bytes);

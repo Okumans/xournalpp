@@ -28,7 +28,7 @@ registration in `ToolHandler::initTools`.
 | `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work; reproduce all production hit geometry and renderer interactions. |
 | `highlighter` | Partial | Core opacity and native serialization work; reproduce production stroke geometry and blend behavior. |
 | `text` | Partial | Rich editing and round-trip work. Add text object selection, move/resize/rotate, transform-following editor placement, IME, and accessibility. |
-| `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, and PDF export work. Rotation uses imported/editable snap settings and the Alt override. Add image clipboard operations and integrate images into general object selection. |
+| `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Standard PNG clipboard images can be pasted. Integrate images into general multi-object selection. |
 | `selectRect` | Partial | Selects editable strokes on the active visible foreground layer; extend to the full production object and layer rules. |
 | `selectRegion` | Partial | Lasso-selects editable strokes on the active visible foreground layer; extend to the full production object and layer rules. |
 | `selectMultiLayerRect` | Pending | Select matching objects across layers with production visibility and ordering semantics. |
@@ -68,11 +68,11 @@ it is not represented by a single `ToolType`.
 | --- | --- | --- |
 | Stroke rectangle/lasso selection | Partial | Active visible layer only; add production cross-layer and complete object rules. |
 | Stroke move, resize, mirror, rotate | Partial | Undoable transforms work; exact grid snapping, edge pan, persistent rotated handle frame, and device behavior remain. |
-| Image move, resize, rotate | Partial | Undoable affine transforms and master angle snapping work; add general multi-object selection and image clipboard operations. |
+| Image move, resize, rotate | Partial | Undoable affine transforms and master angle snapping work; add general multi-object selection. |
 | Text editing | Partial | Inline rich-text editing works; text is not an object-selection transform target. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility work. Multi-layer selection is pending; the master model has no layer-lock action. |
 | Native object picking | Partial | Editable strokes, images, and text have separate picking paths; unsupported native objects cannot be edited. |
-| Clipboard | Partial | Bounded `application/xournal` stroke copy/cut/paste works. Add remaining native types, image/text targets, SVG/PNG, and cross-process compatibility. |
+| Clipboard | Partial | Bounded `application/xournal` stroke and image copy/cut/paste works. Images also offer PNG and accept PNG clipboard paste. Add remaining native types, text and SVG selection targets, and verify cross-process compatibility. |
 
 ## Built-in plugin inventory
 

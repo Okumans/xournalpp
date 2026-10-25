@@ -386,9 +386,10 @@ def verify_images(args, evidence):
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_IMAGE_VERIFY_MODE="insert-resize-save-reopen",
                  XOURNALPP_IMAGE_VERIFY_SOURCE=str(image)),
     )
-    if "PASS: GTK image insertion, resize, move, rotate, native save/reopen and PDF export" not in result:
+    if ("PASS: image insertion, resize, move, rotate, native save/reopen, PDF export, "
+            "editable native image cut/paste, PNG paste and undo/redo" not in result):
         raise RuntimeError("GTK image insertion verification did not finish")
-    for name in ("image-inserted", "image-resized", "image-rotated", "image-reopened"):
+    for name in ("image-inserted", "image-resized", "image-rotated", "image-reopened", "image-png-pasted"):
         screenshot = output / f"{name}.png"
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty image insertion screenshot: {screenshot}")
