@@ -25,6 +25,11 @@ void writePlugin(const std::filesystem::path& directory, const std::string& mani
     main << script;
 }
 
+std::string readFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 }  // namespace
 
 int main() {
@@ -79,13 +84,18 @@ int main() {
                 "[plugin]\nmainfile=main.lua\n",
                 "function initUi() app.registerUi({menu='Set paper', callback='setPaper'}) end\n"
                 "function setPaper() app.changeCurrentPageBackground('graph', 'r1=14.17') end\n");
+    const auto beamerPlugin = root / "BeamerPresentation";
+    writePlugin(beamerPlugin,
+                "[about]\ndescription=Beamer presentation controls\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/BeamerPresentation/main.lua"));
     writePlugin(root / "InvalidMain",
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 7, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 8, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -107,6 +117,7 @@ int main() {
     std::function<void(int)> dialogResponse;
     std::string changedBackgroundFormat;
     std::string changedBackgroundConfig;
+    std::vector<std::string> activatedActions;
     prototype::PluginRuntimeHost host;
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
@@ -125,6 +136,14 @@ int main() {
     host.changeCurrentPageBackground = [&](std::string_view format, std::string_view config, std::string&) {
         changedBackgroundFormat = format;
         changedBackgroundConfig = config;
+        return true;
+    };
+    host.activateAction = [&](std::string_view action, std::string& error) {
+        if (action != "beamer-next" && action != "beamer-previous" && action != "beamer-clean") {
+            error = "Actions are unavailable in this GTK 4 host";
+            return false;
+        }
+        activatedActions.emplace_back(action);
         return true;
     };
     host.openDialog = [&](std::string_view pluginName, std::string_view message,
@@ -164,6 +183,14 @@ int main() {
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
+    require(runtime.invokeMenu("BeamerPresentation", 0) && activatedActions == std::vector<std::string>{"beamer-next"},
+            "Beamer +1 did not dispatch the next-animation host action");
+    require(runtime.invokeMenu("BeamerPresentation", 1) &&
+                    activatedActions == std::vector<std::string>({"beamer-next", "beamer-previous"}),
+            "Beamer -1 did not dispatch the previous-animation host action");
+    require(runtime.invokeMenu("BeamerPresentation", 2) &&
+                    activatedActions == std::vector<std::string>({"beamer-next", "beamer-previous", "beamer-clean"}),
+            "Beamer clean did not dispatch the cleanup host action");
     require(runtime.invokeMenu("DialogPlugin", 0) && dialogPluginName == "DialogPlugin" &&
                     dialogMessage == "Choose one" && !dialogError && dialogButtons.size() == 2 &&
                     dialogButtons[0].response == 1 && dialogButtons[0].label == "First" &&
@@ -186,8 +213,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 5 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 4,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 8 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 5,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

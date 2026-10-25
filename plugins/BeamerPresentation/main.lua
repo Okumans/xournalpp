@@ -10,30 +10,9 @@ function initUi()
 end
 
 function Beamer(mode)
-    local struct = app.getDocumentStructure()
-    local diff = (mode == m.inc) and 1 or -1
-
-
-    local pCurr = app.getPageLabel(struct.pages[struct.currentPage].pdfBackgroundPageNo)
-
-    local pNext = app.getPageLabel(struct.pages[struct.currentPage].pdfBackgroundPageNo+diff)
-
-    if pCurr and pNext and pCurr == pNext then
-        app.changeBackgroundPdfPageNr(diff, true)
-        app.refreshPage()
-    else
-        app.scrollToPage(diff, true)
-    end
+    app.activateAction((mode == m.inc) and "beamer-next" or "beamer-previous")
 end
 
 function BeamerClean()
-    local struct = app.getDocumentStructure()
-    for p=#struct.pages,2,-1 do
-        local page = struct.pages[p].pdfBackgroundPageNo
-        local prev = struct.pages[p-1].pdfBackgroundPageNo
-        if app.getPageLabel(page) == app.getPageLabel(prev) then
-            app.setCurrentPage(p)
-            app.activateAction("delete-page")
-        end
-    end
+    app.activateAction("beamer-clean")
 end

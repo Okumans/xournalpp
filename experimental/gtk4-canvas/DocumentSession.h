@@ -15,6 +15,7 @@
 #include "DocumentImageTransfer.h"
 #include "DocumentLayers.h"
 #include "DocumentPdfPages.h"
+#include "PdfPageLabels.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
 #include "DocumentVersion.h"
@@ -32,6 +33,7 @@ public:
         std::filesystem::path previewPath() const { return directory / "preview.pdf"; }
         std::filesystem::path backgroundPdfPath() const { return directory / "background.pdf"; }
         std::filesystem::path pdfPageMapPath() const { return directory / "pdf-pages.dat"; }
+        std::filesystem::path pdfPageLabelsPath() const { return directory / "pdf-labels.dat"; }
         std::filesystem::path layerStatePath() const { return directory / "layers.dat"; }
         std::filesystem::path audioTargetPath() const { return directory / "audio-targets.dat"; }
 
@@ -94,6 +96,7 @@ public:
             initialAudioTargets = readAudioTargets(StagedRevision{activeDir}.audioTargetPath());
             initialPdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
             pdfPageMap = initialPdfPageMap;
+            pdfPageLabels = readPdfPageLabels(StagedRevision{activeDir}.pdfPageLabelsPath());
             layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
             audioLayerPreviewPaths = StagedRevision{activeDir}.audioLayerPreviewPaths();
             std::filesystem::remove(extracted);
@@ -255,10 +258,79 @@ public:
         return stagePageMutation(worker, "delete-page", pageIndex);
     }
 
+    StagedRevision stageDeletePagesAt(const std::string& worker, const std::vector<int>& pageIndices) {
+        if (pageIndices.empty() || pageIndices.size() >= pdfPageMap.size() || pageIndices.size() > maxPdfPageMapPages) {
+            throw std::runtime_error("Invalid page deletion batch size");
+        }
+        int previous = std::numeric_limits<int>::max();
+        for (int pageIndex: pageIndices) {
+            if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pdfPageMap.size() || pageIndex >= previous) {
+                throw std::runtime_error("Page deletion indices must be valid and strictly descending");
+            }
+            previous = pageIndex;
+        }
+
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            const auto deletions = staged.directory / "page-deletions.dat";
+            std::ofstream output(deletions, std::ios::binary | std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error("Cannot create page deletion list");
+            }
+            output << "XOURNALPP_GTK4_PAGE_DELETIONS_V1 " << pageIndices.size() << '\n';
+            for (int pageIndex: pageIndices) {
+                output << pageIndex << '\n';
+            }
+            output.close();
+            if (!output) {
+                throw std::runtime_error("Cannot write page deletion list");
+            }
+            runWorker(worker, {"delete-pages", snapshotPath().string(), staged.snapshotPath().string(),
+                               staged.previewPath().string(), deletions.string(), audioFolder.string(),
+                               audioDirectory.string()});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
+
+    StagedRevision stageSetPdfPageBackground(const std::string& worker, int documentPage, int pdfPage,
+                                             const std::vector<StrokePacket>& packets,
+                                             const std::vector<TextItem>& texts, const std::vector<ImagePacket>& images,
+                                             const LayerDocument& layers) {
+        if (documentPage < 0 || static_cast<size_t>(documentPage) >= pdfPageMap.size() || pdfPage < 0 ||
+            static_cast<size_t>(pdfPage) >= pdfPageLabels.size()) {
+            throw std::runtime_error("Invalid PDF background page selection");
+        }
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            const auto ink = staged.directory / "background-change.ink";
+            const auto text = staged.directory / "background-change.text";
+            const auto layer = staged.directory / "background-change.layers";
+            const auto image = staged.directory / "background-change.images";
+            writeTransfer(ink, packets);
+            writeTextTransfer(text, texts);
+            writeLayerTransfer(layer, layers);
+            writeImageTransfer(image, images);
+            runWorker(worker, {"set-pdf-page-background", snapshotPath().string(), staged.snapshotPath().string(),
+                               staged.previewPath().string(), std::to_string(documentPage), std::to_string(pdfPage),
+                               ink.string(), text.string(), layer.string(), image.string(), audioFolder.string(),
+                               audioDirectory.string()});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
+
     void commitRevision(const StagedRevision& staged) {
         const auto previous = activeDir;
         activeDir = staged.directory;
         pdfPageMap = readPdfPageMap(StagedRevision{activeDir}.pdfPageMapPath());
+        pdfPageLabels = readPdfPageLabels(StagedRevision{activeDir}.pdfPageLabelsPath());
         layerPreviewPaths = StagedRevision{activeDir}.layerPreviewPaths();
         audioLayerPreviewPaths = StagedRevision{activeDir}.audioLayerPreviewPaths();
         audioTargets = readAudioTargets(StagedRevision{activeDir}.audioTargetPath());
@@ -283,6 +355,7 @@ public:
     std::vector<AudioTarget> initialAudioTargets;
     LayerDocument initialLayers;
     std::vector<int> initialPdfPageMap;
+    std::vector<std::string> pdfPageLabels;
     std::vector<int> pdfPageMap;
     std::vector<std::filesystem::path> layerPreviewPaths;
     std::vector<std::filesystem::path> audioLayerPreviewPaths;

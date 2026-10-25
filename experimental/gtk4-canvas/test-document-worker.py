@@ -596,7 +596,32 @@ def main():
         pdf_bg_open = temporary / "pdf-bg-open"
         pdf_bg_open.mkdir()
         run("open", fixtures / "packaged_xopp/pdfBackground/new.xopp",
-            pdf_bg_open / "snapshot.xopp", pdf_bg_open / "preview.pdf")
+            pdf_bg_open / "snapshot.xopp", pdf_bg_open / "preview.pdf", pdf_bg_open / "ink.dat",
+            pdf_bg_open / "text.dat", pdf_bg_open / "layers.dat", pdf_bg_open / "images.dat")
+        labels_file = pdf_bg_open / "pdf-labels.dat"
+        labels_header = labels_file.read_text().splitlines()[0].split()
+        assert labels_header[0] == "XOURNALPP_GTK4_PDF_LABELS_V1" and int(labels_header[1]) >= 2
+
+        # Beamer animation stepping changes only the selected page's PDF background.
+        beamer_step = temporary / "beamer-step"
+        beamer_step.mkdir()
+        run("set-pdf-page-background", pdf_bg_open / "snapshot.xopp", beamer_step / "snapshot.xopp",
+            beamer_step / "preview.pdf", "0", "1", pdf_bg_open / "ink.dat", pdf_bg_open / "text.dat",
+            pdf_bg_open / "layers.dat", pdf_bg_open / "images.dat")
+        stepped_pages = xml(beamer_step / "snapshot.xopp").findall("page")
+        assert stepped_pages[0].find("background").attrib.get("pageno") == "2"
+        assert stepped_pages[1].find("background").attrib.get("pageno") == "2"
+        assert (beamer_step / "pdf-labels.dat").is_file()
+
+        # Beamer cleanup accepts an original-index list in descending order and keeps a page.
+        beamer_delete = temporary / "beamer-delete"
+        beamer_delete.mkdir()
+        deletions = temporary / "page-deletions.dat"
+        deletions.write_text("XOURNALPP_GTK4_PAGE_DELETIONS_V1 1\n1\n")
+        run("delete-pages", beamer_step / "snapshot.xopp", beamer_delete / "snapshot.xopp",
+            beamer_delete / "preview.pdf", deletions)
+        deleted_pages = xml(beamer_delete / "snapshot.xopp").findall("page")
+        assert len(deleted_pages) == 1 and deleted_pages[0].find("background").attrib.get("pageno") == "2"
         pdf_bg_ins = temporary / "pdf-bg-ins"
         pdf_bg_ins.mkdir()
         run("insert-page", pdf_bg_open / "snapshot.xopp", pdf_bg_ins / "snapshot.xopp",
