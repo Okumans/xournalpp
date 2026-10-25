@@ -136,6 +136,49 @@ static void editableImageHistory() {
           "image deletion should restore image bytes and transform");
 }
 
+static void groupedImageReplacementHistory() {
+    CanvasState state;
+    for (int index = 0; index < 3; ++index) {
+        CanvasImage image;
+        image.page = 0;
+        image.pixelWidth = 2;
+        image.pixelHeight = 2;
+        image.transform.x = index * 10;
+        image.encodedData = "source-" + std::to_string(index);
+        check(state.insertImage(std::move(image)), "grouped image test should insert source images");
+    }
+    const auto original = state.images;
+    state.selectedImages = {0, 2};
+
+    auto first = original[0];
+    first.encodedData = "split-first";
+    auto second = first;
+    second.encodedData = "split-second";
+    second.transform.y = 20;
+    auto third = original[2];
+    third.encodedData = "replaced-third";
+    third.transform.x = 25;
+
+    check(state.replaceImageGroup({{0, {first, second}}, {2, {third}}}),
+          "selected image replacements should apply together");
+    check(state.images.size() == 4 && state.images[0].encodedData == "split-first" &&
+                  state.images[1].encodedData == "split-second" && state.images[2].encodedData == "source-1" &&
+                  state.images[3].encodedData == "replaced-third" &&
+                  state.selectedImages == std::vector<size_t>({0, 1, 3}),
+          "grouped replacement should preserve order and select every transformed output");
+
+    state.undo();
+    check(state.images.size() == original.size() && state.images[0].encodedData == "source-0" &&
+                  state.images[1].encodedData == "source-1" && state.images[2].encodedData == "source-2" &&
+                  state.selectedImages == std::vector<size_t>({0, 2}),
+          "one undo should restore all original images and their selection");
+    state.redo();
+    check(state.images.size() == 4 && state.images[0].encodedData == "split-first" &&
+                  state.images[1].encodedData == "split-second" && state.images[3].encodedData == "replaced-third" &&
+                  state.selectedImages == std::vector<size_t>({0, 1, 3}),
+          "one redo should restore every replacement and output selection");
+}
+
 static void multiImagePasteHistory() {
     CanvasState state;
     state.setPages({{300, 400}});
@@ -830,6 +873,7 @@ int main() {
     try {
         savedHistory();
         editableImageHistory();
+        groupedImageReplacementHistory();
         multiImagePasteHistory();
         verticalSpaceMovement();
         imageRotationGeometry();

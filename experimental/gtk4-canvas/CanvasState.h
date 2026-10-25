@@ -2587,6 +2587,87 @@ public:
         return true;
     }
 
+    bool replaceImageGroup(std::vector<std::pair<size_t, std::vector<CanvasImage>>> replacements) {
+        if (replacements.empty() || current || eraseGesture || selectionGesture ||
+            replacements.size() != selectedImages.size()) {
+            return false;
+        }
+        std::sort(replacements.begin(), replacements.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        auto selectedIndices = selectedImages;
+        std::sort(selectedIndices.begin(), selectedIndices.end());
+        selectedIndices.erase(std::unique(selectedIndices.begin(), selectedIndices.end()), selectedIndices.end());
+
+        const auto sameImage = [](const CanvasImage& lhs, const CanvasImage& rhs) {
+            return lhs.page == rhs.page && lhs.layerOrder == rhs.layerOrder && lhs.layerId == rhs.layerId &&
+                   lhs.originLayer == rhs.originLayer && lhs.pixelWidth == rhs.pixelWidth &&
+                   lhs.pixelHeight == rhs.pixelHeight && lhs.encodedData == rhs.encodedData &&
+                   lhs.transform.xx == rhs.transform.xx && lhs.transform.yx == rhs.transform.yx &&
+                   lhs.transform.xy == rhs.transform.xy && lhs.transform.yy == rhs.transform.yy &&
+                   lhs.transform.x == rhs.transform.x && lhs.transform.y == rhs.transform.y;
+        };
+
+        size_t resultCount = images.size();
+        for (size_t index = 0; index < replacements.size(); ++index) {
+            auto& [sourceIndex, outputs] = replacements[index];
+            if (sourceIndex >= images.size() || outputs.empty() ||
+                !std::binary_search(selectedIndices.begin(), selectedIndices.end(), sourceIndex) ||
+                (index > 0 && replacements[index - 1].first == sourceIndex)) {
+                return false;
+            }
+            if (outputs.size() > maxCanvasImageObjects || resultCount > maxCanvasImageObjects - (outputs.size() - 1)) {
+                return false;
+            }
+            resultCount += outputs.size() - 1;
+            const auto& original = images[sourceIndex];
+            for (auto& output: outputs) {
+                if (!validCanvasImage(output) || output.page != original.page) {
+                    return false;
+                }
+                output.layerId = original.layerId;
+                output.originLayer = original.originLayer;
+            }
+        }
+
+        std::map<std::pair<int, size_t>, size_t> nextOrders;
+        for (auto& [sourceIndex, outputs]: replacements) {
+            const auto key = std::pair{images[sourceIndex].page, images[sourceIndex].originLayer};
+            auto order = nextOrders.try_emplace(key, nextOriginOrder(key.first, key.second)).first;
+            for (auto& output: outputs) {
+                output.layerOrder = order->second++;
+            }
+        }
+
+        Edit edit;
+        edit.selectionBefore = selected;
+        edit.selectionAfter = std::vector<size_t>{};
+        edit.textSelectionBefore = selectedTexts;
+        edit.textSelectionAfter = std::vector<size_t>{};
+        edit.imageSelectionBefore = selectedImages;
+        edit.imageSelectionAfter = std::vector<size_t>{};
+        std::ptrdiff_t indexDelta = 0;
+        for (auto& [sourceIndex, outputs]: replacements) {
+            const bool unchanged = outputs.size() == 1 && sameImage(outputs.front(), images[sourceIndex]);
+            const auto finalIndex = static_cast<size_t>(static_cast<std::ptrdiff_t>(sourceIndex) + indexDelta);
+            if (unchanged) {
+                edit.imageSelectionAfter->push_back(finalIndex);
+                continue;
+            }
+            edit.imageChanges.push_back({sourceIndex, {images[sourceIndex]}, finalIndex, std::move(outputs)});
+            const auto& inserted = edit.imageChanges.back().after;
+            for (size_t offset = 0; offset < inserted.size(); ++offset) {
+                edit.imageSelectionAfter->push_back(finalIndex + offset);
+            }
+            indexDelta += static_cast<std::ptrdiff_t>(inserted.size()) - 1;
+        }
+        if (edit.imageChanges.empty()) {
+            return true;
+        }
+        apply(edit, true);
+        record(std::move(edit));
+        return true;
+    }
+
     bool deleteImage(size_t index) {
         if (index >= images.size() || current || eraseGesture || selectionGesture) {
             return false;

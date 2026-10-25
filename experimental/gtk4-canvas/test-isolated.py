@@ -380,8 +380,15 @@ def verify_plugins(args, evidence):
     toggle_grid = plugin_root / "ToggleGrid"
     highlight_position = plugin_root / "HighlightPosition"
     space_for_notes = plugin_root / "SpaceForNotes"
+    image_actions = plugin_root / "ImageActions"
+    make_image_actions_png(output / "image-actions-input.png")
+    image_actions_test = args.binary.resolve().with_name("canvas-image-actions-test")
+    if not image_actions_test.is_file():
+        raise RuntimeError(f"Missing GTK 4 canvas image-action test binary: {image_actions_test}")
+    image_actions_result = run([str(image_actions_test)], env=dict(os.environ, G_DEBUG="fatal-criticals"))
+    image_actions_available = "PASS: GTK4 canvas image actions (libvips)" in image_actions_result
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()}\ndisabled=\n",
+        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()},{image_actions.resolve()}\ndisabled=\n",
         encoding="utf-8")
     if not args.worker:
         raise RuntimeError("Bundled plugin integration checks require --worker")
@@ -393,16 +400,19 @@ def verify_plugins(args, evidence):
     )
     expected = (
         "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-        "HighlightPosition, SpaceForNotes page insertion, ToggleGrid paper changes, and background undo/redo"
+        "HighlightPosition, ImageActions, SpaceForNotes page insertion, ToggleGrid paper changes, and background undo/redo"
     )
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
-    for screenshot in ("plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps"):
+    screenshots = ["plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps"]
+    if image_actions_available:
+        screenshots.append("image-actions-split")
+    for screenshot in screenshots:
         path = output / f"{screenshot}.png"
         if not path.is_file() or path.stat().st_size < 1000:
             raise RuntimeError(f"Missing plugin integration screenshot: {path}")
     saved_settings = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
-    for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition", "SpaceForNotes"):
+    for plugin in ("ColorCycle", "ToolShortcuts", "ToggleGrid", "HighlightPosition", "SpaceForNotes", "ImageActions"):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")
@@ -424,6 +434,27 @@ def make_png(path, width=32, height=24):
         rows.append(0)
         for x in range(width):
             rows.extend((32 + x * 6, 80 + y * 5, 210 if (x + y) % 2 else 250, 255))
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    payload = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+    path.write_bytes(payload)
+
+
+def make_image_actions_png(path):
+    width, height = 40, 32
+
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data +
+                struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            white = x == 0 or x == width - 1 or y == 0 or y == height - 1 or 18 <= x < 22 or 14 <= y < 18
+            if white:
+                rows.extend((255, 255, 255, 255))
+            else:
+                rows.extend((32 + x * 3, 40 + y * 4, 150 + (x + y) % 80, 255))
     header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     payload = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
     path.write_bytes(payload)
