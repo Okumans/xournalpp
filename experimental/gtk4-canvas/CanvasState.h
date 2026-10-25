@@ -406,6 +406,7 @@ public:
             return false;
         }
 
+        ensurePluginReferences();
         const auto pageIndex = page;
         const auto layerId = activeLayerId(pageIndex);
         const auto origin = activeLayerOrigin(pageIndex);
@@ -425,6 +426,7 @@ public:
             stroke.layerId = layerId;
             stroke.originLayer = origin;
             stroke.layerOrder = nextOrder++;
+            stroke.pluginReference = allocatePluginReference();
         }
 
         const auto preserveSelection = [this](Edit& edit) {

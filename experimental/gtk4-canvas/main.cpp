@@ -4420,6 +4420,41 @@ private:
                 "app.addImages redo did not preserve its opaque references");
         state.undo();
 
+        const auto creationSplineStrokeCount = state.ink.size();
+        prototype::PluginStrokeInput splineStroke;
+        splineStroke.x = {210, 214, 220, 228};
+        splineStroke.y = {40, 44, 47, 50};
+        splineStroke.tool = "highlighter";
+        splineStroke.width = 3.5;
+        splineStroke.color = 0x456789;
+        splineStroke.fill = 80;
+        splineStroke.lineStyle = "plain";
+        std::vector<std::uintptr_t> createdSplineReferences;
+        require(addPluginStrokes({splineStroke}, prototype::PluginStrokeUndoPolicy::Grouped,
+                                 createdSplineReferences, creationError) && createdSplineReferences.size() == 1 &&
+                        state.ink.size() == creationSplineStrokeCount + 1 &&
+                        state.ink.back().points.size() == splineStroke.x.size() &&
+                        state.ink.back().points.front().x == 210 && state.ink.back().points.back().y == 50 &&
+                        state.ink.back().brush.tool == Tool::Highlighter && state.ink.back().fill == 80 &&
+                        state.ink.back().pluginReference == createdSplineReferences.front() &&
+                        state.selected == creationSelectionBeforeImages &&
+                        state.selectedTexts == creationTextSelectionBeforeImages &&
+                        state.selectedImages == creationImageSelection,
+                creationError.empty() ?
+                        "The GTK host did not insert the flattened spline stroke on the active layer" :
+                        creationError.c_str());
+        state.undo();
+        require(state.ink.size() == creationSplineStrokeCount &&
+                        state.selected == creationSelectionBeforeImages &&
+                        state.selectedTexts == creationTextSelectionBeforeImages &&
+                        state.selectedImages == creationImageSelection,
+                "Grouped spline stroke insertion did not undo and restore the previous selection");
+        state.redo();
+        require(state.ink.size() == creationSplineStrokeCount + 1 &&
+                        state.ink.back().pluginReference == createdSplineReferences.front(),
+                "Spline stroke redo did not preserve its opaque reference");
+        state.undo();
+
         state.ink.resize(savedInkSize);
         state.texts.resize(savedTextSize);
         state.images.resize(savedImageSize);

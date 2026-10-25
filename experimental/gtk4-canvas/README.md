@@ -84,8 +84,10 @@ defaults, return stable references, and support grouped, individual, and
 non-undoable history policies. `app.addImages()` accepts a file path or binary
 image data, preserves the master sizing and aspect-ratio options, scales images
 to fit the page, and returns stable references or per-image error strings. It
-supports grouped, individual, and non-undoable history policies. Spline creation,
-remaining image/object mutation APIs, and other master Lua APIs remain migration
+supports grouped, individual, and non-undoable history policies. `app.addSplines()`
+accepts cubic Bezier segments, adaptively flattens them into native stroke paths,
+applies the per-stroke tool/style options, and uses the same history policies.
+Remaining image/object mutation APIs and other master Lua APIs remain migration
 work; see the feature audit.
 
 The bundled ImageActions plugin registers all ten legacy image operations.

@@ -249,6 +249,7 @@ public:
     static int luaAddToSelection(lua_State* state);
     static int luaClearSelection(lua_State* state);
     static int luaAddStrokes(lua_State* state);
+    static int luaAddSplines(lua_State* state);
     static int luaAddTexts(lua_State* state);
     static int luaAddLinks(lua_State* state);
     static int luaAddImages(lua_State* state);
