@@ -1836,7 +1836,7 @@ private:
     }
 
     bool smartSelectHasEditableObjectAt(int page, prototype::Point point) const {
-        return state.pickStroke(page, point) || state.pickText(page, point) || state.pickImage(page, point);
+        return state.pickSmartSelectObject(page, point).has_value();
     }
 
     bool pdfTextAtCanvasPoint(int pageIndex, prototype::Point point) {
@@ -7370,6 +7370,77 @@ private:
                 auto* upperLayer = findLayerControl(2, false);
                 require(upperLayer, "Upper layer selector is missing for Text-tool verification");
                 g_signal_emit_by_name(upperLayer, "clicked");
+
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 2);
+                require(state.brush.tool == Tool::SmartSelect && !state.selectionAcrossLayers,
+                        "Smart Select was not available for native hit testing");
+                state.clearSelection();
+                const bool oldSnapGridEnabled = state.snapGridEnabled;
+                const double oldSnapGridSize = state.snapGridSize;
+                const double oldSnapGridTolerance = state.snapGridTolerance;
+                state.snapGridEnabled = false;
+                const auto edgeTextBefore = state.texts[0];
+                const auto edgeStart = state.pageScreenPoint(
+                        0, edgeTextBefore.x + edgeTextBefore.layoutWidth + 0.25,
+                        edgeTextBefore.y + edgeTextBefore.layoutHeight / 2);
+                begin(Device::Mouse, edgeStart.x, edgeStart.y);
+                require(state.movingSelection() && state.selectedTexts == std::vector<size_t>{0},
+                        "Smart Select missed native text within the 0.5 point edge hit radius");
+                motion(Device::Mouse, edgeStart.x + 10 * state.zoom, edgeStart.y);
+                finish(Device::Mouse, std::nullopt,
+                       prototype::Point{edgeStart.x + 10 * state.zoom, edgeStart.y});
+                require(std::abs(state.texts[0].x - edgeTextBefore.x - 10) < 1e-6 &&
+                                state.selectedTexts == std::vector<size_t>{0},
+                        "Smart Select edge hit did not move the native text object");
+                waitForNextPaint();
+                capture("smart-select-edge-hit");
+                state.undo();
+                require(std::abs(state.texts[0].x - edgeTextBefore.x) < 1e-6,
+                        "Undo did not restore the Smart Select edge-hit move");
+
+                state.snapGridEnabled = true;
+                state.snapGridSize = 10;
+                state.snapGridTolerance = 0.5;
+                const auto selectionBounds = state.selectionBox();
+                require(selectionBounds && selectionBounds->page == 0,
+                        "Smart Select grid-snap verification lost the text selection");
+                const auto oldGridXOffset = state.pageLayers[0].gridXOffset;
+                const auto oldGridYOffset = state.pageLayers[0].gridYOffset;
+                const auto oldGridXStep = state.pageLayers[0].gridXStep;
+                const auto oldGridYStep = state.pageLayers[0].gridYStep;
+                const auto gridStart = state.pageScreenPoint(
+                        0, selectionBounds->x1 - 7, selectionBounds->y0 +
+                                   (selectionBounds->y1 - selectionBounds->y0) / 4);
+                const auto gridAnchorX = selectionBounds->x1;
+                const auto gridAnchorY = selectionBounds->y0;
+                state.pageLayers[0].gridXOffset = gridAnchorX + 10;
+                state.pageLayers[0].gridYOffset = gridAnchorY + 10;
+                state.pageLayers[0].gridXStep = 0;
+                state.pageLayers[0].gridYStep = 0;
+                begin(Device::Mouse, gridStart.x, gridStart.y);
+                motion(Device::Mouse, gridStart.x + 11 * state.zoom, gridStart.y + 11 * state.zoom);
+                finish(Device::Mouse, std::nullopt,
+                       prototype::Point{gridStart.x + 11 * state.zoom, gridStart.y + 11 * state.zoom});
+                require(std::abs(state.texts[0].x - edgeTextBefore.x - 10) < 1e-6 &&
+                                std::abs(state.texts[0].y - edgeTextBefore.y - 10) < 1e-6,
+                        "Smart Select move did not snap its nearest selection corner to the page grid");
+                waitForNextPaint();
+                capture("smart-select-grid-snapped");
+                state.undo();
+                state.pageLayers[0].gridXOffset = oldGridXOffset;
+                state.pageLayers[0].gridYOffset = oldGridYOffset;
+                state.pageLayers[0].gridXStep = oldGridXStep;
+                state.pageLayers[0].gridYStep = oldGridYStep;
+                state.snapGridEnabled = oldSnapGridEnabled;
+                state.snapGridSize = oldSnapGridSize;
+                state.snapGridTolerance = oldSnapGridTolerance;
+                require(std::abs(state.texts[0].x - edgeTextBefore.x) < 1e-6 &&
+                                std::abs(state.texts[0].y - edgeTextBefore.y) < 1e-6,
+                        "Undo did not restore the Smart Select grid-snapped move");
+
+                gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
+                require(state.brush.tool == Tool::SelectRectangle && state.selectionAcrossLayers,
+                        "Restoring the remembered visible-layer selection mode failed");
                 selectTool(Tool::Text);
                 require(state.brush.tool == Tool::Text &&
                                 gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(textButton)) &&
@@ -7605,7 +7676,8 @@ private:
                         "Redo did not reapply the vertical-space edit");
                 waitForNextPaint();
                 capture("vertical-space-applied");
-                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Text-tool mouse/stylus move/resize "
+                std::cout << "PASS: GTK visible-layer rectangle/lasso selection, Smart Select edge hit and grid snap, "
+                             "Text-tool mouse/stylus move/resize "
                              "and formatting, vertical-space direction/preview/undo, "
                              "Select Object and Hand modes, selection-preserving pan, hidden-layer fallback, "
                              "remembered tool state, and shortcuts\n";

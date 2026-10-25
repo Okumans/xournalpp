@@ -41,7 +41,10 @@ int main() {
         original[0].selectedLayer = 2;
         original[0].backgroundVisible = false;
         original[0].backgroundName = "Paper";
+        original[0].gridXOffset = 3;
         original[0].gridYOffset = 80;
+        original[0].gridXStep = 12.27;
+        original[0].gridYStep = 7.085;
         original[0].layers = {{"Lower", true, {0}}, {"上の層", false, {1, 2}}};
         original[1].initialLayerCount = 1;
         original[1].selectedLayer = 1;
@@ -79,6 +82,10 @@ int main() {
         invalidGridOffset[0].gridYOffset = std::numeric_limits<double>::infinity();
         check(throws([&] { writeLayerTransfer(path, invalidGridOffset); }),
               "A non-finite page-grid offset was accepted");
+        auto invalidGridStep = original;
+        invalidGridStep[0].gridXStep = 0;
+        check(throws([&] { writeLayerTransfer(path, invalidGridStep); }),
+              "An incomplete pair of page-grid steps was accepted");
 
         {
             std::ofstream legacy(path, std::ios::binary);
@@ -97,6 +104,17 @@ int main() {
         check(version2Decoded.size() == 1 && version2Decoded[0].backgroundName == "P" &&
                       version2Decoded[0].gridYOffset == 0 && version2Decoded[0].layers[0].name == "L",
               "Version 2 layer-transfer metadata must remain readable with the default grid offset");
+
+        {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_LAYERS_V3 1\n1 1 1 80 1\n1 1\nP\n1 1 1\n0\nL\n";
+        }
+        const auto version3Decoded = readLayerTransfer(path);
+        check(version3Decoded.size() == 1 && version3Decoded[0].backgroundName == "P" &&
+                      version3Decoded[0].gridXOffset == 0 && version3Decoded[0].gridYOffset == 80 &&
+                      version3Decoded[0].gridXStep == 0 && version3Decoded[0].gridYStep == 0 &&
+                      version3Decoded[0].layers[0].name == "L",
+              "Version 3 layer-transfer metadata must retain its vertical offset and default new grid fields");
 
         {
             std::ofstream truncated(path, std::ios::binary);
