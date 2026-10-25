@@ -59,6 +59,7 @@ int main() {
     saved.autosaveTimeoutMinutes = 11;
     saved.stylusButtonOne = prototype::ButtonToolAction::Eraser;
     saved.stylusButtonTwo = prototype::ButtonToolAction::FloatingToolbox;
+    saved.floatingToolboxRows = {{{"SMART_SELECT", "PEN"}, {}, {"COLOR(8)", "DRAW_ARROW"}, {"UNDO"}}};
     std::string error;
     require(prototype::saveGtk4Preferences(directory, saved, error), "GTK 4 preferences could not be saved");
 
@@ -75,7 +76,8 @@ int main() {
                     near(loaded.snapGridTolerance, 0.35) &&
                     loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
-                    loaded.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox,
+                    loaded.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox &&
+                    loaded.floatingToolboxRows == saved.floatingToolboxRows,
             "Saved GTK 4 preference values did not roundtrip");
 
     const auto preferencePath = directory / "gtk4-canvas.ini";

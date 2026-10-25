@@ -72,6 +72,26 @@ inline ButtonToolAction readButtonAction(GKeyFile* keyFile, const char* name, Bu
     return static_cast<ButtonToolAction>(value);
 }
 
+inline void readFloatingToolboxRows(GKeyFile* keyFile, FloatingToolboxRows& rows) {
+    static constexpr std::array<const char*, 4> keys = {"row-1", "row-2", "row-3", "row-4"};
+    for (std::size_t index = 0; index < keys.size(); ++index) {
+        if (!g_key_file_has_key(keyFile, "Floating Toolbox", keys[index], nullptr)) {
+            continue;
+        }
+        GError* error = nullptr;
+        gchar* value = g_key_file_get_string(keyFile, "Floating Toolbox", keys[index], &error);
+        if (error) {
+            g_clear_error(&error);
+            continue;
+        }
+        const auto parsed = parseFloatingToolboxRow(value ? value : "");
+        if (parsed) {
+            rows[index] = *parsed;
+        }
+        g_free(value);
+    }
+}
+
 inline const char* themeName(ThemeVariant theme) {
     switch (theme) {
         case ThemeVariant::ForceLight:
@@ -162,6 +182,7 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     }
     settings.stylusButtonOne = preferences_detail::readButtonAction(keyFile.get(), "button-one", settings.stylusButtonOne);
     settings.stylusButtonTwo = preferences_detail::readButtonAction(keyFile.get(), "button-two", settings.stylusButtonTwo);
+    preferences_detail::readFloatingToolboxRows(keyFile.get(), settings.floatingToolboxRows);
     return result;
 }
 
@@ -206,6 +227,11 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_integer(keyFile.get(), "Editing", "autosave-timeout-minutes", settings.autosaveTimeoutMinutes);
     g_key_file_set_integer(keyFile.get(), "Stylus", "button-one", static_cast<int>(settings.stylusButtonOne));
     g_key_file_set_integer(keyFile.get(), "Stylus", "button-two", static_cast<int>(settings.stylusButtonTwo));
+    static constexpr std::array<const char*, 4> toolboxKeys = {"row-1", "row-2", "row-3", "row-4"};
+    for (std::size_t index = 0; index < toolboxKeys.size(); ++index) {
+        const auto value = serializeFloatingToolboxRow(settings.floatingToolboxRows[index]);
+        g_key_file_set_string(keyFile.get(), "Floating Toolbox", toolboxKeys[index], value.c_str());
+    }
     gsize length = 0;
     gchar* data = g_key_file_to_data(keyFile.get(), &length, nullptr);
     if (!data) {
