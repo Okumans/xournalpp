@@ -39,6 +39,8 @@ static CanvasState multiLayerFixture() {
                  {0, {{55, 78}, {115, 78}}, {Tool::Pen, {1, 0, 0}, 2}, false, 0, 2, 1},
                  {0, {{60, 88}, {120, 88}}, {Tool::Pen, {0, 0, 1}, 2}, false, 0, 2, 1},
                  {0, {{65, 96}, {125, 96}}, {Tool::Pen, {0, 1, 0}, 2}, false, 0, 3, 2}};
+    state.texts.push_back({0, 3, 2, 1, "upper layer", "Sans", 12, 0xff000000U, -1, 0, false,
+                           1, 0, 0, 1, 70, 70, 45, 18, {}});
     state.brush.tool = Tool::SelectRectangle;
     return state;
 }
@@ -69,18 +71,22 @@ static void visibleLayerSelection() {
     selectLayerArea(state, false);
     check(state.selected == std::vector<size_t>({1, 2}),
           "Multilayer rectangle should choose the topmost visible layer with matching strokes");
+    check(state.selectedTexts == std::vector<size_t>{0},
+          "Multilayer rectangle should include text on the first matching visible layer");
 
     state.clearSelection();
     state.brush.tool = Tool::SelectLasso;
     selectLayerArea(state, true);
     check(state.selected == std::vector<size_t>({1, 2}),
           "Multilayer lasso should use the same topmost visible layer rule");
+    check(state.selectedTexts == std::vector<size_t>{0},
+          "Multilayer lasso should include matching text from the first visible layer");
 
     state.clearSelection();
     state.pageLayers[0].layers[1].visible = false;
     state.brush.tool = Tool::SelectRectangle;
     selectLayerArea(state, false);
-    check(state.selected == std::vector<size_t>{0},
+    check(state.selected == std::vector<size_t>{0} && state.selectedTexts.empty(),
           "Multilayer selection should skip hidden layers and continue to the next visible match");
 }
 

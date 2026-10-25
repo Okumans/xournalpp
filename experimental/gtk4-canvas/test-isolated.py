@@ -435,6 +435,8 @@ def verify_selection_modes(args, evidence):
                                       "width": "4"}).text = "60 175 190 175"
     ET.SubElement(upper, "stroke", {"tool": "pen", "capStyle": "round", "color": "#d44f25ff",
                                       "width": "4"}).text = "60 200 190 200"
+    ET.SubElement(upper, "text", {"font": "Sans", "size": "12", "x": "75", "y": "208",
+                                    "color": "#202020ff"}).text = "Upper layer text selection"
     fixture.write_bytes(gzip.compress(ET.tostring(root, encoding="utf-8", xml_declaration=True)))
     fixture_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
     result = run(
@@ -446,7 +448,7 @@ def verify_selection_modes(args, evidence):
             not in result):
         raise RuntimeError("GTK visible-layer selection mode verification did not finish")
     for name in ("selection-visible-layer-rectangle", "selection-visible-layer-lasso",
-                 "selection-hidden-layer-fallback"):
+                 "selection-hidden-layer-fallback", "selection-text-object", "selection-text-moved"):
         screenshot = output / f"{name}.png"
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing or empty visible-layer selection screenshot: {screenshot}")

@@ -42,7 +42,9 @@ inline void validateTextItem(const TextItem& item) {
     if (item.page < 0 || item.layerId == 0 || item.alignment < 0 || item.alignment > 2 ||
         !std::isfinite(item.fontSize) || item.fontSize <= 0 || !std::isfinite(item.wrapWidth) ||
         !std::isfinite(item.xx) || !std::isfinite(item.yx) || !std::isfinite(item.xy) ||
-        !std::isfinite(item.yy) || !std::isfinite(item.x) || !std::isfinite(item.y)) {
+        !std::isfinite(item.yy) || !std::isfinite(item.x) || !std::isfinite(item.y) ||
+        !std::isfinite(item.layoutWidth) || item.layoutWidth < 0 ||
+        !std::isfinite(item.layoutHeight) || item.layoutHeight < 0) {
         throw std::runtime_error("Invalid transferred text metadata");
     }
     if (item.text.size() > maxEditableTextBytes || item.fontName.empty() ||
@@ -124,11 +126,13 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
     std::string magic;
     size_t count = 0;
     text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), magic, count);
-    if ((magic != "XOURNALPP_GTK4_TEXT_V1" && magic != "XOURNALPP_GTK4_TEXT_V2") ||
+    if ((magic != "XOURNALPP_GTK4_TEXT_V1" && magic != "XOURNALPP_GTK4_TEXT_V2" &&
+         magic != "XOURNALPP_GTK4_TEXT_V3") ||
         count > maxEditableTexts) {
         throw std::runtime_error("Invalid text-transfer header");
     }
-    const bool hasLayerIdentity = magic == "XOURNALPP_GTK4_TEXT_V2";
+    const bool hasLayerIdentity = magic != "XOURNALPP_GTK4_TEXT_V1";
+    const bool hasLayoutGeometry = magic == "XOURNALPP_GTK4_TEXT_V3";
 
     std::vector<TextItem> items;
     items.reserve(count);
@@ -139,7 +143,13 @@ inline std::vector<TextItem> readTextTransfer(const std::filesystem::path& path)
         size_t textBytes = 0;
         size_t fontBytes = 0;
         size_t runCount = 0;
-        if (hasLayerIdentity) {
+        if (hasLayoutGeometry) {
+            text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerId,
+                                            item.originLayer, item.layerOrder, item.xx, item.yx, item.xy, item.yy,
+                                            item.x, item.y, item.fontSize, item.color, item.wrapWidth,
+                                            item.layoutWidth, item.layoutHeight, item.alignment, justify, textBytes,
+                                            fontBytes, runCount);
+        } else if (hasLayerIdentity) {
             text_transfer_detail::parseLine(text_transfer_detail::readLine(stream), item.page, item.layerId,
                                             item.originLayer, item.layerOrder, item.xx, item.yx, item.xy, item.yy,
                                             item.x, item.y, item.fontSize, item.color, item.wrapWidth, item.alignment,
@@ -223,11 +233,12 @@ inline void writeTextTransfer(const std::filesystem::path& path, const std::vect
     }
     stream.imbue(std::locale::classic());
     stream << std::setprecision(std::numeric_limits<double>::max_digits10);
-    stream << "XOURNALPP_GTK4_TEXT_V2 " << items.size() << '\n';
+    stream << "XOURNALPP_GTK4_TEXT_V3 " << items.size() << '\n';
     for (const auto& item: items) {
         stream << item.page << ' ' << item.layerId << ' ' << item.originLayer << ' ' << item.layerOrder << ' '
                << item.xx << ' ' << item.yx << ' ' << item.xy << ' ' << item.yy << ' ' << item.x << ' ' << item.y
-               << ' ' << item.fontSize << ' ' << item.color << ' ' << item.wrapWidth << ' ' << item.alignment << ' '
+               << ' ' << item.fontSize << ' ' << item.color << ' ' << item.wrapWidth << ' ' << item.layoutWidth
+               << ' ' << item.layoutHeight << ' ' << item.alignment << ' '
                << item.justify << ' ' << item.text.size() << ' ' << item.fontName.size() << ' '
                << item.styleRuns.size() << '\n';
         stream.write(item.fontName.data(), static_cast<std::streamsize>(item.fontName.size()));

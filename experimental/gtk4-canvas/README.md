@@ -95,9 +95,12 @@ GTK text editor preserves UTF-8 content and formatting runs, including bold,
 italic, underline, strikethrough, superscript, and subscript. Font family and size
 can be set from the toolbar. Text creation, edits, and deletion join undo/redo,
 and Save, autosave, and PDF export retain the text content and style ranges.
-Text objects are not yet movable or resizable through object selection, and
-rotated/scaled text can be rendered but the inline editor does not follow its
-transform. IME and accessibility behavior remain unverified.
+Rectangle and lasso selection include native text with strokes on the active
+visible layer; visible-layer mode stops at the first matching visible layer.
+Shared selection handles move, resize, and rotate selected text, and Delete,
+cross-page transfer, and mixed stroke/text edits join undo/redo. Text clipboard
+copy and duplicate are not implemented yet. The inline editor does not follow
+transformed text. IME and accessibility behavior remain unverified.
 
 Behavior preservation is tracked in [BEHAVIOR_PARITY.md](BEHAVIOR_PARITY.md).
 Defaults now match the existing app's 47% highlighter opacity, 10% keyboard zoom,

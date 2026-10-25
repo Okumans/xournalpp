@@ -41,6 +41,9 @@ struct TextItem {
     double yy = 1;
     double x = 0;
     double y = 0;
+    // Natural untransformed layout size used for rectangular selection.
+    double layoutWidth = 0;
+    double layoutHeight = 0;
     std::vector<TextStyleRun> styleRuns;
 
     bool operator==(const TextItem&) const = default;

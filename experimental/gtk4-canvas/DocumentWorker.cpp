@@ -377,6 +377,9 @@ std::optional<prototype::TextItem> toEditableTextPacket(const Element& element, 
     item.fontSize = text->getFontSize();
     item.color = static_cast<uint32_t>(text->getColor());
     item.wrapWidth = text->getWrap();
+    const auto& naturalSize = text->getNaturalSize();
+    item.layoutWidth = naturalSize.width;
+    item.layoutHeight = naturalSize.height;
     item.alignment = static_cast<int>(static_cast<TextAlignment::Value>(text->getAlign()));
     item.justify = text->getJustify();
     const auto& matrix = text->getTransformation();

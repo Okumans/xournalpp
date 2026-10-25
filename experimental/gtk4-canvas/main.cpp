@@ -1612,7 +1612,10 @@ private:
                 update();
                 return;
             }
-            if (state.selected.empty()) return;
+            if (!state.hasSelection()) return;
+            if (!state.selectedTexts.empty()) {
+                throw std::runtime_error("Copying text selections is not supported yet");
+            }
             const auto bytes = prototype::clipboard::encode(state.copySelection());
             auto* data = g_bytes_new(bytes.data(), bytes.size());
             auto* provider = gdk_content_provider_new_for_bytes(prototype::clipboard::mime, data);
@@ -1640,7 +1643,11 @@ private:
             update();
             return;
         }
-        if (state.selected.empty()) return;
+        if (!state.hasSelection()) return;
+        if (!state.selectedTexts.empty()) {
+            showError("Duplicating text selections is not supported yet");
+            return;
+        }
         const auto box = state.selectionBox();
         state.pasteStrokes(state.copySelection(), box->page,
                            {(box->x0+box->x1)/2 + 20, (box->y0+box->y1)/2 + 20});
@@ -1879,8 +1886,11 @@ private:
         if (!textEditor || !textEditor->active()) {
             return;
         }
-        const auto completed = textEditor->finish();
+        auto completed = textEditor->finish();
         if (completed) {
+            const auto [layoutWidth, layoutHeight] = prototype::textNaturalSize(completed->item);
+            completed->item.layoutWidth = layoutWidth;
+            completed->item.layoutHeight = layoutHeight;
             if (completed->existingIndex) {
                 if (completed->hasContent) {
                     state.replaceText(*completed->existingIndex, completed->item);
@@ -3189,8 +3199,8 @@ private:
         }
         updateTextEditorPosition();
         updateTitle();
-        gtk_label_set_text(GTK_LABEL(selectionLabel), state.selected.empty() ? "Drag to select" :
-                               (std::to_string(state.selected.size()) + " selected").c_str());
+        gtk_label_set_text(GTK_LABEL(selectionLabel), !state.hasSelection() ? "Drag to select" :
+                               (std::to_string(state.selectionCount()) + " selected").c_str());
         gtk_widget_set_sensitive(openButton, !options.worker.empty());
         gtk_widget_set_sensitive(saveButton, bool(nativeSession));
         gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
@@ -4047,7 +4057,7 @@ private:
                         self->selectedImageIndex.reset();
                         self->thumbnails.clear();
                     } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
-                               (key == GDK_KEY_Delete || key == GDK_KEY_BackSpace) && !self->state.selected.empty()) {
+                               (key == GDK_KEY_Delete || key == GDK_KEY_BackSpace) && self->state.hasSelection()) {
                         self->input.cancel();
                         self->state.deleteSelection();
                     } else if (key == GDK_KEY_space && !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {
@@ -4360,9 +4370,9 @@ private:
                         }
                     }
                     for (size_t index = 0; index < state.texts.size(); ++index) {
-                        if (state.texts[index].page == i && state.texts[index].layerId == layerId &&
-                            state.texts[index].originLayer == origin) {
-                            layerItems.push_back({state.texts[index].layerOrder, EditableKind::Text, index});
+                        const auto text = state.displayText(index);
+                        if (text.page == i && text.layerId == layerId && text.originLayer == origin) {
+                            layerItems.push_back({text.layerOrder, EditableKind::Text, index});
                         }
                     }
                     for (size_t index = 0; index < state.images.size(); ++index) {
@@ -4375,7 +4385,8 @@ private:
                                      [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
                     for (const auto& item: layerItems) {
                         if (item.kind == EditableKind::Text) {
-                            prototype::drawText(cr, state.texts[item.index]);
+                            const auto text = state.displayText(item.index);
+                            prototype::drawText(cr, text);
                         } else if (item.kind == EditableKind::Image) {
                             prototype::drawCanvasImage(cr, displayedImage(item.index));
                         } else {
@@ -4869,7 +4880,9 @@ private:
         switch (selectionVerifyStep++) {
             case 0: {
                 require(nativeSession && pageCount == 1 && state.layersForPage(0).layers.size() == 2 &&
-                                state.ink.size() == 4 && state.layersForPage(0).layers[0].name == "Lower" &&
+                                state.ink.size() == 4 && state.texts.size() == 1 &&
+                                state.texts[0].layoutWidth > 0 && state.texts[0].layoutHeight > 0 &&
+                                state.layersForPage(0).layers[0].name == "Lower" &&
                                 state.layersForPage(0).layers[1].name == "Upper",
                         "Visible-layer selection verification requires its native two-layer fixture");
                 require(g_list_model_get_n_items(gtk_drop_down_get_model(GTK_DROP_DOWN(selectionModeDropdown))) == 5,
@@ -4881,13 +4894,15 @@ private:
                 state.clearSelection();
                 {
                     const auto start = state.pageScreenPoint(0, 45, 95);
-                    const auto end = state.pageScreenPoint(0, 205, 220);
+                    const auto end = state.pageScreenPoint(0, 270, 230);
                     g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
                     g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
                     g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
                 }
                 require(state.selected == std::vector<size_t>({2, 3}),
                         "Visible-layer rectangle did not select all matching strokes from the upper layer only");
+                require(state.selectedTexts == std::vector<size_t>{0},
+                        "Visible-layer rectangle did not include native text from the matching upper layer");
                 break;
             }
             case 1: {
@@ -4897,7 +4912,7 @@ private:
                 require(state.brush.tool == Tool::SelectLasso && state.selectionAcrossLayers,
                         "Visible-layer lasso mode did not activate multilayer selection");
                 const auto start = state.pageScreenPoint(0, 45, 95);
-                const std::array<prototype::Point, 4> polygon{{{205, 95}, {205, 220}, {45, 220}, {45, 95}}};
+                const std::array<prototype::Point, 4> polygon{{{270, 95}, {270, 230}, {45, 230}, {45, 95}}};
                 const auto end = state.pageScreenPoint(0, polygon.back().x, polygon.back().y);
                 g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
                 for (const auto& point: polygon) {
@@ -4907,6 +4922,8 @@ private:
                 g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
                 require(state.selected == std::vector<size_t>({2, 3}),
                         "Visible-layer lasso did not select all matching strokes from the upper layer only");
+                require(state.selectedTexts == std::vector<size_t>{0},
+                        "Visible-layer lasso did not include native text from the matching upper layer");
                 break;
             }
             case 2: {
@@ -4918,12 +4935,14 @@ private:
                 require(!state.layerVisible(0, 2), "Upper layer did not become hidden before fallback selection");
                 gtk_drop_down_set_selected(GTK_DROP_DOWN(selectionModeDropdown), 3);
                 const auto start = state.pageScreenPoint(0, 45, 95);
-                const auto end = state.pageScreenPoint(0, 205, 220);
+                const auto end = state.pageScreenPoint(0, 270, 230);
                 g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
                 g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
                 g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
                 require(state.selected == std::vector<size_t>({0, 1}),
                         "Visible-layer rectangle did not fall back to the next visible matching layer");
+                require(state.selectedTexts.empty(),
+                        "Hidden upper-layer text leaked into the visible-layer fallback selection");
                 break;
             }
             case 3: {
@@ -4931,6 +4950,40 @@ private:
                 g_signal_emit_by_name(undoButton, "clicked");
                 require(state.layerVisible(0, 2), "Undo did not restore the upper layer visibility");
                 state.clearSelection();
+                {
+                    const auto start = state.pageScreenPoint(0, 68, 206);
+                    const auto end = state.pageScreenPoint(0, 270, 230);
+                    g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+                    g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+                    g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+                }
+                require(state.selected.empty() && state.selectedTexts == std::vector<size_t>{0},
+                        "Rectangle selection did not isolate the native text object");
+                selectionVerifyTextX = state.texts[0].x;
+                break;
+            }
+            case 4: {
+                capture("selection-text-object");
+                {
+                    const auto start = state.pageScreenPoint(0, 95, 213);
+                    const auto end = state.pageScreenPoint(0, 113, 223);
+                    g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+                    g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+                    g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+                }
+                require(std::abs(state.texts[0].x - (selectionVerifyTextX + 18)) < 1e-6 &&
+                                std::abs(state.texts[0].y - 218) < 1e-6 &&
+                                state.selectedTexts == std::vector<size_t>{0},
+                        "Dragging selected native text did not move it while preserving selection");
+                break;
+            }
+            case 5: {
+                capture("selection-text-moved");
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(std::abs(state.texts[0].x - selectionVerifyTextX) < 1e-6 &&
+                                std::abs(state.texts[0].y - 208) < 1e-6 &&
+                                state.selectedTexts == std::vector<size_t>{0},
+                        "Undo did not restore the native text position and selection");
                 selectTool(Tool::Pen);
                 require(state.selectionAcrossLayers, "Changing drawing tools discarded the remembered selection mode");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[3]), true);
@@ -6450,10 +6503,11 @@ private:
             case 52: {
                 activateSelection(Tool::SmartSelect);
                 state.clearSelection();
+                navigateToPage(0);
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
-                const auto a = state.pageScreenPoint(0, 260, 300);
-                const auto b = state.pageScreenPoint(0, 360, 320);
-                const auto c = state.pageScreenPoint(0, 300, 380);
+                const auto a = state.pageScreenPoint(0, 200, 450);
+                const auto b = state.pageScreenPoint(0, 300, 470);
+                const auto c = state.pageScreenPoint(0, 240, 530);
                 input.begin(Device::Stylus, {a.x,a.y,.25});
                 input.motion(Device::Stylus, {b.x,b.y,.5});
                 input.motion(Device::Stylus, {c.x,c.y,.75});
@@ -6464,14 +6518,17 @@ private:
                                       GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
                 require(handled && state.brush.tool == Tool::SelectLasso, "Lasso shortcut failed");
                 g_signal_emit_by_name(keys,"key-released",GDK_KEY_Shift_L,0u,GdkModifierType(0));
-                const auto from = state.pageScreenPoint(0,250,290);
+                const auto from = state.pageScreenPoint(0,190,440);
                 g_signal_emit_by_name(mouse,"drag-begin",from.x,from.y);
-                for (const auto p: {prototype::Point{370,290},prototype::Point{370,390},prototype::Point{250,390},prototype::Point{250,290}}) {
+                for (const auto p: {prototype::Point{310,440},prototype::Point{310,540},
+                                    prototype::Point{190,540},prototype::Point{190,440}}) {
                     const auto to = state.pageScreenPoint(0,p.x,p.y);
                     g_signal_emit_by_name(mouse,"drag-update",to.x-from.x,to.y-from.y);
                 }
                 g_signal_emit_by_name(mouse,"drag-end",0.0,0.0);
-                require(state.selected == std::vector<size_t>{smokeSelectionIndex},"Lasso did not select native editable stroke");
+                require(state.ink[smokeSelectionIndex].page == 0 &&
+                                state.selected == std::vector<size_t>{smokeSelectionIndex} && state.selectedTexts.empty(),
+                        "Lasso did not isolate the native stroke for the stroke clipboard check");
                 break;
             }
             case 53: {
@@ -6482,10 +6539,13 @@ private:
                                                          handles[0].y+1.5*(handles[4].y-handles[0].y));
                 smokeTransformWidth = state.ink.back().brush.width;
                 g_signal_emit_by_name(mouse,"drag-begin",a.x,a.y);
+                require(state.selected == std::vector<size_t>{smokeSelectionIndex} && state.selectedTexts.empty(),
+                        "Resize handle press discarded the selected stroke");
                 g_signal_emit_by_name(mouse,"drag-update",b.x-a.x,b.y-a.y);
                 require(state.committedInk().back().brush.width == smokeTransformWidth,"Resize preview leaked into autosave");
                 g_signal_emit_by_name(mouse,"drag-end",b.x-a.x,b.y-a.y);
-                require(std::abs(state.ink.back().brush.width-1.5*smokeTransformWidth)<1e-6,"Resize lost native width scaling");
+                require(std::abs(state.ink.back().brush.width-1.5*smokeTransformWidth)<1e-6,
+                        "Resize lost native width scaling");
                 break;
             }
             case 54: {
@@ -6616,6 +6676,7 @@ private:
     int imageVerifyStep = -1;
     std::string selectionVerifyMode;
     int selectionVerifyStep = -1;
+    double selectionVerifyTextX = 0;
     prototype::CanvasImageTransform imageVerifyExpected;
     std::shared_ptr<prototype::bridge::DocumentSession> nativeSession;
     std::string sourcePath;

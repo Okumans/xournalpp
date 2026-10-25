@@ -146,6 +146,93 @@ int main(int argc, char** argv) {
         input.motion(Device::Mouse, {290, 180, {}});
         input.finish(Device::Mouse);
         check(state.selected == std::vector<size_t>({0, 1}), "Shift rectangle must add selection even in lasso tool");
+
+        state = fixture();
+        state.texts.push_back({0, 0, 1, 0, "selected text", "Sans", 12, 0xff000000U, -1, 0, false,
+                               1, 0, 0, 1, 120, 130, 70, 20, {}});
+        state.brush.tool = Tool::SelectRectangle;
+        const auto textSelectStart = state.pageScreenPoint(0, 95, 90);
+        const auto textSelectEnd = state.pageScreenPoint(0, 195, 180);
+        check(state.beginSelection(textSelectStart.x, textSelectStart.y), "Mixed-object selection did not begin");
+        state.moveSelectionPointer(textSelectEnd.x, textSelectEnd.y);
+        state.finishSelection();
+        check(state.selected == std::vector<size_t>{0} && state.selectedTexts == std::vector<size_t>{0} &&
+                      state.selectionCount() == 2,
+              "Rectangle selection did not include the stroke and native text object");
+        const auto mixedStart = state.pageScreenPoint(0, 140, 140);
+        const auto mixedEnd = state.pageScreenPoint(0, 155, 160);
+        check(state.beginSelection(mixedStart.x, mixedStart.y), "Mixed-object move did not begin");
+        state.moveSelectionPointer(mixedEnd.x, mixedEnd.y);
+        check(state.texts[0].x == 120 && state.texts[0].y == 130 &&
+                      state.committedInk()[0].points[0].x == 100,
+              "Mixed-object move preview changed committed document objects");
+        state.finishSelection();
+        check(state.texts[0].x == 135 && state.texts[0].y == 150 &&
+                      state.ink[0].points[0].x == 115 && state.selectedTexts == std::vector<size_t>{0},
+              "Moving a mixed selection did not transform text and ink together");
+        state.undo();
+        check(state.texts[0].x == 120 && state.texts[0].y == 130 &&
+                      state.ink[0].points[0].x == 100 && state.selectedTexts == std::vector<size_t>{0},
+              "Mixed-object move undo did not restore geometry and selection");
+        state.redo();
+        check(state.texts[0].x == 135 && state.ink[0].points[0].x == 115,
+              "Mixed-object move redo failed");
+        state.deleteSelection();
+        check(state.texts.empty() && state.ink.size() == 2 && !state.hasSelection(),
+              "Delete did not remove every object in the mixed selection");
+        state.undo();
+        check(state.texts.size() == 1 && state.ink.size() == 3 && state.selectedTexts == std::vector<size_t>{0} &&
+                      state.selected == std::vector<size_t>{0},
+              "Mixed-object delete undo did not restore objects and selection");
+
+        state = fixture();
+        state.texts.push_back({0, 0, 1, 0, "cross page", "Sans", 12, 0xff000000U, -1, 0, false,
+                               1, 0, 0, 1, 210, 110, 65, 20, {}});
+        state.selected.clear();
+        state.selectedTexts = {0};
+        const auto textMoveStart = state.pageScreenPoint(0, 230, 118);
+        const auto textMoveEnd = state.pageScreenPoint(1, 140, 100);
+        check(state.beginSelection(textMoveStart.x, textMoveStart.y), "Text cross-page move did not begin");
+        state.moveSelectionPointer(textMoveEnd.x, textMoveEnd.y);
+        state.finishSelection();
+        check(state.texts.size() == 1 && state.texts[0].page == 1 && state.selectedTexts == std::vector<size_t>{0},
+              "Cross-page move did not transfer selected text to the target page");
+        state.undo();
+        check(state.texts.size() == 1 && state.texts[0].page == 0 && state.selectedTexts == std::vector<size_t>{0},
+              "Cross-page text undo did not restore its page and selection");
+
+        state = fixture();
+        state.texts.push_back({0, 0, 1, 0, "resize text", "Sans", 12, 0xff000000U, -1, 0, false,
+                               1, 0, 0, 1, 200, 80, 60, 20, {}});
+        state.selected.clear();
+        state.selectedTexts = {0};
+        const auto resizeHandle = state.selectionHandles()[4];
+        drag(state, resizeHandle, {320, 120});
+        state.finishSelection();
+        check(near(state.texts[0].xx, 2) && near(state.texts[0].yy, 2) &&
+                      state.texts[0].x == 200 && state.texts[0].y == 80,
+              "Text corner resize did not preserve its anchor and apply a uniform affine scale");
+        state.undo();
+        check(state.texts[0].xx == 1 && state.texts[0].yy == 1 && state.selectedTexts == std::vector<size_t>{0},
+              "Text resize undo failed");
+
+        state = fixture();
+        state.texts.push_back({0, 0, 1, 0, "rotate text", "Sans", 12, 0xff000000U, -1, 0, false,
+                               1, 0, 0, 1, 200, 80, 60, 20, {}});
+        state.selected.clear();
+        state.selectedTexts = {0};
+        const auto rotateHandle = state.selectionHandles()[8];
+        drag(state, rotateHandle, {230, 144});
+        state.finishSelection();
+        check(near(state.texts[0].xx, 0) && near(state.texts[0].yx, 1) &&
+                      near(state.texts[0].xy, -1) && near(state.texts[0].yy, 0),
+              "Text rotation did not compose the shared selection transform");
+        state.undo();
+        check(state.texts[0].xx == 1 && state.texts[0].yy == 1,
+              "Text rotation undo failed");
+
+        state = fixture();
+        state.selected = {0, 1};
         const auto bytes = clipboard::encode(state.copySelection());
         const auto copy = clipboard::decode(bytes);
         check(copy.size() == 2 && copy[0].points[1].pressure == .75 && copy[1].brush.width == 14,
