@@ -151,6 +151,7 @@ int luaOpenApp(lua_State* state) {
             {"activateAction", LuaPluginRuntime::luaActivateAction},
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
             {"addEmptyPages", LuaPluginRuntime::luaAddEmptyPages},
+            {"transformSelectedImages", LuaPluginRuntime::luaTransformSelectedImages},
             {"openDialog", LuaPluginRuntime::luaOpenDialog},
             {nullptr, nullptr},
     };
@@ -674,6 +675,14 @@ bool LuaPluginRuntime::addEmptyPages(bool force, std::string& error) {
     return host.addEmptyPages(force, error);
 }
 
+bool LuaPluginRuntime::transformSelectedImages(std::int64_t action, std::string& error) {
+    if (!host.transformSelectedImages) {
+        error = "Image actions are unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.transformSelectedImages(action, error);
+}
+
 bool LuaPluginRuntime::openDialog(Plugin& plugin, std::string_view message,
                                   const std::vector<PluginDialogButton>& buttons, bool isError,
                                   std::string_view callback, std::string& error) {
@@ -953,6 +962,25 @@ int LuaPluginRuntime::luaAddEmptyPages(lua_State* state) {
     std::string error;
     if (!plugin->runtime->addEmptyPages(lua_toboolean(state, 1), error)) {
         return luaL_error(state, "%s", error.empty() ? "Adding note pages failed" : error.c_str());
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaTransformSelectedImages(lua_State* state) {
+    if (!lua_isinteger(state, 1)) {
+        return luaL_error(state, "transformSelectedImages expects an integer action code");
+    }
+    const auto action = static_cast<std::int64_t>(lua_tointeger(state, 1));
+    if (action < 1 || action > 10) {
+        return luaL_error(state, "Unknown image action code");
+    }
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    std::string error;
+    if (!plugin->runtime->transformSelectedImages(action, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Image action failed" : error.c_str());
     }
     return 0;
 }

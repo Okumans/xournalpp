@@ -1,7 +1,7 @@
 # GTK 4 canvas and input prototype
 
 This migration experiment is built as a separate executable with GTK 4,
-libadwaita, Poppler, and Lua 5.4. The normal Xournal++ build, executable,
+libadwaita, Poppler, Lua 5.4, and optional libvips support for ImageActions. The normal Xournal++ build, executable,
 settings, and document format are unchanged. There is no installation target.
 
 The prototype opens a PDF or native `.xopp` document in a continuous vertical
@@ -50,6 +50,16 @@ persist in the `.xopp` save path, and participate in undo/redo. The full master
 Lua API, plugin toolbar actions, Search, and most bundled plugin behaviors
 remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
+
+The bundled ImageActions plugin registers all ten legacy image operations.
+When libvips is available at build time, the GTK 4 host performs invert,
+half-resolution downscale, horizontal/vertical flip, 90-degree rotation,
+white-pixel transparency, trim, and vertical/horizontal split. Replacements
+preserve the selected group and use one undo/redo step; split image groups also
+survive native save and reopen. Without libvips, the rest of the prototype still
+builds and the plugin reports the missing dependency when an action is invoked.
+The plugin keeps its original Lua implementation as a fallback for the GTK 3
+host.
 
 With a document worker, the header's Insert Image action opens a local image
 chooser. The image is placed at the center of the active page, scaled to fit

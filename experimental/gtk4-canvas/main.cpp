@@ -24,6 +24,7 @@
 #include "AudioPlayback.h"
 #include "AudioTarget.h"
 #include "BehaviorDefaults.h"
+#include "CanvasImageActions.h"
 #include "CanvasInput.h"
 #include "CanvasState.h"
 #include "DocumentAutosave.h"
@@ -972,6 +973,9 @@ private:
             return changePluginPageBackground(format, config, error);
         };
         host.addEmptyPages = [this](bool force, std::string& error) { return addEmptyPagesFromPlugin(force, error); };
+        host.transformSelectedImages = [this](std::int64_t action, std::string& error) {
+            return transformSelectedImagesFromPlugin(action, error);
+        };
         host.openDialog = [this](std::string_view plugin, std::string_view message,
                                  const std::vector<prototype::PluginDialogButton>& buttons, bool isError,
                                  std::function<void(int)> callback, std::string& error) {
@@ -1016,6 +1020,52 @@ private:
         if (!state.changePageBackground(state.page, std::string(format), std::string(config))) {
             return true;
         }
+        return true;
+    }
+
+    bool transformSelectedImagesFromPlugin(std::int64_t action, std::string& error) {
+        if (action < static_cast<int>(prototype::CanvasImageAction::Invert) ||
+            action > static_cast<int>(prototype::CanvasImageAction::SplitHorizontal)) {
+            error = "Unknown ImageActions mode";
+            return false;
+        }
+        if (!prototype::canvasImageActionsAvailable()) {
+            error = "ImageActions requires libvips support in this GTK 4 build";
+            return false;
+        }
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before transforming images";
+            return false;
+        }
+        if (state.selectedImages.empty()) {
+            return true;
+        }
+
+        std::vector<std::pair<size_t, std::vector<prototype::CanvasImage>>> replacements;
+        replacements.reserve(state.selectedImages.size());
+        const auto imageAction = static_cast<prototype::CanvasImageAction>(action);
+        for (const auto index: state.selectedImages) {
+            if (index >= state.images.size()) {
+                error = "The selected image no longer exists";
+                return false;
+            }
+            const auto& image = state.images[index];
+            if (image.page < 0 || image.page >= state.pageCount()) {
+                error = "The selected image belongs to an invalid page";
+                return false;
+            }
+            const auto page = state.pageSize(image.page);
+            std::vector<prototype::CanvasImage> outputs;
+            if (!prototype::transformCanvasImage(image, imageAction, page.width, page.height, outputs, error)) {
+                return false;
+            }
+            replacements.emplace_back(index, std::move(outputs));
+        }
+        if (!state.replaceImageGroup(std::move(replacements))) {
+            error = "The selected images could not be replaced as one undoable action";
+            return false;
+        }
+        update();
         return true;
     }
 
@@ -1808,11 +1858,14 @@ private:
         const auto spaceForNotes = pluginRuntime->findPlugin("SpaceForNotes");
         require(spaceForNotes && spaceForNotes->loaded && spaceForNotes->menuItems == 2,
                 "Enabled bundled SpaceForNotes plugin did not register both page insertion modes");
+        const auto imageActions = pluginRuntime->findPlugin("ImageActions");
+        require(imageActions && imageActions->loaded && imageActions->menuItems == 10,
+                "Enabled bundled ImageActions plugin did not register all ten image operations");
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
         auto* pluginSection = g_menu_model_get_item_link(menuModel, 0, G_MENU_LINK_SECTION);
-        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 6,
+        require(pluginSection && g_menu_model_get_n_items(pluginSection) == 7,
                 "Plugins menu did not include each enabled plugin group");
         g_object_unref(pluginSection);
         require(g_action_group_has_action(G_ACTION_GROUP(window), "gtk4-plugin-0"),
@@ -1960,6 +2013,8 @@ private:
         require(!reopened.initialLayers.empty() && reopened.initialLayers[0].backgroundFormat == "graph",
                 "Saving and reopening a ToggleGrid document did not preserve its graph background");
 
+        verifyImageActionsPlugin();
+
         g_action_group_activate_action(G_ACTION_GROUP(window), "gtk4-plugin-1", nullptr);
         require(messageDialog &&
                         g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-2"), "No") ==
@@ -1992,8 +2047,70 @@ private:
                 "Applying plugin changes did not persist the disabled plugin state");
         answerDialog("close");
         std::cout << "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
-                     "HighlightPosition, SpaceForNotes page insertion, ToggleGrid paper changes, and background "
-                     "undo/redo\n";
+                     "HighlightPosition, ImageActions, SpaceForNotes page insertion, ToggleGrid paper changes, and "
+                     "background undo/redo\n";
+    }
+
+    void verifyImageActionsPlugin() {
+        require(state.images.empty(), "ImageActions verification expects a clean editable image layer");
+        const auto fixture = std::filesystem::path(options.smokeDirectory) / "image-actions-input.png";
+        auto source = prototype::readCanvasImageFile(fixture);
+        source.page = 0;
+        source.transform = {1, 0, 0, 1, 35, 45};
+        require(state.insertImage(source), "ImageActions integration could not insert its synthetic image");
+        const auto sourceIndex = state.images.size() - 1;
+        const auto original = state.images[sourceIndex];
+
+        if (!prototype::canvasImageActionsAvailable()) {
+            state.selectedImages = {sourceIndex};
+            require(!pluginRuntime->invokeMenu("ImageActions", 0) && messageDialog,
+                    "ImageActions without libvips should report its missing dependency");
+            answerDialog("close");
+            state.undo();
+            require(state.images.empty(), "Unavailable ImageActions should leave the selected image unchanged");
+            return;
+        }
+
+        for (std::size_t mode = 0; mode < 10; ++mode) {
+            state.selectedImages = {sourceIndex};
+            require(pluginRuntime->invokeMenu("ImageActions", mode),
+                    "ImageActions menu operation failed to invoke its GTK host callback");
+            const auto selectedCount = (mode == 8 || mode == 9) ? 2U : 1U;
+            require(state.selectedImages.size() == selectedCount,
+                    "ImageActions did not select all outputs from the grouped operation");
+            if (mode == 8) {
+                capture("image-actions-split");
+                const auto roundTripPath =
+                        (std::filesystem::path(options.smokeDirectory) / "image-actions-round-trip.xopp").string();
+                nativeSession->saveCopy(options.worker, roundTripPath,
+                                        prototype::bridge::transferInk(state.committedInk()), state.texts,
+                                        prototype::bridge::transferImages(state.images), state.pageLayers);
+                const prototype::bridge::DocumentSession reopened(options.worker, roundTripPath);
+                require(reopened.initialImages.size() == 2,
+                        "Saving and reopening a split image group did not preserve both image parts");
+            }
+
+            const auto changedImages = state.images;
+            require(state.canUndo(), "ImageActions transformation should be undoable");
+            state.undo();
+            require(state.images.size() == sourceIndex + 1 &&
+                            state.images[sourceIndex].encodedData == original.encodedData &&
+                            state.selectedImages == std::vector<size_t>{sourceIndex},
+                    "One ImageActions undo should restore its original image and selection");
+            require(state.canRedo(), "ImageActions transformation should be redoable");
+            state.redo();
+            require(state.images.size() == changedImages.size() && state.selectedImages.size() == selectedCount,
+                    "One ImageActions redo should restore the complete transformed image group");
+            for (size_t index = 0; index < changedImages.size(); ++index) {
+                require(state.images[index].encodedData == changedImages[index].encodedData &&
+                                state.images[index].pixelWidth == changedImages[index].pixelWidth &&
+                                state.images[index].pixelHeight == changedImages[index].pixelHeight,
+                        "ImageActions redo changed a transformed output");
+            }
+            state.undo();
+        }
+        state.undo();
+        require(state.images.empty(), "ImageActions verification should remove its fixture with one undo");
     }
 
     void waitForPluginDocumentJob() {

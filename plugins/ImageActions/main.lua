@@ -58,6 +58,10 @@ local function checkVips()
 end
 
 function Cb(mode)
+  if app.transformSelectedImages then
+    app.transformSelectedImages(mode)
+    return
+  end
   local vips = checkVips()
   if not vips then return end
 
@@ -117,6 +121,10 @@ function Cb(mode)
 end
 
 function Split(mode)
+  if app.transformSelectedImages then
+    app.transformSelectedImages(mode)
+    return
+  end
   PADDING = 15 -- margin between image parts
 
   local ffi = require "ffi"
