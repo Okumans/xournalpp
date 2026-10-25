@@ -79,8 +79,11 @@ inline void validate(const LayerDocument& pages) {
             page.selectedLayer > page.layers.size()) {
             throw std::runtime_error("Invalid page layer metadata");
         }
-        std::vector<bool> assigned(page.initialLayerCount, false);
-        std::vector<size_t> allOrigins;
+        if (page.backgroundName &&
+            (page.backgroundName->size() > maxLayerNameBytes ||
+             !g_utf8_validate(page.backgroundName->data(), page.backgroundName->size(), nullptr))) {
+            throw std::runtime_error("Invalid background layer name");
+        }
         for (const auto& layer: page.layers) {
             if (layer.origins.empty() || layer.name.size() > maxLayerNameBytes ||
                 !g_utf8_validate(layer.name.data(), layer.name.size(), nullptr) ||
@@ -88,22 +91,17 @@ inline void validate(const LayerDocument& pages) {
                 throw std::runtime_error("Invalid layer name or origin count");
             }
             totalOrigins += layer.origins.size();
+            std::vector<size_t> layerOrigins;
             for (size_t origin: layer.origins) {
                 if (origin == newLayerOrigin || origin > page.initialLayerCount + maxLayerOrigins) {
                     throw std::runtime_error("Invalid layer origin");
                 }
-                if (origin < page.initialLayerCount) {
-                    if (assigned[origin]) {
-                        throw std::runtime_error("A source layer is assigned more than once");
-                    }
-                    assigned[origin] = true;
-                }
-                allOrigins.push_back(origin);
+                layerOrigins.push_back(origin);
             }
-        }
-        std::sort(allOrigins.begin(), allOrigins.end());
-        if (std::adjacent_find(allOrigins.begin(), allOrigins.end()) != allOrigins.end()) {
-            throw std::runtime_error("A layer origin is assigned more than once");
+            std::sort(layerOrigins.begin(), layerOrigins.end());
+            if (std::adjacent_find(layerOrigins.begin(), layerOrigins.end()) != layerOrigins.end()) {
+                throw std::runtime_error("A layer contains the same source origin more than once");
+            }
         }
     }
 }
@@ -124,7 +122,9 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
     std::string magic;
     size_t count = 0;
     layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), magic, count);
-    if (magic != "XOURNALPP_GTK4_LAYERS_V1" || count > maxLayerPages) {
+    const bool version1 = magic == "XOURNALPP_GTK4_LAYERS_V1";
+    const bool version2 = magic == "XOURNALPP_GTK4_LAYERS_V2";
+    if ((!version1 && !version2) || count > maxLayerPages) {
         throw std::runtime_error("Invalid layer-transfer header");
     }
 
@@ -141,6 +141,22 @@ inline LayerDocument readLayerTransfer(const std::filesystem::path& path) {
             throw std::runtime_error("Invalid page layer-transfer header");
         }
         page.backgroundVisible = backgroundVisible != 0;
+        if (version2) {
+            int hasBackgroundName = 0;
+            size_t nameBytes = 0;
+            layer_transfer_detail::parseLine(layer_transfer_detail::readLine(stream), hasBackgroundName, nameBytes);
+            if ((hasBackgroundName != 0 && hasBackgroundName != 1) || nameBytes > maxLayerNameBytes ||
+                (!hasBackgroundName && nameBytes != 0)) {
+                throw std::runtime_error("Invalid background layer name");
+            }
+            if (hasBackgroundName) {
+                page.backgroundName = layer_transfer_detail::readBytes(stream, nameBytes);
+            }
+            totalBytes += nameBytes;
+            if (totalBytes > maxLayerTransferBytes) {
+                throw std::runtime_error("Layer transfer exceeds its size limit");
+            }
+        }
         page.layers.clear();
         page.layers.reserve(layerCount);
         for (size_t n = 0; n < layerCount; ++n) {
@@ -182,10 +198,16 @@ inline void writeLayerTransfer(const std::filesystem::path& path, const LayerDoc
         throw std::runtime_error("Cannot create layer transfer");
     }
     stream.imbue(std::locale::classic());
-    stream << "XOURNALPP_GTK4_LAYERS_V1 " << pages.size() << '\n';
+    stream << "XOURNALPP_GTK4_LAYERS_V2 " << pages.size() << '\n';
     for (const auto& page: pages) {
         stream << page.initialLayerCount << ' ' << page.selectedLayer << ' ' << page.backgroundVisible << ' '
                << page.layers.size() << '\n';
+        const size_t backgroundNameBytes = page.backgroundName ? page.backgroundName->size() : 0;
+        stream << page.backgroundName.has_value() << ' ' << backgroundNameBytes << '\n';
+        if (page.backgroundName) {
+            stream.write(page.backgroundName->data(), static_cast<std::streamsize>(backgroundNameBytes));
+            stream.put('\n');
+        }
         for (const auto& layer: page.layers) {
             stream << layer.visible << ' ' << layer.name.size() << ' ' << layer.origins.size() << '\n';
             for (size_t origin: layer.origins) {

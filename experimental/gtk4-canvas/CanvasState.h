@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -210,6 +211,47 @@ public:
         return true;
     }
 
+    bool renameLayer(int pageIndex, size_t layerId, const std::string& name) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
+            return false;
+        }
+        auto before = captureLayerMutation(pageIndex);
+        auto& pageState = pageLayers[static_cast<size_t>(pageIndex)];
+        if (layerId == 0) {
+            if (pageState.backgroundName && *pageState.backgroundName == name) {
+                return false;
+            }
+            pageState.backgroundName = name;
+        } else {
+            if (layerId > pageState.layers.size() || pageState.layers[layerId - 1].name == name) {
+                return false;
+            }
+            pageState.layers[layerId - 1].name = name;
+        }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool setAllLayersVisible(int pageIndex, bool visible) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
+            return false;
+        }
+        auto before = captureLayerMutation(pageIndex);
+        auto& pageState = pageLayers[static_cast<size_t>(pageIndex)];
+        const bool changed = std::any_of(pageState.layers.begin(), pageState.layers.end(),
+                                         [visible](const CanvasLayer& layer) { return layer.visible != visible; });
+        if (!changed) {
+            return false;
+        }
+        for (auto& layer: pageState.layers) {
+            layer.visible = visible;
+        }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
     bool addLayerAboveCurrent() {
         if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
             return false;
@@ -240,6 +282,110 @@ public:
                 ++image.layerId;
             }
         }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool duplicateCurrentLayer() {
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
+            return false;
+        }
+        const size_t pageIndex = static_cast<size_t>(page);
+        auto before = captureLayerMutation(page);
+        auto& pageState = pageLayers[pageIndex];
+        const size_t sourceId = pageState.selectedLayer;
+        if (sourceId == 0 || sourceId > pageState.layers.size() || pageState.layers.size() >= 1000) {
+            return false;
+        }
+
+        const CanvasLayer duplicate = pageState.layers[sourceId - 1];
+        pageState.layers.insert(pageState.layers.begin() + static_cast<std::ptrdiff_t>(sourceId), duplicate);
+        pageState.selectedLayer = sourceId + 1;
+
+        std::vector<Ink> duplicateInk;
+        std::vector<TextItem> duplicateTexts;
+        std::vector<CanvasImage> duplicateImages;
+        for (const auto& stroke: ink) {
+            if (stroke.page == page && stroke.layerId == sourceId) {
+                auto copy = stroke;
+                copy.layerId = sourceId + 1;
+                duplicateInk.push_back(std::move(copy));
+            }
+        }
+        for (const auto& text: texts) {
+            if (text.page == page && text.layerId == sourceId) {
+                auto copy = text;
+                copy.layerId = sourceId + 1;
+                duplicateTexts.push_back(std::move(copy));
+            }
+        }
+        for (const auto& image: images) {
+            if (image.page == page && image.layerId == sourceId) {
+                auto copy = image;
+                copy.layerId = sourceId + 1;
+                duplicateImages.push_back(std::move(copy));
+            }
+        }
+        for (auto& stroke: ink) {
+            if (stroke.page == page && stroke.layerId > sourceId) {
+                ++stroke.layerId;
+            }
+        }
+        for (auto& text: texts) {
+            if (text.page == page && text.layerId > sourceId) {
+                ++text.layerId;
+            }
+        }
+        for (auto& image: images) {
+            if (image.page == page && image.layerId > sourceId) {
+                ++image.layerId;
+            }
+        }
+        ink.insert(ink.end(), std::make_move_iterator(duplicateInk.begin()),
+                   std::make_move_iterator(duplicateInk.end()));
+        texts.insert(texts.end(), std::make_move_iterator(duplicateTexts.begin()),
+                     std::make_move_iterator(duplicateTexts.end()));
+        images.insert(images.end(), std::make_move_iterator(duplicateImages.begin()),
+                      std::make_move_iterator(duplicateImages.end()));
+
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool moveCurrentLayer(bool up) {
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
+            return false;
+        }
+        const size_t pageIndex = static_cast<size_t>(page);
+        auto before = captureLayerMutation(page);
+        auto& pageState = pageLayers[pageIndex];
+        const size_t currentId = pageState.selectedLayer;
+        if (currentId == 0 || currentId > pageState.layers.size() ||
+            (up && currentId == pageState.layers.size()) || (!up && currentId == 1)) {
+            return false;
+        }
+
+        const size_t neighborId = up ? currentId + 1 : currentId - 1;
+        std::swap(pageState.layers[currentId - 1], pageState.layers[neighborId - 1]);
+        pageState.selectedLayer = neighborId;
+        const auto remap = [this, currentId, neighborId](auto& objects) {
+            for (auto& object: objects) {
+                if (object.page != page) {
+                    continue;
+                }
+                if (object.layerId == currentId) {
+                    object.layerId = neighborId;
+                } else if (object.layerId == neighborId) {
+                    object.layerId = currentId;
+                }
+            }
+        };
+        remap(ink);
+        remap(texts);
+        remap(images);
+
         recordLayerMutation(std::move(before));
         clearSelection();
         return true;

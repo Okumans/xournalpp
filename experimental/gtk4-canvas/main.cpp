@@ -1214,6 +1214,83 @@ private:
         adw_dialog_present(ADW_DIALOG(messageDialog), window);
     }
 
+    void openLayerRenameDialog(int pageIndex, size_t layerId) {
+        if (busy || choosingFile || messageDialog || !nativeSession || pageIndex < 0 ||
+            static_cast<size_t>(pageIndex) >= state.pageLayers.size()) {
+            return;
+        }
+        const auto& pageLayers = state.layersForPage(pageIndex);
+        if (layerId > pageLayers.layers.size()) {
+            return;
+        }
+        finishTextEditing();
+        resetInput(true);
+
+        std::string currentName;
+        const bool background = layerId == 0;
+        if (background) {
+            currentName = pageLayers.backgroundName.value_or("Background");
+        } else {
+            currentName = pageLayers.layers[layerId - 1].name;
+            if (currentName.empty()) {
+                currentName = "Layer " + std::to_string(layerId);
+            }
+        }
+
+        messageDialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+                background ? "Rename Background" : "Rename Layer", "Change the name shown in the layer list."));
+        auto* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_halign(row, GTK_ALIGN_FILL);
+        gtk_box_append(GTK_BOX(row), gtk_label_new("Name:"));
+        layerRenameEntry = gtk_entry_new();
+        gtk_entry_set_activates_default(GTK_ENTRY(layerRenameEntry), true);
+        gtk_entry_set_max_length(GTK_ENTRY(layerRenameEntry), 4096);
+        gtk_widget_set_hexpand(layerRenameEntry, true);
+        gtk_editable_set_text(GTK_EDITABLE(layerRenameEntry), currentName.c_str());
+        gtk_box_append(GTK_BOX(row), layerRenameEntry);
+        adw_alert_dialog_set_extra_child(messageDialog, row);
+        adw_alert_dialog_add_responses(messageDialog, "cancel", "Cancel", "rename", "Rename", nullptr);
+        adw_alert_dialog_set_response_appearance(messageDialog, "rename", ADW_RESPONSE_SUGGESTED);
+        adw_alert_dialog_set_close_response(messageDialog, "cancel");
+        adw_alert_dialog_set_default_response(messageDialog, "rename");
+        layerRenamePage = pageIndex;
+        layerRenameId = layerId;
+        g_signal_connect(layerRenameEntry, "changed", G_CALLBACK(+[](GtkEditable* entry, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const auto* value = gtk_editable_get_text(entry);
+                             adw_alert_dialog_set_response_enabled(
+                                     self->messageDialog, "rename", std::char_traits<char>::length(value) <= 4096);
+                         }), this);
+        g_signal_connect(layerRenameEntry, "activate", G_CALLBACK(+[](GtkEntry*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->messageDialog) {
+                                 self->answerDialog("rename");
+                             }
+                         }), this);
+        g_signal_connect(messageDialog, "response",
+                         G_CALLBACK(+[](AdwAlertDialog*, const char* response, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const int targetPage = self->layerRenamePage;
+                             const size_t targetLayer = self->layerRenameId;
+                             const std::string newName = self->layerRenameEntry ?
+                                     gtk_editable_get_text(GTK_EDITABLE(self->layerRenameEntry)) : "";
+                             self->messageDialog = nullptr;
+                             self->layerRenameEntry = nullptr;
+                             if (response && std::string_view(response) == "rename" &&
+                                 self->state.renameLayer(targetPage, targetLayer, newName)) {
+                                 self->thumbnails.clear();
+                                 self->rebuildLayerStack();
+                                 self->update();
+                             }
+                             if (self->canvas) {
+                                 gtk_widget_grab_focus(self->canvas);
+                             }
+                         }), this);
+        adw_dialog_present(ADW_DIALOG(messageDialog), window);
+        gtk_widget_grab_focus(layerRenameEntry);
+        gtk_editable_set_position(GTK_EDITABLE(layerRenameEntry), -1);
+    }
+
     void exportPdfTo(const std::string& path) {
         if (!nativeSession || busy) {
             return;
@@ -1840,6 +1917,7 @@ private:
         layerAddButton = button("list-add-symbolic", "Add layer above current",
                                 G_CALLBACK(+[](GtkButton*, gpointer data) {
                                     auto* self = static_cast<Prototype*>(data);
+                                    self->finishTextEditing();
                                     self->resetInput(true);
                                     if (self->state.addLayerAboveCurrent()) {
                                         self->selectedImageIndex.reset();
@@ -1850,6 +1928,7 @@ private:
         layerDeleteButton = button("list-remove-symbolic", "Delete current layer",
                                    G_CALLBACK(+[](GtkButton*, gpointer data) {
                                        auto* self = static_cast<Prototype*>(data);
+                                       self->finishTextEditing();
                                        self->resetInput(true);
                                        if (self->state.deleteCurrentLayer()) {
                                            self->selectedImageIndex.reset();
@@ -1862,6 +1941,7 @@ private:
         gtk_widget_add_css_class(layerMergeButton, "flat");
         g_signal_connect(layerMergeButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
+                             self->finishTextEditing();
                              self->resetInput(true);
                              if (self->state.mergeCurrentLayerDown()) {
                                  self->selectedImageIndex.reset();
@@ -1869,9 +1949,102 @@ private:
                                  self->update();
                              }
                          }), this);
+        layerMenuButton = gtk_menu_button_new();
+        gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(layerMenuButton), "view-more-symbolic");
+        gtk_widget_set_tooltip_text(layerMenuButton, "More layer actions");
+        layerPopover = gtk_popover_new();
+        auto* layerMenu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_margin_top(layerMenu, 6);
+        gtk_widget_set_margin_bottom(layerMenu, 6);
+        gtk_widget_set_margin_start(layerMenu, 6);
+        gtk_widget_set_margin_end(layerMenu, 6);
+        const auto appendLayerAction = [this, layerMenu](const char* title, GCallback callback) {
+            auto* action = gtk_button_new_with_label(title);
+            gtk_widget_set_halign(action, GTK_ALIGN_FILL);
+            gtk_widget_add_css_class(action, "flat");
+            g_signal_connect(action, "clicked", callback, this);
+            gtk_box_append(GTK_BOX(layerMenu), action);
+            return action;
+        };
+        layerRenameButton = appendLayerAction(
+                "Rename Layer…", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    const auto& pageLayers = self->state.layersForPage(self->state.page);
+                    if (pageLayers.selectedLayer > 0) {
+                        self->openLayerRenameDialog(self->state.page, pageLayers.selectedLayer);
+                    }
+                }));
+        layerRenameBackgroundButton = appendLayerAction(
+                "Rename Background…", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    self->openLayerRenameDialog(self->state.page, 0);
+                }));
+        layerDuplicateButton = appendLayerAction(
+                "Duplicate Layer", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    self->finishTextEditing();
+                    self->resetInput(true);
+                    if (self->state.duplicateCurrentLayer()) {
+                        self->refreshAfterLayerMutation();
+                    }
+                }));
+        auto* separator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+        gtk_widget_set_margin_top(separator, 4);
+        gtk_widget_set_margin_bottom(separator, 4);
+        gtk_box_append(GTK_BOX(layerMenu), separator);
+        layerMoveUpButton = appendLayerAction(
+                "Move Layer Up", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    self->finishTextEditing();
+                    self->resetInput(true);
+                    if (self->state.moveCurrentLayer(true)) {
+                        self->refreshAfterLayerMutation();
+                    }
+                }));
+        layerMoveDownButton = appendLayerAction(
+                "Move Layer Down", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    self->finishTextEditing();
+                    self->resetInput(true);
+                    if (self->state.moveCurrentLayer(false)) {
+                        self->refreshAfterLayerMutation();
+                    }
+                }));
+        auto* visibilitySeparator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+        gtk_widget_set_margin_top(visibilitySeparator, 4);
+        gtk_widget_set_margin_bottom(visibilitySeparator, 4);
+        gtk_box_append(GTK_BOX(layerMenu), visibilitySeparator);
+        layerShowAllButton = appendLayerAction(
+                "Show All Layers", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    self->finishTextEditing();
+                    self->resetInput(true);
+                    if (self->state.setAllLayersVisible(self->state.page, true)) {
+                        self->refreshAfterLayerMutation();
+                    }
+                }));
+        layerHideAllButton = appendLayerAction(
+                "Hide All Layers", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    gtk_popover_popdown(GTK_POPOVER(self->layerPopover));
+                    self->finishTextEditing();
+                    self->resetInput(true);
+                    if (self->state.setAllLayersVisible(self->state.page, false)) {
+                        self->refreshAfterLayerMutation();
+                    }
+                }));
+        gtk_popover_set_child(GTK_POPOVER(layerPopover), layerMenu);
+        gtk_menu_button_set_popover(GTK_MENU_BUTTON(layerMenuButton), layerPopover);
         gtk_box_append(GTK_BOX(layerActions), layerAddButton);
         gtk_box_append(GTK_BOX(layerActions), layerDeleteButton);
         gtk_box_append(GTK_BOX(layerActions), layerMergeButton);
+        gtk_box_append(GTK_BOX(layerActions), layerMenuButton);
         gtk_box_append(GTK_BOX(layerHeader), layerActions);
         gtk_box_append(GTK_BOX(layerPanel), layerHeader);
         layerRows = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
@@ -1918,7 +2091,7 @@ private:
                                                     pageLayers.layers[layerId - 1].visible;
                 const bool active = layerId != 0 && layerId == pageLayers.selectedLayer;
                 const auto& layer = layerId == 0 ? prototype::CanvasLayer{} : pageLayers.layers[layerId - 1];
-                const auto title = layerId == 0 ? std::string("Background") :
+                const auto title = layerId == 0 ? pageLayers.backgroundName.value_or("Background") :
                                    (layer.name.empty() ? "Layer " + std::to_string(layerId) : layer.name);
                 auto* visibility = GTK_TOGGLE_BUTTON(gtk_widget_get_first_child(existingRows[index]));
                 auto* select = GTK_BUTTON(gtk_widget_get_next_sibling(GTK_WIDGET(visibility)));
@@ -1939,6 +2112,7 @@ private:
             gtk_widget_set_sensitive(layerAddButton, bool(nativeSession) && pageLayers.layers.size() < 1000);
             gtk_widget_set_sensitive(layerDeleteButton, bool(nativeSession) && !pageLayers.layers.empty());
             gtk_widget_set_sensitive(layerMergeButton, bool(nativeSession) && pageLayers.selectedLayer > 1);
+            updateLayerActionSensitivity(pageLayers);
             layerPanelPage = state.page;
             layerPanelSnapshot = pageLayers;
             return;
@@ -1963,6 +2137,8 @@ private:
                                  const auto id = static_cast<size_t>(GPOINTER_TO_UINT(
                                          g_object_get_data(G_OBJECT(button), "layer-id")));
                                  const bool shown = gtk_toggle_button_get_active(button);
+                                 self->finishTextEditing();
+                                 self->resetInput(true);
                                  gtk_button_set_icon_name(GTK_BUTTON(button), shown ? "view-reveal-symbolic" :
                                                                                      "view-conceal-symbolic");
                                  gtk_widget_set_tooltip_text(GTK_WIDGET(button), shown ? "Hide layer" : "Show layer");
@@ -1991,6 +2167,7 @@ private:
                                  auto* self = static_cast<Prototype*>(data);
                                  const auto id = static_cast<size_t>(GPOINTER_TO_UINT(
                                          g_object_get_data(G_OBJECT(button), "layer-id")));
+                                 self->finishTextEditing();
                                  self->resetInput(true);
                                  if (self->state.selectLayer(self->state.page, id)) {
                                      self->selectedImageIndex.reset();
@@ -2003,7 +2180,7 @@ private:
             gtk_box_append(GTK_BOX(layerRows), row);
         };
 
-        appendVisibilityRow(0, "Background", pageLayers.backgroundVisible, false);
+        appendVisibilityRow(0, pageLayers.backgroundName.value_or("Background"), pageLayers.backgroundVisible, false);
         for (size_t layerId = pageLayers.layers.size(); layerId > 0; --layerId) {
             const auto& layer = pageLayers.layers[layerId - 1];
             const auto title = layer.name.empty() ? "Layer " + std::to_string(layerId) : layer.name;
@@ -2012,6 +2189,7 @@ private:
         gtk_widget_set_sensitive(layerAddButton, bool(nativeSession) && pageLayers.layers.size() < 1000);
         gtk_widget_set_sensitive(layerDeleteButton, bool(nativeSession) && !pageLayers.layers.empty());
         gtk_widget_set_sensitive(layerMergeButton, bool(nativeSession) && pageLayers.selectedLayer > 1);
+        updateLayerActionSensitivity(pageLayers);
         layerPanelPage = state.page;
         layerPanelSnapshot = pageLayers;
     }
@@ -2027,6 +2205,27 @@ private:
             }
         }
         return nullptr;
+    }
+
+    void updateLayerActionSensitivity(const prototype::PageLayers& pageLayers) {
+        const bool hasSelection = pageLayers.selectedLayer > 0 && pageLayers.selectedLayer <= pageLayers.layers.size();
+        gtk_widget_set_sensitive(layerRenameButton, bool(nativeSession) && hasSelection);
+        gtk_widget_set_sensitive(layerRenameBackgroundButton, bool(nativeSession));
+        gtk_widget_set_sensitive(layerDuplicateButton, bool(nativeSession) && hasSelection &&
+                                                               pageLayers.layers.size() < 1000);
+        gtk_widget_set_sensitive(layerMoveUpButton, bool(nativeSession) && hasSelection &&
+                                                           pageLayers.selectedLayer < pageLayers.layers.size());
+        gtk_widget_set_sensitive(layerMoveDownButton, bool(nativeSession) && hasSelection &&
+                                                             pageLayers.selectedLayer > 1);
+        gtk_widget_set_sensitive(layerShowAllButton, bool(nativeSession) && !pageLayers.layers.empty());
+        gtk_widget_set_sensitive(layerHideAllButton, bool(nativeSession) && !pageLayers.layers.empty());
+    }
+
+    void refreshAfterLayerMutation() {
+        selectedImageIndex.reset();
+        thumbnails.clear();
+        rebuildLayerStack();
+        update();
     }
 
     void drawThumbnail(cairo_t* cr, int number, int width, int height) {
@@ -4283,6 +4482,92 @@ private:
                 require(state.ink.size() == layerVerifyInitialInk + 1 && state.ink.back().layerId == 2 &&
                                 state.ink.back().originLayer == 2,
                         "New ink did not follow the active merged layer origin");
+                g_signal_emit_by_name(layerRenameBackgroundButton, "clicked");
+                require(messageDialog && layerRenameEntry, "Rename Background did not open its dialog");
+                break;
+            }
+            case 4: {
+                gtk_editable_set_text(GTK_EDITABLE(layerRenameEntry), "Paper");
+                answerDialog("rename");
+                require(state.layersForPage(0).backgroundName == "Paper",
+                        "Renaming the background did not update its explicit name");
+                break;
+            }
+            case 5: {
+                capture("layer-background-renamed");
+                g_signal_emit_by_name(layerRenameButton, "clicked");
+                require(messageDialog && layerRenameEntry, "Rename Layer did not open its dialog");
+                break;
+            }
+            case 6: {
+                gtk_editable_set_text(GTK_EDITABLE(layerRenameEntry), "Upper renamed");
+                answerDialog("rename");
+                require(state.layersForPage(0).layers[1].name == "Upper renamed",
+                        "Renaming the selected layer did not update its name");
+                break;
+            }
+            case 7: {
+                capture("layer-renamed");
+                g_signal_emit_by_name(layerDuplicateButton, "clicked");
+                layerVerifyDuplicateInkStart = state.ink.size() - 2;
+                require(state.layersForPage(0).layers.size() == 3 && state.activeLayerId(0) == 3 &&
+                                state.layersForPage(0).layers[1].origins == std::vector<size_t>({1, 2}) &&
+                                state.layersForPage(0).layers[2].origins == std::vector<size_t>({1, 2}) &&
+                                state.ink.size() == layerVerifyInitialInk + 3 &&
+                                state.ink[layerVerifyDuplicateInkStart].layerId == 3 &&
+                                state.ink[layerVerifyDuplicateInkStart + 1].layerId == 3,
+                        "Duplicating a merged layer did not copy its origins and editable ink");
+                g_signal_emit_by_name(layerRenameButton, "clicked");
+                require(messageDialog && layerRenameEntry, "Renaming a duplicate did not open its dialog");
+                break;
+            }
+            case 8: {
+                gtk_editable_set_text(GTK_EDITABLE(layerRenameEntry), "Duplicate");
+                answerDialog("rename");
+                break;
+            }
+            case 9: {
+                capture("layer-duplicated");
+                g_signal_emit_by_name(layerMoveDownButton, "clicked");
+                require(state.activeLayerId(0) == 2 && state.layersForPage(0).layers[1].name == "Duplicate" &&
+                                state.ink[layerVerifyDuplicateInkStart].layerId == 2 &&
+                                state.ink[layerVerifyDuplicateInkStart + 1].layerId == 2,
+                        "Moving the duplicate down did not update stack order and object IDs");
+                break;
+            }
+            case 10: {
+                capture("layer-moved-down");
+                g_signal_emit_by_name(layerMoveUpButton, "clicked");
+                require(state.activeLayerId(0) == 3 && state.layersForPage(0).layers[2].name == "Duplicate" &&
+                                state.ink[layerVerifyDuplicateInkStart].layerId == 3 &&
+                                state.ink[layerVerifyDuplicateInkStart + 1].layerId == 3,
+                        "Moving the duplicate up did not restore stack order and object IDs");
+                break;
+            }
+            case 11: {
+                g_signal_emit_by_name(layerHideAllButton, "clicked");
+                require(!state.layerVisible(0, 1) && !state.layerVisible(0, 2) && !state.layerVisible(0, 3),
+                        "Hide All Layers did not hide every foreground layer");
+                break;
+            }
+            case 12: {
+                capture("layers-hidden-all");
+                g_signal_emit_by_name(layerShowAllButton, "clicked");
+                require(state.layerVisible(0, 1) && state.layerVisible(0, 2) && state.layerVisible(0, 3),
+                        "Show All Layers did not show every foreground layer");
+                break;
+            }
+            case 13: {
+                g_signal_emit_by_name(undoButton, "clicked");
+                require(!state.layerVisible(0, 1) && !state.layerVisible(0, 2) && !state.layerVisible(0, 3),
+                        "Undo did not restore the prior all-hidden state");
+                g_signal_emit_by_name(redoButton, "clicked");
+                require(state.layerVisible(0, 1) && state.layerVisible(0, 2) && state.layerVisible(0, 3),
+                        "Redo did not restore the all-visible state");
+                break;
+            }
+            case 14: {
+                capture("layers-shown-all");
                 const auto saved = (std::filesystem::path(options.smokeDirectory) / "layer-saved.xopp").string();
                 saveCopyTo(saved);
                 require(busy, "Saving the layer verification document did not start");
@@ -4293,7 +4578,7 @@ private:
                 require(!modified() && savedCopyPath == saved.string() && std::filesystem::is_regular_file(saved),
                         "Layer-aware save did not complete cleanly");
                 capture("layer-saved");
-                std::cout << "PASS: GTK layer selection, add, visibility, merge, undo and save\n";
+                std::cout << "PASS: GTK layer selection, add, rename, duplicate, reorder, visibility, merge, undo and save\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -5807,6 +6092,7 @@ private:
     std::string layerVerifyMode;
     int layerVerifyStep = -1;
     size_t layerVerifyInitialInk = 0;
+    size_t layerVerifyDuplicateInkStart = 0;
     std::string imageVerifyMode;
     std::string imageVerifySource;
     int imageVerifyStep = -1;
@@ -5845,6 +6131,9 @@ private:
     int ioErrors = 0;
     AdwAlertDialog* messageDialog = nullptr;
     GtkWidget* gotoPageSpin = nullptr;
+    GtkWidget* layerRenameEntry = nullptr;
+    int layerRenamePage = -1;
+    size_t layerRenameId = 0;
     std::function<void()> afterConfirmation;
     GtkWidget* heading = nullptr;
     GtkWidget* openButton = nullptr;
@@ -5930,6 +6219,15 @@ private:
     GtkWidget* layerAddButton = nullptr;
     GtkWidget* layerDeleteButton = nullptr;
     GtkWidget* layerMergeButton = nullptr;
+    GtkWidget* layerMenuButton = nullptr;
+    GtkWidget* layerPopover = nullptr;
+    GtkWidget* layerRenameButton = nullptr;
+    GtkWidget* layerRenameBackgroundButton = nullptr;
+    GtkWidget* layerDuplicateButton = nullptr;
+    GtkWidget* layerMoveUpButton = nullptr;
+    GtkWidget* layerMoveDownButton = nullptr;
+    GtkWidget* layerShowAllButton = nullptr;
+    GtkWidget* layerHideAllButton = nullptr;
     int layerPanelPage = -1;
     std::optional<prototype::PageLayers> layerPanelSnapshot;
     prototype::Brush penBrush;

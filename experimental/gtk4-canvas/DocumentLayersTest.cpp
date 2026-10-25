@@ -39,6 +39,7 @@ int main() {
         original[0].initialLayerCount = 2;
         original[0].selectedLayer = 2;
         original[0].backgroundVisible = false;
+        original[0].backgroundName = "Paper";
         original[0].layers = {{"Lower", true, {0}}, {"上の層", false, {1, 2}}};
         original[1].initialLayerCount = 1;
         original[1].selectedLayer = 1;
@@ -51,10 +52,16 @@ int main() {
         writeLayerTransfer(path, {});
         check(readLayerTransfer(path).empty(), "Empty layer transfer did not round-trip");
 
-        auto duplicateOrigin = original;
-        duplicateOrigin[0].layers[1].origins = {0};
-        check(throws([&] { writeLayerTransfer(path, duplicateOrigin); }),
-              "The same source layer was assigned to multiple destination layers");
+        auto duplicatedLayer = original;
+        duplicatedLayer[0].layers[1].origins = {0, 1};
+        writeLayerTransfer(path, duplicatedLayer);
+        check(readLayerTransfer(path) == duplicatedLayer,
+              "A duplicated native source layer must be assignable to multiple destination layers");
+
+        auto duplicateWithinLayer = original;
+        duplicateWithinLayer[0].layers[1].origins = {1, 1};
+        check(throws([&] { writeLayerTransfer(path, duplicateWithinLayer); }),
+              "A destination layer must not contain the same source origin more than once");
 
         auto missingOrigin = original;
         missingOrigin[0].layers[0].origins.clear();
@@ -67,8 +74,17 @@ int main() {
               "The immutable background was accepted as the active editable layer");
 
         {
+            std::ofstream legacy(path, std::ios::binary);
+            legacy << "XOURNALPP_GTK4_LAYERS_V1 1\n1 1 1 1\n1 1 1\n0\nL\n";
+        }
+        const auto legacyDecoded = readLayerTransfer(path);
+        check(legacyDecoded.size() == 1 && !legacyDecoded[0].backgroundName &&
+                      legacyDecoded[0].layers[0].name == "L",
+              "Version 1 layer-transfer metadata must remain readable without an explicit background name");
+
+        {
             std::ofstream truncated(path, std::ios::binary);
-            truncated << "XOURNALPP_GTK4_LAYERS_V1 1\n1 1 1 1\n1 4 1\n0\nLow";
+            truncated << "XOURNALPP_GTK4_LAYERS_V2 1\n1 1 1 1\n1 10\nBackground\n1 4 1\n0\nLow";
         }
         check(throws([&] { static_cast<void>(readLayerTransfer(path)); }),
               "Truncated layer-transfer metadata was accepted");

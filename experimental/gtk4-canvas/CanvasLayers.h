@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@ struct PageLayers {
     size_t initialLayerCount = 1;
     size_t selectedLayer = 1;
     bool backgroundVisible = true;
+    std::optional<std::string> backgroundName;
     std::vector<CanvasLayer> layers{{"Layer 1", true, {0}}};
 
     bool operator==(const PageLayers&) const = default;

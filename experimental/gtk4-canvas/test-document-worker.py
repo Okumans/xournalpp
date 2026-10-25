@@ -68,9 +68,12 @@ def write_ink_v3(path, packets):
     path.write_text("\n".join(lines) + "\n")
 
 
-def write_layers(path, initial_count, selected, background_visible, layers):
-    parts = ["XOURNALPP_GTK4_LAYERS_V1 1",
-             f"{initial_count} {selected} {int(background_visible)} {len(layers)}"]
+def write_layers(path, initial_count, selected, background_visible, layers, background_name=None):
+    parts = ["XOURNALPP_GTK4_LAYERS_V2 1",
+             f"{initial_count} {selected} {int(background_visible)} {len(layers)}",
+             f"{int(background_name is not None)} {len(background_name.encode('utf-8')) if background_name is not None else 0}"]
+    if background_name is not None:
+        parts.append(background_name)
     for name, visible, origins in layers:
         encoded = name.encode("utf-8")
         parts.append(f"{int(visible)} {len(encoded)} {len(origins)}")
@@ -91,10 +94,20 @@ def read_layers(path):
         return value
 
     magic, count = read_line().split()
-    assert magic == "XOURNALPP_GTK4_LAYERS_V1"
+    assert magic in ("XOURNALPP_GTK4_LAYERS_V1", "XOURNALPP_GTK4_LAYERS_V2")
+    version2 = magic == "XOURNALPP_GTK4_LAYERS_V2"
     pages = []
     for _ in range(int(count)):
         initial_count, selected, background, layer_count = map(int, read_line().split())
+        background_name = None
+        if version2:
+            has_background_name, name_bytes = map(int, read_line().split())
+            assert has_background_name in (0, 1) and (has_background_name or name_bytes == 0)
+            if has_background_name:
+                background_name = data[offset:offset + name_bytes].decode("utf-8")
+                offset += name_bytes
+                assert data[offset:offset + 1] == b"\n"
+                offset += 1
         layers = []
         for _ in range(layer_count):
             visible, name_bytes, origin_count = map(int, read_line().split())
@@ -105,7 +118,8 @@ def read_layers(path):
             offset += 1
             layers.append({"name": name, "visible": bool(visible), "origins": origins})
         pages.append({"initial_count": initial_count, "selected": selected,
-                      "background_visible": bool(background), "layers": layers})
+                      "background_visible": bool(background), "background_name": background_name,
+                      "layers": layers})
     assert offset == len(data)
     return pages
 
