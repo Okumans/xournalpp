@@ -25,14 +25,16 @@ bool near(double left, double right) { return std::abs(left - right) < 1e-8; }
 int main() {
     const auto legacy = prototype::parseSettingsXml(R"xml(
 <settings>
+  <data name="tools"><attribute name="current" type="string" value="showFloatingToolbox"/></data>
   <data name="buttonConfig">
     <data name="stylus"><attribute name="tool" type="string" value="highlighter"/></data>
-    <data name="stylus2"><attribute name="tool" type="string" value="hand"/></data>
+    <data name="stylus2"><attribute name="tool" type="string" value="showFloatingToolbox"/></data>
   </data>
 </settings>
 )xml");
     require(legacy.ok && legacy.settings.stylusButtonOne == prototype::ButtonToolAction::Highlighter &&
-                    legacy.settings.stylusButtonTwo == prototype::ButtonToolAction::Hand,
+                    legacy.settings.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox &&
+                    legacy.settings.activeTool == prototype::Tool::FloatingToolbox,
             "Legacy stylus button mappings were not imported");
 
     const auto directory = std::filesystem::temp_directory_path() /
@@ -56,7 +58,7 @@ int main() {
     saved.autosaveEnabled = true;
     saved.autosaveTimeoutMinutes = 11;
     saved.stylusButtonOne = prototype::ButtonToolAction::Eraser;
-    saved.stylusButtonTwo = prototype::ButtonToolAction::Pen;
+    saved.stylusButtonTwo = prototype::ButtonToolAction::FloatingToolbox;
     std::string error;
     require(prototype::saveGtk4Preferences(directory, saved, error), "GTK 4 preferences could not be saved");
 
@@ -73,7 +75,7 @@ int main() {
                     near(loaded.snapGridTolerance, 0.35) &&
                     loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
-                    loaded.stylusButtonTwo == prototype::ButtonToolAction::Pen,
+                    loaded.stylusButtonTwo == prototype::ButtonToolAction::FloatingToolbox,
             "Saved GTK 4 preference values did not roundtrip");
 
     const auto preferencePath = directory / "gtk4-canvas.ini";

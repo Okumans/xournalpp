@@ -68,7 +68,7 @@ inline void readDouble(GKeyFile* keyFile, const char* group, const char* name, d
 inline ButtonToolAction readButtonAction(GKeyFile* keyFile, const char* name, ButtonToolAction fallback) {
     int value = static_cast<int>(fallback);
     readInt(keyFile, "Stylus", name, value, static_cast<int>(ButtonToolAction::None),
-            static_cast<int>(ButtonToolAction::Hand));
+            static_cast<int>(ButtonToolAction::FloatingToolbox));
     return static_cast<ButtonToolAction>(value);
 }
 

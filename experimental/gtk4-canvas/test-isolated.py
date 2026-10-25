@@ -345,7 +345,7 @@ def verify_preferences(args, evidence):
     stored = (config / "gtk4-canvas.ini").read_text(encoding="utf-8")
     for expected in ("theme=light", "pressure-sensitivity=false", "autosave-timeout-minutes=9",
                      "rotation-snap-tolerance=0.45", "snap-rotation=false", "snap-grid=false",
-                     "snap-grid-size=24", "snap-grid-tolerance=0.4", "button-one=1", "button-two=4"):
+                     "snap-grid-size=24", "snap-grid-tolerance=0.4", "button-one=1", "button-two=5"):
         if expected not in stored:
             raise RuntimeError(f"GTK 4 Preferences file is missing {expected}")
     print("PASS: private GTK4 Preferences interaction, persistence and settings.xml preservation", flush=True)
