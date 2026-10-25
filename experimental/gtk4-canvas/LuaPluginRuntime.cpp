@@ -18,6 +18,8 @@ extern "C" {
 #include <lualib.h>
 }
 
+#include "CanvasDrawing.h"
+
 namespace prototype {
 namespace {
 
@@ -280,6 +282,66 @@ bool readLuaUndoPolicy(lua_State* state, int tableIndex, PluginStrokeUndoPolicy&
     return true;
 }
 
+struct CubicSplineSegment {
+    Point start;
+    Point firstControl;
+    Point secondControl;
+    Point end;
+};
+
+Point interpolateSplinePoint(const Point& start, const Point& end, float t) {
+    const double amount = t;
+    return {start.x * (1 - amount) + end.x * amount,
+            start.y * (1 - amount) + end.y * amount};
+}
+
+std::pair<CubicSplineSegment, CubicSplineSegment> subdivideSpline(const CubicSplineSegment& segment, float t) {
+    const Point b0 = interpolateSplinePoint(segment.start, segment.firstControl, t);
+    const Point b1 = interpolateSplinePoint(segment.firstControl, segment.secondControl, t);
+    const Point b2 = interpolateSplinePoint(segment.secondControl, segment.end, t);
+    const Point c0 = interpolateSplinePoint(b0, b1, t);
+    const Point c1 = interpolateSplinePoint(b1, b2, t);
+    const Point midpoint = interpolateSplinePoint(c0, c1, t);
+    return {{segment.start, b0, c0, midpoint}, {midpoint, c1, b2, segment.end}};
+}
+
+bool splineSegmentIsFlatEnough(const CubicSplineSegment& segment) {
+    const auto distance = [](const Point& first, const Point& second) {
+        return std::hypot(first.x - second.x, first.y - second.y);
+    };
+    const double firstEdge = distance(segment.start, segment.firstControl);
+    const double controlEdge = distance(segment.firstControl, segment.secondControl);
+    const double lastEdge = distance(segment.secondControl, segment.end);
+    const double chord = distance(segment.start, segment.end);
+    if (!std::isfinite(firstEdge) || !std::isfinite(controlEdge) || !std::isfinite(lastEdge) ||
+        !std::isfinite(chord)) {
+        return false;
+    }
+    constexpr double flatnessTolerance = 1.0001;
+    constexpr double minimumKnotDistance = 0.3;
+    return chord < minimumKnotDistance || firstEdge + controlEdge + lastEdge < flatnessTolerance * chord;
+}
+
+bool appendSplinePoints(const CubicSplineSegment& segment, std::vector<Point>& points, std::size_t maxPoints,
+                        unsigned int depth = 0) {
+    if (splineSegmentIsFlatEnough(segment)) {
+        if (points.size() >= maxPoints) {
+            return false;
+        }
+        // The upstream rasterizer emits each flat leaf's start and omits the final endpoint.
+        points.push_back(segment.start);
+        return true;
+    }
+    // Bound pathological coordinates while preserving the upstream flattening for normal curves.
+    constexpr unsigned int maxSubdivisionDepth = 24;
+    if (depth >= maxSubdivisionDepth) {
+        return false;
+    }
+    const auto [first, second] = subdivideSpline(segment, 0.5F);
+    return appendSplinePoints(first, points, maxPoints, depth + 1) &&
+           appendSplinePoints(second, points, maxPoints, depth + 1);
+}
+
 constexpr std::array<std::string_view, 28> toolNames{
         "none",
         "pen",
@@ -327,6 +389,7 @@ int luaOpenApp(lua_State* state) {
             {"addToSelection", LuaPluginRuntime::luaAddToSelection},
             {"clearSelection", LuaPluginRuntime::luaClearSelection},
             {"addStrokes", LuaPluginRuntime::luaAddStrokes},
+            {"addSplines", LuaPluginRuntime::luaAddSplines},
             {"addTexts", LuaPluginRuntime::luaAddTexts},
             {"addLinks", LuaPluginRuntime::luaAddLinks},
             {"addImages", LuaPluginRuntime::luaAddImages},
@@ -1831,6 +1894,179 @@ int LuaPluginRuntime::luaAddStrokes(lua_State* state) {
             if (!plugin->runtime->addStrokes(strokes, undoPolicy, references, hostError)) {
                 std::snprintf(error, sizeof(error), "%s",
                               hostError.empty() ? "Adding strokes failed" : hostError.c_str());
+            }
+        }
+        if (error[0] == '\0') {
+            lua_createtable(state, static_cast<int>(std::min<std::size_t>(references.size(),
+                                                                          std::numeric_limits<int>::max())),
+                            0);
+            lua_Integer referenceIndex = 0;
+            for (const auto reference: references) {
+                lua_pushlightuserdata(state, reinterpret_cast<void*>(reference));
+                lua_rawseti(state, -2, ++referenceIndex);
+            }
+        }
+    }
+    if (error[0] != '\0') {
+        lua_pushstring(state, error);
+        return lua_error(state);
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaAddSplines(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    char error[512]{};
+    {
+        std::vector<PluginStrokeInput> strokes;
+        std::vector<std::uintptr_t> references;
+        PluginStrokeUndoPolicy undoPolicy = PluginStrokeUndoPolicy::Grouped;
+        constexpr std::size_t maxSplineCount = 100000;
+        constexpr std::size_t maxSplineSegmentCount = 1000000;
+        constexpr std::size_t maxPointCount = 1000000;
+        std::size_t totalSplineSegmentCount = 0;
+        std::size_t totalPointCount = 0;
+
+        lua_settop(state, 1);
+        if (!lua_istable(state, 1)) {
+            std::snprintf(error, sizeof(error), "addSplines expects an options table");
+        }
+        if (error[0] == '\0') {
+            lua_getfield(state, 1, "splines");
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Missing spline table!");
+                lua_pop(state, 1);
+            }
+        }
+
+        const int splinesIndex = error[0] == '\0' ? lua_absindex(state, -1) : 0;
+        const std::size_t splineCount = splinesIndex ? lua_rawlen(state, splinesIndex) : 0;
+        if (error[0] == '\0' && splineCount > maxSplineCount) {
+            std::snprintf(error, sizeof(error), "Spline batch exceeds the supported spline count");
+        }
+
+        for (std::size_t index = 1; error[0] == '\0' && index <= splineCount; ++index) {
+            lua_rawgeti(state, splinesIndex, static_cast<lua_Integer>(index));
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Spline entry %zu must be a table", index);
+                lua_pop(state, 1);
+                break;
+            }
+            const int splineIndex = lua_absindex(state, -1);
+            lua_getfield(state, splineIndex, "coordinates");
+            if (!lua_istable(state, -1)) {
+                std::snprintf(error, sizeof(error), "Missing coordinate table!");
+                lua_pop(state, 1);
+            }
+
+            if (error[0] == '\0') {
+                const int coordinatesIndex = lua_absindex(state, -1);
+                const std::size_t coordinateCount = lua_rawlen(state, coordinatesIndex);
+                if (coordinateCount % 8 != 0) {
+                    std::snprintf(error, sizeof(error), "Point table incomplete!");
+                } else if (coordinateCount / 8 > maxSplineSegmentCount - totalSplineSegmentCount) {
+                    std::snprintf(error, sizeof(error), "Spline batch exceeds the supported segment count");
+                }
+
+                std::vector<double> coordinates;
+                if (error[0] == '\0') {
+                    totalSplineSegmentCount += coordinateCount / 8;
+                    coordinates.reserve(coordinateCount);
+                    for (std::size_t coordinateIndex = 1;
+                         error[0] == '\0' && coordinateIndex <= coordinateCount; ++coordinateIndex) {
+                        lua_rawgeti(state, coordinatesIndex, static_cast<lua_Integer>(coordinateIndex));
+                        if (!lua_isnumber(state, -1)) {
+                            std::snprintf(error, sizeof(error),
+                                          "Spline coordinates must contain only finite numbers");
+                            lua_pop(state, 1);
+                            break;
+                        }
+                        const double coordinate = lua_tonumber(state, -1);
+                        lua_pop(state, 1);
+                        if (!std::isfinite(coordinate)) {
+                            std::snprintf(error, sizeof(error),
+                                          "Spline coordinates must contain only finite numbers");
+                            break;
+                        }
+                        coordinates.push_back(coordinate);
+                    }
+                }
+                lua_pop(state, 1);
+
+                if (error[0] == '\0') {
+                    std::vector<Point> points;
+                    const std::size_t remainingPointCount = maxPointCount - totalPointCount;
+                    for (std::size_t coordinateIndex = 0;
+                         error[0] == '\0' && coordinateIndex < coordinates.size(); coordinateIndex += 8) {
+                        const CubicSplineSegment segment{
+                                {coordinates[coordinateIndex], coordinates[coordinateIndex + 1]},
+                                {coordinates[coordinateIndex + 2], coordinates[coordinateIndex + 3]},
+                                {coordinates[coordinateIndex + 4], coordinates[coordinateIndex + 5]},
+                                {coordinates[coordinateIndex + 6], coordinates[coordinateIndex + 7]},
+                        };
+                        if (!appendSplinePoints(segment, points, remainingPointCount)) {
+                            std::snprintf(error, sizeof(error),
+                                          "Spline batch exceeds the supported point count or complexity");
+                        }
+                    }
+                    totalPointCount += points.size();
+                    if (error[0] == '\0' && points.size() >= 2) {
+                        PluginStrokeInput stroke;
+                        stroke.x.reserve(points.size());
+                        stroke.y.reserve(points.size());
+                        for (const auto& point: points) {
+                            stroke.x.push_back(point.x);
+                            stroke.y.push_back(point.y);
+                        }
+
+                        if (!readLuaStringField(state, splineIndex, "tool", stroke.tool, false, error,
+                                                sizeof(error)) ||
+                            !readLuaNumberField(state, splineIndex, "width", stroke.width, false, error,
+                                                sizeof(error)) ||
+                            !readLuaColor(state, splineIndex, stroke.color, error, sizeof(error)) ||
+                            !readLuaStringField(state, splineIndex, "lineStyle", stroke.lineStyle, false, error,
+                                                sizeof(error))) {
+                            // The field reader has already described the invalid option.
+                        }
+                        std::optional<lua_Integer> fill;
+                        if (error[0] == '\0' &&
+                            !readLuaIntegerField(state, splineIndex, "fill", fill, error, sizeof(error))) {
+                            // The field reader has already described the invalid option.
+                        }
+                        if (error[0] == '\0' && stroke.width && *stroke.width <= 0) {
+                            std::snprintf(error, sizeof(error), "Stroke field 'width' must be finite and positive");
+                        }
+                        if (error[0] == '\0' && fill && (*fill < -1 || *fill > 255)) {
+                            std::snprintf(error, sizeof(error),
+                                          "Stroke field 'fill' must be -1 or an opacity from 0 to 255");
+                        }
+                        if (error[0] == '\0') {
+                            if (fill) {
+                                stroke.fill = static_cast<int>(*fill);
+                            }
+                            strokes.push_back(std::move(stroke));
+                        }
+                    }
+                }
+            }
+            lua_pop(state, 1);
+        }
+
+        if (splinesIndex) {
+            lua_pop(state, 1);
+        }
+        if (error[0] == '\0' && !readLuaUndoPolicy(state, 1, undoPolicy, error, sizeof(error))) {
+            // The policy parser has already described the invalid value.
+        }
+        if (error[0] == '\0') {
+            std::string hostError;
+            if (!plugin->runtime->addStrokes(strokes, undoPolicy, references, hostError)) {
+                std::snprintf(error, sizeof(error), "%s",
+                              hostError.empty() ? "Adding splines failed" : hostError.c_str());
             }
         }
         if (error[0] == '\0') {

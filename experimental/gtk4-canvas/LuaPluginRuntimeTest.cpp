@@ -264,6 +264,31 @@ int main() {
                 "function badScale() app.addImages({images={{data='encoded', scale=0}}}) end\n"
                 "function badData() app.addImages({images={{data=42}}}) end\n"
                 "function badUndoPolicy() app.addImages({images={}, allowUndoRedoAction='sometimes'}) end\n");
+    const auto splineCreationPlugin = root / "SplineCreationPlugin";
+    writePlugin(splineCreationPlugin,
+                "[about]\ndescription=Create spline strokes\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Create splines', callback='create'})\n"
+                "  app.registerUi({menu='Reject missing spline coordinates', callback='missingCoordinates'})\n"
+                "  app.registerUi({menu='Reject incomplete spline coordinates', callback='incompleteCoordinates'})\n"
+                "  app.registerUi({menu='Reject nonnumeric spline coordinate', callback='badCoordinate'})\n"
+                "  app.registerUi({menu='Create spline with default history', callback='defaultHistory'})\n"
+                "  app.registerUi({menu='Reject invalid spline undo policy', callback='badUndoPolicy'})\n"
+                "end\n"
+                "function create()\n"
+                "  local refs = app.addSplines({splines={\n"
+                "    {coordinates={0,0, 0,100, 100,100, 100,0, 100,0, 130,-50, 170,-50, 200,0},\n"
+                "     tool='highlighter', width=3.5, color=0x456789, fill=80, lineStyle='plain'},\n"
+                "    {coordinates={210,0, 230,0, 280,0, 300,0}, tool='pen'}\n"
+                "  }, allowUndoRedoAction='individual'})\n"
+                "  assert(#refs == 1 and type(refs[1]) == 'userdata')\n"
+                "end\n"
+                "function missingCoordinates() app.addSplines({splines={{tool='pen'}}}) end\n"
+                "function incompleteCoordinates() app.addSplines({splines={{coordinates={1,2,3,4,5,6,7}}}}) end\n"
+                "function badCoordinate() app.addSplines({splines={{coordinates={1,2,3,4,5,6,'bad',8}}}}) end\n"
+                "function defaultHistory() app.addSplines({splines={{coordinates={0,0,0,10,10,10,10,0}}}}) end\n"
+                "function badUndoPolicy() app.addSplines({splines={}, allowUndoRedoAction='sometimes'}) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -274,9 +299,9 @@ int main() {
     prototype::LuaPluginRuntime runtime;
     runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
                                      quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
-                                     imageCreationPlugin.string(), {});
+                                     imageCreationPlugin.string() + "," + splineCreationPlugin.string(), {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 16, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 17, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -370,7 +395,10 @@ int main() {
                           std::string&) {
         addedStrokes = strokes;
         addedStrokePolicy = policy;
-        references = {0x51, 0x52};
+        references.clear();
+        for (std::size_t index = 0; index < strokes.size(); ++index) {
+            references.push_back(0x51 + index);
+        }
         return true;
     };
     host.addTexts = [&](const std::vector<prototype::PluginTextInput>& texts,
@@ -521,6 +549,10 @@ int main() {
     require(loadedImageCreationPlugin && loadedImageCreationPlugin->loaded &&
                     loadedImageCreationPlugin->menuItems == 7,
             "Plugin using image creation did not load its callbacks");
+    const auto loadedSplineCreationPlugin = runtime.findPlugin("SplineCreationPlugin");
+    require(loadedSplineCreationPlugin && loadedSplineCreationPlugin->loaded &&
+                    loadedSplineCreationPlugin->menuItems == 6,
+            "Plugin using spline creation did not load its callbacks");
     const auto loadedQuickScreenshotPlugin = runtime.findPlugin("QuickScreenshot");
     require(loadedQuickScreenshotPlugin && loadedQuickScreenshotPlugin->loaded &&
                     loadedQuickScreenshotPlugin->menuItems == 1,
@@ -632,6 +664,45 @@ int main() {
                     runtime.findPlugin("ImageCreationPlugin")->error.find("Unrecognized undo option") !=
                             std::string::npos,
             "app.addImages accepted an unknown undo policy");
+    require(runtime.invokeMenu("SplineCreationPlugin", 0) && addedStrokes.size() == 1 &&
+                    addedStrokePolicy == prototype::PluginStrokeUndoPolicy::Individual &&
+                    addedStrokes[0].x.size() > 2 && addedStrokes[0].x.size() == addedStrokes[0].y.size() &&
+                    addedStrokes[0].x.front() == 0 && addedStrokes[0].y.front() == 0 &&
+                    addedStrokes[0].tool == std::optional<std::string>("highlighter") &&
+                    addedStrokes[0].width == std::optional<double>(3.5) &&
+                    addedStrokes[0].color == std::optional<std::uint32_t>(0x456789) &&
+                    addedStrokes[0].fill == std::optional<int>(80) &&
+                    addedStrokes[0].lineStyle == std::optional<std::string>("plain"),
+            "app.addSplines did not flatten cubic segments, skip short strokes, or preserve options");
+    const bool hasSplineJoin = [&] {
+        for (std::size_t index = 0; index < addedStrokes[0].x.size(); ++index) {
+            if (std::abs(addedStrokes[0].x[index] - 100) < 1e-9 &&
+                std::abs(addedStrokes[0].y[index]) < 1e-9) {
+                return true;
+            }
+        }
+        return false;
+    }();
+    require(hasSplineJoin && std::abs(addedStrokes[0].x.back() - 200) > 1e-6,
+            "app.addSplines lost the segment join or changed the master's omitted final endpoint");
+    require(!runtime.invokeMenu("SplineCreationPlugin", 1) &&
+                    runtime.findPlugin("SplineCreationPlugin")->error.find("Missing coordinate table") !=
+                            std::string::npos,
+            "app.addSplines accepted an entry without a coordinate table");
+    require(!runtime.invokeMenu("SplineCreationPlugin", 2) &&
+                    runtime.findPlugin("SplineCreationPlugin")->error.find("Point table incomplete") !=
+                            std::string::npos,
+            "app.addSplines accepted an incomplete cubic segment");
+    require(!runtime.invokeMenu("SplineCreationPlugin", 3) &&
+                    runtime.findPlugin("SplineCreationPlugin")->error.find("finite numbers") != std::string::npos,
+            "app.addSplines accepted a nonnumeric coordinate");
+    require(runtime.invokeMenu("SplineCreationPlugin", 4) && addedStrokes.size() == 1 &&
+                    addedStrokePolicy == prototype::PluginStrokeUndoPolicy::Grouped,
+            "app.addSplines did not default to one grouped undo action");
+    require(!runtime.invokeMenu("SplineCreationPlugin", 5) &&
+                    runtime.findPlugin("SplineCreationPlugin")->error.find("Unrecognized undo option") !=
+                            std::string::npos,
+            "app.addSplines accepted an unknown undo policy");
     require(!runtime.invokeMenu("StrokeApiPlugin", 1) &&
                     runtime.findPlugin("StrokeApiPlugin")->error.find("There is no selection") != std::string::npos,
             "app.getStrokes selection errors were not reported to the plugin");
@@ -708,8 +779,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 35 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 13,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 41 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 14,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

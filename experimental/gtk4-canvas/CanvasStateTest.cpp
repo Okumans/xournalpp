@@ -900,12 +900,19 @@ static void pluginStrokeAndPageSizeHistory() {
     check(state.ink.size() == 3 && state.selected == std::vector<size_t>{0} && state.ink[1].page == 0 &&
                   state.ink[2].layerOrder == state.ink[1].layerOrder + 1,
           "plugin stroke insertion must target the current layer, preserve selection, and order the batch");
+    const auto firstPluginStrokeReference = state.ink[1].pluginReference;
+    const auto secondPluginStrokeReference = state.ink[2].pluginReference;
+    check(firstPluginStrokeReference != 0 && secondPluginStrokeReference != 0 &&
+                  firstPluginStrokeReference != secondPluginStrokeReference,
+          "plugin stroke insertion must allocate stable unique element references before recording history");
     state.undo();
     check(state.ink.size() == 1 && state.selected == std::vector<size_t>{0},
           "grouped plugin stroke insertion must undo in one step without changing the prior selection");
     state.redo();
-    check(state.ink.size() == 3 && state.ink[1].points[0].pressure == 0.5 && state.ink[2].fill == 100,
-          "grouped plugin stroke redo lost pressure or highlighter opacity");
+    check(state.ink.size() == 3 && state.ink[1].points[0].pressure == 0.5 && state.ink[2].fill == 100 &&
+                  state.ink[1].pluginReference == firstPluginStrokeReference &&
+                  state.ink[2].pluginReference == secondPluginStrokeReference,
+          "grouped plugin stroke redo lost pressure, highlighter opacity, or opaque references");
 
     check(state.addPluginStrokes({
                                         Ink{0, {{100, 100, 1}, {110, 110, 1}},
