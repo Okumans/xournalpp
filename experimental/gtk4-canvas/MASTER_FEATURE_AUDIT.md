@@ -94,6 +94,18 @@ checks cover single-column fit/overflow, a two-column grid, diagonal drift,
 horizontal movement, and edge clamping. These checks still do not establish
 the user's touchpad sensitivity or physical momentum behavior.
 
+Phase 124 audited Eraser gestures against upstream `StrokeHandler`. GTK4
+constrains Standard, Delete Stroke, and Whiteout Eraser movement to the saved
+Shift axis, preserves the axis across gestures until Shift is released, and
+gates Shift-click continuation on Shift remaining held through pointer release.
+Standard/Delete Stroke erase the connecting segment as one undo action;
+Whiteout adds a connecting stroke only while its endpoint remains live. The
+same-page/layer/mode and release conditions are covered by `CanvasInputTest`,
+and the private Cage canvas smoke passed in light and dark modes. Upstream
+Shift-click continuation is limited to Pen/Highlighter; extending it to Eraser
+modes is the requested GTK4 behavior. This closes the deferred Eraser gesture
+item; production Eraser hit geometry and renderer details remain Partial.
+
 ## User-directed completion order
 
 Phases 111–114 addressed text-box presentation/caret, synthetic touchpad axis
@@ -212,9 +224,6 @@ These user-requested follow-ups remain:
   remain synthetic and do not cover a physical pen or longer real-world
   sessions. The 421 ms measurement has not been repeated; editable-page
   snapshots and hardware-renderer measurements remain outstanding.
-- Complete Eraser gesture parity with Pen, including any remaining Shift and
-  Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
-  release-time Shift-click; broader parity still needs an upstream audit.
 - A page-raster task previously failed as a whole if writing one of its optional
   medium/low-detail copies failed, discarding an already-rendered primary page.
   Optional tiers now fail independently and are omitted while the requested
