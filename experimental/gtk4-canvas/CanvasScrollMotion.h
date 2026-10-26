@@ -67,8 +67,8 @@ public:
 
 private:
     static constexpr double axisLockDistance = 4.0;
-    static constexpr double horizontalIntentRatio = 1.4;
-    static constexpr double horizontalScrollScale = 0.35;
+    static constexpr double horizontalIntentRatio = 2.0;
+    static constexpr double horizontalScrollScale = 0.18;
 
     Axis axis = Axis::Undecided;
     ScrollDelta pending;
@@ -131,9 +131,9 @@ public:
     bool isActive() const { return active; }
 
 private:
-    static constexpr double maxSpeed = 1.8;
+    static constexpr double maxSpeed = 1.0;
     static constexpr double stopSpeed = 0.015;
-    static constexpr double timeConstantMs = 300.0;
+    static constexpr double timeConstantMs = 220.0;
 
     ScrollDelta velocity;
     long long lastFrameTime = 0;

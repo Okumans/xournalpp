@@ -2522,6 +2522,11 @@ public:
         offsetY -= behavior::scrollDeltaToPixels(dy, discrete);
     }
 
+    bool hasHorizontalScrollRoom(double viewportWidth) const {
+        return std::isfinite(viewportWidth) && viewportWidth > 0 && std::isfinite(zoom) && zoom > 0 &&
+               layoutWidth() * zoom > viewportWidth;
+    }
+
     void constrainScrollOffsets(double viewportWidth, double viewportHeight) {
         if (!std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 ||
             viewportHeight <= 0 || !std::isfinite(zoom) || zoom <= 0) {

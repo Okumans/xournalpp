@@ -811,19 +811,19 @@ def verify_scroll_motion(args, evidence):
         [str(args.binary.resolve()), "--smoke-dir", str(run_dir), "--verify-scroll-motion"],
         env=dict(os.environ, G_DEBUG="fatal-criticals"),
     )
-    marker = "PASS: GTK4 touchpad axis lock, page-grid bounds and momentum"
+    marker = "PASS: GTK4 touchpad axis intent, page-grid bounds and momentum"
     if marker not in output:
         raise RuntimeError("GTK4 touchpad scroll motion verification did not finish")
 
     screenshots = [run_dir / f"{name}.png" for name in
-                   ("scroll-start", "scroll-gesture", "scroll-momentum", "scroll-boundary")]
+                   ("scroll-start", "scroll-gesture", "scroll-momentum", "scroll-horizontal-grid", "scroll-boundary")]
     for screenshot in screenshots:
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing touchpad scroll screenshot: {screenshot}")
 
     return {
         "screenshots": [str(path) for path in screenshots],
-        "checks": ["vertical axis lock", "release momentum", "page-grid edge clamp"],
+        "checks": ["vertical axis lock", "low-speed horizontal grid pan", "release momentum", "page-grid edge clamp"],
         "input_coverage": "Synthetic GTK controller signals; physical touchpad behavior remains unverified",
         "rendering": "Private headless Wayland via Cage",
     }
