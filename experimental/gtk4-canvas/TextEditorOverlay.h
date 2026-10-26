@@ -27,6 +27,15 @@ public:
     };
 
     explicit TextEditorOverlay(GtkOverlay* overlay) {
+        fixed = GTK_FIXED(gtk_fixed_new());
+        gtk_widget_set_hexpand(GTK_WIDGET(fixed), true);
+        gtk_widget_set_vexpand(GTK_WIDGET(fixed), true);
+        gtk_widget_set_halign(GTK_WIDGET(fixed), GTK_ALIGN_FILL);
+        gtk_widget_set_valign(GTK_WIDGET(fixed), GTK_ALIGN_FILL);
+        gtk_widget_set_can_target(GTK_WIDGET(fixed), false);
+        gtk_overlay_add_overlay(overlay, GTK_WIDGET(fixed));
+        gtk_overlay_set_measure_overlay(overlay, GTK_WIDGET(fixed), false);
+
         view = gtk_text_view_new();
         gtk_widget_add_css_class(view, "canvas-text-editor");
         gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 0);
@@ -38,7 +47,7 @@ public:
         gtk_widget_set_halign(view, GTK_ALIGN_START);
         gtk_widget_set_valign(view, GTK_ALIGN_START);
         gtk_widget_set_visible(view, false);
-        gtk_overlay_add_overlay(overlay, view);
+        gtk_fixed_put(fixed, view, 0, 0);
     }
 
     ~TextEditorOverlay() { restoreCursorAspectRatio(); }
@@ -133,26 +142,32 @@ public:
         gtk_widget_grab_focus(view);
     }
 
-    void position(double x, double y, int width, int height) {
+    void position(double x, double y, int width, int height, double xx, double yx, double xy, double yy) {
         if (!active()) {
             return;
         }
-        const int left = std::max(0, static_cast<int>(std::floor(x)));
-        const int top = std::max(0, static_cast<int>(std::floor(y)));
         const int requestedWidth = std::max(40, width);
         const int requestedHeight = std::max(24, height);
-        if (left != positionedLeft) {
-            gtk_widget_set_margin_start(view, left);
-            positionedLeft = left;
-        }
-        if (top != positionedTop) {
-            gtk_widget_set_margin_top(view, top);
-            positionedTop = top;
-        }
         if (requestedWidth != positionedWidth || requestedHeight != positionedHeight) {
             gtk_widget_set_size_request(view, requestedWidth, requestedHeight);
             positionedWidth = requestedWidth;
             positionedHeight = requestedHeight;
+        }
+        if (!positionedAt || positionedAt->first != x || positionedAt->second != y || xx != positionedXX ||
+            yx != positionedYX || xy != positionedXY || yy != positionedYY) {
+            graphene_matrix_t matrix;
+            graphene_matrix_init_from_2d(&matrix, xx, yx, xy, yy, x, y);
+            auto* transform =
+                    graphene_matrix_is_identity(&matrix) ? nullptr : gsk_transform_matrix(nullptr, &matrix);
+            gtk_fixed_set_child_transform(fixed, view, transform);
+            if (transform) {
+                gsk_transform_unref(transform);
+            }
+            positionedAt = std::pair{x, y};
+            positionedXX = xx;
+            positionedYX = yx;
+            positionedXY = xy;
+            positionedYY = yy;
         }
     }
 
@@ -640,6 +655,7 @@ private:
         cursorAspectRatioBeforeEdit.reset();
     }
 
+    GtkFixed* fixed = nullptr;
     GtkWidget* view = nullptr;
     GtkTextBuffer* editorBuffer = nullptr;
     GtkTextTag* baseTag = nullptr;
@@ -652,10 +668,13 @@ private:
     GtkSettings* cursorSettings = nullptr;
     std::optional<double> cursorAspectRatioBeforeEdit;
     static constexpr double editingCursorAspectRatio = 0.5;
-    int positionedLeft = -1;
-    int positionedTop = -1;
+    std::optional<std::pair<double, double>> positionedAt;
     int positionedWidth = -1;
     int positionedHeight = -1;
+    double positionedXX = 1;
+    double positionedYX = 0;
+    double positionedXY = 0;
+    double positionedYY = 1;
     double editorZoom = 1;
 };
 

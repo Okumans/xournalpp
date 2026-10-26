@@ -597,14 +597,28 @@ gboolean Prototype::smoke() {
             state.redo();
             require(state.texts.size() == newTextIndex + 1 && state.selectedTexts == std::vector<size_t>{newTextIndex},
                     "Redo did not restore a newly created text item and its selection");
+            const double rotation = 0.35;
+            const double scale = 1.25;
+            const double cosine = scale * std::cos(rotation);
+            const double sine = scale * std::sin(rotation);
+            require(state.updateSelectedTexts([=](prototype::TextItem& item) {
+                        item.xx = cosine;
+                        item.yx = sine;
+                        item.xy = -sine;
+                        item.yy = cosine;
+                    }),
+                    "Text smoke could not prepare a transformed text object");
+            update();
 
             activateSelection(Tool::SmartSelect);
             auto created = state.texts.back();
             state.clearSelection();
             fitMode = true;
             const auto zoomBeforeSmartSelect = state.zoom;
-            const auto editAt = state.pageScreenPoint(created.page, created.x + created.layoutWidth * 0.12,
-                                                      created.y + created.layoutHeight / 2);
+            const double wordX = created.layoutWidth * 0.12;
+            const double wordY = created.layoutHeight / 2;
+            const auto editAt = state.pageScreenPoint(created.page, created.x + created.xx * wordX + created.xy * wordY,
+                                                      created.y + created.yx * wordX + created.yy * wordY);
             g_signal_emit_by_name(textClick, "released", 1, editAt.x, editAt.y);
             require(!textEditor->active() && state.selectedTexts == std::vector<size_t>{newTextIndex} &&
                             state.hasSelection() && state.selectionBox().has_value(),
@@ -614,19 +628,64 @@ gboolean Prototype::smoke() {
             g_signal_emit_by_name(textClick, "released", 2, editAt.x, editAt.y);
             require(textEditor->active() && std::abs(state.zoom - zoomBeforeSmartSelect) < 1e-9 && !fitMode,
                     "Smart Select double-click did not edit text at the existing canvas zoom");
+            waitForNextWindowFrame();
+            const graphene_point_t editorOrigin{0, 0};
+            graphene_point_t canvasOrigin;
+            require(gtk_widget_compute_point(textEditor->widget(), canvas, &editorOrigin, &canvasOrigin),
+                    "Cannot map the transformed text editor origin to the canvas");
+            const auto textOrigin = state.pageScreenPoint(created.page, created.x, created.y);
+            // The editor has a one-pixel CSS border; GTK coordinates start inside that border. The widget is already
+            // sized in screen pixels, so its local affine transform does not receive the page zoom a second time.
+            const double expectedOriginX = textOrigin.x + created.xx + created.xy;
+            const double expectedOriginY = textOrigin.y + created.yx + created.yy;
+            const double originDeltaX = canvasOrigin.x - expectedOriginX;
+            const double originDeltaY = canvasOrigin.y - expectedOriginY;
+            if (std::abs(originDeltaX) >= 0.75 || std::abs(originDeltaY) >= 0.75) {
+                throw std::runtime_error("The transformed text editor origin does not match the document text origin: dx=" +
+                                         std::to_string(originDeltaX) + ", dy=" + std::to_string(originDeltaY));
+            }
+            const graphene_point_t editorSample{32, 18};
+            graphene_point_t canvasSample;
+            require(gtk_widget_compute_point(textEditor->widget(), canvas, &editorSample, &canvasSample),
+                    "Cannot map a transformed text editor point to the canvas");
+            const double expectedSampleX = expectedOriginX + created.xx * editorSample.x + created.xy * editorSample.y;
+            const double expectedSampleY = expectedOriginY + created.yx * editorSample.x + created.yy * editorSample.y;
+            const double sampleDeltaX = canvasSample.x - expectedSampleX;
+            const double sampleDeltaY = canvasSample.y - expectedSampleY;
+            if (std::abs(sampleDeltaX) >= 0.75 || std::abs(sampleDeltaY) >= 0.75) {
+                throw std::runtime_error("The transformed text editor does not follow the text object's affine matrix: dx=" +
+                                         std::to_string(sampleDeltaX) + ", dy=" + std::to_string(sampleDeltaY));
+            }
             buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
             GtkTextIter selectedStart;
             GtkTextIter selectedEnd;
             require(gtk_text_buffer_get_selection_bounds(buffer, &selectedStart, &selectedEnd) &&
                             !gtk_text_iter_equal(&selectedStart, &selectedEnd),
                     "Smart Select double-click did not select the clicked text word");
+            gchar* selectedWord = gtk_text_buffer_get_text(buffer, &selectedStart, &selectedEnd, true);
+            require(selectedWord && std::string(selectedWord) == "GTK",
+                    "Smart Select double-click mapped the transformed pointer to the wrong text word");
+            g_free(selectedWord);
             GtkTextIter textEnd;
             gtk_text_buffer_get_end_iter(buffer, &textEnd);
+            gtk_text_buffer_place_cursor(buffer, &textEnd);
+            capture("smart-text-editor-transformed");
             gtk_text_buffer_insert(buffer, &textEnd, "!", 1);
             finishTextEditing();
             require(state.texts.back().text == "GTK rich π!" && !state.texts.back().styleRuns.empty() &&
-                            state.selectedTexts == std::vector<size_t>{newTextIndex},
-                    "Editing existing rich text lost content or its style runs");
+                            state.selectedTexts == std::vector<size_t>{newTextIndex} &&
+                            std::abs(state.texts.back().xx - created.xx) < 1e-9 &&
+                            std::abs(state.texts.back().yx - created.yx) < 1e-9 &&
+                            std::abs(state.texts.back().xy - created.xy) < 1e-9 &&
+                            std::abs(state.texts.back().yy - created.yy) < 1e-9,
+                    "Editing transformed rich text lost its content, styles, or affine matrix");
+            require(state.updateSelectedTexts([](prototype::TextItem& item) {
+                        item.xx = 1;
+                        item.yx = 0;
+                        item.xy = 0;
+                        item.yy = 1;
+                    }),
+                    "Text smoke could not restore the identity transform for later interactions");
 
             selectTool(Tool::Text);
             created = state.texts.back();
