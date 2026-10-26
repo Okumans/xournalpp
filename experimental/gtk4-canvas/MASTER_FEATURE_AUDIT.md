@@ -135,10 +135,12 @@ each phase lands:
    visually checked against the user's PDF in private Cage, and Phase 116 made
    Search page-at-a-time and asynchronous; update this list as each item is
    verified.
-4. Migrate native `.xopp` loading and saving into the GTK 4 process, reusing the
-   existing document model/serialization where possible and removing the
-   separate document-worker dependency. Record deliberate compatibility
-   changes in the corresponding PR.
+4. Phase 127 moved the default native `.xopp` and PDF document pipeline into
+   the GTK 4 process. Loading, editing, saving, autosave, export, and page
+   mutations reuse upstream model and serialization code through curated
+   GTK 4 document targets. The optional `--worker` compatibility path remains,
+   but ordinary use no longer needs a separate process. The GTK 4 executable
+   links GTK 4 without pulling in the monolithic GTK 3 core.
 5. Bring every remaining Partial audit item to Covered (or record an explicit
    obsolete decision with its rationale) before the final UI redesign.
 6. Reimagine the completed GTK 4 UI as a modern, cohesive workspace. At that
@@ -164,15 +166,18 @@ matches aligned with the chapter heading and body text. The page-by-page scan
 returned its first result in 9.9 ms, completed in 9.13 seconds, and measured a
 22.54 ms maximum GTK heartbeat gap. Physical-device input remains unverified.
 
-These user-requested follow-ups remain:
+Phase 127 routes the default `--document` and `--pdf` startup paths through an
+in-process `DocumentSession`. Its native command implementation runs on the
+existing document-job thread. The GTK 4 build compiles the upstream XOPP
+loader/saver, PDF model/export, and reusable utilities as curated targets,
+without linking the monolithic GTK 3 core. Open, edit, save, autosave, PDF
+export, and page mutations work without a separate process. An optional
+`--worker` compatibility path and standalone worker target remain available;
+they are not needed for the GTK 4 application workflow. The private Cage
+no-worker smoke passed native open/edit/save/reopen and the common document
+actions. Remaining native object types are tracked in the audit below.
 
-- Replace the optional separate GTK 3 document-worker process with an
-  in-process GTK 4 document backend for native `.xopp` loading/saving and
-  PDF-backed editable documents, reusing the existing `.xopp` format and
-  separating its reusable model/serialization code from GTK 3-only symbols.
-  The current `--pdf` preview path has no native document session, so editing
-  tools such as Text are disabled unless a worker is supplied. This is an
-  architecture milestone, not a user-facing workflow requirement.
+These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
   input is active, then refreshes at the settled zoom. Phase 102 adds three
@@ -280,7 +285,7 @@ registration in `ToolHandler::initTools`.
 | `pen` | Partial | Photoshop-style Shift constraints lock freehand and shape-recognizer strokes to the dominant horizontal or vertical axis, retain the axis across successive strokes until Shift release, and project samples before stabilization. Shift-click can connect from the previous Pen or Highlighter endpoint when that stroke remains on the same page, layer, and tool, provided Shift stays held through pointer release. Solid, dash, dash-dot, dot, and custom `cust:` styles are selectable, rendered for constant-width and pressure strokes, editable on selected Pen strokes, persisted through GTK 4 settings, native save/reopen, and the internal clipboard. Exact production cap geometry, blend modes, shape objects, and remaining stroke-renderer details remain. Physical tablet behavior is not verified. |
 | `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work. All three support the Pen-style Shift axis lock and same-page/layer/mode Shift-click continuation; the connection is applied only if Shift remains held through pointer release. Standard/Delete Stroke erase along a sampled connecting segment in one undo action, while Whiteout creates an editable connecting stroke only if its previous endpoint still exists. Reproduce all production hit geometry and renderer interactions. |
 | `highlighter` | Partial | Core opacity and native serialization work; shares the Pen Shift constraint and endpoint connection behavior. Reproduce production stroke geometry and blend behavior. |
-| `text` | Partial | Rich editing, toolbar font/size/style/color controls, direct Text-tool drag-to-move and handle transforms, rectangle/lasso selection, cross-page transfer, and native text/link clipboard copy/cut/paste/duplicate work. Formatting runs and link URLs survive; mixed stroke/text/image selections preserve stacking order through native, PNG, SVG, and plain-text clipboard targets. Transform-following editor placement, IME, and accessibility remain. |
+| `text` | Partial | Rich editing, toolbar font/size/style/color controls, direct Text-tool drag-to-move and handle transforms, rectangle/lasso selection, cross-page transfer, and native text/link clipboard copy/cut/paste/duplicate work. Formatting runs and link URLs survive; mixed stroke/text/image selections preserve stacking order through native, PNG, SVG, and plain-text clipboard targets. The editor follows transformed text; IME and accessibility behavior remain. |
 | `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Raster, LaTeX, and mixed-object groups preserve native image data and relative transforms; PNG and SVG carry the rendered selection. Unsupported native object editing remains. |
 | `selectRect` | Partial | Selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |
 | `selectRegion` | Partial | Lasso-selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |
@@ -320,12 +325,12 @@ it is not represented by a single `ToolType`.
 | Behavior | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
 | Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes, text, and images. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching object from the first visible layer with matches; unsupported native objects remain outside general selection. Rectangular objects require all four transformed corners inside the selector, matching master behavior. |
-| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Text and image selections draw the shared resize and rotation handles. After rotation the visible frame and handles rotate with the selection while later resize transforms use the accumulated rotation; undo and redo restore both. Transform-following text editor placement and device behavior remain. |
+| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Text and image selections draw the shared resize and rotation handles. After rotation the visible frame and handles rotate with the selection while later resize transforms use the accumulated rotation; undo and redo restore both. Physical input behavior remains. |
 | Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, opens existing text on click or double-click, and selects the clicked word on double-click. Smart Select single-click selects objects and double-click edits native text while preserving the current canvas zoom. The inline editor follows the text item's affine transform, and transformed word picking maps the pointer through the inverse matrix. New unwrapped text editors request a compact 40 px width and resize from the live Pango layout; wrapped editors use their configured width. The caret uses the accent color and a 0.5 aspect ratio only while editing, restoring the prior GTK setting afterward. Newly created or edited text remains selected. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` streams preserve ordered groups of supported strokes, rich text, links, raster images, and LaTeX images, including dash arrays in the internal codec. Copy also offers rendered PNG and SVG, plus plain text when text is selected; external plain-text paste creates an editable text item. Mixed copy/cut/paste/duplicate and cross-type paste/undo are grouped edits. Unsupported native types, audio attachments, and cross-process compatibility verification remain. |
-| PDF text selection and annotation | Partial | Linear and rectangular drag select PDF text; double/triple click selects words/lines. Copy, highlight, underline, and strikethrough work with color controls and marker opacity. The original PDF source is used for text extraction and retained in the native save path. The action toolbar opens beside the release point with edge flipping/clamping, hides on pointer input and zoom while retaining the selection, reopens when selected text is clicked, and clears when the user clicks outside a page. The focused private smoke verifies placement, Hand-tool input dismissal, zoom dismissal, and reopen with synthetic mouse input; the broader worker-backed selection/action/native-save check remains unverified after the GTK3 worker stalled in its Glycin loader sandbox. Physical device routing remains unverified. |
+| PDF text selection and annotation | Partial | Linear and rectangular drag select PDF text; double/triple click selects words/lines. Copy, highlight, underline, and strikethrough work with color controls and marker opacity. The original PDF source is used for text extraction and retained in the native save path. The action toolbar opens beside the release point with edge flipping/clamping, hides on pointer input and zoom while retaining the selection, reopens when selected text is clicked, and clears when the user clicks outside a page. Phase 127's private Cage check runs without the GTK 3 worker and passes PDF selection, toolbar placement/dismissal/reopen, clipboard, annotations, undo/redo, and native PDF-backed XOPP save. Physical device routing remains unverified. |
 
 ## Built-in plugin inventory
 

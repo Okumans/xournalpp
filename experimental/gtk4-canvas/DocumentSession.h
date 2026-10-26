@@ -21,6 +21,7 @@
 #include "DocumentPdfPages.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
+#include "DocumentWorker.h"
 #include "DocumentVersion.h"
 #include "PageSizeTransfer.h"
 #include "PdfPageLabels.h"
@@ -33,7 +34,7 @@ struct LayerActionTargetInfo {
     bool nextPageAnnotated = false;
 };
 
-// The GTK 3 loader/renderer lives in a separate process. Its private snapshot
+// The upstream loader/renderer runs in-process by default. Its private snapshot
 // retains native objects independently of subsequent edits to the source file.
 // External linked assets still refer to their original locations.
 class DocumentSession {
@@ -638,6 +639,18 @@ private:
     }
 
     static std::string runWorker(const std::string& worker, const std::vector<std::string>& arguments) {
+        if (worker.empty()) {
+            auto result = runDocumentCommand(arguments);
+            if (result.exitCode != 0) {
+                if (!result.standardError.empty() && result.standardError.back() == '\n') {
+                    result.standardError.pop_back();
+                }
+                throw std::runtime_error(result.standardError.empty() ? "Document command failed" :
+                                                                         result.standardError);
+            }
+            return result.standardOutput;
+        }
+
         std::vector<const gchar*> command{worker.c_str()};
         for (const auto& argument: arguments) {
             command.push_back(argument.c_str());

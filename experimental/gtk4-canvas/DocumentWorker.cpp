@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <charconv>
-#include <clocale>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -9,15 +8,16 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include <cairo-pdf.h>
 #include <glib.h>
 
-#include "control/pagetype/PageTypeHandler.h"
-#include "control/ExportHelper.h"
 #include "control/jobs/ImageExport.h"
 #include "control/jobs/ProgressListener.h"
 #include "control/xojfile/LoadHandler.h"
@@ -39,6 +39,7 @@
 #include "model/TexImage.h"
 #include "model/XojPage.h"
 #include "pdf/base/XojCairoPdfExport.h"
+#include "pdf/base/XojPdfExportFactory.h"
 #include "util/Matrix.h"
 #include "util/ElementRange.h"
 #include "util/Util.h"
@@ -61,6 +62,7 @@
 #include "PdfPageLabels.h"
 #include "DocumentTextTransfer.h"
 #include "DocumentTransfer.h"
+#include "DocumentWorker.h"
 #include "StrokeClipboard.h"
 
 class GTK4DocumentLayerAccess {
@@ -338,7 +340,7 @@ void appendLayerAwareObjects(Document& document, const std::vector<prototype::br
         }
         if (!pageInfo.backgroundFormat.empty()) {
             PageType background;
-            background.format = PageTypeHandler::getPageTypeFormatForString(pageInfo.backgroundFormat);
+            background.format = PageType::formatFromString(pageInfo.backgroundFormat);
             background.config = pageInfo.backgroundConfig;
             page->setBackgroundType(background);
         }
@@ -683,7 +685,7 @@ prototype::bridge::LayerDocument readLayerDocument(
             pageInfo.backgroundName = page->getBackgroundName();
         }
         const auto background = page->getBackgroundType();
-        pageInfo.backgroundFormat = PageTypeHandler::getStringForPageTypeFormat(background.format);
+        pageInfo.backgroundFormat = PageType::formatToString(background.format);
         pageInfo.backgroundConfig = background.config;
         pageInfo.backgroundColor = static_cast<uint32_t>(page->getBackgroundColor()) & 0xffffffU;
         if (background.format == PageTypeFormat::Lined || background.format == PageTypeFormat::Ruled) {
@@ -1101,8 +1103,17 @@ void exportDocument(Document& document, const fs::path& output, const std::strin
     if (pdf) {
         const auto pdfRange = range.empty() ? nullptr : range.c_str();
         const auto selectedLayers = layerRange.empty() ? nullptr : layerRange.c_str();
-        ExportHelper::exportPdf(&document, stagedOutput, pdfRange, selectedLayers, exportBackground, progressiveMode,
-                                ExportBackend::fromString(backend));
+        auto exporter = XojPdfExportFactory::createExport(&document, nullptr, ExportBackend::fromString(backend));
+        exporter->setExportBackground(exportBackground);
+        exporter->setLayerRange(selectedLayers);
+        const bool exportSucceeded = pdfRange ?
+                                             exporter->createPdf(stagedOutput,
+                                                                 ElementRange::parse(pdfRange, document.getPageCount()),
+                                                                 progressiveMode) :
+                                             exporter->createPdf(stagedOutput, progressiveMode);
+        if (!exportSucceeded) {
+            throw std::runtime_error(exporter->getLastError());
+        }
     } else {
         const auto imageRange = range.empty() ? PageRangeVector{{0, document.getPageCount() - 1}} :
                                                ElementRange::parse(range, document.getPageCount());
@@ -1380,8 +1391,8 @@ void autosaveDocument(Document& document, const fs::path& output) {
     prototype::bridge::publishAutosave(staging, output);
 }
 
-void inspect(const Document& document) {
-    std::cout << "{\"pages\":[";
+void inspect(const Document& document, std::ostream& output) {
+    output << "{\"pages\":[";
     for (size_t i = 0; i < document.getPageCount(); ++i) {
         const auto page = document.getPage(i);
         size_t strokes = 0, texts = 0, images = 0;
@@ -1393,21 +1404,35 @@ void inspect(const Document& document) {
             }
         }
         if (i) {
-            std::cout << ',';
+            output << ',';
         }
-        std::cout << "{\"width\":" << page->getWidth() << ",\"height\":" << page->getHeight()
+        output << "{\"width\":" << page->getWidth() << ",\"height\":" << page->getHeight()
                   << ",\"layers\":" << page->getLayerCount() << ",\"strokes\":" << strokes << ",\"texts\":" << texts
                   << ",\"images\":" << images << '}';
     }
-    std::cout << "]}\n";
+    output << "]}\n";
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    std::setlocale(LC_NUMERIC, "C");
-    std::cout.imbue(std::locale::classic());
-    std::cout << std::setprecision(17);
+auto prototype::bridge::runDocumentCommand(const std::vector<std::string>& arguments)
+        -> prototype::bridge::DocumentCommandResult {
+    std::ostringstream commandOutput;
+    std::ostringstream errors;
+    commandOutput.imbue(std::locale::classic());
+    commandOutput << std::setprecision(17);
+
+    if (arguments.size() >= static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return {1, {}, "Too many document command arguments\n"};
+    }
+    std::vector<char*> argv;
+    argv.reserve(arguments.size() + 1);
+    std::string commandName = "xournalpp-document-worker";
+    argv.emplace_back(commandName.data());
+    for (const auto& argument: arguments) {
+        argv.emplace_back(const_cast<char*>(argument.c_str()));
+    }
+    const int argc = static_cast<int>(argv.size());
     try {
         if (argc < 3) {
             throw std::runtime_error(
@@ -1438,8 +1463,8 @@ int main(int argc, char** argv) {
         LoadContext originalContext, snapshotContext, pageHistoryContext;
         const auto input = std::string(argv[2]).empty() ? fs::path{} : fs::absolute(argv[2]);
         if (command == "version" && argc == 3) {
-            std::cout << prototype::bridge::documentVersion(input).token << '\n';
-            return 0;
+            commandOutput << prototype::bridge::documentVersion(input).token << '\n';
+            return {0, commandOutput.str(), errors.str()};
         }
         if (command == "clipboard-roundtrip" && argc == 4) {
             std::ifstream file(input, std::ios::binary | std::ios::ate);
@@ -1475,7 +1500,7 @@ int main(int argc, char** argv) {
             g_string_free(encoded, true);
             output.close();
             if (!output) throw std::runtime_error("Cannot write clipboard output");
-            return 0;
+            return {0, commandOutput.str(), errors.str()};
         }
         auto document = load(input, originalContext);
         if (command == "layer-actions-inspect-target" && argc == 8) {
@@ -1503,11 +1528,11 @@ int main(int argc, char** argv) {
                 }
                 annotated = next->isAnnotated();
             }
-            std::cout << "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 " << (hasNextPage ? 1 : 0) << ' ' << pdfPage << ' '
+            commandOutput << "XOURNALPP_GTK4_LAYER_ACTION_TARGET_V1 " << (hasNextPage ? 1 : 0) << ' ' << pdfPage << ' '
                       << (annotated ? 1 : 0) << '\n';
-            return 0;
+            return {0, commandOutput.str(), errors.str()};
         } else if (command == "inspect" && argc == 3) {
-            inspect(*document);
+            inspect(*document, commandOutput);
         } else if (command == "render" && argc == 4) {
             render(*document, fs::absolute(argv[3]));
         } else if (command == "export-pdf" && (argc >= 5 && argc <= 9)) {
@@ -1834,7 +1859,7 @@ int main(int argc, char** argv) {
             } else {
                 render(*document, pdf);
             }
-            std::cout << (nativeSave ? "NATIVE_SAVE\n" : "SAVE_AS\n");
+            commandOutput << (nativeSave ? "NATIVE_SAVE\n" : "SAVE_AS\n");
         } else if (command == "save-copy" && (argc >= 5 && argc <= 9)) {
             if (g_ascii_strcasecmp(fs::path(argv[3]).extension().string().c_str(), ".xopp") != 0) {
                 throw std::runtime_error("Save-copy target must use the .xopp extension");
@@ -1866,7 +1891,7 @@ int main(int argc, char** argv) {
             }
             const auto output = fs::absolute(argv[3]);
             saveDocument(*document, output, argv[5], false);
-            std::cout << prototype::bridge::documentVersion(output).token << '\n';
+            commandOutput << prototype::bridge::documentVersion(output).token << '\n';
         } else if (command == "autosave" && (argc >= 5 && argc <= 9)) {
             const auto output = fs::absolute(argv[3]);
             if (!prototype::bridge::isRecoveryArtifact(output)) {
@@ -1887,7 +1912,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Invalid document-worker command");
         }
     } catch (const std::exception& error) {
-        std::cerr << error.what() << '\n';
-        return 1;
+        errors << error.what() << '\n';
+        return {1, commandOutput.str(), errors.str()};
     }
+    return {0, commandOutput.str(), errors.str()};
 }

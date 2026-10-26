@@ -598,9 +598,7 @@ void Prototype::connectInput() {
                     }
                 }
                 if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_o || key == GDK_KEY_O)) {
-                    if (!self->options.worker.empty()) {
-                        self->protectDocument([self] { self->chooseOpen(); });
-                    }
+                    self->protectDocument([self] { self->chooseOpen(); });
                     return true;
                 }
                 if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_s || key == GDK_KEY_S)) {

@@ -479,11 +479,9 @@ def verify_plugins(args, evidence):
     )
     (config / "gtk4-canvas.ini").write_text(
         plugin_config, encoding="utf-8")
-    if not args.worker:
-        raise RuntimeError("Bundled plugin integration checks require --worker")
     result = run(
         [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
-         "--worker", str(args.worker.resolve()), "--pdf",
+         "--pdf",
          str(Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"), "--plugin-dir",
          str(private_toolbar_root), "--verify-plugins"],
         env=dict(os.environ, G_DEBUG="fatal-criticals",
@@ -1212,9 +1210,6 @@ def verify_selection_modes(args, evidence):
 
 
 def verify_pdf_text_selection(args, evidence):
-    if not args.worker:
-        raise RuntimeError("PDF text annotation persistence checks require the document worker")
-
     directory = evidence / "pdf-text-selection"
     fixture_dir = directory / "fixture"
     output = directory / "run"
@@ -1233,8 +1228,7 @@ def verify_pdf_text_selection(args, evidence):
     pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()
 
     result = run(
-        [str(args.binary.resolve()), "--document", str(fixture), "--worker", str(args.worker.resolve()),
-         "--smoke-dir", str(output)],
+        [str(args.binary.resolve()), "--document", str(fixture), "--smoke-dir", str(output)],
         env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PDF_TEXT_SELECTION_VERIFY_MODE="1"),
     )
     expected = (
@@ -1676,10 +1670,9 @@ def inside(args):
             (output / f"{screenshot}.png").unlink(missing_ok=True)
         env = dict(os.environ, G_DEBUG="fatal-criticals")
         command = [str(args.binary.resolve()), "--smoke-dir", str(output)]
+        command.extend(["--document", str(copy)])
         if args.worker:
-            command.extend(["--document", str(copy), "--worker", str(args.worker.resolve())])
-        else:
-            command.extend(["--pdf", str(pdf)])
+            command.extend(["--worker", str(args.worker.resolve())])
         if dark:
             command.append("--dark")
         if os.environ.get("XOURNALPP_PROTOTYPE_GDB"):
@@ -1817,7 +1810,7 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--renderer", type=Path, required=True,
                         help="Existing GTK 3 xournalpp executable, used only for CLI export")
-    parser.add_argument("--worker", type=Path, help="Open native XOPP through the separate document worker")
+    parser.add_argument("--worker", type=Path, help="Optional legacy document-worker fallback")
     parser.add_argument("--fixture", type=Path,
                         default=Path(__file__).resolve().parents[2] / "test/files/benchmark/typed-text.xopp")
     parser.add_argument("--evidence", type=Path, required=True)
@@ -1856,10 +1849,6 @@ def main():
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
-    if args.pdf_text_selection_only and not args.worker:
-        raise RuntimeError("PDF text annotation persistence checks require --worker")
-    if args.canvas_smoke_only and not args.worker:
-        raise RuntimeError("Canvas smoke requires --worker to exercise the text editor")
     if args.link_only and not args.worker:
         raise RuntimeError("Native Link tool checks require --worker")
     if args.laser_only and not args.worker:

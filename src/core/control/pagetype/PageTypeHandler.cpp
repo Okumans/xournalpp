@@ -101,67 +101,9 @@ auto PageTypeHandler::getInfoOn(const PageType& pt) const -> const PageTypeInfo*
 }
 
 auto PageTypeHandler::getPageTypeFormatForString(std::string_view format) -> PageTypeFormat {
-    if (format == "plain") {
-        return PageTypeFormat::Plain;
-    }
-    if (format == "ruled") {
-        return PageTypeFormat::Ruled;
-    }
-    if (format == "lined") {
-        return PageTypeFormat::Lined;
-    }
-    if (format == "staves") {
-        return PageTypeFormat::Staves;
-    }
-    if (format == "graph") {
-        return PageTypeFormat::Graph;
-    }
-    if (format == "dotted") {
-        return PageTypeFormat::Dotted;
-    }
-    if (format == "isodotted") {
-        return PageTypeFormat::IsoDotted;
-    }
-    if (format == "isograph") {
-        return PageTypeFormat::IsoGraph;
-    }
-    if (format == ":pdf") {
-        return PageTypeFormat::Pdf;
-    }
-    if (format == ":image") {
-        return PageTypeFormat::Image;
-    }
-    g_warning("PageTypeHandler::getPageTypeFormatForString: unknown PageType: \"" SV_FMT "\". Replacing with "
-              "PageTypeFormat::Plain",
-              SV_ARG(format));
-    return PageTypeFormat::Plain;
+    return PageType::formatFromString(format);
 }
 
 auto PageTypeHandler::getStringForPageTypeFormat(const PageTypeFormat& format) -> std::string {
-    switch (format) {
-        case PageTypeFormat::Plain:
-            return "plain";
-        case PageTypeFormat::Ruled:
-            return "ruled";
-        case PageTypeFormat::Lined:
-            return "lined";
-        case PageTypeFormat::Staves:
-            return "staves";
-        case PageTypeFormat::Graph:
-            return "graph";
-        case PageTypeFormat::Dotted:
-            return "dotted";
-        case PageTypeFormat::IsoDotted:
-            return "isodotted";
-        case PageTypeFormat::IsoGraph:
-            return "isograph";
-        case PageTypeFormat::Pdf:
-            return ":pdf";
-        case PageTypeFormat::Image:
-            return ":image";
-    }
-    g_warning("PageTypeHandler::getStringForPageTypeFormat: unknown PageType: %d. Replacing with "
-              "PageTypeFormat::Ruled",
-              static_cast<int>(format));
-    return "ruled";
+    return PageType::formatToString(format);
 }

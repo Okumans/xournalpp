@@ -772,7 +772,7 @@ void Prototype::verifyPluginIntegration() {
             "Enabled bundled Example plugin did not register its menu callback");
     const auto toggleGrid = pluginRuntime->findPlugin("ToggleGrid");
     require(toggleGrid && toggleGrid->loaded && toggleGrid->menuItems == 1 && nativeSession,
-            "Enabled bundled ToggleGrid plugin did not load with a native document worker");
+            "Enabled bundled ToggleGrid plugin did not load with a native document session");
     const auto highlightPosition = pluginRuntime->findPlugin("HighlightPosition");
     require(highlightPosition && highlightPosition->loaded && highlightPosition->menuItems == 1,
             "Enabled bundled HighlightPosition plugin did not register its menu action");
@@ -993,11 +993,11 @@ void Prototype::verifyPluginIntegration() {
     state.undo();
     waitForPluginDocumentJob();
     require(state.layersForPage(0).backgroundFormat == "plain",
-            "Undo did not restore the prior page background through the native worker");
+            "Undo did not restore the prior page background through the native backend");
     state.redo();
     waitForPluginDocumentJob();
     require(state.layersForPage(0).backgroundFormat == "graph",
-            "Redo did not restore the graph page background through the native worker");
+            "Redo did not restore the graph page background through the native backend");
     const auto roundTripPath = (std::filesystem::path(options.smokeDirectory) / "toggle-grid-round-trip.xopp").string();
     nativeSession->saveCopy(options.worker, roundTripPath, prototype::bridge::transferInk(state.committedInk()),
                             state.texts, prototype::bridge::transferImages(state.images), state.pageLayers,

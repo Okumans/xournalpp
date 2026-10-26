@@ -282,7 +282,7 @@ void Prototype::requestOpenDocument(const std::string& path, bool initial) {
                   "). Copy the file elsewhere or use automatic recovery on startup.");
         return;
     }
-    if (!options.worker.empty() && !path.empty() && !prototype::bridge::isRecoveryArtifact(path)) {
+    if (!path.empty() && !prototype::bridge::isRecoveryArtifact(path)) {
         const auto extension = std::filesystem::path(path).extension().string();
         if (g_ascii_strcasecmp(extension.c_str(), ".xopp") == 0 || g_ascii_strcasecmp(extension.c_str(), ".xoj") == 0) {
             const auto sidecar =
@@ -393,7 +393,7 @@ void Prototype::saveTo(const std::string& path, const std::string& expected, std
 }
 
 void Prototype::chooseOpen() {
-    if (busy || choosingFile || messageDialog || options.worker.empty()) {
+    if (busy || choosingFile || messageDialog) {
         return;
     }
     if (autosaving) {
@@ -798,8 +798,8 @@ bool Prototype::exportDocumentFromPlugin(const prototype::DocumentExportOptions&
         error = "Missing output file!";
         return false;
     }
-    if (!nativeSession || options.worker.empty()) {
-        error = "Document export requires the GTK 4 document worker";
+    if (!nativeSession) {
+        error = "Document export requires an open native document";
         return false;
     }
     if (closed || choosingFile || messageDialog || busy) {
@@ -881,8 +881,8 @@ void Prototype::performHistoryStep(bool redo) {
         update();
         return;
     }
-    if (!nativeSession || options.worker.empty()) {
-        showError("Page history requires the native document worker");
+    if (!nativeSession) {
+        showError("Page history requires an open native document");
         return;
     }
     if (autosaving) {
@@ -1023,8 +1023,8 @@ void Prototype::insertPageAfterCurrent() {
 }
 
 bool Prototype::addEmptyPagesFromPlugin(bool force, std::string& error) {
-    if (!nativeSession || options.worker.empty()) {
-        error = "Adding note pages requires a native document and document worker";
+    if (!nativeSession) {
+        error = "Adding note pages requires an open native document";
         return false;
     }
     if (busy || choosingFile || messageDialog || closed) {

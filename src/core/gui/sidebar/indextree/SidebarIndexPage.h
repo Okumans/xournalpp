@@ -69,6 +69,8 @@ public:
      * @overwrite
      */
     void documentChanged(DocumentChangeType type) override;
+    void pageInserted(size_t page) override;
+    void pageDeleted(size_t page) override;
 
 private:
     /**
@@ -92,12 +94,15 @@ private:
      * Expand links
      */
     int expandOpenLinks(GtkTreeModel* model, GtkTreeIter* parent);
+    void updatePageNumbers();
+    static gboolean updatePageNumbersIdle(gpointer data);
 
 private:
     /**
      * The Tree with the Bookmarks
      */
     GtkWidget* treeViewBookmarks = nullptr;
+    GtkTreeModel* contentsModel = nullptr;
 
     /**
      * The scrollbars for the Tree
@@ -116,6 +121,7 @@ private:
      * After a timeout we scroll to the selected page
      */
     guint searchTimeout = 0;
+    guint pageNumberUpdateSource = 0;
 
     /**
      * If there is something to display in the tree

@@ -13,7 +13,6 @@
 #include <glib.h>        // for GMarkupParseContext, g_warning...
 #include <glibconfig.h>  // for gsize
 
-#include "control/pagetype/PageTypeHandler.h"          // for PageTypeHandler
 #include "control/xojfile/DocumentBuilderInterface.h"  // for DocumentBuilderInterface
 #include "control/xojfile/XmlAttrs.h"                  // for XmlAttrs
 #include "control/xojfile/XmlParserHelper.h"           // for getAttrib...
@@ -285,7 +284,7 @@ void XmlParser::parseBgSolid(const XmlParserHelper::AttributeMap& attributeMap) 
             XmlParserHelper::getAttribMandatory<std::string_view>(xoj::xml_attrs::CONFIG_STR, attributeMap, "", false);
     PageType bg;
     if (optStyle) {
-        bg.format = PageTypeHandler::getPageTypeFormatForString(*optStyle);
+        bg.format = PageType::formatFromString(*optStyle);
     }
     bg.config = config;
 

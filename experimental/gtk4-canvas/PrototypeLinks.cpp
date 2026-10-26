@@ -51,7 +51,7 @@ void Prototype::openLinkEditor(int page, prototype::Point position, std::optiona
         return;
     }
     if (!nativeSession) {
-        showError("Link editing requires an open document worker.");
+        showError("Link editing requires an open document.");
         return;
     }
     if (index && (*index >= state.texts.size() || !state.texts[*index].isLink)) {

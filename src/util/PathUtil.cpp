@@ -16,13 +16,14 @@
 #include "util/PlaceholderString.h"  // for PlaceholderString
 #include "util/StringUtils.h"        // for replace_pair, StringUtils
 #include "util/Util.h"               // for getPid, execInUiThread
-#include "util/XojMsgBox.h"          // for XojMsgBox
 #include "util/i18n.h"               // for FS, _F, FORMAT_STR
 #include "util/raii/CStringWrapper.h"
 #include "util/safe_casts.h"  // for as_signed
 #include "util/utf8_view.h"   // for utf8_view
 
+#ifndef PROJECT_NAME
 #include "config.h"  // for PROJECT_NAME
+#endif
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -129,7 +130,7 @@ auto Util::readString(fs::path const& path, bool showErrorToUser, std::ios_base:
     } catch (const std::exception& e) {
         if (showErrorToUser) {
             const auto msg = FS(_F("Error reading \"{1}\":\n{2}") % path.u8string() % e.what());
-            XojMsgBox::showErrorToUser(nullptr, msg);
+            Util::reportErrorToUser(msg);
         }
     }
     return std::nullopt;
@@ -455,8 +456,9 @@ auto Util::ensureFolderExists(const fs::path& p) -> fs::path {
     try {
         fs::create_directories(p);
     } catch (const fs::filesystem_error& fe) {
-        std::string msg = FS(_F("Could not create folder: {1}\nFailed with error: {2}") % p.u8string() % fe.what());
-        Util::execInUiThread([msg = std::move(msg)]() { XojMsgBox::showErrorToUser(nullptr, msg); });
+        const std::string msg =
+                FS(_F("Could not create folder: {1}\nFailed with error: {2}") % p.u8string() % fe.what());
+        Util::reportErrorToUser(msg);
     }
     return p;
 }

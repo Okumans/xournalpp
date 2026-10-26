@@ -31,6 +31,7 @@ class Settings;
 class PdfCache {
 public:
     PdfCache(const XojPdfDocument& doc, Settings* settings);
+    PdfCache(const XojPdfDocument& doc, size_t maxSize, double refreshThreshold);
     virtual ~PdfCache();
 
 private:
@@ -96,6 +97,6 @@ private:
     size_t currentBytes = 0;
     size_t maxBytes = 128U * 1024U * 1024U;
 
-    double zoomRefreshThreshold;
+    double zoomRefreshThreshold = 5.0;
     double minimumRenderZoom = 1.0;
 };

@@ -7,8 +7,8 @@ bool Prototype::changePluginPageBackground(std::string_view format, std::string_
         error = "This GTK 4 host currently supports the plain and graph page backgrounds";
         return false;
     }
-    if (!nativeSession || options.worker.empty()) {
-        error = "Changing a page background requires the document worker";
+    if (!nativeSession) {
+        error = "Changing a page background requires an open native document";
         return false;
     }
     if (busy || choosingFile || closed) {
@@ -88,7 +88,7 @@ prototype::PluginDocumentStructure Prototype::pluginDocumentStructure() const {
 }
 
 void Prototype::refreshNativeDocumentRevision(int changedPage) {
-    if (!nativeSession || options.worker.empty() || closed || changedPage < 0 || changedPage >= state.pageCount()) {
+    if (!nativeSession || closed || changedPage < 0 || changedPage >= state.pageCount()) {
         return;
     }
     if (autosaving) {
@@ -502,8 +502,8 @@ bool Prototype::setPluginBackgroundName(std::string_view name, std::string& erro
 }
 
 bool Prototype::changePdfBackgroundPageFromPlugin(int pdfPage, std::string& error) {
-    if (!nativeSession || options.worker.empty()) {
-        error = "Beamer animation navigation requires a native document and document worker";
+    if (!nativeSession) {
+        error = "Beamer animation navigation requires an open native document";
         return false;
     }
     if (busy || choosingFile || messageDialog || closed) {

@@ -111,7 +111,7 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
                 std::filesystem::create_directories(path);
             }
         } else {
-            throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
+            throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE [--worker WORKER]] "
                                      "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                      "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search "
                                      "[--verify-search-query TEXT --verify-search-page PAGE --verify-search-scan-all]] "
@@ -126,8 +126,8 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
         }
     }
 
-    if (!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) {
-        throw std::runtime_error("Use --document with --worker, separately from --pdf");
+    if (!options.nativeDocument.empty() && !options.pdf.empty()) {
+        throw std::runtime_error("Use --document separately from --pdf");
     }
     if (!options.worker.empty() && !g_file_test(options.worker.c_str(), G_FILE_TEST_IS_EXECUTABLE)) {
         throw std::runtime_error("Document worker is missing or not executable");
@@ -180,12 +180,12 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
         throw std::runtime_error("LayerActions verification requires --smoke-dir DIRECTORY");
     }
     if (options.verifyLatex &&
-        (options.smokeDirectory.empty() || options.nativeDocument.empty() || options.worker.empty())) {
-        throw std::runtime_error("LaTeX verification requires --smoke-dir, --document and --worker");
+        (options.smokeDirectory.empty() || options.nativeDocument.empty())) {
+        throw std::runtime_error("LaTeX verification requires --smoke-dir and --document");
     }
     if (options.verifyTextClipboard &&
-        (options.smokeDirectory.empty() || options.nativeDocument.empty() || options.worker.empty())) {
-        throw std::runtime_error("Text clipboard verification requires --smoke-dir, --document and --worker");
+        (options.smokeDirectory.empty() || options.nativeDocument.empty())) {
+        throw std::runtime_error("Text clipboard verification requires --smoke-dir and --document");
     }
 
     return options;

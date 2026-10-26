@@ -518,7 +518,7 @@ gboolean Prototype::smokeLinks() {
 
             linkOutputPath = (std::filesystem::path(options.smokeDirectory) / "links-saved.xopp").string();
             saveCopyTo(linkOutputPath, [this] { linkSaveComplete = true; });
-            require(busy, "Saving edited links did not start a document-worker operation");
+            require(busy, "Saving edited links did not start a document operation");
             break;
         }
         default: {

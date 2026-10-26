@@ -20,20 +20,24 @@
 #include <unordered_map>  // for unordered_map
 #include <vector>         // for vector
 
-#include <cairo.h>    // for cairo_surface_t
-#include <glib.h>     // for gpointer, gsize
-#include <gtk/gtk.h>  // for GtkTreeModel, GtkTreeIter, GtkT...
+#include <cairo.h>  // for cairo_surface_t
+#include <glib.h>   // for gpointer, gsize
 
 #include "pdf/base/XojPdfDocument.h"  // for XojPdfDocument
 #include "pdf/base/XojPdfPage.h"      // for XojPdfPageSPtr
+#include "LinkDestination.h"          // for LinkDestination
 #include "util/PathUtil.h"            // for PathStorageMode
-#include "util/raii/GObjectSPtr.h"    // for GObjectSptr
 
 #include "PageRef.h"     // for PageRef
 #include "filesystem.h"  // for path
 
 class DocumentHandler;
 class XojPdfBookmarkIterator;
+
+struct DocumentOutlineNode {
+    LinkDestination destination;
+    std::vector<DocumentOutlineNode> children;
+};
 
 class Document {
 public:
@@ -84,7 +88,7 @@ public:
 
     fs::path getEvMetadataFilename() const;
 
-    GtkTreeModel* getContentsModel() const;
+    const std::vector<DocumentOutlineNode>& getContents() const;
 
     void setCreateBackupOnSave(bool backup);
     bool shouldCreateBackupOnSave() const;
@@ -107,13 +111,8 @@ public:
     inline void setPathStorageMode(Util::PathStorageMode m) { pathStorageMode = m; }
 
 private:
-    void buildContentsModel();
-    void freeTreeContentModel();
-    static bool freeTreeContentEntry(GtkTreeModel* treeModel, GtkTreePath* path, GtkTreeIter* iter, Document* doc);
-
-    void buildTreeContentsModel(GtkTreeIter* parent, XojPdfBookmarkIterator* iter);
-    void updateIndexPageNumbers();
-    static bool fillPageLabels(GtkTreeModel* treeModel, GtkTreePath* path, GtkTreeIter* iter, Document* doc);
+    void buildContents();
+    void updatePdfPageIndex();
 
 private:
     DocumentHandler* handler = nullptr;
@@ -156,9 +155,9 @@ private:
     void indexPdfPages();
 
     /**
-     * The bookmark contents model
+     * PDF outline data belongs to the document model; each UI builds its own view model.
      */
-    xoj::util::GObjectSPtr<GtkTreeModel> contentsModel;
+    std::vector<DocumentOutlineNode> contents;
 
     /**
      *  create a backup before save
@@ -180,5 +179,5 @@ template <class InputIter>
 void Document::addPages(InputIter first, InputIter last) {
     this->pages.insert(this->pages.end(), first, last);
     this->pageIndex.reset();
-    updateIndexPageNumbers();
+    updatePdfPageIndex();
 }
