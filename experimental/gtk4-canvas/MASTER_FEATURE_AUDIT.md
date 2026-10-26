@@ -202,6 +202,15 @@ performance. The full CTest suite passed 40/40. The private harness now gives
 the app's 90-second timeout a 15-second outer Cage margin and includes captured
 subprocess output in timeout errors.
 
+Phase 130 moves `CanvasState` page layout, coordinate conversion, visibility,
+and hit-testing method bodies from the large header into the compiled
+`CanvasStateGeometry.cpp` unit. The public methods, default arguments, model
+ownership, and edit/history behavior are unchanged. The standalone app and
+default build passed, all 40 CTests passed, and the full no-worker private Cage
+canvas smoke passed. This is the first staged extraction from the remaining
+large model header; selection, edit, and history ownership stay in the same
+`CanvasState` instance.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
