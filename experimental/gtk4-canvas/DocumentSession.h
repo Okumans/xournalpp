@@ -44,6 +44,7 @@ public:
 
         std::filesystem::path directory;
         std::filesystem::path pageHistorySnapshotPath;
+        std::filesystem::path insertedPageHistorySnapshotPath;
         std::filesystem::path snapshotPath() const { return directory / "snapshot.xopp"; }
         std::filesystem::path previewPath() const { return directory / "preview.pdf"; }
         std::filesystem::path backgroundPdfPath() const { return directory / "background.pdf"; }
@@ -517,7 +518,15 @@ public:
         }
 
         StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        const auto replacedPageHistoryDirectory =
+                path / "page-history" / ("page-" + std::to_string(nextPageHistoryId++));
+        const auto insertedPageHistoryDirectory =
+                path / "page-history" / ("page-" + std::to_string(nextPageHistoryId++));
+        staged.pageHistorySnapshotPath = replacedPageHistoryDirectory / "snapshot.xopp";
+        staged.insertedPageHistorySnapshotPath = insertedPageHistoryDirectory / "snapshot.xopp";
         std::filesystem::create_directories(staged.directory);
+        std::filesystem::create_directories(replacedPageHistoryDirectory);
+        std::filesystem::create_directories(insertedPageHistoryDirectory);
         try {
             const auto ink = staged.directory / "layer-action.ink";
             const auto text = staged.directory / "layer-action.text";
@@ -532,7 +541,9 @@ public:
             runWorker(worker, {"layer-actions-clone-next", snapshotPath().string(), staged.snapshotPath().string(),
                                staged.previewPath().string(), std::to_string(currentPage), std::to_string(pdfPage),
                                allowAnnotated ? "1" : "0", ink.string(), text.string(), layer.string(),
-                               image.string(), audioFolder.string(), audioDirectory.string(), pageSizeTransfer.string()});
+                               image.string(), audioFolder.string(), audioDirectory.string(), pageSizeTransfer.string(),
+                               staged.pageHistorySnapshotPath.string(),
+                               staged.insertedPageHistorySnapshotPath.string()});
             static_cast<void>(readTransfer(staged.editableInkPath()));
             static_cast<void>(readTextTransfer(staged.editableTextPath()));
             static_cast<void>(readImageTransfer(staged.editableImagesPath()));
@@ -561,6 +572,12 @@ public:
         if (!staged.directory.empty()) {
             std::error_code ec;
             std::filesystem::remove_all(staged.directory, ec);
+        }
+        for (const auto& snapshot: {staged.pageHistorySnapshotPath, staged.insertedPageHistorySnapshotPath}) {
+            if (!snapshot.empty()) {
+                std::error_code ec;
+                std::filesystem::remove_all(snapshot.parent_path(), ec);
+            }
         }
     }
 
