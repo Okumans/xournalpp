@@ -252,6 +252,14 @@ target_compile_options(canvas-search-test PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(canvas-search-test PRIVATE PkgConfig::UI)
 add_test(NAME canvas-search COMMAND canvas-search-test)
 
+add_executable(page-raster-renderer-test PageRasterRendererTest.cpp PageRasterRenderer.cpp)
+target_include_directories(page-raster-renderer-test PRIVATE
+                           "${XOURNALPP_REPO_ROOT}/src/core" "${XOURNALPP_REPO_ROOT}/src/util/include")
+target_compile_features(page-raster-renderer-test PRIVATE cxx_std_20)
+target_compile_options(page-raster-renderer-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(page-raster-renderer-test PRIVATE PkgConfig::UI)
+add_test(NAME page-raster-renderer COMMAND page-raster-renderer-test)
+
 add_executable(document-pdf-pages-test DocumentPdfPagesTest.cpp)
 target_compile_features(document-pdf-pages-test PRIVATE cxx_std_20)
 target_compile_options(document-pdf-pages-test PRIVATE -Wall -Wextra -Wpedantic)
