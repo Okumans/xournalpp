@@ -1525,7 +1525,8 @@ def inside(args):
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",
                             "continuous-pages", "goto-page-dialog", "page-inserted", "selection",
-                            "selection-moved", "selection-deleted", "lasso-selection", "selection-resized",
+                            "smart-text-selected", "selection-moved", "selection-deleted", "lasso-selection",
+                            "selection-resized",
                             "selection-rotated", "selection-pasted", "selection-transferred", "smart-selection")
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
                              "autosave-note.xopp", ".autosave-note.autosave.xopp",

@@ -149,7 +149,7 @@ inline void drawSelection(cairo_t* cr, const CanvasState& state, int page) {
     const double dashes[] = {5 / state.zoom, 3 / state.zoom};
     cairo_set_dash(cr, dashes, 2, 0);
     cairo_stroke(cr);
-    if (!state.selected.empty() && state.brush.tool != Tool::Hand) {
+    if (state.hasSelection() && state.brush.tool != Tool::Hand) {
         const auto handles = state.selectionHandles();
         cairo_set_dash(cr, nullptr, 0, 0);
         cairo_move_to(cr, handles[3].x, handles[3].y);
