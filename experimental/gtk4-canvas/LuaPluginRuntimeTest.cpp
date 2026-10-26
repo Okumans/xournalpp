@@ -115,10 +115,17 @@ int main() {
                 "[about]\ndescription=Private plugin toolbar action\n[default]\nenabled=true\n"
                 "[plugin]\nmainfile=main.lua\n",
                 "function initUi()\n"
+                "  app.registerPlaceholder('Current_Mode', 'Current mode')\n"
+                "  app.setPlaceholderValue('Current_Mode', 'READY')\n"
                 "  app.registerUi({callback='invokeToolbar', toolbarId='MixedCase_Action-1', "
                 "iconName='document-open'})\n"
                 "end\n"
-                "function invokeToolbar() app.changeActionState('test-mode', 41) end\n");
+                "local invocations = 0\n"
+                "function invokeToolbar()\n"
+                "  app.changeActionState('test-mode', 41)\n"
+                "  invocations = invocations + 1\n"
+                "  app.setPlaceholderValue('Plugin::Current_Mode', invocations == 1 and 'CLICKED' or '')\n"
+                "end\n");
     const auto backgroundPlugin = root / "BackgroundPlugin";
     writePlugin(backgroundPlugin,
                 "[about]\ndescription=Page background action\n[default]\nenabled=true\n"
@@ -637,6 +644,8 @@ int main() {
     bool changedSelection = false;
     std::string changedTool;
     std::int64_t changedMode = -1;
+    std::vector<std::pair<std::string, std::string>> toolbarPlaceholderUpdates;
+    std::size_t toolbarRebuildCount = 0;
     std::int64_t strokeCount = -1;
     std::int64_t documentPageCount = -1;
     std::int64_t pluginObjectCount = -1;
@@ -691,6 +700,10 @@ int main() {
     prototype::PluginScrollPosition scrollPosition{12, 24, 640, 480};
     std::size_t currentScrollPageNumber = 2;
     prototype::PluginRuntimeHost host;
+    host.rebuildFloatingToolboxRows = [&] { ++toolbarRebuildCount; };
+    host.updateToolbarPlaceholder = [&](std::string_view id, std::string_view value) {
+        toolbarPlaceholderUpdates.emplace_back(id, value);
+    };
     host.changeToolColor = [&](const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                                std::string&) {
         changedTool = tool.value_or("");
@@ -1063,8 +1076,28 @@ int main() {
     require(toolbarItem && toolbarItem->id == "Plugin::MixedCase_Action-1" &&
                     toolbarItem->pluginName == "PrivateToolbar" && toolbarItem->iconName == "document-open",
             "Plugin toolbar item lookup did not preserve its full ID, owner, or icon");
+    const auto toolbarPlaceholder = runtime.findToolbarPlaceholder("plugin::Current_Mode");
+    require(toolbarPlaceholder && toolbarPlaceholder->id == "Plugin::Current_Mode" &&
+                    toolbarPlaceholder->pluginName == "PrivateToolbar" &&
+                    toolbarPlaceholder->description == "Current mode" && toolbarPlaceholder->value == "READY" &&
+                    toolbarRebuildCount >= 2 && !toolbarPlaceholderUpdates.empty() &&
+                    toolbarPlaceholderUpdates.back() == std::pair<std::string, std::string>(
+                                                               "Plugin::Current_Mode", "READY"),
+            "Plugin placeholder registration or initial value did not reach the toolbar host");
     require(runtime.invokeToolbarItem("PLUGIN::MixedCase_Action-1") && changedMode == 41,
             "Plugin toolbar item did not invoke its Lua callback");
+    const auto clickedPlaceholder = runtime.findToolbarPlaceholder("Current_Mode");
+    require(clickedPlaceholder && clickedPlaceholder->value == "CLICKED" &&
+                    toolbarPlaceholderUpdates.back() == std::pair<std::string, std::string>(
+                                                               "Plugin::Current_Mode", "CLICKED"),
+            "Plugin callback did not update its registered placeholder by full ID");
+    require(runtime.invokeToolbarItem("Plugin::MixedCase_Action-1"),
+            "Plugin toolbar action could not be invoked a second time");
+    const auto emptyPlaceholder = runtime.findToolbarPlaceholder("Current_Mode");
+    require(emptyPlaceholder && emptyPlaceholder->value.empty() &&
+                    toolbarPlaceholderUpdates.back() == std::pair<std::string, std::string>(
+                                                               "Plugin::Current_Mode", "Current_Mode"),
+            "Empty plugin placeholder values did not fall back to the registered ID");
     const auto loadedStrokeApiPlugin = runtime.findPlugin("StrokeApiPlugin");
     require(loadedStrokeApiPlugin && loadedStrokeApiPlugin->loaded && loadedStrokeApiPlugin->menuItems == 2,
             "Plugin using app.getStrokes did not load and register its menu callbacks");

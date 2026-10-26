@@ -54,7 +54,9 @@ manifest and persists enable/disable choices in `gtk4-canvas.ini`; changes take
 effect after restarting the prototype. Lua menu callbacks and canvas shortcuts
 work for the supported API subset. Registered `Plugin::ID` toolbar actions can
 be placed in the customizable floating-toolbox rows and invoke their Lua
-callbacks. ColorCycle runs with its full color list and selection recoloring,
+callbacks. Plugins can also register described placeholders in those rows and
+update their labels live with `app.setPlaceholderValue`; empty values fall back
+to the placeholder ID. ColorCycle runs with its full color list and selection recoloring,
 Example can open an asynchronous dialog and receive the selected button
 response, and ToolShortcuts can select common tools including Smart Select.
 HighlightPosition toggles a translucent pointer halo with Alt+X;
@@ -66,7 +68,7 @@ are not undoable yet. Page background changes use the native document worker,
 persist in the `.xopp` save path, and participate in undo/redo. BeamerPresentation
 steps through repeated-label PDF animations, moves between slides at label
 boundaries, and removes animation pages through the native document worker. The
-Most of the master Lua API, plugin placeholders, Search, and bundled plugin
+Most of the master Lua API, Search, and bundled plugin
 behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
@@ -511,13 +513,15 @@ recording file during the test session. The private renderer, screenshots, and
 JSON report stay outside Git. This check does not verify audio-device output or
 reopening after the temporary recording file expires.
 
-Physical stylus pressure/eraser behavior, touchpad and touchscreen routing, palm
-rejection, input latency, IME, accessibility, GPU renderers, fractional display
+Physical stylus pressure/eraser behavior, touchscreen routing, palm rejection,
+input latency, IME, accessibility, GPU renderers, fractional display
 scaling, Windows, and macOS remain unverified. Unsupported native objects are not
 selectable or editable, and selection coverage remains partial. Signal-handler
-emergency dump, full document undo, the complete Lua plugin API, plugin toolbar
-actions, most bundled plugin behaviors, and full toolbar configuration import
-remain migration work. Its eraser edits session ink and supported native strokes
+emergency dump, full document undo, the complete Lua plugin API, remaining
+plugin-specific actions, most bundled plugin behaviors, and full toolbar
+configuration import remain migration work. The user reports that the current
+touchpad scrolling still moves too quickly and jumps unpredictably; reproduce
+and tune it later on the user's physical device. Its eraser edits session ink and supported native strokes
 on the active layer; it cannot erase flattened PDF content or unsupported native
 objects. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.

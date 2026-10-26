@@ -390,11 +390,17 @@ def verify_plugins(args, evidence):
     )
     (private_toolbar / "main.lua").write_text(
         "function initUi()\n"
+        "  app.registerPlaceholder('GTK4_TEST_STATUS', 'Private plugin status')\n"
+        "  app.setPlaceholderValue('GTK4_TEST_STATUS', 'READY')\n"
         "  app.registerUi({callback='toggleGridSnapping', toolbarId='GTK4_TEST_ACTION', "
         "iconName='document-open'})\n"
         "end\n"
+        "local invocations = 0\n"
         "function toggleGridSnapping()\n"
-        "  app.changeActionState('grid-snapping', not app.getActionState('grid-snapping'))\n"
+        "  local enabled = not app.getActionState('grid-snapping')\n"
+        "  app.changeActionState('grid-snapping', enabled)\n"
+        "  invocations = invocations + 1\n"
+        "  app.setPlaceholderValue('GTK4_TEST_STATUS', invocations == 1 and 'CLICKED' or '')\n"
         "end\n",
         encoding="utf-8",
     )
@@ -461,7 +467,7 @@ def verify_plugins(args, evidence):
         f"enabled={','.join(str(plugin.resolve()) for plugin in enabled_plugins)}\n"
         "disabled=\n"
         "[Floating Toolbox]\n"
-        "row-1=Plugin::GTK4_TEST_ACTION\n"
+        "row-1=Plugin::GTK4_TEST_ACTION,Plugin::GTK4_TEST_STATUS\n"
     )
     (config / "gtk4-canvas.ini").write_text(
         plugin_config, encoding="utf-8")
@@ -483,8 +489,8 @@ def verify_plugins(args, evidence):
     )
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
-    if "PASS: GTK4 plugin toolbar action registration, rendering, and callback" not in result:
-        raise RuntimeError("GTK 4 private plugin toolbar action did not render or invoke")
+    if "PASS: GTK4 plugin toolbar action and placeholder registration, rendering, and updates" not in result:
+        raise RuntimeError("GTK 4 private plugin toolbar action or placeholder did not render or update")
     screenshots = ["plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps",
                    "fit-to-content-page", "quick-screenshot.png"]
     if image_actions_available:

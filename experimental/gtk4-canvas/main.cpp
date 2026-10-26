@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -1652,6 +1653,21 @@ private:
                 showAlert("Plugin error", std::string(plugin) + ": " + std::string(message));
             } else {
                 std::cerr << "xournalpp-gtk4-canvas: plugin " << plugin << ": " << message << '\n';
+            }
+        };
+        host.rebuildFloatingToolboxRows = [this] { rebuildFloatingToolboxRows(); };
+        host.updateToolbarPlaceholder = [this](std::string_view id, std::string_view value) {
+            if (!floatingToolboxRowsContainer) {
+                return;
+            }
+            const std::string fullId(id);
+            if (auto* label = findWidgetByData(floatingToolboxRowsContainer, "gtk4-plugin-placeholder-id",
+                                               fullId.c_str());
+                label && GTK_IS_LABEL(label)) {
+                const std::string text(value);
+                gtk_label_set_text(GTK_LABEL(label), text.c_str());
+                gtk_accessible_update_property(GTK_ACCESSIBLE(label), GTK_ACCESSIBLE_PROPERTY_LABEL, text.c_str(),
+                                               -1);
             }
         };
         pluginRuntime->loadEnabled(std::move(host));
@@ -5467,14 +5483,27 @@ private:
                                             toolbarItem->id.c_str());
             require(button, "Configured plugin toolbar action did not render a button");
             require(gtk_widget_is_sensitive(button), "Configured plugin toolbar action button is disabled");
+            const auto placeholder = pluginRuntime->findToolbarPlaceholder("Plugin::GTK4_TEST_STATUS");
+            require(placeholder && placeholder->description == "Private plugin status" &&
+                            placeholder->value == "READY",
+                    "Configured plugin toolbar placeholder did not retain its registration or initial value");
+            auto* placeholderLabel = findWidgetByData(floatingToolboxRowsContainer,
+                                                      "gtk4-plugin-placeholder-id", placeholder->id.c_str());
+            require(placeholderLabel && GTK_IS_LABEL(placeholderLabel) &&
+                            std::string(gtk_label_get_text(GTK_LABEL(placeholderLabel))) == "READY",
+                    "Configured plugin toolbar placeholder did not render its initial value");
             const bool previousGridSnapping = state.snapGridEnabled;
             g_signal_emit_by_name(button, "clicked");
             require(state.snapGridEnabled != previousGridSnapping,
                     "Rendered plugin toolbar button did not dispatch its Lua callback");
+            require(std::string(gtk_label_get_text(GTK_LABEL(placeholderLabel))) == "CLICKED",
+                    "Plugin callback did not update the rendered toolbar placeholder");
             g_signal_emit_by_name(button, "clicked");
             require(state.snapGridEnabled == previousGridSnapping,
                     "Plugin toolbar callback did not restore the previous grid-snapping state");
-            std::cout << "PASS: GTK4 plugin toolbar action registration, rendering, and callback\n";
+            require(std::string(gtk_label_get_text(GTK_LABEL(placeholderLabel))) == "GTK4_TEST_STATUS",
+                    "Empty plugin toolbar placeholder value did not fall back to its ID");
+            std::cout << "PASS: GTK4 plugin toolbar action and placeholder registration, rendering, and updates\n";
         }
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
@@ -8080,6 +8109,26 @@ private:
             const auto item = pluginRuntime ? pluginRuntime->findToolbarItem(token) : std::nullopt;
             const auto fallbackLabel = token.substr(std::string_view("Plugin::").size());
             if (!item) {
+                const auto placeholder =
+                        pluginRuntime ? pluginRuntime->findToolbarPlaceholder(token) : std::nullopt;
+                if (placeholder) {
+                    std::string displayValue = placeholder->value.empty() ? fallbackLabel : placeholder->value;
+                    std::replace(displayValue.begin(), displayValue.end(), '\n', ' ');
+                    std::replace(displayValue.begin(), displayValue.end(), '\r', ' ');
+                    auto* label = gtk_label_new(displayValue.c_str());
+                    gtk_widget_set_size_request(label, 200, -1);
+                    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+                    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+                    const std::string tooltip = placeholder->description.empty() ? placeholder->id :
+                                                                                   placeholder->description;
+                    gtk_widget_set_tooltip_text(label, tooltip.c_str());
+                    gtk_accessible_update_property(GTK_ACCESSIBLE(label), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                                   displayValue.c_str(), -1);
+                    g_object_set_data_full(G_OBJECT(label), "gtk4-plugin-placeholder-id",
+                                           g_strdup(placeholder->id.c_str()), g_free);
+                    gtk_box_append(GTK_BOX(row), label);
+                    return;
+                }
                 auto* unavailable = gtk_button_new_with_label(fallbackLabel.c_str());
                 gtk_widget_add_css_class(unavailable, "flat");
                 gtk_widget_set_sensitive(unavailable, false);

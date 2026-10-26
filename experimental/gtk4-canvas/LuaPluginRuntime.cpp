@@ -452,6 +452,8 @@ constexpr std::array<std::string_view, 28> toolNames{
 int luaOpenApp(lua_State* state) {
     static const luaL_Reg functions[] = {
             {"registerUi", LuaPluginRuntime::luaRegisterUi},
+            {"registerPlaceholder", LuaPluginRuntime::luaRegisterPlaceholder},
+            {"setPlaceholderValue", LuaPluginRuntime::luaSetPlaceholderValue},
             {"changeToolColor", LuaPluginRuntime::luaChangeToolColor},
             {"getActionState", LuaPluginRuntime::luaGetActionState},
             {"getToolInfo", LuaPluginRuntime::luaGetToolInfo},
@@ -543,6 +545,11 @@ struct LuaPluginRuntime::MenuEntry {
     GdkModifierType shortcutModifiers{};
 };
 
+struct PluginPlaceholderEntry {
+    std::string description;
+    std::string value;
+};
+
 struct LuaPluginRuntime::Plugin {
     LuaPluginRuntime* runtime = nullptr;
     std::string name;
@@ -560,6 +567,7 @@ struct LuaPluginRuntime::Plugin {
     bool loaded = false;
     LuaState state;
     std::vector<MenuEntry> menuEntries;
+    std::map<std::string, PluginPlaceholderEntry> placeholders;
 };
 
 LuaPluginRuntime::LuaPluginRuntime() = default;
@@ -681,6 +689,9 @@ void LuaPluginRuntime::loadEnabled(PluginRuntimeHost pluginHost) {
         }
     }
     loaded = true;
+    if (host.rebuildFloatingToolboxRows) {
+        host.rebuildFloatingToolboxRows();
+    }
 }
 
 std::vector<PluginSummary> LuaPluginRuntime::plugins() const {
@@ -728,7 +739,7 @@ std::optional<PluginToolbarItem> LuaPluginRuntime::findToolbarItem(std::string_v
     id = toolbarIdWithoutPluginPrefix(id);
 
     for (const auto& plugin: entries) {
-        if (!plugin->loaded) {
+        if (!plugin->loaded && !plugin->inInitUi) {
             continue;
         }
         for (const auto& menu: plugin->menuEntries) {
@@ -739,6 +750,51 @@ std::optional<PluginToolbarItem> LuaPluginRuntime::findToolbarItem(std::string_v
         }
     }
     return std::nullopt;
+}
+
+std::optional<PluginToolbarPlaceholder> LuaPluginRuntime::findToolbarPlaceholder(std::string_view id) const {
+    constexpr std::string_view prefix = "Plugin::";
+    id = toolbarIdWithoutPluginPrefix(id);
+
+    for (const auto& plugin: entries) {
+        if (!plugin->loaded && !plugin->inInitUi) {
+            continue;
+        }
+        const auto found = plugin->placeholders.find(std::string(id));
+        if (found != plugin->placeholders.end()) {
+            return PluginToolbarPlaceholder{std::string(prefix) + found->first, plugin->name,
+                                            found->second.description, found->second.value};
+        }
+    }
+    return std::nullopt;
+}
+
+void LuaPluginRuntime::registerPlaceholder(Plugin& plugin, std::string_view id, std::string_view description) {
+    const bool inserted = plugin.placeholders.try_emplace(
+                                  std::string(id), PluginPlaceholderEntry{std::string(description), {}})
+                                  .second;
+    if (inserted && host.rebuildFloatingToolboxRows) {
+        host.rebuildFloatingToolboxRows();
+    }
+}
+
+void LuaPluginRuntime::setPlaceholderValue(Plugin& plugin, std::string_view id, std::string_view value) {
+    id = toolbarIdWithoutPluginPrefix(id);
+    const auto found = plugin.placeholders.find(std::string(id));
+    if (found == plugin.placeholders.end()) {
+        const std::string fullId = "Plugin::" + std::string(id);
+        g_warning("setPlaceholderValue: placeholder id '%s' does not exist", fullId.c_str());
+        return;
+    }
+
+    found->second.value = value;
+    std::string displayValue = found->second.value.empty() ? found->first : found->second.value;
+    std::replace(displayValue.begin(), displayValue.end(), '\n', ' ');
+    std::replace(displayValue.begin(), displayValue.end(), '\r', ' ');
+    if (host.updateToolbarPlaceholder) {
+        const std::string fullId = "Plugin::" + found->first;
+        host.updateToolbarPlaceholder(fullId, displayValue);
+    }
 }
 
 bool LuaPluginRuntime::invokeToolbarItem(std::string_view id) {
@@ -968,6 +1024,10 @@ void LuaPluginRuntime::load(Plugin& plugin) {
             plugin.error = luaError(plugin.state.get());
             lua_pop(plugin.state.get(), 1);
             plugin.menuEntries.clear();
+            plugin.placeholders.clear();
+            if (host.rebuildFloatingToolboxRows) {
+                host.rebuildFloatingToolboxRows();
+            }
             reportError(plugin, plugin.error);
             return;
         }
@@ -1511,6 +1571,28 @@ int LuaPluginRuntime::luaRegisterUi(lua_State* state) {
     }
     lua_pushstring(state, error);
     return lua_error(state);
+}
+
+int LuaPluginRuntime::luaRegisterPlaceholder(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin || !plugin->runtime) {
+        return luaL_error(state, "registerPlaceholder needs to be called by a loaded plugin");
+    }
+    const char* id = luaL_checkstring(state, 1);
+    const char* description = luaL_checkstring(state, 2);
+    plugin->runtime->registerPlaceholder(*plugin, id, description);
+    return 0;
+}
+
+int LuaPluginRuntime::luaSetPlaceholderValue(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin || !plugin->runtime) {
+        return luaL_error(state, "setPlaceholderValue needs to be called by a loaded plugin");
+    }
+    const char* id = luaL_checkstring(state, 1);
+    const char* value = luaL_checkstring(state, 2);
+    plugin->runtime->setPlaceholderValue(*plugin, id, value);
+    return 0;
 }
 
 int LuaPluginRuntime::luaChangeToolColor(lua_State* state) {
