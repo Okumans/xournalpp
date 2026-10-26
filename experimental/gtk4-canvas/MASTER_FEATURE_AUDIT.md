@@ -56,6 +56,12 @@ The user confirms that the large-PDF sidebar freeze is resolved after Phase 101
 PR #107. Thumbnail latency during continued fast scrolling through the user's
 content-heavy PDF remains unmeasured.
 
+Phase 103 corrects native text interaction: Smart Select single-click selects
+objects and double-click edits text; the Text tool double-click selects the
+clicked word. Entering text editing from Smart Select preserves the current
+canvas zoom, and text/image selections draw their shared resize and rotation
+handles.
+
 These user-requested follow-ups remain:
 
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
@@ -90,10 +96,6 @@ These user-requested follow-ups remain:
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.
-- Fix the reported text and Smart Select interaction regressions: Text-tool
-  double-click does not edit existing text; Smart Select opens text on a single
-  click instead of a double-click; double-clicking text changes page size; and
-  selected text has no resize or rotation handles.
 - Fix the reported document-search highlight placement, which currently marks
   the wrong location.
 
@@ -160,8 +162,8 @@ it is not represented by a single `ToolType`.
 | Behavior | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
 | Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes, text, and images. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching object from the first visible layer with matches; unsupported native objects remain outside general selection. Rectangular objects require all four transformed corners inside the selector, matching master behavior. |
-| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. The user reports that selected text does not show resize or rotation handles. After rotation the visible frame stays axis-aligned while later resize transforms use the accumulated rotation; undo and redo restore both. Transform-following text editor placement and device behavior remain. |
-| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, and newly created or edited text remains selected. The user reports that double-clicking existing text in the Text tool does not enter editing. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. The editor overlay does not follow transforms. |
+| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Text and image selections draw the shared resize and rotation handles. After rotation the visible frame stays axis-aligned while later resize transforms use the accumulated rotation; undo and redo restore both. Transform-following text editor placement and device behavior remain. |
+| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, opens existing text on click or double-click, and selects the clicked word on double-click. Smart Select single-click selects objects and double-click edits native text while preserving the current canvas zoom. Newly created or edited text remains selected. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` streams preserve ordered groups of supported strokes, rich text, links, raster images, and LaTeX images, including dash arrays in the internal codec. Copy also offers rendered PNG and SVG, plus plain text when text is selected; external plain-text paste creates an editable text item. Mixed copy/cut/paste/duplicate and cross-type paste/undo are grouped edits. Unsupported native types, audio attachments, and cross-process compatibility verification remain. |

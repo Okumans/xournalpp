@@ -44,6 +44,44 @@ public:
     bool active() const { return draft.has_value(); }
     const TextItem* item() const { return draft ? &*draft : nullptr; }
 
+    void selectWordAt(int x, int y) {
+        if (!active()) {
+            return;
+        }
+
+        int bufferX = 0;
+        int bufferY = 0;
+        gtk_text_view_window_to_buffer_coords(GTK_TEXT_VIEW(view), GTK_TEXT_WINDOW_WIDGET, x, y, &bufferX,
+                                              &bufferY);
+        GtkTextIter cursor;
+        int trailing = 0;
+        if (!gtk_text_view_get_iter_at_position(GTK_TEXT_VIEW(view), &cursor, &trailing, bufferX, bufferY)) {
+            return;
+        }
+        if (trailing > 0) {
+            gtk_text_iter_forward_chars(&cursor, trailing);
+        }
+
+        GtkTextIter start = cursor;
+        GtkTextIter end = cursor;
+        if (!gtk_text_iter_inside_word(&cursor) && !gtk_text_iter_starts_word(&cursor) &&
+            !gtk_text_iter_ends_word(&cursor)) {
+            gtk_text_buffer_place_cursor(editorBuffer, &cursor);
+            return;
+        }
+        if (!gtk_text_iter_starts_word(&start)) {
+            gtk_text_iter_backward_word_start(&start);
+        }
+        if (!gtk_text_iter_ends_word(&end)) {
+            gtk_text_iter_forward_word_end(&end);
+        }
+        if (gtk_text_iter_compare(&start, &end) < 0) {
+            gtk_text_buffer_select_range(editorBuffer, &end, &start);
+        } else {
+            gtk_text_buffer_place_cursor(editorBuffer, &cursor);
+        }
+    }
+
     void begin(TextItem item, std::optional<size_t> index, double zoom) {
         finish();
         draft = std::move(item);

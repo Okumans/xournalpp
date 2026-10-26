@@ -13713,6 +13713,9 @@ private:
         if (state.pickLink(hit->page, hit->local)) {
             return;
         }
+        if (state.brush.tool == Tool::SmartSelect) {
+            fitMode = false;
+        }
         finishTextEditing();
         resetInput();
         state.clearSelection();
@@ -13739,6 +13742,21 @@ private:
         updateTextToolbarVisibility();
         updateTextEditorPosition();
         update();
+    }
+
+    void selectTextWordAt(double x, double y) {
+        if (!textEditor || !textEditor->active()) {
+            return;
+        }
+        const auto* item = textEditor->item();
+        if (!item) {
+            return;
+        }
+        const auto origin = state.pageScreenPoint(item->page, item->x, item->y);
+        const auto left = std::max(0.0, std::floor(origin.x));
+        const auto top = std::max(0.0, std::floor(origin.y));
+        textEditor->selectWordAt(static_cast<int>(std::lround(x - left)),
+                                 static_cast<int>(std::lround(y - top)));
     }
 
     void finishTextEditing() {
@@ -16637,6 +16655,9 @@ private:
 
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
+        if (device == Device::Mouse && state.brush.tool == Tool::SmartSelect) {
+            textDragHandled = true;
+        }
         trackPointerPosition(x, y);
         hidePdfActionsPreservingSelection();
         if (state.brush.tool == Tool::Latex) {
@@ -17018,6 +17039,15 @@ private:
                                  const auto hit = self->state.hitPage(x, y);
                                  if (hit) {
                                      const auto object = self->state.pickSelectableObject(hit->page, hit->local);
+                                     if (object && object->kind == prototype::SelectableObjectKind::Text &&
+                                         !self->state.texts[object->index].isLink) {
+                                         if (!self->textEditor->active()) {
+                                             self->startTextEditing(x, y);
+                                         }
+                                         self->selectTextWordAt(x, y);
+                                         self->update();
+                                         return;
+                                     }
                                      if (object && object->kind == prototype::SelectableObjectKind::Image &&
                                          self->state.images[object->index].kind == prototype::CanvasImageKind::Latex) {
                                          self->selectTool(Tool::Latex);
@@ -17027,14 +17057,34 @@ private:
                                      }
                                  }
                              }
+                             if (tool == Tool::Text && presses == 2) {
+                                 const auto hit = self->state.hitPage(x, y);
+                                 if (hit && self->textAt(hit->page, hit->local)) {
+                                     if (!self->textEditor->active()) {
+                                         self->startTextEditing(x, y);
+                                     }
+                                     self->selectTextWordAt(x, y);
+                                     self->update();
+                                     return;
+                                 }
+                             }
                              if (presses != 1) return;
                              if (tool == Tool::Text) {
                                  self->startTextEditing(x, y);
                              } else if (tool == Tool::SmartSelect) {
-                                 const auto hit = self->state.hitPage(x, y);
-                                 if (hit && self->textAt(hit->page, hit->local)) {
-                                     self->startTextEditing(x, y);
+                                 if (self->textEditor->active()) {
+                                     self->finishTextEditing();
                                  }
+                                 const auto hit = self->state.hitPage(x, y);
+                                 const auto modifiers = gtk_event_controller_get_current_event_state(
+                                         GTK_EVENT_CONTROLLER(gesture));
+                                 if (hit) {
+                                     self->state.selectObjectAt(hit->page, hit->local,
+                                                                (modifiers & GDK_SHIFT_MASK) != 0);
+                                 } else if ((modifiers & GDK_SHIFT_MASK) == 0) {
+                                     self->state.clearSelection();
+                                 }
+                                 self->update();
                              }
                          }),
                          this);
@@ -21691,11 +21741,25 @@ private:
 
                 activateSelection(Tool::SmartSelect);
                 auto created = state.texts.back();
-                const auto editAt = state.pageScreenPoint(created.page, created.x + created.layoutWidth / 2,
+                state.clearSelection();
+                fitMode = true;
+                const auto zoomBeforeSmartSelect = state.zoom;
+                const auto editAt = state.pageScreenPoint(created.page, created.x + created.layoutWidth * 0.12,
                                                           created.y + created.layoutHeight / 2);
                 g_signal_emit_by_name(textClick, "released", 1, editAt.x, editAt.y);
-                require(textEditor->active(), "Smart Select click did not edit native text");
+                require(!textEditor->active() && state.selectedTexts == std::vector<size_t>{newTextIndex} &&
+                                state.hasSelection() && state.selectionBox().has_value(),
+                        "Smart Select single click did not select native text for transforms");
+                capture("smart-text-selected");
+                g_signal_emit_by_name(textClick, "released", 2, editAt.x, editAt.y);
+                require(textEditor->active() && std::abs(state.zoom - zoomBeforeSmartSelect) < 1e-9 && !fitMode,
+                        "Smart Select double-click did not edit text at the existing canvas zoom");
                 buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+                GtkTextIter selectedStart;
+                GtkTextIter selectedEnd;
+                require(gtk_text_buffer_get_selection_bounds(buffer, &selectedStart, &selectedEnd) &&
+                                !gtk_text_iter_equal(&selectedStart, &selectedEnd),
+                        "Smart Select double-click did not select the clicked text word");
                 GtkTextIter textEnd;
                 gtk_text_buffer_get_end_iter(buffer, &textEnd);
                 gtk_text_buffer_insert(buffer, &textEnd, "!", 1);
@@ -21705,6 +21769,15 @@ private:
                         "Editing existing rich text lost content or its style runs");
 
                 selectTool(Tool::Text);
+                created = state.texts.back();
+                fitMode = true;
+                const auto zoomBeforeTextToolDoubleClick = state.zoom;
+                const auto textToolEditAt = state.pageScreenPoint(created.page, created.x + created.layoutWidth * 0.12,
+                                                                  created.y + created.layoutHeight / 2);
+                g_signal_emit_by_name(textClick, "released", 2, textToolEditAt.x, textToolEditAt.y);
+                require(textEditor->active() && std::abs(state.zoom - zoomBeforeTextToolDoubleClick) < 1e-9,
+                        "Text-tool double-click did not edit existing text at the existing canvas zoom");
+                finishTextEditing();
                 created = state.texts.back();
                 const auto moveStart = state.pageScreenPoint(created.page, created.x + created.layoutWidth / 2,
                                                              created.y + created.layoutHeight / 2);
