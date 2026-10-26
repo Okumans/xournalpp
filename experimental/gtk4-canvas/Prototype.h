@@ -572,6 +572,8 @@ private:
 
     void verifyScrollMotionIntegration();
 
+    void verifyCursorFeedbackIntegration();
+
     void verifySmartSelectPerformanceIntegration();
 
     void verifyPenLineStyleIntegration();
@@ -931,6 +933,12 @@ private:
 
     void trackPointerPosition(double x, double y);
 
+    void setCanvasCursor(const char* name);
+
+    void updateCanvasCursor(double x, double y);
+
+    void refreshCanvasCursor();
+
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt, bool eraserEnd = false,
                uint32_t timeMs = 0);
 
@@ -1174,6 +1182,7 @@ private:
     std::optional<Device> textSelectionOwner;
     std::optional<prototype::Point> selectionEdgePanPointer;
     std::optional<prototype::Point> pointerPosition;
+    std::string canvasCursorName;
     std::optional<prototype::Point> pendingStylusTextTap;
     std::optional<SmartSelectPdfGesture> smartSelectPdfGesture;
     bool textDragHandled = false;

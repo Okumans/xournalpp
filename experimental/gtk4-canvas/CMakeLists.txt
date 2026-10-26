@@ -36,6 +36,8 @@ add_executable(
     PrototypeCanvasView.cpp
     PrototypeClipboard.cpp
     PrototypeDocuments.cpp
+    PrototypeCursor.cpp
+    PrototypeCursorVerification.cpp
     PrototypeFeatureVerification.cpp
     PrototypeFloatingToolbox.cpp
     Gtk4SearchController.cpp

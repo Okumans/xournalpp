@@ -808,7 +808,7 @@ void Prototype::activate(GtkApplication* app) {
         scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
         requestOpenDocument(sourcePath, true);
     }
-    if (options.verifyPlugins || options.verifySearch || options.verifyScrollMotion ||
+    if (options.verifyPlugins || options.verifySearch || options.verifyScrollMotion || options.verifyCursorFeedback ||
         options.verifySmartSelectPerformance || options.verifySidebarPerformance || options.verifySidebarStartup ||
         options.verifyPageLayout || options.verifyPresentationMode || options.verifyPenLineStyle ||
         options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
@@ -824,6 +824,8 @@ void Prototype::activate(GtkApplication* app) {
                             self->verifySearchIntegration();
                         } else if (self->options.verifyScrollMotion) {
                             self->verifyScrollMotionIntegration();
+                        } else if (self->options.verifyCursorFeedback) {
+                            self->verifyCursorFeedbackIntegration();
                         } else if (self->options.verifySmartSelectPerformance) {
                             self->verifySmartSelectPerformanceIntegration();
                         } else if (self->options.verifySidebarPerformance) {
@@ -853,6 +855,8 @@ void Prototype::activate(GtkApplication* app) {
                             verification = "SEARCH";
                         } else if (self->options.verifyScrollMotion) {
                             verification = "SCROLL MOTION";
+                        } else if (self->options.verifyCursorFeedback) {
+                            verification = "CURSOR FEEDBACK";
                         } else if (self->options.verifySmartSelectPerformance) {
                             verification = "SMART SELECT PERFORMANCE";
                         } else if (self->options.verifySidebarPerformance) {
@@ -915,6 +919,7 @@ void Prototype::activate(GtkApplication* app) {
                 this);
     }
     if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
+        !options.verifyCursorFeedback &&
         !options.verifyScrollMotion && !options.verifySmartSelectPerformance && !options.verifySidebarPerformance &&
         !options.verifySidebarStartup && !options.verifyPageLayout && !options.verifyPresentationMode &&
         !options.verifyPenLineStyle && !options.verifyBeamer && !options.verifyLayerActions && !options.verifyLatex) {
@@ -1121,6 +1126,7 @@ void Prototype::update() {
     gtk_widget_queue_draw(canvas);
     syncAudioControls();
     ensureLaserFadeTimer();
+    refreshCanvasCursor();
 }
 
 void Prototype::updateFloatingPageSpinners() {
