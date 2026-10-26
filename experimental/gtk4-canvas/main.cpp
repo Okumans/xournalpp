@@ -13004,7 +13004,8 @@ private:
         constexpr char canvasCssData[] =
                 "listview.page-thumbnails row:selected { background-color: transparent; box-shadow: none; }\n"
                 "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n"
-                ".canvas-text-editor, .canvas-text-editor text { background-color: transparent; }\n";
+                ".canvas-text-editor, .canvas-text-editor text { background-color: transparent; }\n"
+                ".canvas-text-editor text { caret-color: #1c71d8; }\n";
         gtk_css_provider_load_from_string(canvasCss, canvasCssData);
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(canvasCss),
                                                    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -14201,8 +14202,6 @@ private:
         gtk_widget_set_focusable(canvas, true);
         gtk_widget_set_hexpand(canvas, true);
         gtk_widget_set_vexpand(canvas, true);
-        gtk_widget_set_tooltip_text(canvas, "Draw with pen or mouse. Touch or middle-drag to pan. Pinch or Ctrl+wheel "
-                                            "to zoom. Escape cancels ink.");
         canvasOverlay = gtk_overlay_new();
         gtk_overlay_set_child(GTK_OVERLAY(canvasOverlay), canvas);
         textEditor = std::make_unique<prototype::TextEditorOverlay>(GTK_OVERLAY(canvasOverlay));
@@ -15620,6 +15619,26 @@ private:
                              if (!mouseEvent(GTK_EVENT_CONTROLLER(gesture))) return;
                              auto* self = static_cast<Prototype*>(data);
                              self->textDragHandled = false;
+                             if (presses == 2 && self->state.brush.tool == Tool::SmartSelect) {
+                                 const auto hit = self->state.hitPage(x, y);
+                                 if (hit) {
+                                     const auto object = self->state.pickSelectableObject(hit->page, hit->local);
+                                     if (object && object->kind == prototype::SelectableObjectKind::Text &&
+                                         !self->state.texts[object->index].isLink) {
+                                         self->startTextEditing(x, y);
+                                         self->selectTextWordAt(x, y);
+                                         self->update();
+                                         return;
+                                     }
+                                     if (object && object->kind == prototype::SelectableObjectKind::Image &&
+                                         self->state.images[object->index].kind == prototype::CanvasImageKind::Latex) {
+                                         self->selectTool(Tool::Latex);
+                                         self->openLatexEditorAt(x, y, true);
+                                         self->update();
+                                         return;
+                                     }
+                                 }
+                             }
                              if (self->state.drawingMode == prototype::DrawingMode::Spline &&
                                  (self->state.brush.tool == Tool::Pen || self->state.brush.tool == Tool::Highlighter)) {
                                  self->input.splinePress(Device::Mouse, {x, y, std::nullopt}, presses >= 2);
@@ -15672,28 +15691,6 @@ private:
                                  }
                                  return;
                              }
-                             if (tool == Tool::SmartSelect && presses == 2) {
-                                 const auto hit = self->state.hitPage(x, y);
-                                 if (hit) {
-                                     const auto object = self->state.pickSelectableObject(hit->page, hit->local);
-                                     if (object && object->kind == prototype::SelectableObjectKind::Text &&
-                                         !self->state.texts[object->index].isLink) {
-                                         if (!self->textEditor->active()) {
-                                             self->startTextEditing(x, y);
-                                         }
-                                         self->selectTextWordAt(x, y);
-                                         self->update();
-                                         return;
-                                     }
-                                     if (object && object->kind == prototype::SelectableObjectKind::Image &&
-                                         self->state.images[object->index].kind == prototype::CanvasImageKind::Latex) {
-                                         self->selectTool(Tool::Latex);
-                                         self->openLatexEditorAt(x, y, true);
-                                         self->update();
-                                         return;
-                                     }
-                                 }
-                             }
                              if (tool == Tool::Text && presses == 2) {
                                  const auto hit = self->state.hitPage(x, y);
                                  if (hit && self->textAt(hit->page, hit->local)) {
@@ -15720,6 +15717,7 @@ private:
                                                                 (modifiers & GDK_SHIFT_MASK) != 0);
                                  } else if ((modifiers & GDK_SHIFT_MASK) == 0) {
                                      self->state.clearSelection();
+                                     self->clearPdfTextSelection(false);
                                  }
                                  self->update();
                              }
@@ -20430,6 +20428,7 @@ private:
                                 state.hasSelection() && state.selectionBox().has_value(),
                         "Smart Select single click did not select native text for transforms");
                 capture("smart-text-selected");
+                g_signal_emit_by_name(textClick, "pressed", 2, editAt.x, editAt.y);
                 g_signal_emit_by_name(textClick, "released", 2, editAt.x, editAt.y);
                 require(textEditor->active() && std::abs(state.zoom - zoomBeforeSmartSelect) < 1e-9 && !fitMode,
                         "Smart Select double-click did not edit text at the existing canvas zoom");
