@@ -6229,6 +6229,14 @@ private:
         gtk_single_selection_set_selected(GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList)), pageCount - 1);
         waitForNextWindowFrame();
         require(state.page == pageCount - 1, "Selecting the last virtualized sidebar page did not navigate");
+        openGotoPageDialog();
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(gotoPageSpin), 1);
+        answerDialog("go");
+        waitForNextWindowFrame();
+        require(state.page == 0 &&
+                        gtk_single_selection_get_selected(GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList))) == 0 &&
+                        gtk_adjustment_get_value(adjustment) <= gtk_adjustment_get_lower(adjustment) + 1.0,
+                "Go to Page did not synchronize the sidebar selection and scroll position");
         const double anchorX = gtk_widget_get_width(canvas) / 2.0;
         const double anchorY = gtk_widget_get_height(canvas) / 2.0;
         const auto documentAnchor = state.documentPoint(anchorX, anchorY);
@@ -8581,6 +8589,7 @@ private:
         if (number < 0 || number >= pageCount) {
             return;
         }
+        const int previousPage = state.page;
         if (number != state.page) {
             selectedImageIndex.reset();
         }
@@ -8602,6 +8611,9 @@ private:
         fitted = false;
         if (canvas) {
             update();
+            if (number == previousPage) {
+                scrollPageSidebarToCurrent();
+            }
         }
     }
 
@@ -14137,6 +14149,29 @@ private:
         }
     }
 
+    void scrollPageSidebarToCurrent() {
+        if (!pageList || state.page < 0 || state.page >= pageCount) {
+            return;
+        }
+#if GTK_CHECK_VERSION(4, 12, 0)
+        gtk_list_view_scroll_to(pageList, static_cast<guint>(state.page), GTK_LIST_SCROLL_NONE, nullptr);
+#else
+        auto* scroll = gtk_widget_get_parent(GTK_WIDGET(pageList));
+        if (!GTK_IS_SCROLLED_WINDOW(scroll)) {
+            return;
+        }
+        auto* adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
+        const double lower = gtk_adjustment_get_lower(adjustment);
+        const double upper = gtk_adjustment_get_upper(adjustment);
+        const double pageSize = gtk_adjustment_get_page_size(adjustment);
+        const double scrollable = upper - lower - pageSize;
+        if (scrollable > 0 && pageCount > 1) {
+            const double fraction = static_cast<double>(state.page) / static_cast<double>(pageCount - 1);
+            gtk_adjustment_set_value(adjustment, lower + fraction * scrollable);
+        }
+#endif
+    }
+
     void update() {
         if (closed) {
             return;
@@ -14225,10 +14260,14 @@ private:
         updateFloatingPageSpinners();
         updateFloatingLayerMenus();
         if (pageList) {
+            auto* selection = GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList));
+            const bool pageChanged = gtk_single_selection_get_selected(selection) != static_cast<guint>(state.page);
             syncingPage = true;
-            gtk_single_selection_set_selected(
-                    GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList)), static_cast<guint>(state.page));
+            gtk_single_selection_set_selected(selection, static_cast<guint>(state.page));
             syncingPage = false;
+            if (pageChanged) {
+                scrollPageSidebarToCurrent();
+            }
         }
         for (auto* thumbnail: thumbnailWidgets) {
             if (gtk_widget_get_mapped(thumbnail)) {
@@ -16068,7 +16107,7 @@ private:
             cairo_fill(cr);
         }
         bool drewAny = false;
-        for (int i = 0; i < state.pageCount(); ++i) {
+        for (const int i: state.visiblePageIndices(width, height)) {
             const auto sz = state.pageSize(i);
             const double sx0 = state.offsetX + state.pageLeft(i) * state.zoom;
             const double sy0 = state.offsetY + state.pageTop(i) * state.zoom;

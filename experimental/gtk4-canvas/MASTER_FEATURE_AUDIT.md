@@ -36,6 +36,10 @@ sparse-text PDF check bound 205 reusable preview rows, mapped 3 in the
 viewport, reused the same row pool at pages 9,795–9,999, and navigated to the
 last page. The fixture does not measure thumbnail latency on a content-heavy
 real PDF; revisit that case if the reported stall persists.
+Phase 98 also changed canvas painting and active-page selection to query only
+viewport-intersecting pages, using binary search over the layout grid. The
+private 10,000-page check also confirms Go to Page updates and scrolls the page
+sidebar selection. Content-heavy PDF render latency remains unmeasured.
 
 These user-requested follow-ups remain:
 
@@ -46,6 +50,9 @@ These user-requested follow-ups remain:
 - Implement touchpad momentum/kinetic scrolling and verify it on the user's
   physical touchpad. The existing synthetic scroll-unit check does not cover
   momentum or physical-device behavior.
+- Reproduce and fix the reported page-sidebar lag during rapid scrolling. The
+  10,000-page check jumps directly to the last row; it does not measure
+  sustained fast scrolling.
 
 ## Default UI target
 

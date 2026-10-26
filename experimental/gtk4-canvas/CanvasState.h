@@ -2327,6 +2327,26 @@ public:
         return pageLayout.pageTop(index, pages);
     }
 
+    std::vector<int> visiblePageIndices(double viewportWidth, double viewportHeight) const {
+        if (!std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 ||
+            viewportHeight <= 0 || !std::isfinite(zoom) || zoom <= 0 || !std::isfinite(offsetX) ||
+            !std::isfinite(offsetY)) {
+            return {};
+        }
+        const double left = -offsetX / zoom;
+        const double top = -offsetY / zoom;
+        const double right = (viewportWidth - offsetX) / zoom;
+        const double bottom = (viewportHeight - offsetY) / zoom;
+        if (pages.empty()) {
+            const auto size = pageSize(0);
+            if (left < size.width && right > 0 && top < size.height && bottom > 0) {
+                return {0};
+            }
+            return {};
+        }
+        return pageLayout.pagesIntersecting(left, top, right, bottom, pages);
+    }
+
     double activeEraserWidth() const { return brush.tool == Tool::Eraser ? brush.width : eraserWidth; }
 
     double steppedZoom(bool zoomIn, bool scroll) const {
@@ -2475,7 +2495,7 @@ public:
         }
         int bestPage = -1;
         double bestArea = 0.0;
-        for (int i = 0; i < static_cast<int>(pages.size()); ++i) {
+        for (const int i: visiblePageIndices(viewportWidth, viewportHeight)) {
             const auto& sz = pages[static_cast<size_t>(i)];
             const double x0 = std::max(0.0, offsetX + pageLeft(i) * zoom);
             const double y0 = std::max(0.0, offsetY + pageTop(i) * zoom);
@@ -2483,7 +2503,7 @@ public:
             const double y1 = std::min(viewportHeight, offsetY + (pageTop(i) + sz.height) * zoom);
             if (x1 > x0 && y1 > y0) {
                 const double area = (x1 - x0) * (y1 - y0);
-                if (area > bestArea) {
+                if (area > bestArea || (area == bestArea && (bestPage < 0 || i < bestPage))) {
                     bestArea = area;
                     bestPage = i;
                 }

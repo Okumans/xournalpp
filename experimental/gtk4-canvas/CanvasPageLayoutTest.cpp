@@ -34,6 +34,10 @@ void testContinuousVerticalLayout() {
     requireNear(layout.pageTop(1, pages), 215, "Second page should follow the first page and gap");
     require(layout.pageAt(20, 220, pages) == 1, "Page hit testing should resolve centered page cells");
     require(!layout.pageAt(20, 205, pages), "Page gaps should not be hittable");
+    require(layout.pagesIntersecting(15, 220, 35, 240, pages) == std::vector<int>{1},
+            "Viewport queries should return only the intersecting vertical page");
+    require(layout.pagesIntersecting(0, 202, 120, 210, pages).empty(),
+            "Viewport queries should omit page gaps");
 }
 
 void testHorizontalGridLayout() {
@@ -78,6 +82,22 @@ void testPairedOffsetAndReadingDirection() {
     layout.configure(pages, settings, 15);
     require(layout.gridPosition(0).column == 0 && layout.gridPosition(0).row == 1,
             "Reading directions should mirror paired-page grid positions");
+    const double left = layout.pageLeft(0, pages);
+    const double top = layout.pageTop(0, pages);
+    require(layout.pagesIntersecting(left + 10, top + 10, left + 20, top + 20, pages) == std::vector<int>{0},
+            "Viewport queries should honor paired-page reading directions");
+}
+
+void testLargeDocumentViewportQuery() {
+    std::vector<PageSize> pages(10000, {100, 200});
+    prototype::CanvasPageLayout layout;
+    layout.configure(pages, {}, 15);
+
+    constexpr int targetPage = 9876;
+    const double top = layout.pageTop(targetPage, pages);
+    const auto visible = layout.pagesIntersecting(10, top + 20, 90, top + 180, pages);
+    require(visible == std::vector<int>{targetPage},
+            "A large document viewport query should return only its visible page");
 }
 
 }  // namespace
@@ -87,6 +107,7 @@ int main() {
         testContinuousVerticalLayout();
         testHorizontalGridLayout();
         testPairedOffsetAndReadingDirection();
+        testLargeDocumentViewportQuery();
         std::cout << "Canvas page layout checks passed\n";
     } catch (const std::exception& error) {
         std::cerr << "Canvas page layout check failed: " << error.what() << '\n';

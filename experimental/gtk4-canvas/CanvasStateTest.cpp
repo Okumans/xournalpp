@@ -761,6 +761,21 @@ static void continuousMultiPageLayout() {
           "deletePageAt must refuse deleting the last remaining page");
 }
 
+static void visiblePageCullingPreservesActivePageTieBreak() {
+    CanvasState state;
+    state.setPages({{100, 100}, {100, 100}});
+    CanvasLayoutSettings settings;
+    settings.vertical = false;
+    settings.columns = 2;
+    settings.rightToLeft = true;
+    state.setLayoutSettings(settings);
+    check(state.visiblePageIndices(215, 100).size() == 2,
+          "CanvasState should map viewport bounds into the paired RTL page grid");
+    state.syncActivePage(215, 100);
+    check(state.page == 0,
+          "visible-page culling must preserve source-order tie-breaking for equal active-page intersections");
+}
+
 static void pageStructureHistory() {
     CanvasState state;
     state.setPages({{595, 842}, {612, 792}, {500, 700}});
@@ -1546,6 +1561,7 @@ int main() {
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
+        visiblePageCullingPreservesActivePageTieBreak();
         pageStructureHistory();
         scrollDeltaUnits();
         pluginBackgroundNameSetter();
