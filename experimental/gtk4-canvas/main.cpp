@@ -136,6 +136,7 @@ struct ThumbnailLayerSource {
 struct ThumbnailRequest {
     int page = -1;
     uint64_t generation = 0;
+    uint64_t requestId = 0;
     double priority = std::numeric_limits<double>::infinity();
     prototype::PageSize pageSize;
     std::string backgroundPath;
@@ -173,6 +174,7 @@ struct ThumbnailRendererState {
     std::vector<int> lastDispatchOrder;
     size_t offscreenCancellations = 0;
     uint64_t generation = 0;
+    uint64_t requestSequence = 0;
     uint64_t stamp = 0;
     int selectedPage = -1;
     guint dispatchSource = 0;
@@ -284,7 +286,7 @@ void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
         state->activeTasks.erase(active);
     }
     if (const auto found = state->pending.find(task->request.page);
-        found != state->pending.end() && found->second == task->request.generation) {
+        found != state->pending.end() && found->second == task->request.requestId) {
         state->pending.erase(found);
     }
     removeThumbnailTaskFiles(*task);
@@ -507,7 +509,7 @@ void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
         if (request.generation != state->generation ||
             (!state->visiblePages.empty() && !state->visiblePages.contains(request.page))) {
             if (const auto found = state->pending.find(request.page);
-                found != state->pending.end() && found->second == request.generation) {
+                found != state->pending.end() && found->second == request.requestId) {
                 state->pending.erase(found);
             }
             continue;
@@ -651,7 +653,7 @@ public:
                 ++it;
             } else {
                 if (const auto found = state->pending.find(it->page);
-                    found != state->pending.end() && found->second == it->generation) {
+                    found != state->pending.end() && found->second == it->requestId) {
                     state->pending.erase(found);
                 }
                 ++state->offscreenCancellations;
@@ -666,7 +668,7 @@ public:
                     ++state->offscreenCancellations;
                 }
                 if (const auto found = state->pending.find(task->request.page);
-                    found != state->pending.end() && found->second == task->request.generation) {
+                    found != state->pending.end() && found->second == task->request.requestId) {
                     state->pending.erase(found);
                 }
                 if (task->process) {
@@ -683,13 +685,13 @@ public:
         if (!state->visiblePages.empty() && !std::isfinite(request.priority)) {
             return;
         }
-        if (state->previews.contains(request.page) ||
-            (state->pending.contains(request.page) && state->pending.at(request.page) == generation) ||
+        if (state->previews.contains(request.page) || state->pending.contains(request.page) ||
             (state->failed.contains(request.page) && state->failed.at(request.page) == generation)) {
             return;
         }
         request.generation = generation;
-        state->pending[request.page] = generation;
+        request.requestId = ++state->requestSequence;
+        state->pending[request.page] = request.requestId;
         state->queue.push_back(std::move(request));
         sortThumbnailQueue(*state);
         // shortcut: keep 12 visible requests queued; grow only if large-document measurements justify it.
@@ -697,7 +699,7 @@ public:
             const auto dropped = state->queue.back();
             state->queue.pop_back();
             if (const auto found = state->pending.find(dropped.page);
-                found != state->pending.end() && found->second == dropped.generation) {
+                found != state->pending.end() && found->second == dropped.requestId) {
                 state->pending.erase(found);
             }
         }
@@ -717,6 +719,8 @@ public:
     size_t pendingCount() const { return state->pending.size(); }
     size_t activeCount() const { return state->activeTasks.size(); }
     size_t offscreenCancellations() const { return state->offscreenCancellations; }
+    bool hasPending(int page) const { return state->pending.contains(page); }
+    bool hasFailed(int page) const { return state->failed.contains(page); }
 
     int nextQueuedPage() const { return state->queue.empty() ? -1 : state->queue.front().page; }
 
@@ -6979,6 +6983,81 @@ private:
                 "The Pages sidebar did not finish opening for the no-input startup check");
         capture("sidebar-startup-no-input");
         std::cout << "PASS: GTK4 sidebar renders its first visible thumbnail without input\n";
+
+        const int canvasPage = state.page;
+        require(pageCount > 36, "The content-heavy sidebar PDF needs at least 37 pages");
+        const int targetPage = 24;
+        auto* pageScroll = GTK_SCROLLED_WINDOW(gtk_widget_get_parent(GTK_WIDGET(pageList)));
+        auto* adjustment = gtk_scrolled_window_get_vadjustment(pageScroll);
+        const double lower = gtk_adjustment_get_lower(adjustment);
+        const double scrollable =
+                gtk_adjustment_get_upper(adjustment) - lower - gtk_adjustment_get_page_size(adjustment);
+        require(scrollable > 0,
+                "The content-heavy sidebar PDF has no range for the fast-scroll check");
+        const std::array<int, 3> scrollStops{targetPage, targetPage + 12, targetPage};
+        for (const int stopPage: scrollStops) {
+            const double targetValue = lower + scrollable * stopPage / (pageCount - 1.0);
+            for (int frame = 1; frame <= 4; ++frame) {
+                gtk_adjustment_set_value(adjustment, lower + (targetValue - lower) * frame / 4.0);
+                waitForNextWindowFrame();
+            }
+        }
+        prioritizeVisibleSidebarThumbnails();
+        const auto mappedVisiblePages = [this] {
+            std::vector<int> pages;
+            const int viewportHeight = gtk_widget_get_height(GTK_WIDGET(pageList));
+            for (auto* thumbnail: thumbnailWidgets) {
+                const int page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(thumbnail), "page"));
+                graphene_rect_t bounds{};
+                if (page >= 0 && gtk_widget_get_mapped(thumbnail) &&
+                    gtk_widget_compute_bounds(thumbnail, GTK_WIDGET(pageList), &bounds) &&
+                    bounds.origin.y + bounds.size.height > 0 && bounds.origin.y < viewportHeight) {
+                    pages.push_back(page);
+                }
+            }
+            std::sort(pages.begin(), pages.end());
+            return pages;
+        };
+        std::vector<int> visiblePages;
+        const auto stopDeadline = g_get_monotonic_time() + 10000000;
+        const auto visibleThumbnailsReady = [this, &visiblePages, &mappedVisiblePages, targetPage] {
+            visiblePages = mappedVisiblePages();
+            return std::find(visiblePages.begin(), visiblePages.end(), targetPage) != visiblePages.end() &&
+                   std::all_of(visiblePages.begin(), visiblePages.end(),
+                               [this](int page) { return thumbnailRenderer.find(page) != nullptr; });
+        };
+        while (!visibleThumbnailsReady() && g_get_monotonic_time() < stopDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        const bool targetPageVisible =
+                std::find(visiblePages.begin(), visiblePages.end(), targetPage) != visiblePages.end();
+        const bool allVisibleThumbnailsReady =
+                std::all_of(visiblePages.begin(), visiblePages.end(),
+                            [this](int page) { return thumbnailRenderer.find(page) != nullptr; });
+        if (state.page != canvasPage || !targetPageVisible || !allVisibleThumbnailsReady) {
+            std::cerr << "SIDEBAR FAST STOP FAILED: initial_canvas_page=" << canvasPage + 1
+                      << " canvas_page=" << state.page + 1 << " target_visible="
+                      << targetPageVisible << " visible=";
+            for (const int page: visiblePages) {
+                const char* status = thumbnailRenderer.find(page) ? "ready" :
+                                     thumbnailRenderer.hasPending(page) ? "pending" :
+                                     thumbnailRenderer.hasFailed(page) ? "failed" : "missing";
+                std::cerr << page + 1 << ':' << status << ',';
+            }
+            std::cerr << " pending_total=" << thumbnailRenderer.pendingCount()
+                      << " active=" << thumbnailRenderer.activeCount()
+                      << " next=" << thumbnailRenderer.nextQueuedPage() << '\n';
+        }
+        require(state.page == canvasPage && targetPageVisible && allVisibleThumbnailsReady,
+                "Visible sidebar thumbnails did not all finish after fast scrolling stopped");
+        capture("sidebar-fast-scroll-stop");
+        std::cout << "SIDEBAR FAST STOP: canvas_page=" << state.page << " visible_pages=";
+        for (const int page: visiblePages) {
+            std::cout << page + 1 << ',';
+        }
+        std::cout << " rendered=" << visiblePages.size() << '\n';
+        std::cout << "PASS: GTK4 sidebar renders visible thumbnails after fast scrolling stops\n";
     }
 
     void verifySearchIntegration() {
@@ -13385,6 +13464,7 @@ private:
             gtk_string_list_append(pages, label.c_str());
         }
         auto* selection = gtk_single_selection_new(G_LIST_MODEL(pages));
+        gtk_single_selection_set_autoselect(selection, false);
         g_signal_connect(selection, "notify::selected",
                          G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);

@@ -919,10 +919,18 @@ def verify_sidebar_startup(args, evidence):
     screenshot = run_dir / "sidebar-startup-no-input.png"
     if not screenshot.is_file() or screenshot.stat().st_size < 1000:
         raise RuntimeError(f"Missing no-input sidebar screenshot: {screenshot}")
+    scroll_screenshot = run_dir / "sidebar-fast-scroll-stop.png"
+    if not scroll_screenshot.is_file() or scroll_screenshot.stat().st_size < 1000:
+        raise RuntimeError(f"Missing fast-scroll sidebar screenshot: {scroll_screenshot}")
+    scroll_marker = "PASS: GTK4 sidebar renders visible thumbnails after fast scrolling stops"
+    if scroll_marker not in output:
+        raise RuntimeError("Visible thumbnails did not settle after fast sidebar scrolling")
     report = {
         "fixture_pdf": str(pdf),
         "screenshot": str(screenshot),
-        "checks": ["first visible page thumbnail renders and redraws without input"],
+        "fast_scroll_screenshot": str(scroll_screenshot),
+        "checks": ["first visible page thumbnail renders and redraws without input",
+                   "visible thumbnails finish after fast scroll while the canvas page stays unchanged"],
         "rendering": "Private headless Wayland via Cage",
     }
     print("PASS: private GTK4 sidebar startup thumbnail repaint", flush=True)
