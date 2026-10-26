@@ -151,6 +151,13 @@ struct ThumbnailPreview {
 
 struct ThumbnailTask;
 
+struct ThumbnailWidgetReference {
+    ThumbnailWidgetReference() { g_weak_ref_init(&reference, nullptr); }
+    ~ThumbnailWidgetReference() { g_weak_ref_clear(&reference); }
+
+    GWeakRef reference;
+};
+
 struct ThumbnailRendererState {
     ThumbnailRendererState() { g_weak_ref_init(&pageList, nullptr); }
     ~ThumbnailRendererState() { g_weak_ref_clear(&pageList); }
@@ -160,6 +167,7 @@ struct ThumbnailRendererState {
     std::map<int, uint64_t> pending;
     std::map<int, uint64_t> failed;
     std::map<int, double> visiblePages;
+    std::map<int, std::unique_ptr<ThumbnailWidgetReference>> boundThumbnails;
     std::deque<ThumbnailRequest> queue;
     std::vector<std::shared_ptr<ThumbnailTask>> activeTasks;
     std::vector<int> lastDispatchOrder;
@@ -304,6 +312,13 @@ void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
             state->previews.insert_or_assign(task->request.page, std::move(task->preview));
             if (!error.empty()) {
                 std::cerr << "GTK4 page thumbnail partially rendered: " << error << '\n';
+            }
+            if (const auto found = state->boundThumbnails.find(task->request.page);
+                found != state->boundThumbnails.end()) {
+                if (auto* thumbnail = GTK_WIDGET(g_weak_ref_get(&found->second->reference))) {
+                    gtk_widget_queue_draw(thumbnail);
+                    g_object_unref(thumbnail);
+                }
             }
             if (auto* list = GTK_WIDGET(g_weak_ref_get(&state->pageList))) {
                 gtk_widget_queue_draw(list);
@@ -586,6 +601,29 @@ public:
     }
 
     void setPageList(GtkWidget* list) { g_weak_ref_set(&state->pageList, G_OBJECT(list)); }
+
+    void bindThumbnailWidget(int page, GtkWidget* widget) {
+        auto& reference = state->boundThumbnails[page];
+        if (!reference) {
+            reference = std::make_unique<ThumbnailWidgetReference>();
+        }
+        g_weak_ref_set(&reference->reference, G_OBJECT(widget));
+    }
+
+    void unbindThumbnailWidget(int page, GtkWidget* widget) {
+        const auto found = state->boundThumbnails.find(page);
+        if (found == state->boundThumbnails.end()) {
+            return;
+        }
+        auto* bound = GTK_WIDGET(g_weak_ref_get(&found->second->reference));
+        const bool matches = bound == widget;
+        if (bound) {
+            g_object_unref(bound);
+        }
+        if (matches) {
+            state->boundThumbnails.erase(found);
+        }
+    }
 
     void invalidate() {
         ++state->generation;
@@ -6927,7 +6965,8 @@ private:
     void verifySidebarStartupIntegration() {
         require(document && pageList && splitView && pageCount > 0,
                 "Sidebar startup check did not load its PDF");
-        adw_overlay_split_view_set_show_sidebar(splitView, true);
+        require(adw_overlay_split_view_get_show_sidebar(splitView),
+                "Sidebar startup check did not start with the Pages sidebar open");
         const auto deadline = g_get_monotonic_time() + 6000000;
         while ((!thumbnailRenderer.find(0) || sidebarStartupReadyDraws == 0) &&
                g_get_monotonic_time() < deadline) {
@@ -6936,9 +6975,6 @@ private:
         }
         require(thumbnailRenderer.find(0) && sidebarStartupReadyDraws > 0,
                 "The first page thumbnail did not render and redraw without input");
-        for (int frame = 0; frame < 18; ++frame) {
-            waitForNextWindowFrame();
-        }
         require(gtk_widget_get_width(GTK_WIDGET(pageList)) >= pageThumbnailWidth,
                 "The Pages sidebar did not finish opening for the no-input startup check");
         capture("sidebar-startup-no-input");
@@ -13401,6 +13437,7 @@ private:
                              gtk_label_set_text(label, gtk_string_object_get_string(
                                                               GTK_STRING_OBJECT(gtk_list_item_get_item(item))));
                              self->thumbnailWidgets.push_back(preview);
+                             self->thumbnailRenderer.bindThumbnailWidget(static_cast<int>(page), preview);
                              self->prioritizeVisibleSidebarThumbnails();
                              self->requestSidebarThumbnail(static_cast<int>(page));
                              gtk_widget_queue_draw(preview);
@@ -13410,6 +13447,8 @@ private:
                                                             gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              auto* preview = GTK_WIDGET(g_object_get_data(G_OBJECT(item), "thumbnail"));
+                             const int page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(preview), "page"));
+                             self->thumbnailRenderer.unbindThumbnailWidget(page, preview);
                              const auto found = std::find(self->thumbnailWidgets.begin(), self->thumbnailWidgets.end(),
                                                           preview);
                              if (found != self->thumbnailWidgets.end()) {

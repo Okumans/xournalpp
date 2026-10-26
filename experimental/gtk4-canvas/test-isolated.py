@@ -907,6 +907,7 @@ def verify_sidebar_startup(args, evidence):
     config_dir = evidence / "sidebar-startup-config"
     run_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "gtk4-canvas.ini").write_text("[General]\nshow-sidebar=true\n", encoding="utf-8")
     output = run(
         [str(args.binary.resolve()), "--config-dir", str(config_dir), "--pdf", str(pdf),
          "--smoke-dir", str(run_dir), "--verify-sidebar-startup"],

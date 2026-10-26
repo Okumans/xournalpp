@@ -45,7 +45,8 @@ renderer processes, starts the nearest visible page first, and cancels offscreen
 work. The private 10,000-page check renders page 5000 while the canvas remains
 on page 0 with its raster cache suppressed, verifies first dispatch, then drives
 32 sidebar scroll frames. A no-input private GUI check against the user's
-775-page PDF confirms the first visible thumbnail renders and redraws.
+775-page PDF starts with the sidebar open from saved preferences and confirms
+the first visible thumbnail renders and redraws.
 Layer-sidebar responsiveness and thumbnail latency on content-heavy PDFs remain
 unmeasured.
 
