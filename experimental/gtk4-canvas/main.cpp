@@ -13000,14 +13000,15 @@ private:
         thumbnailRenderer.setRedrawWidget(GTK_WIDGET(pageList));
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "page-thumbnails");
-        auto* sidebarCss = gtk_css_provider_new();
-        constexpr char sidebarCssData[] =
+        auto* canvasCss = gtk_css_provider_new();
+        constexpr char canvasCssData[] =
                 "listview.page-thumbnails row:selected { background-color: transparent; box-shadow: none; }\n"
-                "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n";
-        gtk_css_provider_load_from_string(sidebarCss, sidebarCssData);
-        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(sidebarCss),
+                "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n"
+                ".canvas-text-editor, .canvas-text-editor text { background-color: transparent; }\n";
+        gtk_css_provider_load_from_string(canvasCss, canvasCssData);
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(canvasCss),
                                                    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        g_object_unref(sidebarCss);
+        g_object_unref(canvasCss);
         gtk_list_view_set_show_separators(pageList, false);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
         g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)), "value-changed",
@@ -16660,6 +16661,9 @@ private:
                         }
                     }
                     for (size_t index = 0; index < state.texts.size(); ++index) {
+                        if (textEditor && textEditor->active() && textEditor->existingItemIndex() == index) {
+                            continue;
+                        }
                         if (state.verticalSpaceAffectsText(index)) {
                             continue;
                         }
