@@ -61,8 +61,47 @@ objects and double-click edits text; the Text tool double-click selects the
 clicked word. Entering text editing from Smart Select preserves the current
 canvas zoom, and text/image selections draw their shared resize and rotation
 handles. Phase 107 groups adjacent committed Pen/whiteout and Highlighter
-strokes into bounded shared rasters; appended strokes extend the raster, while
-the active stroke and transformed selections remain live vector content.
+strokes into bounded shared rasters. Phase 110 gives append-only active Pen,
+Highlighter, and whiteout strokes viewport-bounded live rasters, appends new
+segments, and repairs the previous join against the canonical Cairo path. It
+keeps transformed selections and unsupported active shapes/fills vector
+rendered, owns the cache per window, prunes obsolete visible-page runs, and
+clears the cache on document replacement. The focused pixel test covers 40
+same-bounds committed strokes and live Pen, dashed/pressure Pen, Highlighter,
+and whiteout updates; the private Cage smoke passes in light and dark modes.
+This does not measure long-running frame time on the user's PDF.
+
+## User-directed completion order
+
+Continue in this order after the active ink-cache slice:
+
+1. Fix the text editor presentation and interaction: size the initial box to
+   its content/font instead of a wide default, keep the caret easy to see,
+   ensure text and its selection/control geometry stay aligned, and verify
+   existing-text edit gestures and text rendering in the private Cage UI.
+2. Match original Xournal++ touchpad scrolling: keep horizontal drift minimal,
+   constrain movement to the page/grid navigation area, and add momentum. Test
+   synthetic deltas first, then verify the behavior on the user's physical
+   touchpad; synthetic input alone is not physical-device parity.
+3. Finish the other deferred user reports below, including ink frame-time on
+   the user's PDF, search highlight geometry/responsiveness, raster-worker
+   failures, Smart Select drag performance, cursor feedback, and remaining
+   Eraser parity. Keep the audit updated as each issue is verified.
+4. Migrate native `.xopp` loading and saving into the GTK 4 process, reusing the
+   existing document model/serialization where possible and removing the
+   separate GTK 3 worker dependency. Record deliberate compatibility changes
+   in the corresponding PR.
+5. Bring every remaining Partial audit item to Covered (or record an explicit
+   obsolete decision with its rationale) before the final UI redesign.
+6. Reimagine the completed GTK 4 UI as a modern, cohesive workspace. At that
+   stage, use a GPT-6.1-Sol high-reasoning agent to plan the redesign, then
+   implement and validate the chosen direction against the compact default
+   tool layout and customizability requirements above.
+
+Document search must remain Enter-driven: typing edits the query and clears
+stale results, while Enter or an explicit next/previous action starts a
+page-at-a-time idle scan. Phase 109 implements this; keep it covered by the
+focused private Search check while addressing the other search issues.
 
 These user-requested follow-ups remain:
 
@@ -96,8 +135,15 @@ These user-requested follow-ups remain:
   fast-scroll previews settled on pages 25–27, and zoom-out reported 3 full,
   3 medium, and 11 low-detail cached pages.
 - Implement touchpad momentum/kinetic scrolling and verify it on the user's
-  physical touchpad. The existing synthetic scroll-unit check does not cover
-  momentum or physical-device behavior.
+  physical touchpad. Match the original Xournal++ feel, minimize unwanted
+  horizontal movement, and keep scrolling within the page/grid area. The
+  existing synthetic scroll-unit check does not cover momentum or physical
+  device behavior.
+- Fix the reported text editor sizing and caret visibility problems. The
+  initial text box should start close to the entered text/font size, and its
+  rendered text, editor bounds, selection frame, and transform controls should
+  remain aligned. Verify text creation and double-click editing in the private
+  Cage UI.
 - Measure sidebar and canvas raster latency while rapidly scrolling the user's
   content-heavy PDF. The generated 10,000-page fixture verifies
   nearest-visible-first independent rendering and a synthetic 32-frame scroll,
@@ -109,11 +155,14 @@ These user-requested follow-ups remain:
   128-point strokes measured about 421 ms for one full editable-ink draw.
   Phase 107 combines adjacent committed Pen/whiteout and Highlighter strokes
   into one cached draw-order run and appends new strokes to that raster without
-  rescanning the earlier stroke geometry. This targets the user's report that
-  highlighter drawing becomes unusable after about 40 strokes; that case has
-  not yet been measured against the new cache. The 421 ms measurement has not
-  been repeated; editable-page snapshots and user-document frame-time
-  measurements remain outstanding.
+  rescanning the earlier stroke geometry. Phase 110 adds an in-place path for
+  same-bounds run extensions and a live raster for append-only active strokes;
+  the 40-stroke pixel check confirms no prior-raster bytes are copied when
+  bounds stay fixed. This targets the user's report that highlighter drawing
+  becomes unusable after about 40 strokes, but does not establish interactive
+  frame time on the user's PDF. The 421 ms measurement has not been repeated;
+  editable-page snapshots and user-document frame-time measurements remain
+  outstanding.
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.

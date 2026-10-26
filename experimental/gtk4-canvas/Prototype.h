@@ -1319,6 +1319,7 @@ private:
     std::vector<GtkWidget*> thumbnailWidgets;
     PageRasterRenderer thumbnailRenderer;
     PageRasterRenderer canvasRenderer;
+    InkRasterCache inkRasterCache;
     size_t sidebarStartupReadyDraws = 0;
     bool sidebarCanvasRenderSuppressed = false;
     GtkWidget* layerRows = nullptr;
@@ -1370,7 +1371,7 @@ private:
     int lastWidth = 0;
     int lastHeight = 0;
     int frames = 0;
-    size_t baselineRasters = 0;
+    size_t baselineFullRasters = 0;
     int smokeStep = 0;
     size_t smokeCacheBytes = 0;
     int snapshotWaits = 0;

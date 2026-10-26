@@ -303,8 +303,17 @@ gboolean Prototype::smoke() {
             const auto converted = surfacePoint(canvasOrigin.x + 40 - tx, canvasOrigin.y + 60 - ty);
             require(converted && std::abs(converted->x - 40) < 0.01 && std::abs(converted->y - 60) < 0.01,
                     "Pointer anchor failed to account for sidebar and toolbar offsets");
+            auto initiallyVisiblePages =
+                    state.visiblePageIndices(gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
+            if (initiallyVisiblePages.empty()) {
+                initiallyVisiblePages.push_back(state.page);
+            }
+            for (const int page: initiallyVisiblePages) {
+                require(waitForCanvasRaster(page, canvasRenderScale(page, gtk_widget_get_scale_factor(canvas))),
+                        "Initial visible PDF raster did not finish before ink smoke checks");
+            }
             capture("initial");
-            baselineRasters = canvasRenderer.completedRequests();
+            baselineFullRasters = canvasRenderer.completedFullRequests();
             require(std::abs(state.brush.width - 1.41) < 1e-6 &&
                             gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 2u,
                     "Initial Pen preset did not match Medium 1.41pt");
@@ -323,7 +332,8 @@ gboolean Prototype::smoke() {
             break;
         }
         case 1: {
-            require(canvasRenderer.completedRequests() == baselineRasters, "Ink unnecessarily rerasterized PDF");
+            require(canvasRenderer.completedFullRequests() == baselineFullRasters,
+                    "Ink unnecessarily rerasterized a full-resolution PDF page");
             capture("ink");
             gboolean handled = false;
             g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_z, 0u, GDK_CONTROL_MASK, &handled);
@@ -347,8 +357,8 @@ gboolean Prototype::smoke() {
             break;
         }
         case 2:
-            require(canvasRenderer.completedRequests() == baselineRasters,
-                    "Brush changes unnecessarily rerasterized PDF");
+            require(canvasRenderer.completedFullRequests() == baselineFullRasters,
+                    "Brush changes unnecessarily rerasterized a full-resolution PDF page");
             capture("tools");
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
             require(state.brush.width == 6 && state.brush.color[0] == 1 &&
@@ -406,7 +416,7 @@ gboolean Prototype::smoke() {
         case 5: {
             require(waitForCanvasRaster(state.page,
                                         canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))) &&
-                            canvasRenderer.completedRequests() > baselineRasters,
+                            canvasRenderer.completedFullRequests() > baselineFullRasters,
                     "Zoom did not refresh PDF resolution");
             capture("zoom");
             zoomPreview = true;
@@ -424,7 +434,7 @@ gboolean Prototype::smoke() {
             update();
             require(waitForCanvasRaster(state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))),
                     "The settled canvas raster did not finish");
-            baselineRasters = canvasRenderer.completedRequests();
+            baselineFullRasters = canvasRenderer.completedFullRequests();
             smokeDrawingTools();
             if (pageCount > 1) {
                 const double zoomBeforeNav = state.zoom;

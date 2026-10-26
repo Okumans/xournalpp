@@ -14,7 +14,7 @@ namespace prototype {
 void drawCanvasImage(cairo_t* cr, const CanvasImage& image);
 void drawText(cairo_t* cr, const TextItem& item);
 
-inline void drawInkSource(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}) {
+inline void drawInkSource(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}, double dashOffset = 0) {
     if (ink.points.empty()) {
         return;
     }
@@ -52,7 +52,7 @@ inline void drawInkSource(cairo_t* cr, const Ink& ink, const SelectionTransform&
         if (ink.brush.lineDashes.empty()) {
             cairo_set_dash(cr, nullptr, 0, 0);
         } else {
-            cairo_set_dash(cr, ink.brush.lineDashes.data(), static_cast<int>(ink.brush.lineDashes.size()), 0);
+            cairo_set_dash(cr, ink.brush.lineDashes.data(), static_cast<int>(ink.brush.lineDashes.size()), dashOffset);
         }
         const auto start = matrix.apply(ink.points.front());
         cairo_move_to(cr, start.x, start.y);
@@ -79,7 +79,7 @@ inline void drawInkSource(cairo_t* cr, const Ink& ink, const SelectionTransform&
             if (ink.brush.lineDashes.empty()) {
                 xoj::view::StrokeContour(pressurePoints).addToCairo(cr);
             } else {
-                xoj::view::StrokeContourDashes(pressurePoints, ink.brush.lineDashes).addToCairo(cr, 0);
+                xoj::view::StrokeContourDashes(pressurePoints, ink.brush.lineDashes).addToCairo(cr, dashOffset);
             }
             cairo_fill(cr);
         }
