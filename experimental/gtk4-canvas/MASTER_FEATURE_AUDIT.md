@@ -122,7 +122,10 @@ each phase lands:
 
 1. Reopen text-box editing for a real UI check and fix any remaining reports:
    text/layout size mismatch, an overly wide initial box, a hard-to-see caret,
-   and editor bounds that are missing or do not track the text.
+   and editor bounds that are missing or do not track the text. Phase 128 now
+   requires the relevant no-worker screenshots and passes its GTK/Pango sizing,
+   caret, and transformed-editor checks in both themes on the typed-text
+   fixture; recheck the user's separate PDF if the issue is still visible there.
 2. Verify and tune touchpad scrolling on the user's physical device. Preserve
    momentum, keep horizontal drift very low in a single-column document, allow
    horizontal travel only where the page grid provides it, and clamp movement
@@ -176,6 +179,15 @@ export, and page mutations work without a separate process. An optional
 they are not needed for the GTK 4 application workflow. The private Cage
 no-worker smoke passed native open/edit/save/reopen and the common document
 actions. Remaining native object types are tracked in the audit below.
+
+Phase 128 re-ran the no-worker GTK 4 canvas smoke in private Cage in light and
+dark modes. The Python harness now requires screenshots for the initial text
+editor, live text layout, caret, edited text, Smart Select selection, and
+transformed text editor on its normal in-process path. GTK assertions checked
+the compact initial allocation, growth from the Pango layout, active caret
+sizing, and transformed editor coordinates; all passed. This validates the
+bundled typed-text fixture, while the user's separate PDF and physical text
+input remain unverified.
 
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
