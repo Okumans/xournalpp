@@ -56,7 +56,8 @@ work for the supported API subset. Registered `Plugin::ID` toolbar actions can
 be placed in the customizable floating-toolbox rows and invoke their Lua
 callbacks. Plugins can also register described placeholders in those rows and
 update their labels live with `app.setPlaceholderValue`; empty values fall back
-to the placeholder ID. ColorCycle runs with its full color list and selection recoloring,
+to the placeholder ID. The floating rows also expose bold, italic, underline,
+strikethrough, superscript, and subscript formatting. ColorCycle runs with its full color list and selection recoloring,
 Example can open an asynchronous dialog and receive the selected button
 response, and ToolShortcuts can select common tools including Smart Select.
 HighlightPosition toggles a translucent pointer halo with Alt+X;
