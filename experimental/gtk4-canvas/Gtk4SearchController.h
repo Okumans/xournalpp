@@ -1,14 +1,16 @@
 #pragma once
 
+#include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <gtk/gtk.h>
-#include <poppler.h>
 
 #include "CanvasState.h"
+#include "SearchPdfWorker.h"
 
 namespace prototype::gtk4 {
 
@@ -27,8 +29,9 @@ public:
     virtual bool canOpenSearchBar() const = 0;
     virtual int searchPageCount() const = 0;
     virtual prototype::CanvasState& searchCanvasState() = 0;
-    virtual PopplerPage* pdfPageForSearch(int page) = 0;
-    virtual PopplerPage* layerPdfPageForSearch(int page, size_t origin) = 0;
+    virtual std::optional<SearchPdfSource> searchBackgroundPdfSource(int page) const = 0;
+    virtual std::optional<SearchPdfSource> searchLayerPdfSource(int page, size_t origin) const = 0;
+    virtual std::shared_ptr<const void> searchDocumentLifetime() const = 0;
     virtual const void* searchDocumentIdentity() const = 0;
     virtual GtkWidget* searchCanvasWidget() const = 0;
     virtual void finishTextEditingForSearch() = 0;
@@ -57,6 +60,7 @@ public:
     const std::optional<size_t>& activeMatch() const { return activeSearchMatch; }
     bool isOpen() const;
     bool isSearching() const { return searchInProgress; }
+    int pagesScanned() const { return searchPagesScanned; }
 
 private:
     GtkWidget* button(const char* icon, const char* tooltip, GCallback callback);
@@ -65,11 +69,10 @@ private:
     void beginSearch(std::string query, int direction);
     void queryEdited();
     static gboolean processSearchPageCallback(gpointer data);
-    void appendPdfSearchMatches(int pageNumber, PopplerPage* page, const std::string& query,
-                                std::vector<SearchMatch>& matches);
     void appendTextSearchMatches(const prototype::TextItem& item, const std::string& query,
                                  std::vector<SearchMatch>& matches);
-    bool appendPageSearchMatches(int pageNumber, std::vector<SearchMatch>& matches, std::string& error);
+    bool appendPageSearchMatches(const SearchPdfPageResult& pdfResults, std::vector<SearchMatch>& matches,
+                                 std::string& error);
     void updateStatus();
     void ensureMatchesFresh();
     bool matchesFromEntry(int direction);
@@ -78,6 +81,7 @@ private:
     void scrollToMatch(const SearchMatch& match);
 
     SearchControllerHost& host;
+    SearchPdfWorker searchPdfWorker;
     GtkWidget* searchBar = nullptr;
     GtkSearchEntry* searchEntry = nullptr;
     GtkWidget* searchStatus = nullptr;
@@ -91,7 +95,8 @@ private:
     int searchScanDirection = 1;
     int searchPagesScanned = 0;
     int pendingNavigationDirection = 0;
-    guint searchIdleSource = 0;
+    uint64_t searchPdfGeneration = 0;
+    guint searchPollSource = 0;
     bool searchInProgress = false;
     bool searchHasRun = false;
     size_t searchResultRevision = std::numeric_limits<size_t>::max();

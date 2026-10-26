@@ -670,9 +670,15 @@ private:
 
     prototype::CanvasState& searchCanvasState() override;
 
-    PopplerPage* pdfPageForSearch(int page) override;
+    PopplerPage* pdfPageForSearch(int page);
 
-    PopplerPage* layerPdfPageForSearch(int page, size_t origin) override;
+    PopplerPage* layerPdfPageForSearch(int page, size_t origin);
+
+    std::optional<SearchPdfSource> searchBackgroundPdfSource(int page) const override;
+
+    std::optional<SearchPdfSource> searchLayerPdfSource(int page, size_t origin) const override;
+
+    std::shared_ptr<const void> searchDocumentLifetime() const override;
 
     const void* searchDocumentIdentity() const override;
 

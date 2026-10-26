@@ -162,38 +162,14 @@ void Gtk4SearchController::setStatus(const std::string& text) {
 }
 
 void Gtk4SearchController::cancelSearch() {
-    if (searchIdleSource) {
-        g_source_remove(searchIdleSource);
-        searchIdleSource = 0;
+    if (searchPollSource) {
+        g_source_remove(searchPollSource);
+        searchPollSource = 0;
     }
+    searchPdfWorker.cancel();
+    searchPdfGeneration = 0;
     searchInProgress = false;
     pendingNavigationDirection = 0;
-}
-
-void Gtk4SearchController::appendPdfSearchMatches(int pageNumber, PopplerPage* page, const std::string& query,
-                                                  std::vector<SearchMatch>& matches) {
-    if (!page || query.empty()) {
-        return;
-    }
-    double pageHeight = 0;
-    poppler_page_get_size(page, nullptr, &pageHeight);
-    if (!std::isfinite(pageHeight) || pageHeight <= 0) {
-        return;
-    }
-
-    GList* results = poppler_page_find_text(page, query.c_str());
-    for (GList* result = results; result; result = result->next) {
-        const auto* rectangle = static_cast<const PopplerRectangle*>(result->data);
-        if (!rectangle || !std::isfinite(rectangle->x1) || !std::isfinite(rectangle->y1) ||
-            !std::isfinite(rectangle->x2) || !std::isfinite(rectangle->y2)) {
-            continue;
-        }
-        const double top = pageHeight - std::max(rectangle->y1, rectangle->y2);
-        const double bottom = pageHeight - std::min(rectangle->y1, rectangle->y2);
-        matches.push_back({pageNumber, std::min(rectangle->x1, rectangle->x2), top,
-                           std::max(rectangle->x1, rectangle->x2), bottom});
-    }
-    g_list_free_full(results, [](gpointer data) { poppler_rectangle_free(static_cast<PopplerRectangle*>(data)); });
 }
 
 void Gtk4SearchController::appendTextSearchMatches(const prototype::TextItem& item, const std::string& query,
@@ -251,30 +227,25 @@ void Gtk4SearchController::appendTextSearchMatches(const prototype::TextItem& it
     cairo_surface_destroy(surface);
 }
 
-bool Gtk4SearchController::appendPageSearchMatches(int pageNumber, std::vector<SearchMatch>& matches,
-                                                   std::string& error) {
+bool Gtk4SearchController::appendPageSearchMatches(const SearchPdfPageResult& pdfResults,
+                                                   std::vector<SearchMatch>& matches, std::string& error) {
+    const int pageNumber = pdfResults.page;
     try {
-        if (auto* pdfPage = host.pdfPageForSearch(pageNumber)) {
-            appendPdfSearchMatches(pageNumber, pdfPage, searchQuery, matches);
-            g_object_unref(pdfPage);
-        }
+        const auto appendPdfMatches = [pageNumber, &matches](const std::vector<SearchPdfMatch>& pdfMatches) {
+            for (const auto& match: pdfMatches) {
+                matches.push_back({pageNumber, match.x0, match.y0, match.x1, match.y1});
+            }
+        };
+        appendPdfMatches(pdfResults.backgroundMatches);
 
         const auto& layers = host.searchCanvasState().layersForPage(pageNumber).layers;
         const auto& textIndicesByLayer = searchTextIndicesByPageAndLayer[static_cast<size_t>(pageNumber)];
         for (size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
-            const auto& layer = layers[layerIndex];
-            if (!layer.visible) {
-                continue;
+            if (layerIndex < pdfResults.layerMatches.size()) {
+                appendPdfMatches(pdfResults.layerMatches[layerIndex]);
             }
 
-            for (const size_t origin: layer.origins) {
-                if (auto* pdfPage = host.layerPdfPageForSearch(pageNumber, origin)) {
-                    appendPdfSearchMatches(pageNumber, pdfPage, searchQuery, matches);
-                    g_object_unref(pdfPage);
-                }
-            }
-
-            if (layerIndex < textIndicesByLayer.size()) {
+            if (layers[layerIndex].visible && layerIndex < textIndicesByLayer.size()) {
                 for (const size_t index: textIndicesByLayer[layerIndex]) {
                     appendTextSearchMatches(host.searchCanvasState().texts[index], searchQuery, matches);
                 }
@@ -337,15 +308,42 @@ void Gtk4SearchController::beginSearch(std::string query, int direction) {
         }
     }
 
-    searchPagesScanned = 0;
     const int pageCountInt = searchResultPageCount;
     const int startPage = std::clamp(searchStartPage, 0, pageCountInt - 1);
     searchScanPage = searchScanDirection > 0 ? startPage : (startPage + pageCountInt - 1) % pageCountInt;
+
+    SearchPdfScanRequest scanRequest;
+    scanRequest.query = searchQuery;
+    scanRequest.sourceLifetime = host.searchDocumentLifetime();
+    scanRequest.pages.reserve(pageCount);
+    for (int scanned = 0; scanned < pageCountInt; ++scanned) {
+        const int pageNumber = (searchScanPage + scanned * searchScanDirection + pageCountInt * 2) % pageCountInt;
+        const auto& layers = host.searchCanvasState().layersForPage(pageNumber).layers;
+
+        SearchPdfPageSources pageSources;
+        pageSources.page = pageNumber;
+        pageSources.background = host.searchBackgroundPdfSource(pageNumber);
+        pageSources.layers.resize(layers.size());
+        for (size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
+            if (!layers[layerIndex].visible) {
+                continue;
+            }
+            for (const size_t origin: layers[layerIndex].origins) {
+                if (auto source = host.searchLayerPdfSource(pageNumber, origin)) {
+                    pageSources.layers[layerIndex].push_back(std::move(*source));
+                }
+            }
+        }
+        scanRequest.pages.push_back(std::move(pageSources));
+    }
+
+    searchPagesScanned = 0;
     searchInProgress = true;
     setStatus("Searching document…");
     host.updateSearchCanvas();
-    searchIdleSource =
-            g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, &Gtk4SearchController::processSearchPageCallback, this, nullptr);
+    searchPdfGeneration = searchPdfWorker.submit(std::move(scanRequest));
+    searchPollSource =
+            g_timeout_add_full(G_PRIORITY_DEFAULT, 8, &Gtk4SearchController::processSearchPageCallback, this, nullptr);
 }
 
 void Gtk4SearchController::queryEdited() {
@@ -376,7 +374,7 @@ void Gtk4SearchController::queryEdited() {
 gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
     auto* self = static_cast<Gtk4SearchController*>(data);
     if (!self->searchInProgress) {
-        self->searchIdleSource = 0;
+        self->searchPollSource = 0;
         return G_SOURCE_REMOVE;
     }
 
@@ -385,17 +383,43 @@ gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
         self->searchResultDocumentIdentity != self->host.searchDocumentIdentity()) {
         const std::string query = self->searchQuery;
         const int direction = self->searchScanDirection;
-        self->searchIdleSource = 0;
+        self->searchPollSource = 0;
         self->searchInProgress = false;
         self->beginSearch(query, direction);
         return G_SOURCE_REMOVE;
     }
 
+    auto result = self->searchPdfWorker.takeResult(self->searchPdfGeneration);
+    if (!result) {
+        return G_SOURCE_CONTINUE;
+    }
+    if (!result->error.empty()) {
+        self->searchPollSource = 0;
+        self->searchInProgress = false;
+        self->searchPdfWorker.cancel();
+        gtk_widget_add_css_class(GTK_WIDGET(self->searchEntry), "error");
+        self->setStatus("Search failed: " + result->error);
+        return G_SOURCE_REMOVE;
+    }
+    if (result->finished) {
+        self->searchInProgress = false;
+        self->searchPollSource = 0;
+        if (!self->searchMatches.empty() && self->pendingNavigationDirection != 0) {
+            const size_t target = self->pendingNavigationDirection > 0 ? 0 : self->searchMatches.size() - 1;
+            self->pendingNavigationDirection = 0;
+            self->activateMatch(target);
+        } else {
+            self->updateStatus();
+        }
+        return G_SOURCE_REMOVE;
+    }
+
     std::vector<SearchMatch> pageMatches;
     std::string error;
-    if (!self->appendPageSearchMatches(self->searchScanPage, pageMatches, error)) {
-        self->searchIdleSource = 0;
+    if (!self->appendPageSearchMatches(*result, pageMatches, error)) {
+        self->searchPollSource = 0;
         self->searchInProgress = false;
+        self->searchPdfWorker.cancel();
         gtk_widget_add_css_class(GTK_WIDGET(self->searchEntry), "error");
         self->setStatus("Search failed: " + error);
         return G_SOURCE_REMOVE;
@@ -405,7 +429,7 @@ gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
     }
 
     const size_t firstNewMatch = self->searchMatches.size();
-    auto& pageIndices = self->searchMatchesByPage[static_cast<size_t>(self->searchScanPage)];
+    auto& pageIndices = self->searchMatchesByPage[static_cast<size_t>(result->page)];
     for (auto& match: pageMatches) {
         pageIndices.push_back(self->searchMatches.size());
         self->searchMatches.push_back(std::move(match));
@@ -422,21 +446,8 @@ gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
         self->host.updateSearchCanvas();
     }
 
-    if (self->searchPagesScanned >= self->searchResultPageCount) {
-        self->searchInProgress = false;
-        self->searchIdleSource = 0;
-        if (!self->searchMatches.empty() && self->pendingNavigationDirection != 0) {
-            const size_t target = self->pendingNavigationDirection > 0 ? 0 : self->searchMatches.size() - 1;
-            self->pendingNavigationDirection = 0;
-            self->activateMatch(target);
-        } else {
-            self->updateStatus();
-        }
-        return G_SOURCE_REMOVE;
-    }
-
     const int pageCount = self->searchResultPageCount;
-    self->searchScanPage = (self->searchScanPage + self->searchScanDirection + pageCount) % pageCount;
+    self->searchScanPage = (result->page + self->searchScanDirection + pageCount) % pageCount;
     self->updateStatus();
     return G_SOURCE_CONTINUE;
 }

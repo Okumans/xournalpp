@@ -548,6 +548,8 @@ def verify_search(args, evidence):
     if custom_pdf_search:
         command.extend(["--verify-search-query", args.search_query,
                         "--verify-search-page", str(args.search_page)])
+        if args.search_scan_all:
+            command.append("--verify-search-scan-all")
     result = run(command, env=dict(os.environ, G_DEBUG="fatal-criticals"))
     if custom_pdf_search:
         marker = "PASS: GTK4 PDF Search overlay geometry matches Poppler page"
@@ -557,12 +559,15 @@ def verify_search(args, evidence):
         screenshot = output / "search-native-text.png"
     if marker not in result:
         raise RuntimeError("GTK 4 document Search integration did not complete")
+    if args.search_scan_all and "SEARCH RESPONSIVENESS: pages=" not in result:
+        raise RuntimeError("Long-document Search did not report its GTK event-loop responsiveness")
     if not screenshot.is_file() or screenshot.stat().st_size < 1000:
         raise RuntimeError(f"Missing document Search screenshot: {screenshot}")
     return {
         "fixture_pdf": str(pdf),
         "search_query": args.search_query if custom_pdf_search else None,
         "zero_based_page": args.search_page if custom_pdf_search else None,
+        "search_scan_all_pages": args.search_scan_all,
         "screenshot": str(screenshot),
         "rendering": "Private headless Wayland via Cage",
     }
@@ -1781,6 +1786,8 @@ def main():
     parser.add_argument("--search-query", help="Query to search on --search-page")
     parser.add_argument("--search-page", type=int, default=0,
                         help="Zero-based PDF page for --search-query (default: 0)")
+    parser.add_argument("--search-scan-all", action="store_true",
+                        help="Wait for and measure a full page-by-page search scan")
     parser.add_argument("--scroll-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smart-select-performance-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
@@ -1821,6 +1828,8 @@ def main():
         raise RuntimeError("Custom Search requires an existing PDF, a query and a nonnegative page")
     if args.search_pdf and not args.search_only:
         raise RuntimeError("--search-pdf can only be used with --search-only")
+    if args.search_scan_all and not args.search_pdf:
+        raise RuntimeError("--search-scan-all requires --search-pdf and --search-query")
     if args.inside:
         inside(args)
         return
@@ -1890,6 +1899,8 @@ def main():
             command.extend(["--search-query", args.search_query])
         if args.search_page != 0:
             command.extend(["--search-page", str(args.search_page)])
+        if args.search_scan_all:
+            command.append("--search-scan-all")
         if args.scroll_only:
             command.append("--scroll-only")
         if args.smart_select_performance_only:
