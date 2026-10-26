@@ -36,7 +36,8 @@ public:
     void clear();
     void clearActive();
 
-    bool drawCommitted(cairo_t* cr, const std::vector<const Ink*>& strokes, double requestedScale);
+    bool drawCommitted(cairo_t* cr, const std::vector<const Ink*>& strokes, double requestedScale,
+                       const cairo_matrix_t* transform = nullptr);
     // Set appendOnly only when the existing point prefix cannot change during this stroke.
     bool drawActive(cairo_t* cr, const Ink& stroke, double requestedScale, double visibleX0, double visibleY0,
                     double visibleX1, double visibleY1, bool appendOnly);

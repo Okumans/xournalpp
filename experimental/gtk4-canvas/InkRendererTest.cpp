@@ -1,7 +1,11 @@
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <utility>
+#include <vector>
 
+#include "InkRasterCache.h"
 #include "InkRenderer.h"
 
 static uint32_t pixel(cairo_surface_t* surface, int x, int y) {
@@ -97,6 +101,39 @@ int main() {
     pass &= pixel(surface, 100,80)==0xff0000 && pixel(surface,100,85)==0xff0000;
     pass &= pixel(surface,100,88)==0xffffff && pixel(surface,190,80)==0xffffff;
     pass &= line.points[1].x==60 && line.brush.width==8;
+
+    prototype::Ink cachedFirst{0, {{20, 40}, {100, 40}}, {prototype::Tool::Highlighter, {1, 1, 0}, 12}};
+    prototype::Ink cachedSecond{0, {{80, 40}, {160, 40}}, {prototype::Tool::Highlighter, {1, 1, 0}, 12}};
+    const std::vector<const prototype::Ink*> cachedRun{&cachedFirst, &cachedSecond};
+    const prototype::SelectionTransform translation{1, 0, 0, 1, 40, 20, 1};
+    constexpr std::array<std::pair<int, int>, 5> samples{{{80, 60}, {130, 60}, {180, 60}, {130, 70}, {50, 50}}};
+    std::array<uint32_t, 5> vectorPixels{};
+    const auto paintSelectionBackground = [&] {
+        cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_paint(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        cairo_set_source_rgb(cr, 0, 0, 0);
+        cairo_rectangle(cr, 125, 55, 10, 10);
+        cairo_fill(cr);
+    };
+    paintSelectionBackground();
+    prototype::drawInk(cr, cachedFirst, translation);
+    prototype::drawInk(cr, cachedSecond, translation);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        vectorPixels[i] = pixel(surface, samples[i].first, samples[i].second);
+    }
+    paintSelectionBackground();
+    cairo_matrix_t previewMatrix;
+    cairo_matrix_init(&previewMatrix, 1, 0, 0, 1, translation.x0, translation.y0);
+    prototype::InkRasterCache inkRasterCache;
+    pass &= inkRasterCache.drawCommitted(cr, cachedRun, 1, &previewMatrix);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        pass &= vectorPixels[i] == pixel(surface, samples[i].first, samples[i].second);
+    }
+    cairo_matrix_t restoredMatrix;
+    cairo_get_matrix(cr, &restoredMatrix);
+    pass &= restoredMatrix.x0 == 0 && restoredMatrix.y0 == 0 && cairo_get_operator(cr) == CAIRO_OPERATOR_OVER;
     cairo_matrix_t matrix;
     cairo_get_matrix(cr, &matrix);
 

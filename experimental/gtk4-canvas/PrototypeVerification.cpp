@@ -1121,6 +1121,87 @@ void Prototype::verifyScrollMotionIntegration() {
     std::cout << "PASS: GTK4 touchpad axis lock, page-grid bounds and momentum\n";
 }
 
+void Prototype::verifySmartSelectPerformanceIntegration() {
+    require(canvas && mouse, "Smart Select performance verification needs the mapped canvas drag controller");
+    const int viewportWidth = gtk_widget_get_width(canvas);
+    const int viewportHeight = gtk_widget_get_height(canvas);
+    require(viewportWidth > 0 && viewportHeight > 0, "Smart Select performance canvas is not mapped");
+
+    state.setPages({{600, 800}});
+    pageCount = 1;
+    state.selectActivePage(0);
+    state.zoom = 1.0;
+    state.offsetX = (viewportWidth - state.layoutWidth() * state.zoom) / 2.0;
+    state.offsetY = (viewportHeight - state.layoutHeight() * state.zoom) / 2.0;
+    state.constrainScrollOffsets(viewportWidth, viewportHeight);
+    state.syncActivePage(viewportWidth, viewportHeight);
+    fitMode = false;
+    fitted = true;
+    selectTool(Tool::SmartSelect);
+
+    constexpr size_t strokeCount = 40;
+    constexpr size_t pointsPerStroke = 128;
+    state.ink.clear();
+    state.ink.reserve(strokeCount);
+    for (size_t strokeIndex = 0; strokeIndex < strokeCount; ++strokeIndex) {
+        prototype::Ink stroke;
+        stroke.page = 0;
+        stroke.layerId = state.activeLayerId(0);
+        stroke.originLayer = state.activeLayerOrigin(0);
+        stroke.layerOrder = strokeIndex;
+        stroke.brush = {Tool::Highlighter, {1, 0.85, 0.05}, 10};
+        stroke.points.reserve(pointsPerStroke);
+        for (size_t pointIndex = 0; pointIndex < pointsPerStroke; ++pointIndex) {
+            const double progress = static_cast<double>(pointIndex) / (pointsPerStroke - 1);
+            const double x = 70 + progress * 460;
+            const double y = 80 + strokeIndex * 16 + std::sin(progress * 8 * G_PI) * 3;
+            stroke.points.push_back({x, y, 1});
+        }
+        state.ink.push_back(std::move(stroke));
+    }
+    state.selectAllOnPage();
+    require(state.selected.size() == strokeCount, "Smart Select performance fixture did not select every stroke");
+    update();
+    capture("smart-select-performance-selected");
+
+    const auto bounds = state.selectionBox();
+    require(bounds.has_value(), "Smart Select performance fixture has no selection bounds");
+    const double startX = state.offsetX + (state.pageLeft(0) + (bounds->x0 + bounds->x1) / 2) * state.zoom;
+    const double startY = state.offsetY + (state.pageTop(0) + (bounds->y0 + bounds->y1) / 2) * state.zoom;
+    g_signal_emit_by_name(mouse, "drag-begin", startX, startY);
+    require(state.movingSelection(), "Smart Select did not begin moving the selected annotation group");
+
+    std::vector<double> frameLatencyMs;
+    frameLatencyMs.reserve(24);
+    for (int frame = 1; frame <= 24; ++frame) {
+        const int previousPaints = paints;
+        const auto started = g_get_monotonic_time();
+        const double dx = frame * 3.0;
+        const double dy = frame * 0.5;
+        g_signal_emit_by_name(mouse, "drag-update", dx, dy);
+        const auto deadline = started + 500000;
+        while (paints <= previousPaints && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(500);
+        }
+        require(paints > previousPaints, "Smart Select drag did not produce a GTK canvas frame");
+        frameLatencyMs.push_back((g_get_monotonic_time() - started) / 1000.0);
+    }
+    g_signal_emit_by_name(mouse, "drag-end", 72.0, 12.0);
+    require(!state.movingSelection(), "Smart Select drag did not finish the annotation group move");
+    update();
+    capture("smart-select-performance-moved");
+
+    std::sort(frameLatencyMs.begin(), frameLatencyMs.end());
+    const double medianMs = frameLatencyMs[frameLatencyMs.size() / 2];
+    const double p95Ms = frameLatencyMs[(frameLatencyMs.size() * 95 + 99) / 100 - 1];
+    const double maxMs = frameLatencyMs.back();
+    require(p95Ms < 100 && maxMs < 250,
+            "Smart Select drag exceeded the 100 ms p95 / 250 ms maximum-frame responsiveness limit");
+    std::cout << "PASS: GTK4 Smart Select drag raster-cache frame latency median_ms=" << medianMs << " p95_ms=" << p95Ms
+              << " max_ms=" << maxMs << " (40 highlighter strokes, 128 points each)\n";
+}
+
 void Prototype::verifyPenLineStyleIntegration() {
     require(lineStyleDropdown && gtk_widget_get_visible(lineStyleDropdown),
             "Pen line-style selector is not visible for the Pen tool");

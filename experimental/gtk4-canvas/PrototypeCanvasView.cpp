@@ -809,8 +809,9 @@ void Prototype::activate(GtkApplication* app) {
         requestOpenDocument(sourcePath, true);
     }
     if (options.verifyPlugins || options.verifySearch || options.verifyScrollMotion ||
-        options.verifySidebarPerformance || options.verifySidebarStartup || options.verifyPageLayout || options.verifyPresentationMode ||
-        options.verifyPenLineStyle || options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
+        options.verifySmartSelectPerformance || options.verifySidebarPerformance || options.verifySidebarStartup ||
+        options.verifyPageLayout || options.verifyPresentationMode || options.verifyPenLineStyle ||
+        options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
         g_timeout_add(
                 200,
                 +[](gpointer data) -> gboolean {
@@ -823,6 +824,8 @@ void Prototype::activate(GtkApplication* app) {
                             self->verifySearchIntegration();
                         } else if (self->options.verifyScrollMotion) {
                             self->verifyScrollMotionIntegration();
+                        } else if (self->options.verifySmartSelectPerformance) {
+                            self->verifySmartSelectPerformanceIntegration();
                         } else if (self->options.verifySidebarPerformance) {
                             self->verifySidebarPerformanceIntegration();
                         } else if (self->options.verifySidebarStartup) {
@@ -843,17 +846,30 @@ void Prototype::activate(GtkApplication* app) {
                             self->verifyLatexIntegration();
                         }
                     } catch (const std::exception& error) {
-                        const char* verification = self->options.verifyLatex              ? "LATEX" :
-                                                   self->options.verifySearch             ? "SEARCH" :
-                                                   self->options.verifyScrollMotion       ? "SCROLL MOTION" :
-                                                   self->options.verifySidebarPerformance ? "SIDEBAR PERFORMANCE" :
-                                                   self->options.verifySidebarStartup     ? "SIDEBAR STARTUP" :
-                                                   self->options.verifyPresentationMode   ? "PRESENTATION MODE" :
-                                                   self->options.verifyPageLayout         ? "PAGE LAYOUT" :
-                                                   self->options.verifyPenLineStyle       ? "PEN LINE STYLE" :
-                                                   self->options.verifyBeamer             ? "BEAMER" :
-                                                   self->options.verifyLayerActions       ? "LAYER ACTIONS" :
-                                                                                            "PLUGIN";
+                        const char* verification = "PLUGIN";
+                        if (self->options.verifyLatex) {
+                            verification = "LATEX";
+                        } else if (self->options.verifySearch) {
+                            verification = "SEARCH";
+                        } else if (self->options.verifyScrollMotion) {
+                            verification = "SCROLL MOTION";
+                        } else if (self->options.verifySmartSelectPerformance) {
+                            verification = "SMART SELECT PERFORMANCE";
+                        } else if (self->options.verifySidebarPerformance) {
+                            verification = "SIDEBAR PERFORMANCE";
+                        } else if (self->options.verifySidebarStartup) {
+                            verification = "SIDEBAR STARTUP";
+                        } else if (self->options.verifyPresentationMode) {
+                            verification = "PRESENTATION MODE";
+                        } else if (self->options.verifyPageLayout) {
+                            verification = "PAGE LAYOUT";
+                        } else if (self->options.verifyPenLineStyle) {
+                            verification = "PEN LINE STYLE";
+                        } else if (self->options.verifyBeamer) {
+                            verification = "BEAMER";
+                        } else if (self->options.verifyLayerActions) {
+                            verification = "LAYER ACTIONS";
+                        }
                         std::cerr << verification << " VERIFY FAILED: " << error.what() << '\n';
                         self->failed = true;
                     }
@@ -899,10 +915,9 @@ void Prototype::activate(GtkApplication* app) {
                 this);
     }
     if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
-        !options.verifyScrollMotion &&
-        !options.verifySidebarPerformance && !options.verifySidebarStartup && !options.verifyPageLayout &&
-        !options.verifyPresentationMode && !options.verifyPenLineStyle && !options.verifyBeamer &&
-        !options.verifyLayerActions && !options.verifyLatex) {
+        !options.verifyScrollMotion && !options.verifySmartSelectPerformance && !options.verifySidebarPerformance &&
+        !options.verifySidebarStartup && !options.verifyPageLayout && !options.verifyPresentationMode &&
+        !options.verifyPenLineStyle && !options.verifyBeamer && !options.verifyLayerActions && !options.verifyLatex) {
         if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
             settingsVerifyMode = verifyMode;
         }

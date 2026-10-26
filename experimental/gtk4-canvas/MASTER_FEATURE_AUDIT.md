@@ -69,7 +69,10 @@ rendered, owns the cache per window, prunes obsolete visible-page runs, and
 clears the cache on document replacement. The focused pixel test covers 40
 same-bounds committed strokes and live Pen, dashed/pressure Pen, Highlighter,
 and whiteout updates; the private Cage smoke passes in light and dark modes.
-This does not measure long-running frame time on the user's PDF.
+This does not measure long-running frame time on the user's PDF. Phase 113
+reuses committed Pen, Highlighter, and Eraser rasters during rigid Smart Select
+moves and rotations; resize previews remain vector rendered to preserve stroke
+width changes.
 
 ## User-directed completion order
 
@@ -164,9 +167,13 @@ final UI redesign phase.
   the 40-stroke pixel check confirms no prior-raster bytes are copied when
   bounds stay fixed. This targets the user's report that highlighter drawing
   becomes unusable after about 40 strokes, but does not establish interactive
-  frame time on the user's PDF. The 421 ms measurement has not been repeated;
-  editable-page snapshots and user-document frame-time measurements remain
-  outstanding.
+  frame time on the user's PDF. Phase 113's private Cage check moved 40
+  Highlighter strokes with 128 points each over 24 painted frames; its final
+  software-renderer run measured 15.87 ms median, 18.17 ms p95, and 18.22 ms
+  maximum. This synthetic fixture does not replace user-document frame-time
+  measurements or hardware-renderer measurements. The 421 ms measurement has
+  not been repeated; editable-page snapshots and user-document measurements
+  remain outstanding.
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.

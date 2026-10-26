@@ -571,6 +571,8 @@ private:
 
     void verifyScrollMotionIntegration();
 
+    void verifySmartSelectPerformanceIntegration();
+
     void verifyPenLineStyleIntegration();
 
     void verifyPluginIntegration();

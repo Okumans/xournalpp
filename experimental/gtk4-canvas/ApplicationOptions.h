@@ -23,6 +23,7 @@ struct ApplicationOptions {
     bool verifyPlugins = false;
     bool verifySearch = false;
     bool verifyScrollMotion = false;
+    bool verifySmartSelectPerformance = false;
     bool verifySidebarPerformance = false;
     bool verifySidebarStartup = false;
     bool verifyPageLayout = false;

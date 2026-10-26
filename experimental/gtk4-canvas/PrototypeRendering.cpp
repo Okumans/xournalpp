@@ -374,6 +374,19 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
                             const auto transform = state.selectionMatrix(index);
                             return transform.identity() && std::abs(transform.widthScale - 1.0) < 1e-12;
                         };
+                        const auto isRigidPreviewTransform = [](const prototype::SelectionTransform& transform) {
+                            const double xScale = std::hypot(transform.xx, transform.yx);
+                            const double yScale = std::hypot(transform.xy, transform.yy);
+                            return std::abs(xScale - 1.0) < 1e-9 && std::abs(yScale - 1.0) < 1e-9 &&
+                                   std::abs(transform.xx * transform.xy + transform.yx * transform.yy) < 1e-9 &&
+                                   std::abs(transform.widthScale - 1.0) < 1e-9;
+                        };
+                        const auto sameTransform = [](const prototype::SelectionTransform& left,
+                                                      const prototype::SelectionTransform& right) {
+                            return left.xx == right.xx && left.yx == right.yx && left.xy == right.xy &&
+                                   left.yy == right.yy && left.x0 == right.x0 && left.y0 == right.y0 &&
+                                   left.widthScale == right.widthScale;
+                        };
                         const bool canCacheRun =
                                 !fadeEditableObjects && cacheableTool && hasIdentityTransform(item.index);
                         if (canCacheRun) {
@@ -400,6 +413,44 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
                             }
                             for (const auto* stroke: strokeRun) {
                                 prototype::drawInk(cr, *stroke);
+                            }
+                            itemIndex = runEnd;
+                            continue;
+                        }
+                        const auto selectionTransform = state.selectionMatrix(item.index);
+                        if (!fadeEditableObjects && cacheableTool && !selectionTransform.identity() &&
+                            isRigidPreviewTransform(selectionTransform)) {
+                            std::vector<const Ink*> strokeRun;
+                            size_t runEnd = itemIndex;
+                            while (runEnd < layerItems.size() && layerItems[runEnd].kind == EditableKind::Ink) {
+                                const auto& candidate = state.ink[layerItems[runEnd].index];
+                                const auto candidateTransform = state.selectionMatrix(layerItems[runEnd].index);
+                                const bool candidateCacheable = candidate.brush.tool == Tool::Pen ||
+                                                                candidate.brush.tool == Tool::Highlighter ||
+                                                                candidate.brush.tool == Tool::Eraser;
+                                if (!candidateCacheable ||
+                                    (candidate.brush.tool == Tool::Highlighter) !=
+                                            (first.brush.tool == Tool::Highlighter) ||
+                                    !sameTransform(candidateTransform, selectionTransform) ||
+                                    !isRigidPreviewTransform(candidateTransform)) {
+                                    break;
+                                }
+                                strokeRun.push_back(&candidate);
+                                ++runEnd;
+                            }
+
+                            cairo_matrix_t matrix;
+                            cairo_matrix_init(&matrix, selectionTransform.xx, selectionTransform.yx,
+                                              selectionTransform.xy, selectionTransform.yy, selectionTransform.x0,
+                                              selectionTransform.y0);
+                            const double rasterScale = zoomPreview ? deviceScale : state.zoom * deviceScale;
+                            if (inkRasterCache.drawCommitted(cr, strokeRun, rasterScale, &matrix)) {
+                                itemIndex = runEnd;
+                                continue;
+                            }
+                            for (size_t selectedIndex = itemIndex; selectedIndex < runEnd; ++selectedIndex) {
+                                const auto index = layerItems[selectedIndex].index;
+                                prototype::drawInk(cr, state.ink[index], state.selectionMatrix(index));
                             }
                             itemIndex = runEnd;
                             continue;
