@@ -540,19 +540,29 @@ def verify_search(args, evidence):
         "disabled=\n",
         encoding="utf-8",
     )
-    pdf = Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"
-    result = run(
-        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
-         "--pdf", str(pdf), "--verify-search"],
-        env=dict(os.environ, G_DEBUG="fatal-criticals"),
-    )
-    if "PASS: GTK4 document Search across PDF and editable text" not in result:
+    custom_pdf_search = args.search_pdf is not None
+    pdf = args.search_pdf.resolve() if custom_pdf_search else \
+        Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"
+    command = [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+               "--pdf", str(pdf), "--verify-search"]
+    if custom_pdf_search:
+        command.extend(["--verify-search-query", args.search_query,
+                        "--verify-search-page", str(args.search_page)])
+    result = run(command, env=dict(os.environ, G_DEBUG="fatal-criticals"))
+    if custom_pdf_search:
+        marker = "PASS: GTK4 PDF Search overlay geometry matches Poppler page"
+        screenshot = output / "search-pdf-geometry.png"
+    else:
+        marker = "PASS: GTK4 document Search across PDF and editable text"
+        screenshot = output / "search-native-text.png"
+    if marker not in result:
         raise RuntimeError("GTK 4 document Search integration did not complete")
-    screenshot = output / "search-native-text.png"
     if not screenshot.is_file() or screenshot.stat().st_size < 1000:
         raise RuntimeError(f"Missing document Search screenshot: {screenshot}")
     return {
         "fixture_pdf": str(pdf),
+        "search_query": args.search_query if custom_pdf_search else None,
+        "zero_based_page": args.search_page if custom_pdf_search else None,
         "screenshot": str(screenshot),
         "rendering": "Private headless Wayland via Cage",
     }
@@ -1767,6 +1777,10 @@ def main():
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--search-pdf", type=Path, help="PDF path for a focused Search geometry check")
+    parser.add_argument("--search-query", help="Query to search on --search-page")
+    parser.add_argument("--search-page", type=int, default=0,
+                        help="Zero-based PDF page for --search-query (default: 0)")
     parser.add_argument("--scroll-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smart-select-performance-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
@@ -1801,6 +1815,12 @@ def main():
         raise RuntimeError("Text clipboard verification requires --worker")
     if args.sidebar_startup_only and not args.sidebar_startup_pdf:
         raise RuntimeError("Sidebar startup verification requires --sidebar-startup-pdf")
+    if args.search_query and not args.search_pdf:
+        raise RuntimeError("--search-query requires --search-pdf")
+    if args.search_pdf and (not args.search_query or args.search_page < 0 or not args.search_pdf.is_file()):
+        raise RuntimeError("Custom Search requires an existing PDF, a query and a nonnegative page")
+    if args.search_pdf and not args.search_only:
+        raise RuntimeError("--search-pdf can only be used with --search-only")
     if args.inside:
         inside(args)
         return
@@ -1864,6 +1884,12 @@ def main():
             command.append("--plugins-only")
         if args.search_only:
             command.append("--search-only")
+        if args.search_pdf:
+            command.extend(["--search-pdf", str(args.search_pdf.resolve())])
+        if args.search_query:
+            command.extend(["--search-query", args.search_query])
+        if args.search_page != 0:
+            command.extend(["--search-page", str(args.search_page)])
         if args.scroll_only:
             command.append("--scroll-only")
         if args.smart_select_performance_only:

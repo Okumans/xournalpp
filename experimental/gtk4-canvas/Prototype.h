@@ -568,6 +568,7 @@ private:
     void verifySidebarStartupIntegration();
 
     void verifySearchIntegration();
+    void verifySearchOverlayGeometry();
 
     void verifyScrollMotionIntegration();
 
