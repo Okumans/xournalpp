@@ -7002,7 +7002,6 @@ private:
                 waitForNextWindowFrame();
             }
         }
-        prioritizeVisibleSidebarThumbnails();
         const auto mappedVisiblePages = [this] {
             std::vector<int> pages;
             const int viewportHeight = gtk_widget_get_height(GTK_WIDGET(pageList));
@@ -7020,11 +7019,32 @@ private:
         };
         std::vector<int> visiblePages;
         const auto stopDeadline = g_get_monotonic_time() + 10000000;
-        const auto visibleThumbnailsReady = [this, &visiblePages, &mappedVisiblePages, targetPage] {
+        const auto hasRenderedInk = [this](int page) {
+            const auto* preview = thumbnailRenderer.find(page);
+            if (!preview || !preview->background ||
+                cairo_surface_get_type(preview->background.get()) != CAIRO_SURFACE_TYPE_IMAGE) {
+                return false;
+            }
+            auto* surface = preview->background.get();
+            cairo_surface_flush(surface);
+            const auto* pixels = cairo_image_surface_get_data(surface);
+            const int stride = cairo_image_surface_get_stride(surface);
+            for (int y = 0; y < pageThumbnailHeight; ++y) {
+                const auto* row = reinterpret_cast<const uint32_t*>(pixels + y * stride);
+                for (int x = 0; x < pageThumbnailWidth; ++x) {
+                    if ((row[x] & 0x00ffffffU) < 0x00f0f0f0U) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        const auto visibleThumbnailsReady = [this, &visiblePages, &mappedVisiblePages, &hasRenderedInk, targetPage] {
             visiblePages = mappedVisiblePages();
             return std::find(visiblePages.begin(), visiblePages.end(), targetPage) != visiblePages.end() &&
                    std::all_of(visiblePages.begin(), visiblePages.end(),
-                               [this](int page) { return thumbnailRenderer.find(page) != nullptr; });
+                               [this](int page) { return thumbnailRenderer.find(page) != nullptr; }) &&
+                   hasRenderedInk(targetPage) && hasRenderedInk(targetPage + 1);
         };
         while (!visibleThumbnailsReady() && g_get_monotonic_time() < stopDeadline) {
             g_main_context_iteration(nullptr, false);
@@ -7035,12 +7055,15 @@ private:
         const bool allVisibleThumbnailsReady =
                 std::all_of(visiblePages.begin(), visiblePages.end(),
                             [this](int page) { return thumbnailRenderer.find(page) != nullptr; });
-        if (state.page != canvasPage || !targetPageVisible || !allVisibleThumbnailsReady) {
+        const bool knownContentPagesReady = hasRenderedInk(targetPage) && hasRenderedInk(targetPage + 1);
+        if (state.page != canvasPage || !targetPageVisible || !allVisibleThumbnailsReady || !knownContentPagesReady) {
             std::cerr << "SIDEBAR FAST STOP FAILED: initial_canvas_page=" << canvasPage + 1
                       << " canvas_page=" << state.page + 1 << " target_visible="
-                      << targetPageVisible << " visible=";
+                      << targetPageVisible << " content_pages_ready=" << knownContentPagesReady << " visible=";
             for (const int page: visiblePages) {
-                const char* status = thumbnailRenderer.find(page) ? "ready" :
+                const char* status = thumbnailRenderer.find(page) ?
+                                     ((page == targetPage || page == targetPage + 1) && !hasRenderedInk(page) ?
+                                              "blank-content" : "ready") :
                                      thumbnailRenderer.hasPending(page) ? "pending" :
                                      thumbnailRenderer.hasFailed(page) ? "failed" : "missing";
                 std::cerr << page + 1 << ':' << status << ',';
@@ -7049,7 +7072,7 @@ private:
                       << " active=" << thumbnailRenderer.activeCount()
                       << " next=" << thumbnailRenderer.nextQueuedPage() << '\n';
         }
-        require(state.page == canvasPage && targetPageVisible && allVisibleThumbnailsReady,
+        require(state.page == canvasPage && targetPageVisible && allVisibleThumbnailsReady && knownContentPagesReady,
                 "Visible sidebar thumbnails did not all finish after fast scrolling stopped");
         capture("sidebar-fast-scroll-stop");
         std::cout << "SIDEBAR FAST STOP: canvas_page=" << state.page << " visible_pages=";
@@ -13542,6 +13565,11 @@ private:
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
         gtk_list_view_set_show_separators(pageList, false);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
+        g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)), "value-changed",
+                         G_CALLBACK(+[](GtkAdjustment*, gpointer data) {
+                             static_cast<Prototype*>(data)->prioritizeVisibleSidebarThumbnails();
+                         }),
+                         this);
         gtk_box_append(GTK_BOX(box), scroll);
         auto* layerPanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_widget_set_margin_start(layerPanel, 8);
@@ -13891,7 +13919,10 @@ private:
             const double center = bounds.origin.y + bounds.size.height / 2.0;
             visiblePages.emplace(page, std::abs(center - viewportCenter));
         }
-        thumbnailRenderer.setVisiblePages(std::move(visiblePages), state.page);
+        thumbnailRenderer.setVisiblePages(visiblePages, state.page);
+        for (const auto& [page, distance]: visiblePages) {
+            requestSidebarThumbnail(page);
+        }
     }
 
     void requestSidebarThumbnail(int number) {
