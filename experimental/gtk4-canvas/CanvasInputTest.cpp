@@ -572,6 +572,55 @@ static void shiftClickRespectsPageAndLayer() {
           "a Shift-click on a different layer must not connect to the prior layer's stroke");
 }
 
+static void shiftClickRequiresShiftThroughRelease() {
+    CanvasState penState;
+    CanvasInput penInput(penState);
+    penInput.begin(Device::Mouse, {20, 30, std::nullopt});
+    penInput.motion(Device::Mouse, {60, 30, std::nullopt});
+    penInput.finish(Device::Mouse);
+    penInput.setModifiers(true, false, false);
+    penInput.begin(Device::Mouse, {100, 80, std::nullopt});
+    penInput.setModifiers(false, false, false);
+    penInput.finish(Device::Mouse, std::nullopt, Point{101, 81});
+    check(penState.ink.size() == 2 && penState.ink.back().points.front().x == 100 &&
+                  penState.ink.back().points.front().y == 80,
+          "a Pen Shift-click must not connect when Shift is released before pointer release");
+
+    CanvasState whiteoutState;
+    CanvasInput whiteoutInput(whiteoutState);
+    whiteoutState.brush.tool = Tool::Eraser;
+    whiteoutState.eraserMode = EraserMode::Whiteout;
+    whiteoutInput.begin(Device::Mouse, {20, 30, std::nullopt});
+    whiteoutInput.motion(Device::Mouse, {60, 30, std::nullopt});
+    whiteoutInput.finish(Device::Mouse);
+    whiteoutInput.setModifiers(true, false, false);
+    whiteoutInput.begin(Device::Mouse, {100, 80, std::nullopt});
+    whiteoutInput.setModifiers(false, false, false);
+    whiteoutInput.finish(Device::Mouse, std::nullopt, Point{101, 81});
+    check(whiteoutState.ink.size() == 2 && whiteoutState.ink.back().points.front().x == 100 &&
+                  whiteoutState.ink.back().points.front().y == 80,
+          "a Whiteout Eraser Shift-click must not connect when Shift is released before pointer release");
+
+    for (const auto mode: {EraserMode::Standard, EraserMode::DeleteStroke}) {
+        CanvasState eraserState;
+        CanvasInput eraserInput(eraserState);
+        eraserInput.begin(Device::Mouse, {142, 100, std::nullopt});
+        eraserInput.motion(Device::Mouse, {158, 100, std::nullopt});
+        eraserInput.finish(Device::Mouse);
+        eraserState.brush.tool = Tool::Eraser;
+        eraserState.brush.width = 2;
+        eraserState.eraserMode = mode;
+        eraserInput.begin(Device::Mouse, {50, 100, std::nullopt});
+        eraserInput.finish(Device::Mouse);
+        eraserInput.setModifiers(true, false, false);
+        eraserInput.begin(Device::Mouse, {250, 100, std::nullopt});
+        eraserInput.setModifiers(false, false, false);
+        eraserInput.finish(Device::Mouse, std::nullopt, Point{250, 100});
+        check(eraserState.ink.size() == 1,
+              "a Standard/Delete Stroke Eraser Shift-click must stop connecting when Shift is released early");
+    }
+}
+
 static void shiftProjectionPrecedesStabilization() {
     CanvasState state;
     CanvasInput input(state);
@@ -629,10 +678,11 @@ int main() {
         shiftLineConstraintPersistsUntilRelease();
         shiftClickConnectsOnlyToCurrentEndpoint();
         shiftClickRespectsPageAndLayer();
+        shiftClickRequiresShiftThroughRelease();
         shiftProjectionPrecedesStabilization();
         pageInsertionDoesNotReuseAnotherPagesShiftAxis();
         std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary and dedicated hand pan, "
-                     "backlog flags/order, Photoshop-style Shift stroke constraints\n";
+                     "backlog flags/order, Shift constraints and release-time Shift-click behavior\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
