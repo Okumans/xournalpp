@@ -41,6 +41,7 @@
 #include "BehaviorDefaults.h"
 #include "CanvasImageActions.h"
 #include "CanvasInput.h"
+#include "CanvasScrollMotion.h"
 #include "CanvasState.h"
 #include "ClipboardRenderer.h"
 #include "DocumentAutosave.h"
@@ -568,6 +569,8 @@ private:
 
     void verifySearchIntegration();
 
+    void verifyScrollMotionIntegration();
+
     void verifyPenLineStyleIntegration();
 
     void verifyPluginIntegration();
@@ -873,6 +876,12 @@ private:
 
     void zoom(double value, double x, double y, bool previewRaster = false);
 
+    bool applyCanvasScroll(double dx, double dy, bool discrete);
+
+    void startScrollMomentum(double vx, double vy);
+
+    void cancelScrollMomentum();
+
     void finishZoomPreview();
 
     static bool mouseEvent(GtkEventController* controller);
@@ -1146,6 +1155,10 @@ private:
     std::string smokeExternalVersion;
     CanvasState state;
     prototype::CanvasInput input{state};
+    prototype::ScrollAxisLock scrollAxisLock;
+    prototype::ScrollMomentum scrollMomentum;
+    guint scrollMomentumTick = 0;
+    bool scrollGestureAllowsMomentum = false;
     Gtk4SearchController searchController;
     std::optional<size_t> selectedImageIndex;
     std::optional<ImageGesture> imageGesture;
@@ -1357,6 +1370,7 @@ private:
     GtkGesture* mouse = nullptr;
     GtkGesture* stylus = nullptr;
     GtkEventController* pointerMotion = nullptr;
+    GtkEventControllerScroll* scrollController = nullptr;
     std::vector<GtkGesture*> panGestures;
     GtkGesture* pinch = nullptr;
     GtkEventController* keys = nullptr;

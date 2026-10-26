@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "BehaviorDefaults.h"
+#include "CanvasScrollMotion.h"
 #include "CanvasState.h"
 
 using namespace prototype;
@@ -894,6 +895,70 @@ static void scrollDeltaUnits() {
           "non-finite scroll deltas should not move the canvas");
 }
 
+static void constrainedScrollAndMomentum() {
+    CanvasState state;
+    state.setPages({{600, 800}, {600, 800}});
+    state.zoom = 1.0;
+    state.offsetX = 120;
+    state.offsetY = 500;
+    state.constrainScrollOffsets(400, 500);
+    check(state.offsetX == 0 && state.offsetY == 0,
+          "scrolling must not expose blank space beyond the top or left of the page grid");
+
+    state.offsetX = -900;
+    state.offsetY = -2000;
+    state.constrainScrollOffsets(400, 500);
+    check(std::abs(state.offsetX - (400 - state.layoutWidth())) < 1e-9 &&
+                  std::abs(state.offsetY - (500 - state.layoutHeight())) < 1e-9,
+          "scrolling must stop at the right and bottom edges of the page grid");
+
+    state.setPages({{600, 800}});
+    state.offsetX = -100;
+    state.offsetY = 100;
+    state.constrainScrollOffsets(900, 1000);
+    check(state.offsetX == 150 && state.offsetY == 100,
+          "a page smaller than the viewport must stay centered instead of drifting away");
+
+    ScrollAxisLock axis;
+    axis.begin();
+    const auto verticalFirst = axis.filter(0.3, 1.5, true);
+    const auto verticalLock = axis.filter(0.4, 4.0, true);
+    const auto verticalNoise = axis.filter(3.0, 1.0, true);
+    check(verticalFirst.x == 0 && verticalFirst.y == 0 && verticalLock.x == 0 && verticalLock.y == 5.5 &&
+                  verticalNoise.x == 0 && verticalNoise.y == 1.0 && axis.filterVelocity(0.8, 0.5, true).x == 0,
+          "a vertical touchpad gesture must discard horizontal drift and keep vertical momentum");
+
+    axis.begin();
+    axis.filter(2.0, 0.3, true);
+    const auto horizontalLock = axis.filter(5.0, 0.4, true);
+    const auto horizontalVelocity = axis.filterVelocity(1.0, 0.8, true);
+    check(axis.lockedAxis() == ScrollAxisLock::Axis::Horizontal && horizontalLock.x > 0 &&
+                  horizontalLock.y == 0 && std::abs(horizontalVelocity.x - 0.35) < 1e-9 && horizontalVelocity.y == 0,
+          "an intentional horizontal gesture may move through a multi-column grid at reduced speed");
+
+    axis.begin();
+    const auto singleColumn = axis.filter(10.0, 2.0, false);
+    check(singleColumn.x == 0 && singleColumn.y == 2.0 && axis.filterVelocity(1.0, 0.5, false).x == 0,
+          "single-column documents must ignore horizontal touchpad movement");
+
+    ScrollMomentum momentum;
+    check(momentum.start(0, 1.0), "a normal touchpad release should start momentum");
+    ScrollDelta step;
+    check(momentum.advance(1000000, step) && step.y == 0,
+          "the first animation frame should establish the momentum clock");
+    check(momentum.advance(1016000, step) && step.y > 0 && step.y < 16,
+          "momentum should advance smoothly and decay between animation frames");
+    double totalDistance = step.y;
+    for (long long frame = 1032000; momentum.isActive() && frame < 3000000; frame += 16000) {
+        momentum.advance(frame, step);
+        totalDistance += step.y;
+    }
+    check(!momentum.isActive() && totalDistance > 100 && totalDistance < 400,
+          "touchpad momentum should ease to a stop with bounded travel");
+    check(!momentum.start(std::numeric_limits<double>::quiet_NaN(), 1.0) && !momentum.isActive(),
+          "non-finite device velocity must not start a momentum animation");
+}
+
 static void layerManagement() {
     CanvasState state;
     state.setPages({{595, 842}, {595, 842}});
@@ -1564,6 +1629,7 @@ int main() {
         visiblePageCullingPreservesActivePageTieBreak();
         pageStructureHistory();
         scrollDeltaUnits();
+        constrainedScrollAndMomentum();
         pluginBackgroundNameSetter();
         layerManagement();
         replaceNextPageWithClone();

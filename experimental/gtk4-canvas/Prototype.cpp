@@ -71,6 +71,7 @@ Prototype::Prototype(prototype::ApplicationOptions options):
 }
 
 Prototype::~Prototype() {
+    cancelScrollMomentum();
     for (const auto& operation: quickScreenshotOperations) {
         operation->self = nullptr;
         if (operation->process) {
