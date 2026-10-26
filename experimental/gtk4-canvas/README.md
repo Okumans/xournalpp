@@ -176,7 +176,9 @@ More tools. Floating-toolbox rows import read-only from `toolbar.ini` and both
 customization paths save only to `gtk4-canvas.ini`, without changing
 `settings.xml` or `toolbar.ini`. Common actions such as Pen, Highlighter, Laser
 Pointer, PDF selection, Undo, zoom, drawing modes, palette colors, rich-text
-formatting, and text alignment/justification work in the floating rows.
+formatting, and text alignment/justification work in the floating rows. The
+master `RULER`, rectangle, ellipse, arrow, double-arrow, coordinate-system,
+spline, and stroke-recognizer drawing tokens select their matching modes.
 `TOOL_FILL` and unknown tokens remain visible but disabled. Stylus side buttons
 can temporarily select Pen, Highlighter, Eraser, or Hand while held. Releasing a
 mapped button restores the toolbar tool. A Floating Toolbox mapping opens the panel at the pointer without

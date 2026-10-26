@@ -13,9 +13,41 @@
 
 #include <glib.h>
 
+#include "CanvasDrawing.h"
+
 namespace prototype {
 
 using FloatingToolboxRows = std::array<std::vector<std::string>, 4>;
+
+struct FloatingDrawingModeAction {
+    std::string_view token;
+    DrawingMode mode;
+    std::string_view label;
+};
+
+inline constexpr std::array<FloatingDrawingModeAction, 8> floatingDrawingModeActions = {{
+        {"RULER", DrawingMode::Line, "Line"},
+        {"DRAW_RECTANGLE", DrawingMode::Rectangle, "Rectangle"},
+        {"DRAW_ELLIPSE", DrawingMode::Ellipse, "Ellipse"},
+        {"DRAW_ARROW", DrawingMode::Arrow, "Arrow"},
+        {"DRAW_DOUBLE_ARROW", DrawingMode::DoubleArrow, "Double arrow"},
+        {"DRAW_COORDINATE_SYSTEM", DrawingMode::CoordinateSystem, "Coordinate system"},
+        {"DRAW_SPLINE", DrawingMode::Spline, "Spline"},
+        {"SHAPE_RECOGNIZER", DrawingMode::ShapeRecognizer, "Shape recognizer"},
+}};
+
+inline std::optional<FloatingDrawingModeAction> floatingDrawingModeAction(std::string_view token) {
+    if (token == "DRAW_LINE") {
+        return floatingDrawingModeActions[0];
+    }
+    if (token == "DRAW_RECT") {
+        return floatingDrawingModeActions[1];
+    }
+
+    const auto action = std::find_if(floatingDrawingModeActions.begin(), floatingDrawingModeActions.end(),
+                                     [token](const auto& candidate) { return candidate.token == token; });
+    return action == floatingDrawingModeActions.end() ? std::nullopt : std::optional(*action);
+}
 
 inline constexpr std::array<std::string_view, 4> defaultFloatingToolboxRowText = {
         "PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO",

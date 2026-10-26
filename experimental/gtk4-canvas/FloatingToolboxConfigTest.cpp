@@ -20,6 +20,18 @@ void require(bool condition, const char* message) {
 }  // namespace
 
 int main() {
+    for (const auto& action: prototype::floatingDrawingModeActions) {
+        const auto mapped = prototype::floatingDrawingModeAction(action.token);
+        require(mapped && mapped->mode == action.mode && mapped->label == action.label,
+                "A master floating drawing token did not map to its mode and label");
+    }
+    const auto rulerAlias = prototype::floatingDrawingModeAction("DRAW_LINE");
+    const auto rectangleAlias = prototype::floatingDrawingModeAction("DRAW_RECT");
+    require(rulerAlias && rulerAlias->mode == prototype::DrawingMode::Line && rectangleAlias &&
+                    rectangleAlias->mode == prototype::DrawingMode::Rectangle &&
+                    !prototype::floatingDrawingModeAction("TOOL_FILL"),
+            "Drawing token aliases or unsupported fill handling changed unexpectedly");
+
     const auto defaultRows = prototype::defaultFloatingToolboxRows();
     require(defaultRows[0] == std::vector<std::string>({"PEN", "HIGHLIGHTER", "LASER_POINTER", "PDF_TOOL", "UNDO"}) &&
                     defaultRows[1] == std::vector<std::string>({"ZOOM_SLIDER", "DRAW_ELLIPSE"}) &&

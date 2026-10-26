@@ -8637,15 +8637,10 @@ private:
                              }),
                              this);
             gtk_box_append(GTK_BOX(row), scale);
-        } else if (token == "DRAW_ELLIPSE" || token == "DRAW_RECTANGLE" || token == "DRAW_ARROW" ||
-                   token == "DRAW_LINE") {
-            const auto mode = token == "DRAW_ELLIPSE" ? prototype::DrawingMode::Ellipse :
-                              token == "DRAW_RECTANGLE" ? prototype::DrawingMode::Rectangle :
-                              token == "DRAW_ARROW" ? prototype::DrawingMode::Arrow : prototype::DrawingMode::Line;
-            const char* label = token == "DRAW_ELLIPSE" ? "Ellipse" :
-                                token == "DRAW_RECTANGLE" ? "Rectangle" :
-                                token == "DRAW_ARROW" ? "Arrow" : "Line";
-            addButton(label, G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        } else if (const auto drawingModeAction = prototype::floatingDrawingModeAction(token)) {
+            const auto mode = drawingModeAction->mode;
+            const std::string label(drawingModeAction->label);
+            addButton(label.c_str(), G_CALLBACK(+[](GtkButton* button, gpointer data) {
                           auto* self = static_cast<Prototype*>(data);
                           const auto selectedMode = static_cast<prototype::DrawingMode>(GPOINTER_TO_INT(
                                   g_object_get_data(G_OBJECT(button), "floating-drawing-mode")));
@@ -8657,8 +8652,10 @@ private:
                               self->update();
                           }
                       }));
-            g_object_set_data(G_OBJECT(gtk_widget_get_last_child(row)), "floating-drawing-mode",
-                              GINT_TO_POINTER(static_cast<int>(mode)));
+            auto* modeButton = gtk_widget_get_last_child(row);
+            gtk_widget_set_tooltip_text(modeButton, label.c_str());
+            g_object_set_data(G_OBJECT(modeButton), "floating-drawing-mode", GINT_TO_POINTER(static_cast<int>(mode)));
+            g_object_set_data_full(G_OBJECT(modeButton), "floating-drawing-mode-token", g_strdup(token.c_str()), g_free);
         } else if (token == "TOOL_FILL") {
             auto* unsupported = gtk_button_new_with_label("Fill");
             gtk_widget_set_sensitive(unsupported, false);
@@ -15223,6 +15220,13 @@ private:
 
     gboolean smokePreferencesVerify() {
         const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
+        const prototype::FloatingToolboxRows floatingModeTestRows = {{
+                {"SMART_SELECT", "PEN"},
+                {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER",
+                 "RULER"},
+                {"FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
+                {"DRAW_ARROW"},
+        }};
         if (preferencesVerifyMode == "edit" && ((preferencesVerifyStep >= 4 && !floatingToolboxSmokeReady) ||
                                                 (preferencesVerifyStep >= 5 && !floatingToolboxDismissSmokeReady))) {
             return G_SOURCE_CONTINUE;
@@ -15401,20 +15405,16 @@ private:
                             "Applying LaTeX preferences did not persist the text fields and editor options");
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanSpeed)), 31.0);
                     gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier)), 3.5);
-                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow1)),
-                                          "SMART_SELECT,PEN");
-                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow2)), "ZOOM_SLIDER");
-                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow3)), "FINE");
-                    gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow4)), "DRAW_ARROW");
+                    const std::array<PreferenceKey, 4> rowKeys = {
+                            PreferenceKey::FloatingToolboxRow1, PreferenceKey::FloatingToolboxRow2,
+                            PreferenceKey::FloatingToolboxRow3, PreferenceKey::FloatingToolboxRow4,
+                    };
+                    for (size_t index = 0; index < rowKeys.size(); ++index) {
+                        const auto serialized = prototype::serializeFloatingToolboxRow(floatingModeTestRows[index]);
+                        gtk_editable_set_text(GTK_EDITABLE(control(rowKeys[index])), serialized.c_str());
+                    }
                     g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
-                    require(importedConfig.settings.floatingToolboxRows[0] ==
-                                            std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
-                                    importedConfig.settings.floatingToolboxRows[1] ==
-                                            std::vector<std::string>({"ZOOM_SLIDER"}) &&
-                                    importedConfig.settings.floatingToolboxRows[2] ==
-                                            std::vector<std::string>({"FINE"}) &&
-                                    importedConfig.settings.floatingToolboxRows[3] ==
-                                            std::vector<std::string>({"DRAW_ARROW"}),
+                    require(importedConfig.settings.floatingToolboxRows == floatingModeTestRows,
                             "Applying toolbar rows did not update the active layout");
                     g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
                     gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)),
@@ -15461,9 +15461,35 @@ private:
                     require(std::abs(state.brush.width - prototype::widthsForTool(Tool::Pen)[1]) < 1e-8,
                             "Configured FINE action did not select the Pen fine-width preset");
                     auto* fourthConfiguredRow = gtk_widget_get_next_sibling(thirdConfiguredRow);
+                    const auto originalDrawingMode = state.drawingMode;
                     g_signal_emit_by_name(gtk_widget_get_first_child(fourthConfiguredRow), "clicked");
                     require(state.drawingMode == prototype::DrawingMode::Arrow,
                             "Configured DRAW_ARROW action did not select arrow drawing mode");
+                    const auto findConfiguredDrawingMode = [&](std::string_view token) -> GtkWidget* {
+                        for (auto* row = gtk_widget_get_first_child(floatingToolboxRowsContainer); row;
+                             row = gtk_widget_get_next_sibling(row)) {
+                            for (auto* child = gtk_widget_get_first_child(row); child;
+                                 child = gtk_widget_get_next_sibling(child)) {
+                                const auto* configuredToken = static_cast<const char*>(
+                                        g_object_get_data(G_OBJECT(child), "floating-drawing-mode-token"));
+                                if (configuredToken && token == configuredToken) {
+                                    return child;
+                                }
+                            }
+                        }
+                        return nullptr;
+                    };
+                    for (const auto& drawingAction: prototype::floatingDrawingModeActions) {
+                        auto* drawingButton = findConfiguredDrawingMode(drawingAction.token);
+                        require(drawingButton, "A configured master drawing-mode token did not render as an action");
+                        g_signal_emit_by_name(drawingButton, "clicked");
+                        require(state.drawingMode == drawingAction.mode,
+                                "A configured master drawing-mode token selected the wrong drawing behavior");
+                    }
+                    gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                               static_cast<guint>(originalDrawingMode));
+                    require(state.drawingMode == originalDrawingMode,
+                            "The floating drawing-mode smoke check did not restore the selected mode");
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     importedConfig.settings.stylusButtonTwo ==
@@ -15483,10 +15509,7 @@ private:
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
-                                    importedConfig.settings.floatingToolboxRows[0] ==
-                                            std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
-                                    importedConfig.settings.floatingToolboxRows[3] ==
-                                            std::vector<std::string>({"DRAW_ARROW"}) &&
+                                    importedConfig.settings.floatingToolboxRows == floatingModeTestRows &&
                                     importedConfig.settings.latexDefaultText == "\\frac{\\alpha}{2}" &&
                                     prototype::preferences_detail::pathToUtf8(
                                             importedConfig.settings.latexTemplatePath) ==
@@ -15627,14 +15650,7 @@ private:
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
-                                    importedConfig.settings.floatingToolboxRows[0] ==
-                                            std::vector<std::string>({"SMART_SELECT", "PEN"}) &&
-                                    importedConfig.settings.floatingToolboxRows[1] ==
-                                            std::vector<std::string>({"ZOOM_SLIDER"}) &&
-                                    importedConfig.settings.floatingToolboxRows[2] ==
-                                            std::vector<std::string>({"FINE"}) &&
-                                    importedConfig.settings.floatingToolboxRows[3] ==
-                                            std::vector<std::string>({"DRAW_ARROW"}),
+                                    importedConfig.settings.floatingToolboxRows == floatingModeTestRows,
                             "GTK 4 preference edits were not restored at next startup");
                     openPreferences();
                     break;
