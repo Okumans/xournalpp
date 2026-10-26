@@ -887,12 +887,44 @@ def verify_sidebar_performance(args, evidence):
     report = {
         "page_count": page_count,
         "screenshot": str(screenshot),
-        "checks": ["virtualized page rows", "bounded mapped thumbnails", "scroll to last page",
+        "checks": ["virtualized page rows", "bounded mapped thumbnails",
+                   "sidebar rendering without the main canvas PDF cache",
+                   "nearest-visible-page first dispatch", "offscreen thumbnail cancellation",
+                   "scroll to last page",
                    "selection navigates from last row", "smooth zoom reuses and refreshes raster",
                    "sidebar open screenshot"],
         "rendering": "Private headless Wayland via Cage",
     }
     print("PASS: private GTK4 large-PDF sidebar virtualization", flush=True)
+    return report
+
+
+def verify_sidebar_startup(args, evidence):
+    pdf = args.sidebar_startup_pdf.resolve()
+    if not pdf.is_file():
+        raise RuntimeError(f"Sidebar startup PDF does not exist: {pdf}")
+    run_dir = evidence / "sidebar-startup"
+    config_dir = evidence / "sidebar-startup-config"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    output = run(
+        [str(args.binary.resolve()), "--config-dir", str(config_dir), "--pdf", str(pdf),
+         "--smoke-dir", str(run_dir), "--verify-sidebar-startup"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 sidebar renders its first visible thumbnail without input"
+    if marker not in output:
+        raise RuntimeError("No-input sidebar startup verification did not finish")
+    screenshot = run_dir / "sidebar-startup-no-input.png"
+    if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+        raise RuntimeError(f"Missing no-input sidebar screenshot: {screenshot}")
+    report = {
+        "fixture_pdf": str(pdf),
+        "screenshot": str(screenshot),
+        "checks": ["first visible page thumbnail renders and redraws without input"],
+        "rendering": "Private headless Wayland via Cage",
+    }
+    print("PASS: private GTK4 sidebar startup thumbnail repaint", flush=True)
     return report
 
 
@@ -1324,6 +1356,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.sidebar_startup_only:
+        startup_evidence = verify_sidebar_startup(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"sidebar-startup": startup_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.sidebar_performance_only:
         sidebar_evidence = verify_sidebar_performance(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1649,6 +1688,8 @@ def main():
     parser.add_argument("--page-layout-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--presentation-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sidebar-performance-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--sidebar-startup-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--sidebar-startup-pdf", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1666,6 +1707,8 @@ def main():
         raise RuntimeError("LaTeX editor verification requires --worker")
     if args.clipboard_only and not args.worker:
         raise RuntimeError("Text clipboard verification requires --worker")
+    if args.sidebar_startup_only and not args.sidebar_startup_pdf:
+        raise RuntimeError("Sidebar startup verification requires --sidebar-startup-pdf")
     if args.inside:
         inside(args)
         return
@@ -1745,6 +1788,9 @@ def main():
             command.append("--presentation-only")
         if args.sidebar_performance_only:
             command.append("--sidebar-performance-only")
+        if args.sidebar_startup_only:
+            command.extend(["--sidebar-startup-only", "--sidebar-startup-pdf",
+                            str(args.sidebar_startup_pdf.resolve())])
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

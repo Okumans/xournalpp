@@ -40,9 +40,14 @@ Phase 98 also changed canvas painting and active-page selection to query only
 viewport-intersecting pages, using binary search over the layout grid. The
 private 10,000-page check also confirms Go to Page updates and scrolls the page
 sidebar selection. Phase 99 moved page-sidebar PDF thumbnail rendering off the
-GTK main loop, limits it to two concurrent renders, and keeps at most 12 recent
-queued pages. Its private 10,000-page check drives 32 scroll frames and waits
-for visible thumbnails. Content-heavy PDF latency remains unmeasured.
+GTK main loop. Phase 100 gives it an independent priority queue and isolated
+renderer processes, starts the nearest visible page first, and cancels offscreen
+work. The private 10,000-page check renders page 5000 while the canvas remains
+on page 0 with its raster cache suppressed, verifies first dispatch, then drives
+32 sidebar scroll frames. A no-input private GUI check against the user's
+775-page PDF confirms the first visible thumbnail renders and redraws.
+Layer-sidebar responsiveness and thumbnail latency on content-heavy PDFs remain
+unmeasured.
 
 These user-requested follow-ups remain:
 
@@ -53,10 +58,16 @@ These user-requested follow-ups remain:
 - Implement touchpad momentum/kinetic scrolling and verify it on the user's
   physical touchpad. The existing synthetic scroll-unit check does not cover
   momentum or physical-device behavior.
-- Confirm page-sidebar responsiveness on the user's content-heavy PDF. The
-  generated 10,000-page fixture verifies a synthetic 32-frame scroll and
-  asynchronous thumbnail completion, but does not measure a real document's
-  thumbnail latency.
+- Diagnose and fix the layer sidebar freezing when opened on a large PDF. The
+  independent scheduler currently covers page thumbnails, not layer-sidebar
+  construction or refresh work.
+- Measure page-thumbnail latency while rapidly scrolling the user's
+  content-heavy PDF. The generated 10,000-page fixture verifies
+  nearest-visible-first independent rendering and a synthetic 32-frame scroll,
+  but not real-document latency under continued scrolling.
+- Complete Eraser gesture parity with Pen, including any remaining Shift and
+  Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
+  release-time Shift-click; broader parity still needs an upstream audit.
 
 ## Default UI target
 
