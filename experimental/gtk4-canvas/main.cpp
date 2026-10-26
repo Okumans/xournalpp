@@ -3260,6 +3260,26 @@ private:
         return 0;
     }
 
+    std::int64_t pluginToolSizeState(const std::array<double, 5>& widths, double width) const {
+        if (const auto size = prototype::behavior::matchToolSize(widths, width)) {
+            return static_cast<std::int64_t>(*size);
+        }
+        return 5;  // app.C.ToolSize_none also represents custom widths.
+    }
+
+    std::int64_t pluginActiveToolSizeState() const {
+        switch (state.brush.tool) {
+            case Tool::Pen:
+            case Tool::Highlighter:
+            case Tool::Eraser:
+            case Tool::LaserPointerPen:
+            case Tool::LaserPointerHighlighter:
+                return pluginToolSizeState(prototype::widthsForTool(state.brush.tool), state.brush.width);
+            default:
+                return 5;
+        }
+    }
+
     bool getPluginActionState(std::string_view action, prototype::PluginActionValue& value,
                               std::string& error) const {
         if (action == "select-tool") {
@@ -3276,6 +3296,26 @@ private:
         }
         if (action == "zoom") {
             value = state.zoom;
+            return true;
+        }
+        if (action == "tool-size") {
+            value = pluginActiveToolSizeState();
+            return true;
+        }
+        if (action == "tool-pen-size") {
+            value = pluginToolSizeState(prototype::behavior::penWidths, penBrush.width);
+            return true;
+        }
+        if (action == "tool-eraser-size") {
+            value = pluginToolSizeState(prototype::behavior::eraserWidths, eraserBrush.width);
+            return true;
+        }
+        if (action == "tool-highlighter-size") {
+            value = pluginToolSizeState(prototype::behavior::highlighterWidths, highlightBrush.width);
+            return true;
+        }
+        if (action == "tool-eraser-type") {
+            value = static_cast<std::int64_t>(state.eraserMode) + 1;
             return true;
         }
         if (action == "tool-color") {
@@ -4492,6 +4532,37 @@ private:
                         std::abs(std::get<double>(actionState) - state.zoom) < 1e-9,
                 actionStateError.empty() ? "app.getActionState did not report the current zoom" :
                                            actionStateError.c_str());
+        require(getPluginActionState("tool-size", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) == pluginActiveToolSizeState(),
+                actionStateError.empty() ? "app.getActionState did not report the active tool size" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("tool-pen-size", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) ==
+                                pluginToolSizeState(prototype::behavior::penWidths, penBrush.width),
+                actionStateError.empty() ? "app.getActionState did not report the pen size preset" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("tool-eraser-size", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) ==
+                                pluginToolSizeState(prototype::behavior::eraserWidths, eraserBrush.width),
+                actionStateError.empty() ? "app.getActionState did not report the eraser size preset" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("tool-highlighter-size", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) ==
+                                pluginToolSizeState(prototype::behavior::highlighterWidths, highlightBrush.width),
+                actionStateError.empty() ? "app.getActionState did not report the highlighter size preset" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("tool-eraser-type", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) == static_cast<std::int64_t>(state.eraserMode) + 1,
+                actionStateError.empty() ? "app.getActionState did not report the eraser mode" :
+                                           actionStateError.c_str());
+        require(pluginToolSizeState(prototype::behavior::penWidths, 1.41) == 2 &&
+                        pluginToolSizeState(prototype::behavior::penWidths, 1.42) == 5,
+                "app.getActionState did not distinguish preset sizes from custom widths");
         require(getPluginActionState("grid-snapping", actionState, actionStateError) &&
                         std::holds_alternative<bool>(actionState) &&
                         std::get<bool>(actionState) == state.snapGridEnabled,

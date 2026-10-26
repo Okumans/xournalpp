@@ -488,6 +488,19 @@ int luaOpenApp(lua_State* state) {
         lua_pushinteger(state, static_cast<lua_Integer>(index));
         lua_setfield(state, -2, key.c_str());
     }
+    constexpr std::array<std::string_view, 6> toolSizeNames{
+            "veryThin", "thin", "medium", "thick", "veryThick", "none"};
+    for (std::size_t index = 0; index < toolSizeNames.size(); ++index) {
+        const std::string key = "ToolSize_" + std::string(toolSizeNames[index]);
+        lua_pushinteger(state, static_cast<lua_Integer>(index));
+        lua_setfield(state, -2, key.c_str());
+    }
+    constexpr std::array<std::string_view, 4> eraserTypeNames{"none", "default", "whiteout", "deleteStroke"};
+    for (std::size_t index = 0; index < eraserTypeNames.size(); ++index) {
+        const std::string key = "EraserType_" + std::string(eraserTypeNames[index]);
+        lua_pushinteger(state, static_cast<lua_Integer>(index));
+        lua_setfield(state, -2, key.c_str());
+    }
     lua_pushinteger(state, 0);
     lua_setfield(state, -2, "Alignment_left");
     lua_pushinteger(state, 1);
