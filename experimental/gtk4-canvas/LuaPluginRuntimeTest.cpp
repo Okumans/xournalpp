@@ -536,6 +536,7 @@ int main() {
                 "  assert(app.getActionState('tool-eraser-size') == app.C.ToolSize_thin)\n"
                 "  assert(app.getActionState('tool-highlighter-size') == app.C.ToolSize_veryThick)\n"
                 "  assert(app.getActionState('tool-eraser-type') == app.C.EraserType_whiteout)\n"
+                "  assert(app.getActionState('tool-pen-line-style') == 'plain')\n"
                 "  assert(app.getActionState('tool-color') == 0xff123456)\n"
                 "  app.changeActionState('action-state-summary',\n"
                 "    tostring(app.getActionState('select-tool')) .. ':' ..\n"
@@ -545,6 +546,7 @@ int main() {
                 "    tostring(app.getActionState('tool-eraser-size')) .. ':' ..\n"
                 "    tostring(app.getActionState('tool-highlighter-size')) .. ':' ..\n"
                 "    tostring(app.getActionState('tool-eraser-type')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-pen-line-style')) .. ':' ..\n"
                 "    tostring(app.getActionState('tool-color')))\n"
                 "end\n"
                 "function missing() app.getActionState('missing-action-state') end\n");
@@ -658,6 +660,8 @@ int main() {
             value = std::int64_t{4};
         } else if (action == "tool-eraser-type") {
             value = std::int64_t{2};
+        } else if (action == "tool-pen-line-style") {
+            value = std::string{"plain"};
         } else if (action == "tool-color") {
             value = std::int64_t{0xff123456U};
         } else {
@@ -1136,7 +1140,7 @@ int main() {
             "app.refreshPage did not propagate the missing-page error");
     refreshPageAvailable = true;
     require(runtime.invokeMenu("ActionStateApiPlugin", 0) &&
-                    actionStateSummary == "1:1.25:2:2:1:4:2:4279383126",
+                    actionStateSummary == "1:1.25:2:2:1:4:2:plain:4279383126",
             "app.getActionState did not preserve boolean, integer, and numeric action-state values");
     require(!runtime.invokeMenu("ActionStateApiPlugin", 1) &&
                     runtime.findPlugin("ActionStateApiPlugin")->error.find("unavailable") != std::string::npos,
