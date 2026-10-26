@@ -258,6 +258,8 @@ struct PluginRuntimeHost {
                        std::function<void(int)>, std::string&)>
             openDialog;
     std::function<void(std::string_view, std::string_view)> reportError;
+    std::function<void()> rebuildFloatingToolboxRows;
+    std::function<void(std::string_view, std::string_view)> updateToolbarPlaceholder;
 };
 
 struct PluginSummary {
@@ -282,6 +284,13 @@ struct PluginToolbarItem {
     std::string iconName;
 };
 
+struct PluginToolbarPlaceholder {
+    std::string id;
+    std::string pluginName;
+    std::string description;
+    std::string value;
+};
+
 class LuaPluginRuntime final {
 public:
     LuaPluginRuntime();
@@ -297,6 +306,7 @@ public:
     std::vector<PluginSummary> plugins() const;
     std::optional<PluginSummary> findPlugin(std::string_view name) const;
     std::optional<PluginToolbarItem> findToolbarItem(std::string_view id) const;
+    std::optional<PluginToolbarPlaceholder> findToolbarPlaceholder(std::string_view id) const;
     bool invokeToolbarItem(std::string_view id);
     void resetPendingStates();
     void setPendingEnabled(std::string_view name, bool enabled);
@@ -308,6 +318,8 @@ public:
     bool invokeMenu(std::string_view pluginName, std::size_t menuIndex);
 
     static int luaRegisterUi(lua_State* state);
+    static int luaRegisterPlaceholder(lua_State* state);
+    static int luaSetPlaceholderValue(lua_State* state);
     static int luaChangeToolColor(lua_State* state);
     static int luaGetActionState(lua_State* state);
     static int luaGetToolInfo(lua_State* state);
@@ -356,6 +368,8 @@ private:
     struct MenuEntry;
 
     void load(Plugin& plugin);
+    void registerPlaceholder(Plugin& plugin, std::string_view id, std::string_view description);
+    void setPlaceholderValue(Plugin& plugin, std::string_view id, std::string_view value);
     bool call(Plugin& plugin, std::string_view function, std::optional<std::int64_t> mode = std::nullopt);
     bool call(Plugin& plugin, std::string_view function, const char* argument);
     bool changeToolColor(const std::optional<std::string>& tool, std::uint32_t color, bool selection,
