@@ -569,7 +569,7 @@ private:
     }
 
     void finishShiftClick(std::optional<Point> releasePoint, std::optional<double> releasePressure) {
-        if (!shiftClickConnection || !state.current || pointerDragged ||
+        if (!shiftHeld || !shiftClickConnection || !state.current || pointerDragged ||
             state.current->page != shiftClickConnection->page ||
             state.current->layerId != shiftClickConnection->layerId ||
             state.current->brush.tool != shiftClickConnection->tool ||
@@ -589,7 +589,7 @@ private:
     }
 
     void finishEraserShiftClick(std::optional<Point> releasePoint) {
-        if (!shiftClickConnection || !shiftClickConnection->erasePath || pointerDragged ||
+        if (!shiftHeld || !shiftClickConnection || !shiftClickConnection->erasePath || pointerDragged ||
             shiftClickConnection->tool != Tool::Eraser || state.eraserMode != shiftClickConnection->eraserMode) {
             return;
         }

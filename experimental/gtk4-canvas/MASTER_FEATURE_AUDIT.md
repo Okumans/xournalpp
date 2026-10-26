@@ -28,17 +28,17 @@ master-parity audit. This does not classify a current master feature obsolete.
 
 ## Deferred user-requested follow-ups
 
-Phase 90 added the Eraser Shift constraint. Phase 96 replaced the eager page
-preview rows with a GTK 4 `GtkListView`. A private 10,000-page sparse-text PDF
-check bound 205 reusable preview rows, mapped 3 in the viewport, reused the
-same row pool at pages 9,795–9,999, and navigated to the last page. The fixture
-does not measure thumbnail latency on a content-heavy real PDF; revisit that
-case if the reported stall persists.
+Phase 90 added the Eraser Shift constraint. Phase 97 aligned Shift-click
+release handling for Pen and all Eraser modes with upstream Pen behavior;
+regression checks cover releasing Shift before pointer-up. Phase 96 replaced
+the eager page preview rows with a GTK 4 `GtkListView`. A private 10,000-page
+sparse-text PDF check bound 205 reusable preview rows, mapped 3 in the
+viewport, reused the same row pool at pages 9,795–9,999, and navigated to the
+last page. The fixture does not measure thumbnail latency on a content-heavy
+real PDF; revisit that case if the reported stall persists.
 
 These user-requested follow-ups remain:
 
-- Compare Eraser Shift and Shift-click behavior with the Pen and port any
-  remaining modifier-routing gaps.
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
   input is active, then refreshes at the settled zoom. The existing sparse
@@ -67,8 +67,8 @@ registration in `ToolHandler::initTools`.
 
 | Master tool | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| `pen` | Partial | Photoshop-style Shift constraints lock freehand and shape-recognizer strokes to the dominant horizontal or vertical axis, retain the axis across successive strokes until Shift release, and project samples before stabilization. Shift-click can connect from the previous Pen or Highlighter endpoint when that stroke remains on the same page, layer, and tool. Solid, dash, dash-dot, dot, and custom `cust:` styles are selectable, rendered for constant-width and pressure strokes, editable on selected Pen strokes, persisted through GTK 4 settings, native save/reopen, and the internal clipboard. Exact production cap geometry, blend modes, shape objects, and remaining stroke-renderer details remain. Physical tablet behavior is not verified. |
-| `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work. All three support the Pen-style Shift axis lock and same-page/layer/mode Shift-click continuation; Standard/Delete Stroke erase along a sampled connecting segment in one undo action, while Whiteout creates an editable connecting stroke only if its previous endpoint still exists. Reproduce all production hit geometry and renderer interactions. |
+| `pen` | Partial | Photoshop-style Shift constraints lock freehand and shape-recognizer strokes to the dominant horizontal or vertical axis, retain the axis across successive strokes until Shift release, and project samples before stabilization. Shift-click can connect from the previous Pen or Highlighter endpoint when that stroke remains on the same page, layer, and tool, provided Shift stays held through pointer release. Solid, dash, dash-dot, dot, and custom `cust:` styles are selectable, rendered for constant-width and pressure strokes, editable on selected Pen strokes, persisted through GTK 4 settings, native save/reopen, and the internal clipboard. Exact production cap geometry, blend modes, shape objects, and remaining stroke-renderer details remain. Physical tablet behavior is not verified. |
+| `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work. All three support the Pen-style Shift axis lock and same-page/layer/mode Shift-click continuation; the connection is applied only if Shift remains held through pointer release. Standard/Delete Stroke erase along a sampled connecting segment in one undo action, while Whiteout creates an editable connecting stroke only if its previous endpoint still exists. Reproduce all production hit geometry and renderer interactions. |
 | `highlighter` | Partial | Core opacity and native serialization work; shares the Pen Shift constraint and endpoint connection behavior. Reproduce production stroke geometry and blend behavior. |
 | `text` | Partial | Rich editing, toolbar font/size/style/color controls, direct Text-tool drag-to-move and handle transforms, rectangle/lasso selection, cross-page transfer, and native text/link clipboard copy/cut/paste/duplicate work. Formatting runs and link URLs survive; mixed stroke/text/image selections preserve stacking order through native, PNG, SVG, and plain-text clipboard targets. Transform-following editor placement, IME, and accessibility remain. |
 | `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Raster, LaTeX, and mixed-object groups preserve native image data and relative transforms; PNG and SVG carry the rendered selection. Unsupported native object editing remains. |
