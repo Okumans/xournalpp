@@ -144,6 +144,7 @@ struct PdfTextSelectionState {
     Tool tool = Tool::SelectPdfTextLinear;
     prototype::PdfTextSelectionStyle style = prototype::PdfTextSelectionStyle::Linear;
     PopplerRectangle bounds{};
+    prototype::Point toolbarAnchor;
     bool dragging = false;
     bool finalized = false;
     std::string text;
@@ -8321,15 +8322,32 @@ private:
             !pdfTextSelection->region || cairo_region_num_rectangles(pdfTextSelection->region.get()) == 0) {
             return;
         }
-        cairo_rectangle_int_t extents{};
-        cairo_region_get_extents(pdfTextSelection->region.get(), &extents);
-        const auto first = state.pageScreenPoint(pdfTextSelection->page, extents.x, extents.y);
-        const auto second = state.pageScreenPoint(pdfTextSelection->page, extents.x + extents.width,
-                                                  extents.y + extents.height);
-        GdkRectangle pointing{static_cast<int>(std::floor(std::min(first.x, second.x))),
-                              static_cast<int>(std::floor(std::min(first.y, second.y))),
-                              std::max(1, static_cast<int>(std::ceil(std::abs(second.x - first.x)))),
-                              std::max(1, static_cast<int>(std::ceil(std::abs(second.y - first.y))))};
+        constexpr int gap = 8;
+        const int viewportWidth = gtk_widget_get_width(canvasOverlay);
+        const int viewportHeight = gtk_widget_get_height(canvasOverlay);
+        int minimumWidth = 0;
+        int naturalWidth = 0;
+        int minimumHeight = 0;
+        int naturalHeight = 0;
+        int minimumBaseline = -1;
+        int naturalBaseline = -1;
+        gtk_widget_measure(GTK_WIDGET(pdfActionsPopover), GTK_ORIENTATION_HORIZONTAL, -1, &minimumWidth,
+                           &naturalWidth, &minimumBaseline, &naturalBaseline);
+        gtk_widget_measure(GTK_WIDGET(pdfActionsPopover), GTK_ORIENTATION_VERTICAL, std::max(1, naturalWidth),
+                           &minimumHeight, &naturalHeight, &minimumBaseline, &naturalBaseline);
+        const int width = std::max(naturalWidth, gtk_widget_get_width(GTK_WIDGET(pdfActionsPopover)));
+        const int height = std::max(naturalHeight, gtk_widget_get_height(GTK_WIDGET(pdfActionsPopover)));
+        const bool rightFits = pdfTextSelection->toolbarAnchor.x + width + gap <= viewportWidth;
+        const bool aboveFits = pdfTextSelection->toolbarAnchor.y >= height + gap;
+        int left = static_cast<int>(std::lround(rightFits ? pdfTextSelection->toolbarAnchor.x + gap :
+                                                               pdfTextSelection->toolbarAnchor.x - width - gap));
+        int top = static_cast<int>(std::lround(aboveFits ? pdfTextSelection->toolbarAnchor.y - height - gap :
+                                                              pdfTextSelection->toolbarAnchor.y + gap));
+        left = std::clamp(left, 0, std::max(0, viewportWidth - width));
+        top = std::clamp(top, 0, std::max(0, viewportHeight - height));
+
+        gtk_popover_set_position(pdfActionsPopover, aboveFits ? GTK_POS_TOP : GTK_POS_BOTTOM);
+        GdkRectangle pointing{left + width / 2, aboveFits ? top + height : top, 1, 1};
         gtk_popover_set_pointing_to(pdfActionsPopover, &pointing);
         if (pdfSelectionStyleButton) {
             const char* label = pdfTextSelection->style == prototype::PdfTextSelectionStyle::Linear ?
@@ -8339,6 +8357,27 @@ private:
         if (popup) {
             gtk_popover_popup(pdfActionsPopover);
         }
+    }
+
+    void hidePdfActionsPreservingSelection() {
+        if (pdfActionsPopover) {
+            gtk_popover_popdown(pdfActionsPopover);
+        }
+    }
+
+    bool reopenPdfActionsForSelection(double x, double y) {
+        if (!pdfTextSelection || !pdfTextSelection->finalized || !pdfTextSelection->region) {
+            return false;
+        }
+        const auto hit = state.hitPage(x, y);
+        if (!hit || hit->page != pdfTextSelection->page ||
+            !cairo_region_contains_point(pdfTextSelection->region.get(), static_cast<int>(hit->local.x),
+                                         static_cast<int>(hit->local.y))) {
+            return false;
+        }
+        pdfTextSelection->toolbarAnchor = {x, y};
+        updatePdfActionsPosition(true);
+        return true;
     }
 
     void clearPdfTextSelection(bool update = true) {
@@ -8360,6 +8399,7 @@ private:
             update();
             return;
         }
+        state.selectActivePage(hit->page);
         auto* page = pdfPageForPage(hit->page);
         if (!page) {
             update();
@@ -8371,6 +8411,7 @@ private:
         selection.tool = state.brush.tool;
         selection.style = pdfSelectionStyleForTool(selection.tool);
         selection.bounds = {hit->local.x, hit->local.y, hit->local.x, hit->local.y};
+        selection.toolbarAnchor = {x, y};
         selection.dragging = true;
         selection.region = prototype::pdfTextSelectionPreview(page, selection.bounds, selection.style);
         g_object_unref(page);
@@ -8384,6 +8425,7 @@ private:
         }
         const auto size = state.pageSize(pdfTextSelection->page);
         const auto local = state.pageLocalPoint(pdfTextSelection->page, x, y);
+        pdfTextSelection->toolbarAnchor = {x, y};
         pdfTextSelection->bounds.x2 = std::clamp(local.x, 0.0, size.width);
         pdfTextSelection->bounds.y2 = std::clamp(local.y, 0.0, size.height);
         auto* page = pdfPageForPage(pdfTextSelection->page);
@@ -8398,9 +8440,12 @@ private:
         update();
     }
 
-    void finishPdfTextSelection(Device device) {
+    void finishPdfTextSelection(Device device, std::optional<prototype::Point> toolbarAnchor = std::nullopt) {
         if (!pdfTextSelection || !pdfTextSelection->dragging || pdfTextSelection->owner != device) {
             return;
+        }
+        if (toolbarAnchor) {
+            pdfTextSelection->toolbarAnchor = *toolbarAnchor;
         }
         pdfTextSelection->dragging = false;
         auto* page = pdfPageForPage(pdfTextSelection->page);
@@ -8486,6 +8531,7 @@ private:
             update();
             return;
         }
+        state.selectActivePage(hit->page);
         auto* page = pdfPageForPage(hit->page);
         if (!page) {
             clearPdfTextSelection(false);
@@ -8500,6 +8546,7 @@ private:
         selection.style = style;
         selection.bounds = {hit->local.x - clickRadius, hit->local.y - clickRadius,
                             hit->local.x + clickRadius, hit->local.y + clickRadius};
+        selection.toolbarAnchor = {x, y};
         auto result = prototype::selectPdfText(page, selection.bounds, style);
         g_object_unref(page);
         if (result.text.empty() || result.textRects.empty()) {
@@ -8519,7 +8566,7 @@ private:
         update();
     }
 
-    void copyPdfTextSelection() {
+    void copyPdfTextSelection(bool dismiss = true) {
         if (!pdfTextSelection || !pdfTextSelection->finalized || pdfTextSelection->text.empty()) {
             return;
         }
@@ -8530,8 +8577,10 @@ private:
         if (auto* primary = gdk_display_get_primary_clipboard(display)) {
             gdk_clipboard_set_text(primary, pdfTextSelection->text.c_str());
         }
-        clearPdfTextSelection(false);
-        update();
+        if (dismiss) {
+            clearPdfTextSelection(false);
+            update();
+        }
     }
 
     static bool samePdfHighlight(const Ink& stroke, int page, size_t layerId, size_t originLayer,
@@ -8627,6 +8676,7 @@ private:
     void createPdfActionsPopover() {
         pdfActionsPopover = GTK_POPOVER(gtk_popover_new());
         gtk_popover_set_position(pdfActionsPopover, GTK_POS_TOP);
+        gtk_popover_set_has_arrow(pdfActionsPopover, false);
         gtk_popover_set_autohide(pdfActionsPopover, false);
         auto* actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         gtk_widget_add_css_class(actions, "toolbar");
@@ -10787,9 +10837,6 @@ private:
         if (textEditor && textEditor->active()) {
             finishTextEditing();
         }
-        if (!prototype::isPdfTextSelectionTool(tool) && pdfTextSelection) {
-            clearPdfTextSelection(false);
-        }
         if (tool != Tool::SmartSelect && tool != Tool::Hand) {
             selectedImageIndex.reset();
         }
@@ -12533,6 +12580,14 @@ private:
         if (closed) {
             return;
         }
+        if (pdfTextSelection && pdfTextSelection->finalized && state.page != pdfTextSelection->page) {
+            clearPdfTextSelection(false);
+        }
+        if (pdfActionsObservedZoom && std::abs(*pdfActionsObservedZoom - state.zoom) > 1e-9 &&
+            pdfTextSelection && pdfTextSelection->finalized) {
+            hidePdfActionsPreservingSelection();
+        }
+        pdfActionsObservedZoom = state.zoom;
         ensureSearchMatchesFresh();
         const auto& pageLayers = state.layersForPage(state.page);
         if (layerRows && (layerPanelPage != state.page || !layerPanelSnapshot ||
@@ -13243,6 +13298,7 @@ private:
     void begin(Device device, double x, double y, std::optional<double> pressure = std::nullopt,
                bool eraserEnd = false, uint32_t timeMs = 0) {
         trackPointerPosition(x, y);
+        hidePdfActionsPreservingSelection();
         if (state.brush.tool == Tool::Latex) {
             gtk_widget_grab_focus(canvas);
             if (device == Device::Mouse) {
@@ -13288,6 +13344,11 @@ private:
             return;
         }
         if (prototype::isPdfTextSelectionTool(state.brush.tool)) {
+            if (reopenPdfActionsForSelection(x, y)) {
+                gtk_widget_grab_focus(canvas);
+                update();
+                return;
+            }
             gtk_widget_grab_focus(canvas);
             beginPdfTextSelection(device, x, y);
             return;
@@ -13295,9 +13356,6 @@ private:
         if (beginSmartSelectPdfGesture(device, x, y)) {
             gtk_widget_grab_focus(canvas);
             return;
-        }
-        if (pdfTextSelection) {
-            clearPdfTextSelection(false);
         }
         if (beginImageGesture(device, x, y)) {
             gtk_widget_grab_focus(canvas);
@@ -13423,7 +13481,7 @@ private:
             if (exceededThreshold) {
                 beginPdfTextSelection(device, gesture.start.x, gesture.start.y);
                 updatePdfTextSelection(device, end.x, end.y);
-                finishPdfTextSelection(device);
+                finishPdfTextSelection(device, end);
             } else {
                 state.clearSelection();
                 selectedImageIndex.reset();
@@ -13463,7 +13521,7 @@ private:
             return;
         }
         if (pdfTextSelection && pdfTextSelection->dragging && pdfTextSelection->owner == device) {
-            finishPdfTextSelection(device);
+            finishPdfTextSelection(device, releasePoint);
             return;
         }
         if (imageGesture && imageGesture->owner == device) {
@@ -14005,7 +14063,7 @@ private:
                     if (!editingText && !GTK_IS_EDITABLE(gtk_window_get_focus(GTK_WINDOW(self->window)))) {
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_c || key == GDK_KEY_C)) {
                             if (self->pdfTextSelection && self->pdfTextSelection->finalized) {
-                                self->copyPdfTextSelection();
+                                self->copyPdfTextSelection(false);
                             } else {
                                 self->copySelection();
                             }
@@ -14013,7 +14071,7 @@ private:
                         }
                         if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_x || key == GDK_KEY_X)) {
                             if (self->pdfTextSelection && self->pdfTextSelection->finalized) {
-                                self->copyPdfTextSelection();
+                                self->copyPdfTextSelection(false);
                             } else {
                                 self->copySelection(true);
                             }
@@ -14654,6 +14712,27 @@ private:
                 gtk_snapshot_restore(snapshot);
                 g_object_unref(popPaintable);
             }
+        }
+        if (!target && pdfActionsPopover && gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover))) {
+            const int popW = gtk_widget_get_width(GTK_WIDGET(pdfActionsPopover));
+            const int popH = gtk_widget_get_height(GTK_WIDGET(pdfActionsPopover));
+            GdkRectangle pointing{};
+            graphene_rect_t overlayBounds;
+            if (popW <= 0 || popH <= 0 ||
+                !gtk_popover_get_pointing_to(pdfActionsPopover, &pointing) ||
+                !gtk_widget_compute_bounds(canvasOverlay, window, &overlayBounds)) {
+                throw SnapshotPending{};
+            }
+            auto* popPaintable = gtk_widget_paintable_new(GTK_WIDGET(pdfActionsPopover));
+            const float px = overlayBounds.origin.x + pointing.x - 0.5f * popW;
+            const float py = overlayBounds.origin.y + pointing.y -
+                             (gtk_popover_get_position(pdfActionsPopover) == GTK_POS_TOP ? popH : 0);
+            const graphene_point_t offset{px, py};
+            gtk_snapshot_save(snapshot);
+            gtk_snapshot_translate(snapshot, &offset);
+            gdk_paintable_snapshot(GDK_PAINTABLE(popPaintable), GDK_SNAPSHOT(snapshot), popW, popH);
+            gtk_snapshot_restore(snapshot);
+            g_object_unref(popPaintable);
         }
         auto* node = gtk_snapshot_free_to_node(snapshot);
         if (!node) {
@@ -15727,7 +15806,73 @@ private:
         g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
     }
 
+    gboolean smokePdfTextToolbar() {
+        switch (pdfTextSelectionVerifyStep++) {
+            case 0: {
+                require(document && pageCount > 0,
+                        "PDF toolbar verification requires a directly opened PDF document");
+                smokeDragPdfPage(Tool::SelectPdfTextLinear);
+                require(pdfTextSelection && pdfTextSelection->finalized && !pdfTextSelection->text.empty() &&
+                                !pdfTextSelection->textRects.empty() &&
+                                gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)) &&
+                                !gtk_popover_get_autohide(pdfActionsPopover),
+                        "PDF text selection did not show its persistent action toolbar");
+                capture("pdf-text-toolbar-placement");
+                break;
+            }
+            case 1: {
+                activateSelection(Tool::Hand);
+                const auto blankPoint = state.pageScreenPoint(0, 1, 1);
+                begin(Device::Mouse, blankPoint.x, blankPoint.y);
+                finish(Device::Mouse, std::nullopt, blankPoint);
+                require(pdfTextSelection && pdfTextSelection->finalized &&
+                                !gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)),
+                        "A Hand-tool press did not hide the PDF action toolbar while preserving its selection");
+                activateSelection(Tool::SelectPdfTextLinear);
+
+                const auto& textRect = pdfTextSelection->textRects.front();
+                const auto textCenter = state.pageScreenPoint(
+                        pdfTextSelection->page, (textRect.x1 + textRect.x2) / 2,
+                        (textRect.y1 + textRect.y2) / 2);
+                zoom(state.zoom * 1.1, textCenter.x, textCenter.y);
+                require(pdfTextSelection && pdfTextSelection->finalized &&
+                                !gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)),
+                        "Zooming did not hide the PDF action toolbar while preserving its selection");
+                break;
+            }
+            case 2: {
+                const auto& textRect = pdfTextSelection->textRects.front();
+                const auto textCenter = state.pageScreenPoint(
+                        pdfTextSelection->page, (textRect.x1 + textRect.x2) / 2,
+                        (textRect.y1 + textRect.y2) / 2);
+                begin(Device::Mouse, textCenter.x, textCenter.y);
+                GdkRectangle toolbarPoint{};
+                require(pdfTextSelection && pdfTextSelection->finalized && !pdfTextSelection->dragging &&
+                                gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)) &&
+                                gtk_popover_get_pointing_to(pdfActionsPopover, &toolbarPoint) &&
+                                toolbarPoint.width == 1 && toolbarPoint.height == 1 &&
+                                toolbarPoint.x >= 0 && toolbarPoint.y >= 0 &&
+                                toolbarPoint.x < gtk_widget_get_width(canvasOverlay) &&
+                                toolbarPoint.y < gtk_widget_get_height(canvasOverlay),
+                        "Clicking selected PDF text did not reopen the compact toolbar at an in-viewport point");
+                capture("pdf-text-toolbar-reopened");
+                std::cout << "PASS: GTK PDF text toolbar placement, input/zoom dismissal, and selection reopen\n";
+                closeWindow();
+                return G_SOURCE_REMOVE;
+            }
+            default:
+                return G_SOURCE_REMOVE;
+        }
+        update();
+        lastSmokePaint = paints;
+        gtk_widget_queue_draw(window);
+        return G_SOURCE_CONTINUE;
+    }
+
     gboolean smokePdfTextSelection() {
+        if (pdfTextSelectionVerifyMode == "toolbar-only") {
+            return smokePdfTextToolbar();
+        }
         switch (pdfTextSelectionVerifyStep++) {
             case 0: {
                 require(nativeSession && document && pageCount >= 1 && state.texts.size() >= 3,
@@ -15739,6 +15884,28 @@ private:
                                 !pdfTextSelection->textRects.empty(),
                         "Linear selection did not select text from the PDF background only");
                 capture("pdf-text-linear-selection");
+                require(gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)) &&
+                                !gtk_popover_get_autohide(pdfActionsPopover),
+                        "Finalizing a PDF text selection did not show its persistent action toolbar");
+                const auto& firstTextRect = pdfTextSelection->textRects.front();
+                const auto firstTextCenter = state.pageScreenPoint(
+                        pdfTextSelection->page, (firstTextRect.x1 + firstTextRect.x2) / 2,
+                        (firstTextRect.y1 + firstTextRect.y2) / 2);
+                zoom(state.zoom * 1.1, firstTextCenter.x, firstTextCenter.y);
+                require(pdfTextSelection && pdfTextSelection->finalized &&
+                                !gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)),
+                        "Zooming did not hide the PDF action toolbar while keeping its text selection");
+                const auto reopenedTextCenter = state.pageScreenPoint(
+                        pdfTextSelection->page, (firstTextRect.x1 + firstTextRect.x2) / 2,
+                        (firstTextRect.y1 + firstTextRect.y2) / 2);
+                begin(Device::Mouse, reopenedTextCenter.x, reopenedTextCenter.y);
+                GdkRectangle toolbarPoint{};
+                require(pdfTextSelection && pdfTextSelection->finalized && !pdfTextSelection->dragging &&
+                                gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover)) &&
+                                gtk_popover_get_pointing_to(pdfActionsPopover, &toolbarPoint) &&
+                                toolbarPoint.width == 1 && toolbarPoint.height == 1,
+                        "Clicking the selected text did not reopen the compact toolbar at the pointer");
+                capture("pdf-text-toolbar-reopened");
 
                 auto* page = pdfPageForPage(0);
                 require(page != nullptr, "PDF-backed XOPP fixture lost its first PDF page");
@@ -15987,8 +16154,8 @@ private:
                         "Native save did not preserve PDF text annotations");
                 std::cout
                         << "PASS: GTK Smart Select PDF delegation, threshold and modifier routing, "
-                           "linear/rectangle/word/line "
-                           "selection, clipboard, marker presets and opacity, annotations, undo/redo and native save\n";
+                           "linear/rectangle/word/line selection, toolbar placement and dismissal/reopen, "
+                           "clipboard, marker presets and opacity, annotations, undo/redo and native save\n";
                 closeWindow();
                 return G_SOURCE_REMOVE;
             }
@@ -19038,6 +19205,7 @@ private:
     std::optional<SmartSelectPdfGesture> smartSelectPdfGesture;
     bool textDragHandled = false;
     std::optional<PdfTextSelectionState> pdfTextSelection;
+    std::optional<double> pdfActionsObservedZoom;
     std::vector<SearchMatch> searchMatches;
     std::optional<size_t> activeSearchMatch;
     std::string searchQuery;
