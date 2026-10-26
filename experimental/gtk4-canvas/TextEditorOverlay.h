@@ -31,8 +31,8 @@ public:
         auto* settings = gtk_widget_get_settings(view);
         gdouble cursorAspectRatio = 0;
         g_object_get(settings, "gtk-cursor-aspect-ratio", &cursorAspectRatio, nullptr);
-        if (cursorAspectRatio < 0.1) {
-            g_object_set(settings, "gtk-cursor-aspect-ratio", 0.1, nullptr);
+        if (cursorAspectRatio < 0.2) {
+            g_object_set(settings, "gtk-cursor-aspect-ratio", 0.2, nullptr);
         }
         gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 0);
         gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 0);

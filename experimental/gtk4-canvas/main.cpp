@@ -13004,7 +13004,8 @@ private:
         constexpr char canvasCssData[] =
                 "listview.page-thumbnails row:selected { background-color: transparent; box-shadow: none; }\n"
                 "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n"
-                ".canvas-text-editor, .canvas-text-editor text { background-color: transparent; }\n"
+                ".canvas-text-editor { background-color: transparent; border: 1px solid #1c71d8; }\n"
+                ".canvas-text-editor text { background-color: transparent; }\n"
                 ".canvas-text-editor text { caret-color: #1c71d8; }\n";
         gtk_css_provider_load_from_string(canvasCss, canvasCssData);
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(canvasCss),
@@ -15454,7 +15455,7 @@ private:
             fitMode = false;
             state.syncActivePage(gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
         }
-        if (state.selecting()) {
+        if (state.selecting() || (state.current && !input.panning())) {
             gtk_widget_queue_draw(canvas);
         } else {
             update();

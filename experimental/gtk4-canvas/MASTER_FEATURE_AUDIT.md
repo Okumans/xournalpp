@@ -98,6 +98,9 @@ These user-requested follow-ups remain:
   skips full sidebar/search refreshes and keeps overview full-detail priority on
   the active page until release; a standalone debug Cairo run over 5,000
   128-point strokes still measured about 421 ms for one full editable-ink draw.
+  Pen/highlighter motion avoids requeueing sidebar thumbnails for every sample,
+  but editable content is still redrawn on the canvas; immutable page snapshots
+  for editable content remain needed to remove this cost.
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.
