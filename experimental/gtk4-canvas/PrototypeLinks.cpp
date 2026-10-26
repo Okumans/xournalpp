@@ -276,7 +276,7 @@ void Prototype::updateLinkHover(double x, double y) {
     }
     const auto hit = state.hitPage(x, y);
     const auto link = hit ? state.pickLink(hit->page, hit->local) : std::nullopt;
-    gtk_widget_set_cursor_from_name(canvas, link ? "pointer" : nullptr);
+    setCanvasCursor(link ? "pointer" : "default");
     if (link) {
         if (linkInfoIndex != link) {
             showLinkInfo(*link);

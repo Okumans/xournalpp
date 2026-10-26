@@ -199,8 +199,8 @@ void Prototype::connectInput() {
                     if (self->linkInfoPopover) {
                         gtk_popover_popdown(GTK_POPOVER(self->linkInfoPopover));
                     }
-                    gtk_widget_set_cursor_from_name(self->canvas, "pointer");
                 }
+                self->refreshCanvasCursor();
             }),
             this);
     gtk_widget_add_controller(canvas, pointerMotion);
@@ -312,6 +312,7 @@ void Prototype::connectInput() {
                              pan->enabled =
                                      !self->presentationMode && (touch || mouseEvent(GTK_EVENT_CONTROLLER(gesture))) &&
                                      !self->input.active() && !self->state.blocksScroll(false, g_get_monotonic_time());
+                             self->refreshCanvasCursor();
                          }),
                          this);
         g_signal_connect(pan, "drag-update",
@@ -327,12 +328,21 @@ void Prototype::connectInput() {
                              }
                              pan->x = dx;
                              pan->y = dy;
+                             self->refreshCanvasCursor();
                          }),
                          this);
-        g_signal_connect(pan, "cancel", G_CALLBACK(+[](GtkGesture* gesture, GdkEventSequence*, gpointer) {
+        g_signal_connect(pan, "drag-end", G_CALLBACK(+[](GtkGestureDrag* gesture, double, double, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
                              static_cast<PanState*>(g_object_get_data(G_OBJECT(gesture), "pan-state"))->enabled = false;
+                             self->refreshCanvasCursor();
                          }),
-                         nullptr);
+                         this);
+        g_signal_connect(pan, "cancel", G_CALLBACK(+[](GtkGesture* gesture, GdkEventSequence*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             static_cast<PanState*>(g_object_get_data(G_OBJECT(gesture), "pan-state"))->enabled = false;
+                             self->refreshCanvasCursor();
+                         }),
+                         this);
         addGesture(pan);
         panGestures.push_back(pan);
     }
@@ -656,7 +666,7 @@ void Prototype::connectInput() {
                     self->state.deleteSelection();
                 } else if (key == GDK_KEY_space && !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK))) {
                     self->input.spaceHeld = true;
-                    gtk_widget_set_cursor_from_name(self->canvas, "grab");
+                    self->refreshCanvasCursor();
                 } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_Z)) {
                     self->performHistoryStep((modifiers & GDK_SHIFT_MASK) != 0);
                 } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
@@ -739,9 +749,7 @@ void Prototype::connectInput() {
                 }
                 if (key == GDK_KEY_space) {
                     self->input.spaceHeld = false;
-                    gtk_widget_set_cursor_from_name(self->canvas, self->input.panning()                ? "grabbing" :
-                                                                  self->state.brush.tool == Tool::Hand ? "grab" :
-                                                                                                         nullptr);
+                    self->refreshCanvasCursor();
                 }
                 self->update();
             }),
@@ -898,9 +906,7 @@ void Prototype::resetInput(bool interrupted) {
     for (auto* pan: panGestures) {
         static_cast<PanState*>(g_object_get_data(G_OBJECT(pan), "pan-state"))->enabled = false;
     }
-    if (canvas) {
-        gtk_widget_set_cursor_from_name(canvas, state.brush.tool == Tool::Hand ? "grab" : nullptr);
-    }
+    refreshCanvasCursor();
 }
 
 void Prototype::playObjectAt(double screenX, double screenY) {
@@ -967,6 +973,7 @@ void Prototype::trackPointerPosition(double x, double y) {
         return;
     }
     pointerPosition = prototype::Point{x, y};
+    updateCanvasCursor(x, y);
     if (canvasOverviewMode()) {
         gtk_widget_queue_draw(canvas);
     }
@@ -1079,11 +1086,6 @@ void Prototype::begin(Device device, double x, double y, std::optional<double> p
     input.begin(device, {x, y, pressure, timeMs}, eraserEnd);
     state.brush = toolbarBrush;
     input.spaceHeld = previousSpaceHeld;
-    if (input.panning()) {
-        gtk_widget_set_cursor_from_name(canvas, "grabbing");
-    } else if (state.brush.tool == Tool::Hand || input.spaceHeld) {
-        gtk_widget_set_cursor_from_name(canvas, "grab");
-    }
     update();
 }
 
@@ -1194,7 +1196,6 @@ void Prototype::finish(Device device, std::optional<double> releasePressure,
         }
         state.finishSelection();
         textSelectionOwner.reset();
-        gtk_widget_set_cursor_from_name(canvas, nullptr);
         update();
         return;
     }
@@ -1214,9 +1215,6 @@ void Prototype::finish(Device device, std::optional<double> releasePressure,
         return;
     }
     input.finish(device, releasePressure, releasePoint);
-    if (!input.active()) {
-        gtk_widget_set_cursor_from_name(canvas, input.spaceHeld || state.brush.tool == Tool::Hand ? "grab" : nullptr);
-    }
     update();
 }
 

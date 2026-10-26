@@ -1028,6 +1028,10 @@ public:
 
     bool movingSelection() const { return selectionGesture && selectionGesture->moving; }
 
+    std::optional<int> movingSelectionHandle() const {
+        return movingSelection() ? std::optional<int>{selectionGesture->handle} : std::nullopt;
+    }
+
     bool selectionFrameMatchesCurrentSelection() const {
         return selectionFrame && selectionFrame->inkIndices == selected &&
                selectionFrame->textIndices == selectedTexts && selectionFrame->imageIndices == selectedImages;

@@ -74,6 +74,8 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
             options.verifySearchPage = parsed;
         } else if (argument == "--verify-scroll-motion") {
             options.verifyScrollMotion = true;
+        } else if (argument == "--verify-cursor-feedback") {
+            options.verifyCursorFeedback = true;
         } else if (argument == "--verify-smart-select-performance") {
             options.verifySmartSelectPerformance = true;
         } else if (argument == "--verify-sidebar-performance") {
@@ -114,6 +116,7 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
                                      "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search "
                                      "[--verify-search-query TEXT --verify-search-page PAGE --verify-search-scan-all]] "
                                      "[--verify-scroll-motion] "
+                                     "[--verify-cursor-feedback] "
                                      "[--verify-smart-select-performance] "
                                      "[--verify-sidebar-performance] [--verify-sidebar-startup] "
                                      "[--verify-page-layout] [--verify-presentation-mode] "

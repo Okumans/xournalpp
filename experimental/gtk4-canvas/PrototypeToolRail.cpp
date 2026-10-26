@@ -176,13 +176,6 @@ void Prototype::selectTool(Tool tool) {
         gtk_popover_popdown(GTK_POPOVER(linkInfoPopover));
         linkInfoIndex.reset();
     }
-    if (canvas) {
-        gtk_widget_set_cursor_from_name(canvas, tool == Tool::Hand                      ? "grab" :
-                                                tool == Tool::Link                      ? "pointer" :
-                                                tool == Tool::Latex                     ? "text" :
-                                                prototype::isPdfTextSelectionTool(tool) ? "text" :
-                                                                                          nullptr);
-    }
     updateTextToolbarVisibility();
     gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), static_cast<guint>(state.eraserMode));
     gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));

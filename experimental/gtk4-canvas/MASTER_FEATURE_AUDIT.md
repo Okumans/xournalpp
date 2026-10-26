@@ -111,10 +111,11 @@ each phase lands:
    physical-device sensitivity or momentum parity.
 3. Finish the other deferred user reports below, including real-document ink
    frame-time, sidebar latency on content-heavy PDFs, raster-worker failures,
-   Smart Select drag performance, cursor feedback, and any remaining tool
-   parity. Search highlight geometry has been visually checked against the
-   user's PDF in private Cage, and Phase 116 made Search page-at-a-time and
-   asynchronous; update this list as each item is verified.
+   Smart Select drag performance, and any remaining tool parity. Phase 122
+   covers contextual cursor feedback. Search highlight geometry has been
+   visually checked against the user's PDF in private Cage, and Phase 116 made
+   Search page-at-a-time and asynchronous; update this list as each item is
+   verified.
 4. Migrate native `.xopp` loading and saving into the GTK 4 process, reusing the
    existing document model/serialization where possible and removing the
    separate document-worker dependency. Record deliberate compatibility
@@ -226,8 +227,11 @@ These user-requested follow-ups remain:
   blocked primary output reports its tier/path. The original intermittent
   failure was not reproduced on the current machine, so the underlying cause
   of the user's prior environment-specific failures remains unconfirmed.
-- Before release, verify that cursor shapes track the active tool and action,
-  including selection, resize/rotate, pan, text editing, and erasing.
+- Phase 122 centralizes GTK4 canvas cursors around the active tool and pointer
+  action. The private Cage `--cursor-only` check reads the mapped widget cursor
+  after synthetic motion over editable text, selection move/resize/rotate
+  handles, erasing, and temporary/active pan. It does not verify cursor-theme
+  artwork on the user's desktop or physical input-device routing.
 
 ## Default UI target
 

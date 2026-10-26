@@ -26,6 +26,7 @@ struct ApplicationOptions {
     std::string verifySearchQuery;
     int verifySearchPage = 0;
     bool verifyScrollMotion = false;
+    bool verifyCursorFeedback = false;
     bool verifySmartSelectPerformance = false;
     bool verifySidebarPerformance = false;
     bool verifySidebarStartup = false;

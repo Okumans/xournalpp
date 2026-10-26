@@ -829,6 +829,25 @@ def verify_scroll_motion(args, evidence):
     }
 
 
+def verify_cursor_feedback(args, evidence):
+    run_dir = evidence / "cursor-feedback"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output = run(
+        [str(args.binary.resolve()), "--smoke-dir", str(run_dir), "--verify-cursor-feedback"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 contextual tool, text, selection, transform and pan cursors"
+    if marker not in output:
+        raise RuntimeError("GTK4 cursor feedback verification did not finish")
+
+    return {
+        "checks": ["text and eraser tools", "Smart Select text hover", "selection move and resize handles",
+                   "rotation handle", "temporary hand and active pan"],
+        "input_coverage": "Synthetic GTK pointer-motion signals; cursor objects read from the mapped canvas",
+        "rendering": "Private headless Wayland via Cage",
+    }
+
+
 def verify_smart_select_performance(args, evidence):
     run_dir = evidence / "smart-select-performance"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1475,6 +1494,13 @@ def inside(args):
              "rendering": "Private headless Wayland via Cage"},
             indent=2) + "\n")
         return
+    if args.cursor_only:
+        cursor_evidence = verify_cursor_feedback(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"cursor-feedback": cursor_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.sidebar_startup_only:
         startup_evidence = verify_sidebar_startup(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1813,6 +1839,7 @@ def main():
     parser.add_argument("--search-scan-all", action="store_true",
                         help="Wait for and measure a full page-by-page search scan")
     parser.add_argument("--scroll-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--cursor-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smart-select-performance-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smart-select-pdf", type=Path, help="PDF to use for the ink performance check")
     parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
@@ -1930,6 +1957,8 @@ def main():
             command.append("--search-scan-all")
         if args.scroll_only:
             command.append("--scroll-only")
+        if args.cursor_only:
+            command.append("--cursor-only")
         if args.smart_select_performance_only:
             command.append("--smart-select-performance-only")
         if args.smart_select_pdf:
