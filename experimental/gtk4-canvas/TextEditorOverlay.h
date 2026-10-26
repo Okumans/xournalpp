@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -28,12 +29,6 @@ public:
     explicit TextEditorOverlay(GtkOverlay* overlay) {
         view = gtk_text_view_new();
         gtk_widget_add_css_class(view, "canvas-text-editor");
-        auto* settings = gtk_widget_get_settings(view);
-        gdouble cursorAspectRatio = 0;
-        g_object_get(settings, "gtk-cursor-aspect-ratio", &cursorAspectRatio, nullptr);
-        if (cursorAspectRatio < 0.2) {
-            g_object_set(settings, "gtk-cursor-aspect-ratio", 0.2, nullptr);
-        }
         gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 0);
         gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 0);
         gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view), 0);
@@ -46,10 +41,29 @@ public:
         gtk_overlay_add_overlay(overlay, view);
     }
 
+    ~TextEditorOverlay() { restoreCursorAspectRatio(); }
+
     GtkWidget* widget() const { return view; }
     bool active() const { return draft.has_value(); }
     const TextItem* item() const { return draft ? &*draft : nullptr; }
     std::optional<size_t> existingItemIndex() const { return existingIndex; }
+
+    void setLayoutChangedCallback(std::function<void()> callback) { layoutChangedCallback = std::move(callback); }
+
+    TextItem layoutItem() const {
+        if (!draft) {
+            return {};
+        }
+        TextItem result = *draft;
+        GtkTextIter start;
+        GtkTextIter end;
+        gtk_text_buffer_get_bounds(editorBuffer, &start, &end);
+        gchar* value = gtk_text_buffer_get_text(editorBuffer, &start, &end, true);
+        result.text = value ? value : "";
+        g_free(value);
+        result.styleRuns = collectStyleRuns();
+        return result;
+    }
 
     void selectWordAt(int x, int y) {
         if (!active()) {
@@ -91,6 +105,7 @@ public:
 
     void begin(TextItem item, std::optional<size_t> index, double zoom) {
         finish();
+        enhanceCursorAspectRatio();
         draft = std::move(item);
         existingIndex = index;
         editorZoom = std::clamp(zoom, 0.1, 8.0);
@@ -122,16 +137,34 @@ public:
         if (!active()) {
             return;
         }
-        gtk_widget_set_margin_start(view, std::max(0, static_cast<int>(std::floor(x))));
-        gtk_widget_set_margin_top(view, std::max(0, static_cast<int>(std::floor(y))));
-        gtk_widget_set_size_request(view, std::max(40, width), std::max(32, height));
+        const int left = std::max(0, static_cast<int>(std::floor(x)));
+        const int top = std::max(0, static_cast<int>(std::floor(y)));
+        const int requestedWidth = std::max(40, width);
+        const int requestedHeight = std::max(24, height);
+        if (left != positionedLeft) {
+            gtk_widget_set_margin_start(view, left);
+            positionedLeft = left;
+        }
+        if (top != positionedTop) {
+            gtk_widget_set_margin_top(view, top);
+            positionedTop = top;
+        }
+        if (requestedWidth != positionedWidth || requestedHeight != positionedHeight) {
+            gtk_widget_set_size_request(view, requestedWidth, requestedHeight);
+            positionedWidth = requestedWidth;
+            positionedHeight = requestedHeight;
+        }
     }
 
     void setZoom(double zoom) {
         if (!active()) {
             return;
         }
-        editorZoom = std::clamp(zoom, 0.1, 8.0);
+        const double nextZoom = std::clamp(zoom, 0.1, 8.0);
+        if (std::abs(editorZoom - nextZoom) < 1e-9) {
+            return;
+        }
+        editorZoom = nextZoom;
         applyBaseStyle();
         // Font-size changes in the text view are read through the tag table.
         for (auto* tag: styleTags) {
@@ -143,6 +176,7 @@ public:
 
     void setWrap(bool wrap) {
         gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), wrap ? GTK_WRAP_WORD_CHAR : GTK_WRAP_NONE);
+        notifyLayoutChanged();
     }
 
     void setAlignment(int alignment) {
@@ -151,6 +185,7 @@ public:
         }
         draft->alignment = alignment;
         applyParagraphStyle();
+        notifyLayoutChanged();
     }
 
     void setJustify(bool justify) {
@@ -159,6 +194,7 @@ public:
         }
         draft->justify = justify;
         applyParagraphStyle();
+        notifyLayoutChanged();
     }
 
     void setBaseFont(const std::string& fontName, double size) {
@@ -177,6 +213,7 @@ public:
             pendingStyle = run;
             removeStyleTags(start, end);
             applyTagRange(run, start, end);
+            notifyLayoutChanged();
             return;
         }
 
@@ -189,6 +226,7 @@ public:
         run.fontName = fontName;
         run.fontSize = size;
         pendingStyle = run;
+        notifyLayoutChanged();
     }
 
     void setTextColor(uint32_t color) {
@@ -206,6 +244,7 @@ public:
             pendingStyle = run;
             removeStyleTags(start, end);
             applyTagRange(run, start, end);
+            notifyLayoutChanged();
             return;
         }
 
@@ -215,6 +254,7 @@ public:
         auto run = styleAt(start);
         run.color = color;
         pendingStyle = run;
+        notifyLayoutChanged();
     }
 
     void applyFormat(Format format) {
@@ -235,6 +275,7 @@ public:
             removeStyleTags(start, end);
             applyTagRange(run, start, end);
         }
+        notifyLayoutChanged();
     }
 
     static void applyFormatToItem(TextItem& item, Format format) {
@@ -311,6 +352,7 @@ public:
         pendingStyle.reset();
         styleTags.clear();
         gtk_widget_set_visible(view, false);
+        restoreCursorAspectRatio();
         return result;
     }
 
@@ -558,6 +600,44 @@ private:
             }
         }
         lastText = value;
+        draft->text = value;
+        notifyLayoutChanged();
+    }
+
+    void notifyLayoutChanged() {
+        if (layoutChangedCallback) {
+            layoutChangedCallback();
+        }
+    }
+
+    void enhanceCursorAspectRatio() {
+        auto* settings = gtk_widget_get_settings(view);
+        if (!settings || cursorAspectRatioBeforeEdit) {
+            return;
+        }
+
+        cursorSettings = GTK_SETTINGS(g_object_ref(settings));
+        gdouble current = 0;
+        g_object_get(cursorSettings, "gtk-cursor-aspect-ratio", &current, nullptr);
+        cursorAspectRatioBeforeEdit = current;
+        if (current < editingCursorAspectRatio) {
+            g_object_set(cursorSettings, "gtk-cursor-aspect-ratio", editingCursorAspectRatio, nullptr);
+        }
+    }
+
+    void restoreCursorAspectRatio() {
+        if (!cursorAspectRatioBeforeEdit) {
+            return;
+        }
+        if (cursorSettings) {
+            gdouble current = 0;
+            g_object_get(cursorSettings, "gtk-cursor-aspect-ratio", &current, nullptr);
+            if (std::abs(current - editingCursorAspectRatio) < 1e-6) {
+                g_object_set(cursorSettings, "gtk-cursor-aspect-ratio", *cursorAspectRatioBeforeEdit, nullptr);
+            }
+        }
+        g_clear_object(&cursorSettings);
+        cursorAspectRatioBeforeEdit.reset();
     }
 
     GtkWidget* view = nullptr;
@@ -568,6 +648,14 @@ private:
     std::optional<size_t> existingIndex;
     std::optional<TextStyleRun> pendingStyle;
     std::string lastText;
+    std::function<void()> layoutChangedCallback;
+    GtkSettings* cursorSettings = nullptr;
+    std::optional<double> cursorAspectRatioBeforeEdit;
+    static constexpr double editingCursorAspectRatio = 0.3;
+    int positionedLeft = -1;
+    int positionedTop = -1;
+    int positionedWidth = -1;
+    int positionedHeight = -1;
     double editorZoom = 1;
 };
 

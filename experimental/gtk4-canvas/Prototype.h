@@ -1374,6 +1374,8 @@ private:
     size_t baselineFullRasters = 0;
     int smokeStep = 0;
     size_t smokeCacheBytes = 0;
+    double smokeCursorAspectRatioBeforeTextEditor = 0;
+    int smokeTextEditorInitialWidth = 0;
     int snapshotWaits = 0;
     double smokeTransformWidth = 0;
     size_t smokeClipboardCount = 0;

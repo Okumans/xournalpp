@@ -118,8 +118,9 @@ GtkWidget* Prototype::createSidebar() {
     constexpr char canvasCssData[] =
             "listview.page-thumbnails row:selected { background-color: transparent; box-shadow: none; }\n"
             "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n"
-            ".canvas-text-editor { background-color: transparent; border: 1px solid #1c71d8; }\n"
-            ".canvas-text-editor text { background-color: transparent; }\n"
+            ".canvas-text-editor { background-color: transparent; border: 1px solid #1c71d8; padding: 0; caret-color: "
+            "#1c71d8; }\n"
+            ".canvas-text-editor text { background-color: transparent; padding: 0; }\n"
             ".canvas-text-editor text { caret-color: #1c71d8; }\n";
     gtk_css_provider_load_from_string(canvasCss, canvasCssData);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(canvasCss),

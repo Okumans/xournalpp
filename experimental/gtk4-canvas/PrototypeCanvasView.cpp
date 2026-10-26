@@ -697,6 +697,7 @@ void Prototype::activate(GtkApplication* app) {
     canvasOverlay = gtk_overlay_new();
     gtk_overlay_set_child(GTK_OVERLAY(canvasOverlay), canvas);
     textEditor = std::make_unique<prototype::TextEditorOverlay>(GTK_OVERLAY(canvasOverlay));
+    textEditor->setLayoutChangedCallback([this] { updateTextEditorPosition(); });
     textEditor->setWrap(false);
     createPdfActionsPopover();
     createLinkInfoPopover();

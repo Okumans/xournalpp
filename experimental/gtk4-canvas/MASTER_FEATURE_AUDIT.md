@@ -105,6 +105,13 @@ focused private Search check while addressing the other search issues.
 
 These user-requested follow-ups remain:
 
+The user-requested execution order is: finish the current text editor box and
+caret work; implement touchpad scrolling; resolve the other reported input,
+search, drawing, sidebar, and rendering issues below; migrate `.xopp` loading
+and saving into the GTK 4 process; close every remaining `Partial` audit item;
+then redesign the UI. Use a high-reasoning GPT-6.1-Sol planning agent for the
+final UI redesign phase.
+
 - Replace the optional separate GTK 3 document-worker process with an
   in-process GTK 4 document backend for native `.xopp` loading/saving and
   PDF-backed editable documents, reusing the existing `.xopp` format and
@@ -135,15 +142,10 @@ These user-requested follow-ups remain:
   fast-scroll previews settled on pages 25–27, and zoom-out reported 3 full,
   3 medium, and 11 low-detail cached pages.
 - Implement touchpad momentum/kinetic scrolling and verify it on the user's
-  physical touchpad. Match the original Xournal++ feel, minimize unwanted
-  horizontal movement, and keep scrolling within the page/grid area. The
-  existing synthetic scroll-unit check does not cover momentum or physical
-  device behavior.
-- Fix the reported text editor sizing and caret visibility problems. The
-  initial text box should start close to the entered text/font size, and its
-  rendered text, editor bounds, selection frame, and transform controls should
-  remain aligned. Verify text creation and double-click editing in the private
-  Cage UI.
+  physical touchpad. The existing synthetic scroll-unit check does not cover
+  momentum or physical-device behavior. Match the user's Xournal++ preference:
+  almost no horizontal drift, movement constrained to the page/grid, and
+  momentum after the gesture ends.
 - Measure sidebar and canvas raster latency while rapidly scrolling the user's
   content-heavy PDF. The generated 10,000-page fixture verifies
   nearest-visible-first independent rendering and a synthetic 32-frame scroll,
@@ -238,7 +240,7 @@ it is not represented by a single `ToolType`.
 | --- | --- | --- |
 | Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes, text, and images. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching object from the first visible layer with matches; unsupported native objects remain outside general selection. Rectangular objects require all four transformed corners inside the selector, matching master behavior. |
 | Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Text and image selections draw the shared resize and rotation handles. After rotation the visible frame and handles rotate with the selection while later resize transforms use the accumulated rotation; undo and redo restore both. Transform-following text editor placement and device behavior remain. |
-| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, opens existing text on click or double-click, and selects the clicked word on double-click. Smart Select single-click selects objects and double-click edits native text while preserving the current canvas zoom. Newly created or edited text remains selected. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. The editor overlay does not follow transforms. |
+| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, opens existing text on click or double-click, and selects the clicked word on double-click. Smart Select single-click selects objects and double-click edits native text while preserving the current canvas zoom. New unwrapped text editors start at 40 px and resize from the live Pango layout; wrapped editors use their configured width. The caret uses the accent color and an enlarged aspect ratio only while editing, restoring the prior GTK setting afterward. Newly created or edited text remains selected. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` streams preserve ordered groups of supported strokes, rich text, links, raster images, and LaTeX images, including dash arrays in the internal codec. Copy also offers rendered PNG and SVG, plus plain text when text is selected; external plain-text paste creates an editable text item. Mixed copy/cut/paste/duplicate and cross-type paste/undo are grouped edits. Unsupported native types, audio attachments, and cross-process compatibility verification remain. |
