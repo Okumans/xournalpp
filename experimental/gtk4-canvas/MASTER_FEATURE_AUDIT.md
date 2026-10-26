@@ -215,8 +215,6 @@ These user-requested follow-ups remain:
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.
-- Investigate the reported mismatch between the PDF text-selection highlight
-  and the blue selection frame.
 - A page-raster task previously failed as a whole if writing one of its optional
   medium/low-detail copies failed, discarding an already-rendered primary page.
   Optional tiers now fail independently and are omitted while the requested
@@ -232,6 +230,10 @@ These user-requested follow-ups remain:
   after synthetic motion over editable text, selection move/resize/rotate
   handles, erasing, and temporary/active pan. It does not verify cursor-theme
   artwork on the user's desktop or physical input-device routing.
+- Phase 123 aligns the blue frame during rectangular PDF text-selection drags
+  with the outward-rounded bounds used for the shaded preview. The pure geometry
+  test covers reversed fractional bounds, and the private Cage toolbar check
+  captures the active drag and asserts that its preview and frame extents match.
 
 ## Default UI target
 
