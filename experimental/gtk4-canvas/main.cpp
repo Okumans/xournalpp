@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +34,7 @@
 
 #include "AudioPlayback.h"
 #include "AudioTarget.h"
+#include "ApplicationOptions.h"
 #include "BeamerPresentation.h"
 #include "BehaviorDefaults.h"
 #include "CanvasImageActions.h"
@@ -76,34 +76,6 @@ using prototype::Tool;
 namespace {
 
 struct SnapshotPending {};
-
-struct Options {
-    std::string pdf;
-    std::string nativeDocument;
-    std::string worker;
-    std::string rasterExecutable;
-    std::string configDirectory;
-    std::string pluginDirectory;
-    std::string smokeDirectory;
-    int autosaveSeconds = prototype::behavior::autosaveTimeoutSeconds;
-    std::optional<int> autosaveSecondsOverride;
-    bool dark = false;
-    bool explicitDark = false;
-    bool disableAudio = false;
-    bool verifyPlugins = false;
-    bool verifySearch = false;
-    bool verifySidebarPerformance = false;
-    bool verifySidebarStartup = false;
-    bool verifyPageLayout = false;
-    bool verifyPresentationMode = false;
-    bool verifyPenLineStyle = false;
-    bool verifyBeamer = false;
-    bool verifyLayerActions = false;
-    bool verifyLatex = false;
-    bool verifyTextClipboard = false;
-    int width = 1100;
-    int height = 820;
-};
 
 struct RecoveryInfo {
     std::string saveTarget;
@@ -210,7 +182,7 @@ public:
         std::optional<prototype::PageLayers> snapshot;
     };
 
-    explicit Prototype(Options options): options(std::move(options)),
+    explicit Prototype(prototype::ApplicationOptions options): options(std::move(options)),
                                           thumbnailRenderer(this->options.rasterExecutable),
                                           canvasRenderer(this->options.rasterExecutable, 4, 1, 4) {
         preferencesConfigDir = !this->options.configDirectory.empty() ?
@@ -21490,7 +21462,7 @@ private:
         return G_SOURCE_CONTINUE;
     }
 
-    Options options;
+    prototype::ApplicationOptions options;
     std::unique_ptr<prototype::LuaPluginRuntime> pluginRuntime;
     std::vector<std::shared_ptr<QuickScreenshotContext>> quickScreenshotOperations;
     bool quickScreenshotVerifyDone = false;
@@ -21861,149 +21833,7 @@ int main(int argc, char** argv) {
         if (argc > 1 && std::string_view(argv[1]) == "--gtk4-page-raster-worker") {
             return prototype::runPageRasterWorker(argc, argv);
         }
-        Options options;
-        const std::filesystem::path executable(argv[0]);
-        if (executable.has_parent_path()) {
-            options.rasterExecutable = std::filesystem::absolute(executable).string();
-        } else if (auto* resolved = g_find_program_in_path(argv[0])) {
-            options.rasterExecutable = resolved;
-            g_free(resolved);
-        } else {
-            throw std::runtime_error("Cannot locate the page raster renderer");
-        }
-        for (int i = 1; i < argc; ++i) {
-            const std::string argument = argv[i];
-            if (argument == "--dark") {
-                options.dark = true;
-                options.explicitDark = true;
-            } else if (argument == "--autosave-seconds" && i + 1 < argc) {
-                const std::string_view raw = argv[++i];
-                int parsed = 0;
-                const auto [end, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), parsed);
-                if (ec != std::errc{} || end != raw.data() + raw.size() || parsed < 1 || parsed > 86400) {
-                    throw std::runtime_error("Autosave interval must be between 1 and 86400 seconds");
-                }
-                options.autosaveSeconds = parsed;
-                options.autosaveSecondsOverride = parsed;
-            } else if (argument == "--disable-audio") {
-                options.disableAudio = true;
-            } else if (argument == "--config-dir" && i + 1 < argc) {
-                const auto cfgPath = std::filesystem::absolute(argv[++i]);
-                std::error_code ec;
-                const auto st = std::filesystem::symlink_status(cfgPath, ec);
-                if (ec || st.type() != std::filesystem::file_type::directory) {
-                    throw std::runtime_error("Configuration directory is missing or not a directory");
-                }
-                options.configDirectory = cfgPath.string();
-            } else if (argument == "--plugin-dir" && i + 1 < argc) {
-                const auto pluginPath = std::filesystem::absolute(argv[++i]);
-                std::error_code ec;
-                const auto st = std::filesystem::symlink_status(pluginPath, ec);
-                if (ec || st.type() != std::filesystem::file_type::directory) {
-                    throw std::runtime_error("Plugin directory is missing or not a directory");
-                }
-                options.pluginDirectory = pluginPath.string();
-            } else if (argument == "--verify-plugins") {
-                options.verifyPlugins = true;
-            } else if (argument == "--verify-search") {
-                options.verifySearch = true;
-            } else if (argument == "--verify-sidebar-performance") {
-                options.verifySidebarPerformance = true;
-            } else if (argument == "--verify-sidebar-startup") {
-                options.verifySidebarStartup = true;
-            } else if (argument == "--verify-page-layout") {
-                options.verifyPageLayout = true;
-            } else if (argument == "--verify-presentation-mode") {
-                options.verifyPresentationMode = true;
-            } else if (argument == "--verify-pen-line-style") {
-                options.verifyPenLineStyle = true;
-            } else if (argument == "--verify-beamer") {
-                options.verifyBeamer = true;
-            } else if (argument == "--verify-layer-actions") {
-                options.verifyLayerActions = true;
-            } else if (argument == "--verify-latex") {
-                options.verifyLatex = true;
-            } else if (argument == "--verify-text-clipboard") {
-                options.verifyTextClipboard = true;
-            } else if ((argument == "--pdf" || argument == "--document" || argument == "--worker" ||
-                        argument == "--smoke-dir") &&
-                       i + 1 < argc) {
-                const auto path = std::filesystem::absolute(argv[++i]).string();
-                if (argument == "--pdf") {
-                    options.pdf = path;
-                } else if (argument == "--document") {
-                    options.nativeDocument = path;
-                } else if (argument == "--worker") {
-                    options.worker = path;
-                } else {
-                    options.smokeDirectory = path;
-                    std::filesystem::create_directories(path);
-                }
-            } else {
-                throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
-                                         "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
-                                         "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
-                                         "[--verify-sidebar-performance] [--verify-sidebar-startup] "
-                                         "[--verify-page-layout] [--verify-presentation-mode] "
-                                         "[--verify-pen-line-style] [--verify-beamer] "
-                                         "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
-                                         "[--disable-audio] "
-                                         "[--smoke-dir DIRECTORY]");
-            }
-        }
-        if (!options.nativeDocument.empty() && (!options.pdf.empty() || options.worker.empty())) {
-            throw std::runtime_error("Use --document with --worker, separately from --pdf");
-        }
-        if (!options.worker.empty() && !g_file_test(options.worker.c_str(), G_FILE_TEST_IS_EXECUTABLE)) {
-            throw std::runtime_error("Document worker is missing or not executable");
-        }
-        if (options.verifyPlugins && options.smokeDirectory.empty()) {
-            throw std::runtime_error("Plugin verification requires --smoke-dir DIRECTORY");
-        }
-        if (options.verifySearch && (options.smokeDirectory.empty() || options.pdf.empty() ||
-                                     !options.nativeDocument.empty() || !options.worker.empty())) {
-            throw std::runtime_error("Search verification requires --smoke-dir and --pdf without --worker");
-        }
-        if (options.verifySidebarPerformance &&
-            (options.smokeDirectory.empty() || options.pdf.empty() || !options.nativeDocument.empty() ||
-             !options.worker.empty())) {
-            throw std::runtime_error(
-                    "Sidebar performance verification requires --smoke-dir and --pdf without --worker");
-        }
-        if (options.verifySidebarStartup &&
-            (options.smokeDirectory.empty() || options.pdf.empty() || !options.nativeDocument.empty() ||
-             !options.worker.empty())) {
-            throw std::runtime_error("Sidebar startup verification requires --smoke-dir and --pdf without --worker");
-        }
-        if (options.verifyPageLayout && (options.smokeDirectory.empty() || !options.pdf.empty() ||
-                                         !options.nativeDocument.empty() || !options.worker.empty())) {
-            throw std::runtime_error("Page layout verification requires --smoke-dir without a document or worker");
-        }
-        if (options.verifyPresentationMode &&
-            (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||
-             !options.worker.empty())) {
-            throw std::runtime_error(
-                    "Presentation Mode verification requires --smoke-dir without a document or worker");
-        }
-        if (options.verifyPenLineStyle &&
-            (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||
-             !options.worker.empty())) {
-            throw std::runtime_error("Pen line-style verification requires --smoke-dir without a document or worker");
-        }
-        if (options.verifyBeamer && options.smokeDirectory.empty()) {
-            throw std::runtime_error("Beamer verification requires --smoke-dir DIRECTORY");
-        }
-        if (options.verifyLayerActions && options.smokeDirectory.empty()) {
-            throw std::runtime_error("LayerActions verification requires --smoke-dir DIRECTORY");
-        }
-        if (options.verifyLatex && (options.smokeDirectory.empty() || options.nativeDocument.empty() ||
-                                    options.worker.empty())) {
-            throw std::runtime_error("LaTeX verification requires --smoke-dir, --document and --worker");
-        }
-        if (options.verifyTextClipboard && (options.smokeDirectory.empty() || options.nativeDocument.empty() ||
-                                            options.worker.empty())) {
-            throw std::runtime_error("Text clipboard verification requires --smoke-dir, --document and --worker");
-        }
+        auto options = prototype::parseApplicationOptions(argc, argv);
         Prototype app(std::move(options));
         return app.run();
     } catch (const std::exception& error) {
