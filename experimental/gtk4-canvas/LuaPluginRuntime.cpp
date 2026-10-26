@@ -448,6 +448,7 @@ int luaOpenApp(lua_State* state) {
             {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
             {"getPageLabel", LuaPluginRuntime::luaGetPageLabel},
             {"getColorPalette", LuaPluginRuntime::luaGetColorPalette},
+            {"refreshPage", LuaPluginRuntime::luaRefreshPage},
             {"getFonts", LuaPluginRuntime::luaGetFonts},
             {"getFont", LuaPluginRuntime::luaGetFont},
             {"setFont", LuaPluginRuntime::luaSetFont},
@@ -1040,6 +1041,14 @@ bool LuaPluginRuntime::getColorPalette(std::vector<PluginPaletteColor>& palette,
     }
     palette = host.getColorPalette();
     return true;
+}
+
+bool LuaPluginRuntime::refreshPage(std::string& error) {
+    if (!host.refreshPage) {
+        error = "Page refresh is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.refreshPage(error);
 }
 
 bool LuaPluginRuntime::getFonts(PluginFontList& fonts, std::string& error) const {
@@ -1658,6 +1667,19 @@ int LuaPluginRuntime::luaGetColorPalette(lua_State* state) {
         lua_rawseti(state, -2, static_cast<lua_Integer>(index + 1));
     }
     return 1;
+}
+
+int LuaPluginRuntime::luaRefreshPage(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    std::string error;
+    if (!plugin->runtime->refreshPage(error)) {
+        return luaL_error(state, "%s", error.empty() ? "Refreshing the current page failed" : error.c_str());
+    }
+    return 0;
 }
 
 int LuaPluginRuntime::luaGetFonts(lua_State* state) {

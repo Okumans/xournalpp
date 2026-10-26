@@ -508,6 +508,16 @@ int main() {
                 "function emptyTable() app.setFont({}) end\n"
                 "function nonfiniteSize() app.setFont({size=0/0}) end\n"
                 "function wrongType() app.setFont(true) end\n");
+    const auto refreshPageApiPlugin = root / "RefreshPageApiPlugin";
+    writePlugin(refreshPageApiPlugin,
+                "[about]\ndescription=Refresh the current page\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Refresh current page', callback='refresh'})\n"
+                "  app.registerUi({menu='Reject refresh without a page', callback='missingPage'})\n"
+                "end\n"
+                "function refresh() assert(app.refreshPage() == nil) end\n"
+                "function missingPage() app.refreshPage() end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -523,10 +533,10 @@ int main() {
                              folderApiPlugin.string() + "," + currentPageApiPlugin.string() + "," +
                              pageLabelApiPlugin.string() + "," + colorPaletteApiPlugin.string() + "," +
                              currentLayerApiPlugin.string() + "," + scrollApiPlugin.string() + "," +
-                             fontApiPlugin.string(),
+                             fontApiPlugin.string() + "," + refreshPageApiPlugin.string(),
                      {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 25, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 26, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -578,6 +588,8 @@ int main() {
     std::string paletteSummary;
     prototype::PluginFont currentPluginFont{systemFontFamilies.front(), 12.5};
     std::size_t fontChangeCount = 0;
+    bool refreshPageAvailable = true;
+    std::size_t refreshPageCount = 0;
     std::vector<std::string> activatedActions;
     double zoomValue = 1.25;
     std::size_t currentPageNumber = 2;
@@ -654,6 +666,14 @@ int main() {
             {"Rosewater", 0xdc8a78U},
     };
     host.getColorPalette = [&] { return testPalette; };
+    host.refreshPage = [&](std::string& error) {
+        if (!refreshPageAvailable) {
+            error = "Called applib_refreshPage, but there is no current page.";
+            return false;
+        }
+        ++refreshPageCount;
+        return true;
+    };
     host.getFont = [&] { return currentPluginFont; };
     host.setFont = [&](const prototype::PluginFont& font, std::string&) {
         currentPluginFont = font;
@@ -1041,6 +1061,14 @@ int main() {
     require(!runtime.invokeMenu("FontApiPlugin", 8) &&
                     runtime.findPlugin("FontApiPlugin")->error.find("either a string or a table") != std::string::npos,
             "app.setFont accepted a value that is neither a string nor a table");
+    require(runtime.invokeMenu("RefreshPageApiPlugin", 0) && refreshPageCount == 1,
+            "app.refreshPage did not refresh the host or incorrectly returned a value");
+    refreshPageAvailable = false;
+    require(!runtime.invokeMenu("RefreshPageApiPlugin", 1) &&
+                    runtime.findPlugin("RefreshPageApiPlugin")->error.find(
+                            "Called applib_refreshPage, but there is no current page.") != std::string::npos,
+            "app.refreshPage did not propagate the missing-page error");
+    refreshPageAvailable = true;
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1249,8 +1277,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 83 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 22,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 85 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 23,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

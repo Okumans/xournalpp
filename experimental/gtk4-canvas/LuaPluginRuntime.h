@@ -195,6 +195,7 @@ struct PluginRuntimeHost {
     std::function<int()> getDisplayDpi;
     std::function<bool(std::size_t, std::string&, std::string&)> getPageLabel;
     std::function<std::vector<PluginPaletteColor>()> getColorPalette;
+    std::function<bool(std::string&)> refreshPage;
     std::function<PluginFont()> getFont;
     std::function<bool(const PluginFont&, std::string&)> setFont;
     std::function<PluginScrollPosition()> getScrollPosition;
@@ -280,6 +281,7 @@ public:
     static int luaGetDisplayDpi(lua_State* state);
     static int luaGetPageLabel(lua_State* state);
     static int luaGetColorPalette(lua_State* state);
+    static int luaRefreshPage(lua_State* state);
     static int luaGetFonts(lua_State* state);
     static int luaGetFont(lua_State* state);
     static int luaSetFont(lua_State* state);
@@ -326,6 +328,7 @@ private:
     bool getDisplayDpi(int& dpi, std::string& error) const;
     bool getPageLabel(std::size_t pageNumber, std::string& label, std::string& error) const;
     bool getColorPalette(std::vector<PluginPaletteColor>& palette, std::string& error) const;
+    bool refreshPage(std::string& error);
     bool getFonts(PluginFontList& fonts, std::string& error) const;
     bool getFont(PluginFont& font, std::string& error) const;
     bool setFont(const PluginFont& font, std::string& error);
