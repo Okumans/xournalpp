@@ -39,7 +39,10 @@ real PDF; revisit that case if the reported stall persists.
 Phase 98 also changed canvas painting and active-page selection to query only
 viewport-intersecting pages, using binary search over the layout grid. The
 private 10,000-page check also confirms Go to Page updates and scrolls the page
-sidebar selection. Content-heavy PDF render latency remains unmeasured.
+sidebar selection. Phase 99 moved page-sidebar PDF thumbnail rendering off the
+GTK main loop, limits it to two concurrent renders, and keeps at most 12 recent
+queued pages. Its private 10,000-page check drives 32 scroll frames and waits
+for visible thumbnails. Content-heavy PDF latency remains unmeasured.
 
 These user-requested follow-ups remain:
 
@@ -50,9 +53,10 @@ These user-requested follow-ups remain:
 - Implement touchpad momentum/kinetic scrolling and verify it on the user's
   physical touchpad. The existing synthetic scroll-unit check does not cover
   momentum or physical-device behavior.
-- Reproduce and fix the reported page-sidebar lag during rapid scrolling. The
-  10,000-page check jumps directly to the last row; it does not measure
-  sustained fast scrolling.
+- Confirm page-sidebar responsiveness on the user's content-heavy PDF. The
+  generated 10,000-page fixture verifies a synthetic 32-frame scroll and
+  asynchronous thumbnail completion, but does not measure a real document's
+  thumbnail latency.
 
 ## Default UI target
 

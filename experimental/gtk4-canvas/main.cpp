@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -119,6 +120,275 @@ struct PageCacheEntry {
     bool audioMode = false;
     uint64_t stamp = 0;
     std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface;
+};
+
+constexpr int pageThumbnailWidth = 112;
+constexpr int pageThumbnailHeight = 150;
+
+struct ThumbnailLayerSource {
+    size_t origin = 0;
+    std::string path;
+};
+
+struct ThumbnailRequest {
+    int page = -1;
+    uint64_t generation = 0;
+    prototype::PageSize pageSize;
+    std::string backgroundPath;
+    std::vector<ThumbnailLayerSource> layers;
+};
+
+struct ThumbnailPreview {
+    double scale = 1;
+    uint64_t stamp = 0;
+    std::unique_ptr<cairo_surface_t, SurfaceDeleter> background;
+    std::map<size_t, std::unique_ptr<cairo_surface_t, SurfaceDeleter>> layers;
+};
+
+struct ThumbnailRendererState {
+    ThumbnailRendererState() { g_weak_ref_init(&pageList, nullptr); }
+    ~ThumbnailRendererState() { g_weak_ref_clear(&pageList); }
+
+    GWeakRef pageList;
+    std::map<int, ThumbnailPreview> previews;
+    std::map<int, uint64_t> pending;
+    std::map<int, uint64_t> failed;
+    std::deque<ThumbnailRequest> queue;
+    uint64_t generation = 0;
+    uint64_t stamp = 0;
+    size_t active = 0;
+    bool stopping = false;
+};
+
+struct ThumbnailTask {
+    ThumbnailRequest request;
+    ThumbnailPreview preview;
+};
+
+void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state);
+
+void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
+                         const std::shared_ptr<ThumbnailTask>& task, const std::string& error) {
+    if (state->active > 0) {
+        --state->active;
+    }
+    if (const auto found = state->pending.find(task->request.page);
+        found != state->pending.end() && found->second == task->request.generation) {
+        state->pending.erase(found);
+    }
+    if (state->stopping) {
+        return;
+    }
+    if (task->request.generation == state->generation) {
+        if (!task->preview.background) {
+            if (state->failed.size() == 16) {
+                state->failed.erase(state->failed.begin());
+            }
+            state->failed[task->request.page] = task->request.generation;
+            if (!error.empty()) {
+                std::cerr << "GTK4 page thumbnail failed: " << error << '\n';
+            }
+        } else {
+            if (state->previews.size() >= 16) {
+                const auto oldest = std::min_element(
+                        state->previews.begin(), state->previews.end(),
+                        [](const auto& left, const auto& right) { return left.second.stamp < right.second.stamp; });
+                state->previews.erase(oldest);
+            }
+            task->preview.stamp = ++state->stamp;
+            state->previews.insert_or_assign(task->request.page, std::move(task->preview));
+            if (!error.empty()) {
+                std::cerr << "GTK4 page thumbnail partially rendered: " << error << '\n';
+            }
+            if (auto* list = GTK_WIDGET(g_weak_ref_get(&state->pageList))) {
+                gtk_widget_queue_draw(list);
+                g_object_unref(list);
+            }
+        }
+    }
+    startThumbnailTasks(state);
+}
+
+PopplerDocument* openThumbnailDocument(const std::string& path) {
+    GError* error = nullptr;
+    const auto absolutePath = std::filesystem::absolute(path).string();
+    auto* uri = g_filename_to_uri(absolutePath.c_str(), nullptr, &error);
+    if (!uri) {
+        const std::string message = error ? error->message : "Cannot create PDF URI";
+        g_clear_error(&error);
+        throw std::runtime_error(message);
+    }
+    auto* document = poppler_document_new_from_file(uri, nullptr, &error);
+    g_free(uri);
+    if (!document) {
+        const std::string message = error ? error->message : "Cannot open PDF thumbnail source";
+        g_clear_error(&error);
+        throw std::runtime_error(message);
+    }
+    return document;
+}
+
+void renderThumbnailPdf(const std::string& path, int pageNumber, double scale, cairo_surface_t* surface) {
+    auto* document = openThumbnailDocument(path);
+    auto* page = poppler_document_get_page(document, pageNumber);
+    g_object_unref(document);
+    if (!page) {
+        throw std::runtime_error("Cannot open PDF thumbnail page " + std::to_string(pageNumber + 1));
+    }
+    auto* context = cairo_create(surface);
+    cairo_set_source_rgba(context, 0, 0, 0, 0);
+    cairo_set_operator(context, CAIRO_OPERATOR_SOURCE);
+    cairo_paint(context);
+    cairo_set_operator(context, CAIRO_OPERATOR_OVER);
+    cairo_scale(context, scale, scale);
+    poppler_page_render(page, context);
+    const auto status = cairo_status(context);
+    cairo_destroy(context);
+    g_object_unref(page);
+    if (status != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error(cairo_status_to_string(status));
+    }
+}
+
+void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
+    const auto& request = task->request;
+    const double pageWidth = request.pageSize.width > 0 ? request.pageSize.width : 595;
+    const double pageHeight = request.pageSize.height > 0 ? request.pageSize.height : 842;
+    task->preview.scale = std::min(pageThumbnailWidth / pageWidth, pageThumbnailHeight / pageHeight);
+    task->preview.background.reset(
+            cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pageThumbnailWidth, pageThumbnailHeight));
+    if (cairo_surface_status(task->preview.background.get()) != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error(cairo_status_to_string(cairo_surface_status(task->preview.background.get())));
+    }
+    auto* context = cairo_create(task->preview.background.get());
+    cairo_set_source_rgb(context, 1, 1, 1);
+    cairo_paint(context);
+    cairo_destroy(context);
+
+    std::string firstError;
+    if (!request.backgroundPath.empty()) {
+        try {
+            auto* document = openThumbnailDocument(request.backgroundPath);
+            auto* page = poppler_document_get_page(document, request.page);
+            if (!page) {
+                g_object_unref(document);
+                throw std::runtime_error("Cannot open PDF thumbnail page " + std::to_string(request.page + 1));
+            }
+            double width = 0;
+            double height = 0;
+            poppler_page_get_size(page, &width, &height);
+            if (width > 0 && height > 0 && std::isfinite(width) && std::isfinite(height)) {
+                task->preview.scale = std::min(pageThumbnailWidth / width, pageThumbnailHeight / height);
+            }
+            context = cairo_create(task->preview.background.get());
+            cairo_scale(context, task->preview.scale, task->preview.scale);
+            poppler_page_render(page, context);
+            const auto status = cairo_status(context);
+            cairo_destroy(context);
+            g_object_unref(page);
+            g_object_unref(document);
+            if (status != CAIRO_STATUS_SUCCESS) {
+                throw std::runtime_error(cairo_status_to_string(status));
+            }
+        } catch (const std::exception& error) {
+            firstError = error.what();
+        }
+    }
+    for (const auto& layer: request.layers) {
+        auto surface = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(
+                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pageThumbnailWidth, pageThumbnailHeight));
+        if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
+            if (firstError.empty()) {
+                firstError = cairo_status_to_string(cairo_surface_status(surface.get()));
+            }
+            continue;
+        }
+        try {
+            renderThumbnailPdf(layer.path, request.page, task->preview.scale, surface.get());
+            task->preview.layers.emplace(layer.origin, std::move(surface));
+        } catch (const std::exception& error) {
+            if (firstError.empty()) {
+                firstError = error.what();
+            }
+        }
+    }
+    if (!firstError.empty()) {
+        throw std::runtime_error(firstError);
+    }
+}
+
+void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
+    // shortcut: cap at two active and 12 queued renders; raise after measuring large real PDFs.
+    while (!state->stopping && state->active < 2 && !state->queue.empty()) {
+        auto request = std::move(state->queue.back());
+        state->queue.pop_back();
+        if (request.generation != state->generation) {
+            continue;
+        }
+        auto task = std::make_shared<ThumbnailTask>();
+        task->request = std::move(request);
+        ++state->active;
+        prototype::bridge::documentJob(
+                [task] { renderThumbnailTask(task); },
+                [state, task](const std::string& error) { finishThumbnailTask(state, task, error); });
+    }
+}
+
+class PageThumbnailRenderer {
+public:
+    PageThumbnailRenderer(): state(std::make_shared<ThumbnailRendererState>()) {}
+    ~PageThumbnailRenderer() {
+        state->stopping = true;
+        state->queue.clear();
+        state->pending.clear();
+    }
+
+    void setPageList(GtkWidget* list) { g_weak_ref_set(&state->pageList, G_OBJECT(list)); }
+
+    void invalidate() {
+        ++state->generation;
+        state->previews.clear();
+        state->pending.clear();
+        state->failed.clear();
+        state->queue.clear();
+    }
+
+    void request(ThumbnailRequest request) {
+        const auto generation = state->generation;
+        if (state->previews.contains(request.page) ||
+            (state->pending.contains(request.page) && state->pending.at(request.page) == generation) ||
+            (state->failed.contains(request.page) && state->failed.at(request.page) == generation)) {
+            return;
+        }
+        request.generation = generation;
+        state->pending[request.page] = generation;
+        state->queue.push_back(std::move(request));
+        // Drop old requests first so a fast scroll cannot leave a long stale-render queue.
+        while (state->queue.size() > 12) {
+            const auto dropped = state->queue.front();
+            state->queue.pop_front();
+            if (const auto found = state->pending.find(dropped.page);
+                found != state->pending.end() && found->second == dropped.generation) {
+                state->pending.erase(found);
+            }
+        }
+        startThumbnailTasks(state);
+    }
+
+    const ThumbnailPreview* find(int page) {
+        const auto found = state->previews.find(page);
+        if (found == state->previews.end()) {
+            return nullptr;
+        }
+        found->second.stamp = ++state->stamp;
+        return &found->second;
+    }
+
+    bool empty() const { return state->previews.empty(); }
+    size_t pendingCount() const { return state->pending.size(); }
+
+private:
+    std::shared_ptr<ThumbnailRendererState> state;
 };
 
 struct ImageGesture {
@@ -2820,7 +3090,7 @@ private:
                     pdfTextDocumentPath.clear();
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -3026,7 +3296,6 @@ private:
         }
         if (selection && state.hasSelection()) {
             state.recolorSelection(rgb, packTextColor(rgb));
-            thumbnails.clear();
         }
         input.cancel();
         if (colorButton && state.brush.tool != Tool::Eraser) {
@@ -3619,7 +3888,7 @@ private:
         }
         pageCache.clear();
         layerPageCache.clear();
-        thumbnails.clear();
+        thumbnailRenderer.invalidate();
         update();
         return true;
     }
@@ -3648,7 +3917,6 @@ private:
                     item.layoutWidth = width;
                     item.layoutHeight = height;
                 })) {
-                thumbnails.clear();
                 update();
             }
         }
@@ -3838,7 +4106,9 @@ private:
             }
         }
 
-        thumbnails.clear();
+        if (updateVisibility) {
+            thumbnailRenderer.invalidate();
+        }
         rebuildLayerStack();
         update();
         return true;
@@ -4665,7 +4935,7 @@ private:
                     pdfTextDocumentPath.clear();
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -4774,7 +5044,7 @@ private:
                     pdfTextDocumentPath.clear();
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -4876,7 +5146,7 @@ private:
                     pdfTextDocumentPath.clear();
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -6204,6 +6474,16 @@ private:
         adw_overlay_split_view_set_show_sidebar(splitView, true);
         waitForNextWindowFrame();
         const auto openMilliseconds = (g_get_monotonic_time() - started) / 1000;
+        const auto waitForThumbnail = [this](int page) {
+            const auto deadline = g_get_monotonic_time() + 5000000;
+            while (!thumbnailRenderer.find(page) && g_get_monotonic_time() < deadline) {
+                g_main_context_iteration(nullptr, false);
+                g_usleep(1000);
+            }
+            require(thumbnailRenderer.find(page) != nullptr,
+                    "An asynchronous page thumbnail did not finish within five seconds");
+        };
+        waitForThumbnail(0);
         const auto maxMappedRows = static_cast<size_t>(gtk_widget_get_height(GTK_WIDGET(pageList)) / 180 + 3);
         const auto [firstPage, lastPage] = pageRange();
         std::cout << "SIDEBAR OPEN: pages=" << pageCount << " realized=" << thumbnailWidgets.size()
@@ -6218,6 +6498,25 @@ private:
 
         auto* pageScroll = GTK_SCROLLED_WINDOW(gtk_widget_get_parent(GTK_WIDGET(pageList)));
         auto* adjustment = gtk_scrolled_window_get_vadjustment(pageScroll);
+        const double lower = gtk_adjustment_get_lower(adjustment);
+        const double scrollable =
+                gtk_adjustment_get_upper(adjustment) - lower - gtk_adjustment_get_page_size(adjustment);
+        double maxFrameMilliseconds = 0;
+        size_t maxPendingCount = 0;
+        require(scrollable > 0, "The 10000-page sidebar has no scrollable range");
+        for (int frame = 1; frame <= 32; ++frame) {
+            gtk_adjustment_set_value(adjustment, lower + scrollable * frame / 32.0);
+            const auto frameStarted = g_get_monotonic_time();
+            waitForNextWindowFrame();
+            const double frameMilliseconds = (g_get_monotonic_time() - frameStarted) / 1000.0;
+            maxFrameMilliseconds = std::max(maxFrameMilliseconds, frameMilliseconds);
+            maxPendingCount = std::max(maxPendingCount, thumbnailRenderer.pendingCount());
+            require(frameMilliseconds < 500 && maxPendingCount <= 14,
+                    "Rapid sidebar scrolling blocked the GTK frame or queued unbounded thumbnail work");
+        }
+        waitForThumbnail(pageCount - 1);
+        std::cout << "SIDEBAR FAST SCROLL: frames=32 max_pending=" << maxPendingCount
+                  << " max_frame_ms=" << maxFrameMilliseconds << '\n';
         gtk_adjustment_set_value(adjustment,
                                  gtk_adjustment_get_upper(adjustment) - gtk_adjustment_get_page_size(adjustment));
         waitForNextWindowFrame();
@@ -6237,6 +6536,7 @@ private:
                         gtk_single_selection_get_selected(GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList))) == 0 &&
                         gtk_adjustment_get_value(adjustment) <= gtk_adjustment_get_lower(adjustment) + 1.0,
                 "Go to Page did not synchronize the sidebar selection and scroll position");
+        waitForThumbnail(0);
         const double anchorX = gtk_widget_get_width(canvas) / 2.0;
         const double anchorY = gtk_widget_get_height(canvas) / 2.0;
         const auto documentAnchor = state.documentPoint(anchorX, anchorY);
@@ -6554,7 +6854,7 @@ private:
         require(!pageCache.empty(), "Plugin page-refresh verification could not build the current page cache");
         std::string refreshPageError;
         require(refreshPluginPage(refreshPageError) && pageCache.empty() && layerPageCache.empty() &&
-                        thumbnails.empty() && state.revision() == refreshPageRevision &&
+                        thumbnailRenderer.empty() && state.revision() == refreshPageRevision &&
                         state.canUndo() == refreshPageCanUndo && state.canRedo() == refreshPageCanRedo,
                 refreshPageError.empty() ? "app.refreshPage did not invalidate page surfaces without changing history" :
                                            refreshPageError.c_str());
@@ -8185,7 +8485,7 @@ private:
         saveVersion = recovery ? recovery->saveVersion : session->originalVersion;
         pageCache.clear();
         layerPageCache.clear();
-        thumbnails.clear();
+        thumbnailRenderer.invalidate();
         thumbnailWidgets.clear();
         pageList = nullptr;
         adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -8730,7 +9030,6 @@ private:
                              self->layerRenameEntry = nullptr;
                              if (response && std::string_view(response) == "rename" &&
                                  self->state.renameLayer(targetPage, targetLayer, newName)) {
-                                 self->thumbnails.clear();
                                  self->rebuildLayerStack();
                                  self->update();
                              }
@@ -8957,7 +9256,7 @@ private:
                            session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                            pageCache.clear();
                            layerPageCache.clear();
-                           thumbnails.clear();
+                           thumbnailRenderer.invalidate();
                            thumbnailWidgets.clear();
                            pageList = nullptr;
                            adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -9027,7 +9326,7 @@ private:
                     state.selectActivePage(afterPage + 1);
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -9143,7 +9442,7 @@ private:
                     session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -9210,7 +9509,7 @@ private:
                     session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                     pageCache.clear();
                     layerPageCache.clear();
-                    thumbnails.clear();
+                    thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
                     adw_overlay_split_view_set_sidebar(splitView, createSidebar());
@@ -10441,7 +10740,7 @@ private:
                                      self->state.images[*self->selectedImageIndex].layerId == layerId) {
                                      self->selectedImageIndex.reset();
                                  }
-                                 self->thumbnails.clear();
+                                 self->thumbnailRenderer.invalidate();
                                  self->update();
                              }
                          }),
@@ -11889,8 +12188,6 @@ private:
                                                                  self->state.insertText(std::move(*edited));
                                  if (!changed) {
                                      self->showError("The link could not be added to the active layer.");
-                                 } else {
-                                     self->thumbnails.clear();
                                  }
                              }
                              if (self->canvas) {
@@ -12115,9 +12412,7 @@ private:
             textEditor->setTextColor(color);
             gtk_widget_grab_focus(textEditor->widget());
         } else if (state.brush.tool == Tool::Text && !state.selectedTexts.empty()) {
-            if (state.recolorSelectedTexts(color)) {
-                thumbnails.clear();
-            }
+            state.recolorSelectedTexts(color);
         }
     }
 
@@ -12216,7 +12511,6 @@ private:
                     item.layoutWidth = width;
                     item.layoutHeight = height;
                 })) {
-                thumbnails.clear();
                 update();
             }
         }
@@ -12247,7 +12541,6 @@ private:
                     item.layoutWidth = width;
                     item.layoutHeight = height;
                 })) {
-                thumbnails.clear();
                 update();
             }
         }
@@ -12275,7 +12568,6 @@ private:
                     item.layoutWidth = width;
                     item.layoutHeight = height;
                 })) {
-                thumbnails.clear();
                 update();
             }
         }
@@ -12690,8 +12982,8 @@ private:
                              auto* self = static_cast<Prototype*>(data);
                              auto* contents = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
                              auto* preview = gtk_drawing_area_new();
-                             gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(preview), 112);
-                             gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(preview), 150);
+                             gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(preview), pageThumbnailWidth);
+                             gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(preview), pageThumbnailHeight);
                              gtk_drawing_area_set_draw_func(
                                      GTK_DRAWING_AREA(preview),
                                      +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer owner) {
@@ -12736,6 +13028,7 @@ private:
                          }),
                          this);
         pageList = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(selection), factory));
+        thumbnailRenderer.setPageList(GTK_WIDGET(pageList));
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
         gtk_list_view_set_show_separators(pageList, false);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
@@ -12986,7 +13279,7 @@ private:
                                          self->state.images[*self->selectedImageIndex].layerId == id) {
                                          self->selectedImageIndex.reset();
                                      }
-                                     self->thumbnails.clear();
+                                     self->thumbnailRenderer.invalidate();
                                      self->update();
                                  }
                              }), this);
@@ -13060,7 +13353,7 @@ private:
 
     void refreshAfterLayerMutation() {
         selectedImageIndex.reset();
-        thumbnails.clear();
+        thumbnailRenderer.invalidate();
         rebuildLayerStack();
         update();
     }
@@ -13069,43 +13362,53 @@ private:
         if (number < 0 || number >= pageCount) {
             return;
         }
-        if (!thumbnails.contains(number)) {
-            if (thumbnails.size() == 16) {
-                thumbnails.erase(thumbnails.begin());
+        const auto& pageLayers = state.layersForPage(number);
+        const auto* preview = thumbnailRenderer.find(number);
+        if (!preview) {
+            ThumbnailRequest request;
+            request.page = number;
+            request.pageSize = state.pageSize(number);
+            if (document && pageLayers.backgroundVisible) {
+                request.backgroundPath = nativeSession ? nativeSession->previewPath().string() : sourcePath;
             }
-            auto surface = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(
-                    cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 112, 150));
-            auto* context = cairo_create(surface.get());
-            const auto sz = state.pageSize(number);
-            double scale = std::min(112.0 / sz.width, 150.0 / sz.height);
-            cairo_set_source_rgb(context, 1, 1, 1);
-            cairo_paint(context);
-            if (document && state.layersForPage(number).backgroundVisible) {
-                auto* source = poppler_document_get_page(document, number);
-                double w, h;
-                poppler_page_get_size(source, &w, &h);
-                scale = std::min(112.0 / w, 150.0 / h);
-                cairo_scale(context, scale, scale);
-                poppler_page_render(source, context);
-                g_object_unref(source);
+            if (nativeSession) {
+                for (const auto& layer: pageLayers.layers) {
+                    if (!layer.visible) {
+                        continue;
+                    }
+                    for (const size_t origin: layer.origins) {
+                        if (origin < nativeSession->layerPreviewPaths.size() &&
+                            std::none_of(
+                                    request.layers.begin(), request.layers.end(),
+                                    [origin](const ThumbnailLayerSource& source) { return source.origin == origin; })) {
+                            request.layers.push_back({origin, nativeSession->layerPreviewPaths[origin].string()});
+                        }
+                    }
+                }
             }
-            cairo_destroy(context);
-            thumbnails.emplace(number, std::make_pair(std::move(surface), scale));
+            thumbnailRenderer.request(std::move(request));
         }
         cairo_save(cr);
-        cairo_translate(cr, (width - 112) / 2.0, (height - 150) / 2.0);
-        cairo_rectangle(cr, 0, 0, 112, 150);
+        cairo_translate(cr, (width - pageThumbnailWidth) / 2.0, (height - pageThumbnailHeight) / 2.0);
+        cairo_rectangle(cr, 0, 0, pageThumbnailWidth, pageThumbnailHeight);
         cairo_clip(cr);
-        cairo_set_source_surface(cr, thumbnails.at(number).first.get(), 0, 0);
-        cairo_paint(cr);
-        cairo_scale(cr, thumbnails.at(number).second, thumbnails.at(number).second);
+        if (preview && preview->background) {
+            cairo_set_source_surface(cr, preview->background.get(), 0, 0);
+            cairo_paint(cr);
+        } else {
+            cairo_set_source_rgb(cr, 1, 1, 1);
+            cairo_paint(cr);
+        }
+        const auto pageSize = state.pageSize(number);
+        const double fallbackScale =
+                std::min(pageThumbnailWidth / pageSize.width, pageThumbnailHeight / pageSize.height);
+        const double scale = preview ? preview->scale : fallbackScale;
         enum class EditableKind { Ink, Text, Image };
         struct LayerItem {
             size_t order;
             EditableKind kind;
             size_t index;
         };
-        const auto& pageLayers = state.layersForPage(number);
         for (size_t layerIndex = 0; layerIndex < pageLayers.layers.size(); ++layerIndex) {
             const size_t layerId = layerIndex + 1;
             const auto& layer = pageLayers.layers[layerIndex];
@@ -13113,10 +13416,11 @@ private:
                 continue;
             }
             for (size_t origin: layer.origins) {
-                if (origin < layerDocuments.size()) {
-                    if (auto* nativePage = poppler_document_get_page(layerDocuments[origin], number)) {
-                        poppler_page_render(nativePage, cr);
-                        g_object_unref(nativePage);
+                if (preview) {
+                    const auto nativePreview = preview->layers.find(origin);
+                    if (nativePreview != preview->layers.end()) {
+                        cairo_set_source_surface(cr, nativePreview->second.get(), 0, 0);
+                        cairo_paint(cr);
                     }
                 }
                 std::vector<LayerItem> items;
@@ -13141,6 +13445,8 @@ private:
                 }
                 std::stable_sort(items.begin(), items.end(),
                                  [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
+                cairo_save(cr);
+                cairo_scale(cr, scale, scale);
                 for (const auto& item: items) {
                     if (item.kind == EditableKind::Text) {
                         prototype::drawText(cr, state.texts[item.index]);
@@ -13154,6 +13460,7 @@ private:
                     state.current->originLayer == origin) {
                     prototype::drawInk(cr, *state.current);
                 }
+                cairo_restore(cr);
             }
         }
         cairo_restore(cr);
@@ -13472,7 +13779,6 @@ private:
                                              item.layoutWidth = width;
                                              item.layoutHeight = height;
                                          })) {
-                                         self->thumbnails.clear();
                                          self->update();
                                      }
                                  }
@@ -13499,7 +13805,6 @@ private:
                                          item.layoutWidth = width;
                                          item.layoutHeight = height;
                                      })) {
-                                     self->thumbnails.clear();
                                      self->update();
                                  }
                              }
@@ -14188,7 +14493,6 @@ private:
         const auto& pageLayers = state.layersForPage(state.page);
         if (layerRows && (layerPanelPage != state.page || !layerPanelSnapshot ||
                           *layerPanelSnapshot != pageLayers)) {
-            thumbnails.clear();
             rebuildLayerStack();
         }
         updateTextEditorPosition();
@@ -14547,7 +14851,6 @@ private:
         }
         if (gesture.changed && state.replaceImage(gesture.index, std::move(gesture.preview))) {
             selectedImageIndex = gesture.index;
-            thumbnails.clear();
         }
         update();
     }
@@ -14721,7 +15024,6 @@ private:
                         update();
                         return;
                     }
-                    thumbnails.clear();
                     activateSelection(Tool::SmartSelect);
                     selectedImageIndex = insertedIndex;
                     update();
@@ -14748,7 +15050,6 @@ private:
                 showError("The image could not be inserted into the active page.");
                 return;
             }
-            thumbnails.clear();
             update();
         } catch (const std::exception& error) {
             showError(std::string("Cannot insert image: ") + error.what());
@@ -15126,9 +15427,7 @@ private:
             return;
         }
         if (state.verticalSpacePreview()) {
-            if (state.finishVerticalSpace()) {
-                thumbnails.clear();
-            }
+            state.finishVerticalSpace();
             update();
             return;
         }
@@ -15790,7 +16089,6 @@ private:
                         self->resetInput();
                         self->state.deleteImage(*self->selectedImageIndex);
                         self->selectedImageIndex.reset();
-                        self->thumbnails.clear();
                     } else if (!(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
                                (key == GDK_KEY_Delete || key == GDK_KEY_BackSpace) && self->state.hasSelection()) {
                         self->input.cancel();
@@ -21183,7 +21481,7 @@ private:
     std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> preferenceControls{};
     GtkListView* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
-    std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;
+    PageThumbnailRenderer thumbnailRenderer;
     GtkWidget* layerRows = nullptr;
     GtkWidget* layerAddButton = nullptr;
     GtkWidget* layerDeleteButton = nullptr;
