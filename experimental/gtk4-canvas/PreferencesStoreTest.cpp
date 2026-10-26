@@ -59,6 +59,9 @@ int main() {
     saved.pageLayout.rightToLeft = true;
     saved.pageLayout.bottomToTop = true;
     saved.pageLayout.presentationMode = true;
+    saved.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Default)] = {true, false, false, false};
+    saved.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)] = {false, true, false, false};
+    saved.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)] = {true, true, false, true};
     saved.pressureSensitivity = false;
     saved.highlightPosition = true;
     saved.cursorHighlightColor = 0x7f123456U;
@@ -116,6 +119,7 @@ int main() {
                     loaded.pageLayout.pairedPageOffset == saved.pageLayout.pairedPageOffset &&
                     !loaded.pageLayout.vertical && loaded.pageLayout.rightToLeft &&
                     loaded.pageLayout.bottomToTop && loaded.pageLayout.presentationMode &&
+                    loaded.viewModes == saved.viewModes &&
                     loaded.penFillEnabled && loaded.penFillOpacity == 192 && !loaded.highlighterFillEnabled &&
                     loaded.penLineStyle == saved.penLineStyle &&
                     loaded.highlighterFillOpacity == 64 &&

@@ -647,6 +647,37 @@ static void partialAndWhiteoutEraser() {
           "delete-stroke eraser must hit visible painted thickness of wide strokes");
 }
 
+static void presentationPageFit() {
+    CanvasState state;
+    state.setPages({{500, 700}, {1000, 400}});
+    CanvasLayoutSettings layout;
+    layout.presentationMode = true;
+    layout.vertical = false;
+    layout.columns = 4;
+    state.setLayoutSettings(layout);
+    check(state.pageLayout.columnCount() == 1 && state.pageLayout.rowCount() == 2,
+          "presentation layout must override the configured multi-column flow");
+
+    state.fitPresentation(900, 600);
+    const double firstPageZoom = std::min(900.0 / 514.0, 600.0 / 714.0);
+    check(std::abs(state.zoom - firstPageZoom) < 1e-9,
+          "presentation zoom must fit the active page with the upstream 14pt allowance");
+    auto firstPageOrigin = state.pageScreenPoint(0, 0, 0);
+    check(std::abs(firstPageOrigin.x + 250 * state.zoom - 450) < 1e-8 &&
+                  std::abs(firstPageOrigin.y + 350 * state.zoom - 300) < 1e-8,
+          "presentation fit must center the active page in the viewport");
+
+    state.selectActivePage(1);
+    state.fitPresentation(900, 600);
+    const double secondPageZoom = std::min(900.0 / 1014.0, 600.0 / 414.0);
+    check(std::abs(state.zoom - secondPageZoom) < 1e-9,
+          "presentation zoom must be recomputed for each page's dimensions");
+    const auto secondPageOrigin = state.pageScreenPoint(1, 0, 0);
+    check(std::abs(secondPageOrigin.x + 500 * state.zoom - 450) < 1e-8 &&
+                  std::abs(secondPageOrigin.y + 200 * state.zoom - 300) < 1e-8,
+          "landscape presentation pages must also be centered in the viewport");
+}
+
 static void continuousMultiPageLayout() {
     CanvasState state;
     state.setPages({{595, 842}, {792, 612}});  // Portrait A4 followed by Landscape Letter.
@@ -1518,6 +1549,7 @@ int main() {
         pluginStrokeAndPageSizeHistory();
         pluginTextBatchHistory();
         pluginImageBatchHistory();
+        presentationPageFit();
         pluginElementReferences();
         pdfAnnotationInkHistory();
         fillStrokesAndSelection();

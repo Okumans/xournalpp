@@ -59,6 +59,10 @@ int main() {
   <property name="stabilizerMass" value="6"/>
   <property name="stabilizerFinalizeStroke" value="false"/>
   <property name="showSidebar" value="false"/>
+  <property name="presentationMode" value="true"/>
+  <property name="defaultViewModeAttributes" value="showMenubar,showToolbar"/>
+  <property name="fullscreenViewModeAttributes" value="goFullscren,showToolbar,showSidebar"/>
+  <property name="presentationViewModeAttributes" value="goFullscren,showMenubar,showSidebar"/>
   <property name="numColumns" value="3"/>
   <property name="numRows" value="2"/>
   <property name="viewFixedRows" value="true"/>
@@ -170,8 +174,16 @@ int main() {
     prototype::applyImportedSettingsToCanvas(importedState, s);
     require(s.pageLayout.columns == 3 && s.pageLayout.rows == 2 && s.pageLayout.fixedRows &&
                     s.pageLayout.pairedPages && s.pageLayout.pairedPageOffset == 37 && !s.pageLayout.vertical &&
-                    s.pageLayout.rightToLeft && s.pageLayout.bottomToTop,
+                    s.pageLayout.rightToLeft && s.pageLayout.bottomToTop && s.pageLayout.presentationMode,
             "Legacy page-layout settings were not imported");
+    const auto& defaultView = s.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Default)];
+    const auto& fullscreenView = s.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)];
+    const auto& presentationView = s.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)];
+    require(defaultView.showMenubar && defaultView.showToolbar && !defaultView.showSidebar &&
+                    fullscreenView.goFullscreen && !fullscreenView.showMenubar && fullscreenView.showToolbar &&
+                    fullscreenView.showSidebar && presentationView.goFullscreen && presentationView.showMenubar &&
+                    !presentationView.showToolbar && presentationView.showSidebar,
+            "Legacy fullscreen and Presentation Mode view presets were not imported");
     require(importedState.layoutSettings.columns == 3 && importedState.layoutSettings.rows == 2 &&
                     importedState.layoutSettings.fixedRows && importedState.layoutSettings.pairedPages &&
                     importedState.layoutSettings.pairedPageOffset == 37 && !importedState.layoutSettings.vertical &&
