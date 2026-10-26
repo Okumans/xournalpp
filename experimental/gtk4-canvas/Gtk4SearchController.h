@@ -40,6 +40,7 @@ public:
 class Gtk4SearchController {
 public:
     explicit Gtk4SearchController(SearchControllerHost& host): host(host) {}
+    ~Gtk4SearchController();
 
     GtkWidget* createWidget();
     void open();
@@ -55,21 +56,25 @@ public:
     const std::vector<SearchMatch>& matches() const { return searchMatches; }
     const std::optional<size_t>& activeMatch() const { return activeSearchMatch; }
     bool isOpen() const;
+    bool isSearching() const { return searchInProgress; }
 
 private:
     GtkWidget* button(const char* icon, const char* tooltip, GCallback callback);
     void setStatus(const std::string& text);
+    void cancelSearch();
+    void beginSearch(std::string query, int direction);
+    void queryEdited();
+    static gboolean processSearchPageCallback(gpointer data);
     void appendPdfSearchMatches(int pageNumber, PopplerPage* page, const std::string& query,
                                 std::vector<SearchMatch>& matches);
     void appendTextSearchMatches(const prototype::TextItem& item, const std::string& query,
                                  std::vector<SearchMatch>& matches);
-    bool rebuildSearchMatches(std::string& error);
-    size_t countMatchesOnPage(int page) const;
+    bool appendPageSearchMatches(int pageNumber, std::vector<SearchMatch>& matches, std::string& error);
     void updateStatus();
-    void refreshMatchesAndStatus();
-    void textChanged();
     void ensureMatchesFresh();
-    void matchesFromEntry();
+    bool matchesFromEntry(int direction);
+    void navigate(int direction);
+    void activateMatch(size_t index);
     void scrollToMatch(const SearchMatch& match);
 
     SearchControllerHost& host;
@@ -77,9 +82,18 @@ private:
     GtkSearchEntry* searchEntry = nullptr;
     GtkWidget* searchStatus = nullptr;
     std::vector<SearchMatch> searchMatches;
+    std::vector<std::vector<size_t>> searchMatchesByPage;
+    std::vector<std::vector<std::vector<size_t>>> searchTextIndicesByPageAndLayer;
     std::optional<size_t> activeSearchMatch;
     std::string searchQuery;
     int searchStartPage = 0;
+    int searchScanPage = 0;
+    int searchScanDirection = 1;
+    int searchPagesScanned = 0;
+    int pendingNavigationDirection = 0;
+    guint searchIdleSource = 0;
+    bool searchInProgress = false;
+    bool searchHasRun = false;
     size_t searchResultRevision = std::numeric_limits<size_t>::max();
     int searchResultPageCount = -1;
     const void* searchResultDocumentIdentity = nullptr;

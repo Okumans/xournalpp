@@ -965,8 +965,30 @@ void Prototype::verifySearchIntegration() {
                     gtk_widget_get_height(searchController.widget()) > 0,
             "Document Search bar did not receive mapped space in the window");
 
+    const auto waitForSearch = [this] {
+        const auto deadline = g_get_monotonic_time() + 3000000;
+        while (searchController.isSearching() && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(!searchController.isSearching(), "Incremental document Search did not finish");
+    };
+    const auto waitForEntryChange = [] {
+        const auto deadline = g_get_monotonic_time() + 220000;
+        while (g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+    };
+
     gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), "STRASSE");
-    searchTextChanged();
+    waitForEntryChange();
+    require(searchController.matches().empty() && !searchController.isSearching(),
+            "Editing the Search field started a document scan before Enter");
+    searchNext();
+    require(searchController.matches().empty() && searchController.isSearching(),
+            "Search did not defer its first page scan to the GTK event loop");
+    waitForSearch();
     require(searchController.matches().size() == 1 && searchController.matches().front().page == 0 &&
                     std::abs(searchController.matches().front().x0 - sample.x) < 1.0,
             "Search did not case-fold editable rich text or map its UTF-8 match to canvas coordinates");
@@ -984,18 +1006,37 @@ void Prototype::verifySearchIntegration() {
     capture("search-native-text");
 
     gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), "xournal++");
-    searchTextChanged();
+    searchNext();
+    waitForSearch();
+    auto* pdfPage = pdfPageForSearch(0);
+    require(pdfPage != nullptr, "Search could not access the original PDF page for geometry verification");
+    double pdfHeight = 0;
+    poppler_page_get_size(pdfPage, nullptr, &pdfHeight);
+    GList* pdfResults = poppler_page_find_text(pdfPage, "xournal++");
+    require(pdfResults != nullptr, "Search geometry fixture has no matching PDF text");
+    const auto* pdfResult = static_cast<const PopplerRectangle*>(pdfResults->data);
+    const double expectedPdfTop = pdfHeight - std::max(pdfResult->y1, pdfResult->y2);
+    const double expectedPdfBottom = pdfHeight - std::min(pdfResult->y1, pdfResult->y2);
+    const bool pdfGeometryMatches = std::any_of(searchController.matches().begin(), searchController.matches().end(),
+                                                [expectedPdfTop, expectedPdfBottom](const SearchMatch& match) {
+                                                    return match.page == 0 &&
+                                                           std::abs(match.y0 - expectedPdfTop) < 0.1 &&
+                                                           std::abs(match.y1 - expectedPdfBottom) < 0.1;
+                                                });
+    g_list_free_full(pdfResults, [](gpointer data) { poppler_rectangle_free(static_cast<PopplerRectangle*>(data)); });
+    g_object_unref(pdfPage);
+    require(pdfGeometryMatches,
+            "PDF Search highlights did not convert Poppler result coordinates to canvas page coordinates");
     require(!searchController.matches().empty() &&
                     std::any_of(searchController.matches().begin(), searchController.matches().end(),
                                 [](const SearchMatch& match) { return match.page == 0 && match.x1 > match.x0; }),
             "Search did not find case-insensitive text in the original PDF background");
-    searchNext();
     require(searchController.activeMatch() && searchController.matches()[*searchController.activeMatch()].page == 0,
             "Search Next did not navigate to a PDF text match");
 
     gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), "Page 2");
-    searchTextChanged();
     searchNext();
+    waitForSearch();
     require(searchController.activeMatch() && searchController.matches()[*searchController.activeMatch()].page == 1 &&
                     state.page == 1,
             "Search Next did not continue from the current page into a later PDF page");
