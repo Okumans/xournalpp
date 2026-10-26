@@ -62,6 +62,7 @@ enum class Tool {
 inline bool isLaserPointerTool(Tool tool) {
     return tool == Tool::LaserPointerPen || tool == Tool::LaserPointerHighlighter;
 }
+inline bool isFillableTool(Tool tool) { return tool == Tool::Pen || tool == Tool::Highlighter; }
 inline bool isSelectionTool(Tool tool) {
     return tool == Tool::SelectRectangle || tool == Tool::SelectLasso || tool == Tool::SmartSelect ||
            tool == Tool::SelectObject || tool == Tool::SelectPdfTextLinear || tool == Tool::SelectPdfTextRect;
@@ -98,6 +99,8 @@ struct Brush {
     Tool tool = Tool::Pen;
     std::array<double, 3> color = behavior::defaultPenColor;
     double width = behavior::penWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    bool fillEnabled = false;
+    int fillOpacity = 128;
 };
 
 struct Ink {
@@ -424,7 +427,7 @@ public:
         size_t nextOrder = nextOriginOrder(pageIndex, origin);
         for (auto& stroke: additions) {
             if (stroke.points.size() < 2 || !std::isfinite(stroke.brush.width) || stroke.brush.width <= 0 ||
-                stroke.fill < -1 || stroke.fill > 255 || (stroke.fill >= 0 && stroke.brush.tool != Tool::Highlighter)) {
+                stroke.fill < -1 || stroke.fill > 255 || (stroke.fill >= 0 && !isFillableTool(stroke.brush.tool))) {
                 return false;
             }
             for (const auto& point: stroke.points) {
@@ -2729,6 +2732,9 @@ public:
                           false};
         } else {
             current = Ink{hit->page, {hit->local}, brush, false};
+            if (isFillableTool(brush.tool) && brush.fillEnabled) {
+                current->fill = std::clamp(brush.fillOpacity, 0, 255);
+            }
         }
         current->layerId = activeLayerId(hit->page);
         current->originLayer = activeLayerOrigin(hit->page);
@@ -2915,6 +2921,30 @@ public:
         }
     }
 
+    bool hasSelectedFillableInk() const {
+        return std::any_of(selected.begin(), selected.end(), [&](size_t index) {
+            return index < ink.size() && isFillableTool(ink[index].brush.tool);
+        });
+    }
+
+    bool setSelectedInkFill(int penOpacity, int highlighterOpacity) {
+        if (penOpacity < -1 || penOpacity > 255 || highlighterOpacity < -1 || highlighterOpacity > 255) {
+            return false;
+        }
+        std::vector<std::pair<size_t, Ink>> replacements;
+        for (const size_t index: selected) {
+            if (index >= ink.size() || !isFillableTool(ink[index].brush.tool)) {
+                continue;
+            }
+            auto replacement = ink[index];
+            replacement.fill = replacement.brush.tool == Tool::Pen ? penOpacity : highlighterOpacity;
+            if (replacement.fill != ink[index].fill) {
+                replacements.emplace_back(index, std::move(replacement));
+            }
+        }
+        return applyInkEdits(std::move(replacements), {});
+    }
+
     bool applyInkEdits(std::vector<std::pair<size_t, Ink>> replacements, std::vector<Ink> additions) {
         if (current || eraseGesture || selectionGesture || (replacements.empty() && additions.empty())) {
             return false;
@@ -2932,7 +2962,8 @@ public:
             if (replacement.page != original.page || replacement.layerId != original.layerId ||
                 replacement.originLayer != original.originLayer || replacement.layerOrder != original.layerOrder ||
                 replacement.points.size() != original.points.size() || replacement.brush.tool != original.brush.tool ||
-                replacement.brush.width != original.brush.width || replacement.fill != original.fill ||
+                replacement.brush.width != original.brush.width || replacement.fill < -1 || replacement.fill > 255 ||
+                (replacement.fill >= 0 && !isFillableTool(replacement.brush.tool)) ||
                 replacement.capStyle != original.capStyle) {
                 return false;
             }
@@ -2943,7 +2974,7 @@ public:
             if (addition.page < 0 || addition.page >= pageCount() || addition.points.size() < 2 ||
                 !std::isfinite(addition.brush.width) || addition.brush.width <= 0 || addition.fill < -1 ||
                 addition.fill > 255 || addition.capStyle < 0 || addition.capStyle > 2 ||
-                (addition.fill >= 0 && addition.brush.tool != Tool::Highlighter)) {
+                (addition.fill >= 0 && !isFillableTool(addition.brush.tool))) {
                 return false;
             }
             for (const auto& point: addition.points) {

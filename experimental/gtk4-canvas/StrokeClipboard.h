@@ -292,7 +292,7 @@ inline std::vector<Ink> decode(std::string_view bytes) {
         const auto fill = in.value<int>("_i");
         const auto capStyle = in.value<int>("_i");
         if (width <= 0 || tool < 0 || tool > 2 || fill < -1 || fill > 255 || capStyle < 0 || capStyle > 2 ||
-            (fill >= 0 && tool != 2))
+            (fill >= 0 && tool == 1))
             Reader::fail();
         if (tool == 1 && (argb & 0xffffffU) != 0xffffffU)
             Reader::fail();

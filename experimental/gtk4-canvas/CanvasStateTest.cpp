@@ -66,6 +66,37 @@ static void brushAndHistory() {
     check(bounded.ink.size() == 140 && !bounded.canRedo(), "retained history remains fully redoable");
 }
 
+static void fillStrokesAndSelection() {
+    CanvasState state;
+    state.brush = {Tool::Pen, {0.8, 0.1, 0.2}, 4, true, 96};
+    state.drawingMode = DrawingMode::Rectangle;
+    check(state.begin(Device::Mouse, 20, 20), "filled Pen rectangle did not start");
+    state.append(Device::Mouse, 100, 80);
+    state.finish(Device::Mouse);
+    check(state.ink.size() == 1 && state.ink[0].fill == 96,
+          "A filled Pen drawing did not retain its configured opacity");
+
+    state.selected = {0};
+    check(state.hasSelectedFillableInk() && state.setSelectedInkFill(180, 72) && state.ink[0].fill == 180,
+          "Fill did not update a selected Pen stroke");
+    state.undo();
+    check(state.ink[0].fill == 96, "Undo did not restore the selected stroke fill");
+    state.redo();
+    check(state.ink[0].fill == 180, "Redo did not restore the selected stroke fill");
+    check(state.setSelectedInkFill(-1, -1) && state.ink[0].fill == -1,
+          "Fill could not be removed from a selected Pen stroke");
+    state.undo();
+    check(state.ink[0].fill == 180, "Undo did not restore a removed fill");
+
+    state.brush = {Tool::Highlighter, {1, 1, 0}, 12, true, 72};
+    state.drawingMode = DrawingMode::Freehand;
+    check(state.begin(Device::Mouse, 130, 40), "filled Highlighter stroke did not start");
+    state.append(Device::Mouse, 180, 40);
+    state.finish(Device::Mouse);
+    check(state.ink.size() == 2 && state.ink[1].fill == 72,
+          "A filled Highlighter stroke did not retain its configured opacity");
+}
+
 static void savedHistory() {
     CanvasState state;
     check(state.revision() == 0, "new state starts at the clean revision");
@@ -1368,6 +1399,7 @@ int main() {
         pluginImageBatchHistory();
         pluginElementReferences();
         pdfAnnotationInkHistory();
+        fillStrokesAndSelection();
         check(std::abs(behavior::steppedZoom(1, true, true) - 1.02) < 1e-12,
               "wheel zoom must use the original default two-percent step");
         check(std::abs(behavior::steppedZoom(1, true, false) - 1.1) < 1e-12,

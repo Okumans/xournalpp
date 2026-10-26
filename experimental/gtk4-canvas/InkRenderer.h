@@ -29,6 +29,25 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
     const auto capStyle = ink.capStyle == 1 ? CAIRO_LINE_CAP_BUTT :
                           ink.capStyle == 2 ? CAIRO_LINE_CAP_SQUARE : CAIRO_LINE_CAP_ROUND;
     cairo_set_line_cap(cr, capStyle);
+    if (ink.fill >= 0 && ink.brush.tool == Tool::Pen && ink.points.size() > 2) {
+        const auto first = matrix.apply(ink.points.front());
+        cairo_move_to(cr, first.x, first.y);
+        for (size_t i = 1; i < ink.points.size(); ++i) {
+            const auto point = matrix.apply(ink.points[i]);
+            cairo_line_to(cr, point.x, point.y);
+        }
+        cairo_set_source_rgba(cr, color[0], color[1], color[2], static_cast<double>(ink.fill) / 255.0);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, color[0], color[1], color[2]);
+    } else if (highlight && ink.fill >= 0 && ink.brush.tool == Tool::Highlighter && ink.points.size() > 2) {
+        const auto first = matrix.apply(ink.points.front());
+        cairo_move_to(cr, first.x, first.y);
+        for (size_t i = 1; i < ink.points.size(); ++i) {
+            const auto point = matrix.apply(ink.points[i]);
+            cairo_line_to(cr, point.x, point.y);
+        }
+        cairo_fill(cr);
+    }
     if (ink.capStyle != 0 && !ink.pressureSensitive && ink.points.size() > 1) {
         cairo_set_line_width(cr, ink.brush.width * matrix.widthScale);
         cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);

@@ -48,6 +48,21 @@ int main() {
     pass &= pixel(surface, 40, 120) == 0x0000ff;
     prototype::drawInk(cr, {0, {{90, 105}, {90, 135}}, {prototype::Tool::Pen, {0, 1, 0}, 4}});
     pass &= pixel(surface, 90, 120) == 0x00ff00;
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_paint(cr);
+    prototype::Ink filledRectangle{0,
+                                   {{20, 65}, {120, 65}, {120, 105}, {20, 105}, {20, 65}},
+                                   {prototype::Tool::Pen, {1, 0, 0}, 4}};
+    filledRectangle.fill = 128;
+    prototype::drawInk(cr, filledRectangle);
+    pass &= pixel(surface, 80, 85) >= 0xff7e7e && pixel(surface, 80, 85) <= 0xff8080 &&
+            pixel(surface, 20, 85) == 0xff0000;
+    prototype::Ink filledHighlight{0,
+                                   {{130, 65}, {220, 65}, {220, 105}, {130, 105}, {130, 65}},
+                                   {prototype::Tool::Highlighter, {1, 1, 0}, 4}};
+    filledHighlight.fill = 128;
+    prototype::drawInk(cr, filledHighlight);
+    pass &= (pixel(surface, 170, 85) & 0xff) >= 126 && (pixel(surface, 170, 85) & 0xff) <= 128;
     // Selection preview transforms points; committed ink and autosave stay unchanged.
     cairo_set_source_rgb(cr, 1, 1, 1);
     cairo_paint(cr);

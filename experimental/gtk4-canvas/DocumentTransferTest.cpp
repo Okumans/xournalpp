@@ -22,14 +22,16 @@ int main() {
         pdfHighlight.pressureSensitive = false;
         pdfHighlight.fill = 60;
         pdfHighlight.capStyle = 1;
+        auto filledPen = mouse;
+        filledPen.fill = 128;
         prototype::Ink whiteout{0, {{10, 15, 0.3}, {50, 15, 0.9}}, {prototype::Tool::Eraser, {0.2, 0.3, 0.4}, 8.5}, true};
-        const auto packets = transferInk({mouse, stylus, highlighter, whiteout, pdfHighlight});
+        const auto packets = transferInk({mouse, stylus, highlighter, whiteout, pdfHighlight, filledPen});
         if (packets[0].pressureSensitive || !packets[1].pressureSensitive || !packets[2].highlighter ||
             !packets[3].whiteout || packets[3].highlighter || packets[3].pressureSensitive ||
             packets[3].color != prototype::behavior::whiteoutColor ||
             packets[1].points[1].x != 3 || packets[0].page != 1 || packets[0].layerOrder != 11 ||
             packets[0].layerId != 2 || packets[0].originLayer != 7 || packets[4].fill != 60 ||
-            packets[4].capStyle != 1) {
+            packets[4].capStyle != 1 || packets[5].fill != 128) {
             throw std::runtime_error("Session ink transfer changed tool, pressure mode or page coordinates");
         }
         StrokePacket original{2, false, true, 4.25, {0.1, 0.2, 0.9}, {{12.34, 56.78, 0.25}, {80, 90, 0.8}}};
@@ -42,27 +44,31 @@ int main() {
         annotatedPacket.pressureSensitive = false;
         annotatedPacket.fill = 230;
         annotatedPacket.capStyle = 1;
-        writeTransfer(path, {original, whiteoutPacket, annotatedPacket});
+        auto filledPenPacket = original;
+        filledPenPacket.fill = 128;
+        writeTransfer(path, {original, whiteoutPacket, annotatedPacket, filledPenPacket});
         const auto decoded = readTransfer(path);
-        if (decoded.size() != 3 || decoded[0].page != original.page || !decoded[0].pressureSensitive ||
+        if (decoded.size() != 4 || decoded[0].page != original.page || !decoded[0].pressureSensitive ||
             decoded[0].width != original.width || decoded[0].color != original.color ||
             decoded[0].layerOrder != original.layerOrder || decoded[0].layerId != original.layerId ||
             decoded[0].originLayer != original.originLayer ||
             decoded[0].points[0].x != original.points[0].x || decoded[0].points[1].pressure != 0.8 ||
             !decoded[1].whiteout || decoded[1].highlighter || decoded[1].width != 8.5 ||
             !decoded[2].highlighter || decoded[2].pressureSensitive || decoded[2].fill != 230 ||
+            decoded[3].highlighter || !decoded[3].pressureSensitive || decoded[3].fill != 128 ||
             decoded[2].capStyle != 1) {
             throw std::runtime_error("Ink transfer did not preserve page, style or sample precision");
         }
         const auto hydrated = sessionInk(decoded);
-        if (hydrated.size() != 3 || hydrated[0].page != 2 || hydrated[0].brush.tool != prototype::Tool::Pen ||
+        if (hydrated.size() != 4 || hydrated[0].page != 2 || hydrated[0].brush.tool != prototype::Tool::Pen ||
             !hydrated[0].pressureSensitive || hydrated[0].brush.width != 4.25 ||
             hydrated[0].layerOrder != 19 || hydrated[0].layerId != 3 || hydrated[0].originLayer != 12 ||
             hydrated[0].points[0].pressure != 0.25 || hydrated[0].points[1].pressure != 0.8 ||
             hydrated[1].brush.tool != prototype::Tool::Eraser || hydrated[1].pressureSensitive ||
             hydrated[1].brush.color != prototype::behavior::whiteoutColor ||
             hydrated[2].brush.tool != prototype::Tool::Highlighter || hydrated[2].fill != 230 ||
-            hydrated[2].capStyle != 1) {
+            hydrated[2].capStyle != 1 || hydrated[3].brush.tool != prototype::Tool::Pen ||
+            hydrated[3].fill != 128 || !hydrated[3].pressureSensitive) {
             throw std::runtime_error("Session hydration lost tool, pressure mode, or whiteout color");
         }
         prototype::CanvasState preloaded;

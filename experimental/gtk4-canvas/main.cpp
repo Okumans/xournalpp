@@ -492,7 +492,8 @@ public:
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
         input.setStabilizerConfig(importedConfig.settings.stabilizer);
-        penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth};
+        penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth,
+                    importedConfig.settings.penFillEnabled, importedConfig.settings.penFillOpacity};
         latexBrush = {Tool::Latex, importedConfig.settings.latexColor, importedConfig.settings.penWidth};
         latexTemplatePath = importedConfig.settings.latexTemplatePath;
         if (latexTemplatePath.empty()) {
@@ -501,7 +502,8 @@ public:
 #endif
         }
         highlightBrush = {Tool::Highlighter, importedConfig.settings.highlighterColor,
-                          importedConfig.settings.highlighterWidth};
+                          importedConfig.settings.highlighterWidth, importedConfig.settings.highlighterFillEnabled,
+                          importedConfig.settings.highlighterFillOpacity};
         laserPenBrush = {Tool::LaserPointerPen, importedConfig.settings.laserPenColor,
                          importedConfig.settings.laserPenWidth};
         laserHighlighterBrush = {Tool::LaserPointerHighlighter, importedConfig.settings.laserHighlighterColor,
@@ -3379,6 +3381,59 @@ private:
         }
     }
 
+    bool toolSupportsSelectionFill() const {
+        return state.brush.tool == Tool::SelectRectangle || state.brush.tool == Tool::SelectLasso ||
+               state.brush.tool == Tool::SelectObject || state.brush.tool == Tool::SmartSelect;
+    }
+
+    bool fillToggleAvailable() const {
+        return prototype::isFillableTool(state.brush.tool) ||
+               (toolSupportsSelectionFill() && state.hasSelectedFillableInk());
+    }
+
+    bool fillToggleActive() const {
+        return toolSupportsSelectionFill() ? selectionFillEnabled : state.brush.fillEnabled;
+    }
+
+    bool setFillEnabled(bool enabled, std::string& error) {
+        const Tool tool = state.brush.tool;
+        if (prototype::isFillableTool(tool)) {
+            const auto previousSettings = importedConfig.settings;
+            const auto previousBrush = state.brush;
+            const auto previousPenBrush = penBrush;
+            const auto previousHighlightBrush = highlightBrush;
+            input.cancel();
+            state.brush.fillEnabled = enabled;
+            if (tool == Tool::Pen) {
+                state.brush.fillOpacity = importedConfig.settings.penFillOpacity;
+                penBrush = state.brush;
+                importedConfig.settings.penFillEnabled = enabled;
+            } else {
+                state.brush.fillOpacity = importedConfig.settings.highlighterFillOpacity;
+                highlightBrush = state.brush;
+                importedConfig.settings.highlighterFillEnabled = enabled;
+            }
+            if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+                importedConfig.settings = previousSettings;
+                state.brush = previousBrush;
+                penBrush = previousPenBrush;
+                highlightBrush = previousHighlightBrush;
+                update();
+                return false;
+            }
+        } else if (toolSupportsSelectionFill() && state.hasSelectedFillableInk()) {
+            input.cancel();
+            state.setSelectedInkFill(enabled ? importedConfig.settings.penFillOpacity : -1,
+                                     enabled ? importedConfig.settings.highlighterFillOpacity : -1);
+            selectionFillEnabled = enabled;
+        } else {
+            error = "Fill is available for Pen, Highlighter, or selected Pen/Highlighter strokes";
+            return false;
+        }
+        update();
+        return true;
+    }
+
     bool getPluginActionState(std::string_view action, prototype::PluginActionValue& value,
                               std::string& error) const {
         if (action == "select-tool") {
@@ -3411,6 +3466,10 @@ private:
         }
         if (action == "tool-highlighter-size") {
             value = pluginToolSizeState(prototype::behavior::highlighterWidths, highlightBrush.width);
+            return true;
+        }
+        if (action == "tool-fill") {
+            value = fillToggleActive();
             return true;
         }
         if (action == "tool-eraser-type") {
@@ -3481,21 +3540,22 @@ private:
             info.type = pluginToolName(state.brush.tool);
             setBrush(state.brush, prototype::widthsForTool(state.brush.tool));
             setShapeStyle();
-            info.fillOpacity = 128;
+            info.filled = state.brush.fillEnabled;
+            info.fillOpacity = state.brush.fillOpacity;
             return true;
         }
         if (tool == "pen") {
             setBrush(penBrush, prototype::behavior::penWidths);
             setShapeStyle();
-            info.filled = false;
-            info.fillOpacity = 128;
+            info.filled = penBrush.fillEnabled;
+            info.fillOpacity = penBrush.fillOpacity;
             return true;
         }
         if (tool == "highlighter") {
             setBrush(highlightBrush, prototype::behavior::highlighterWidths);
             setShapeStyle();
-            info.filled = false;
-            info.fillOpacity = 128;
+            info.filled = highlightBrush.fillEnabled;
+            info.fillOpacity = highlightBrush.fillOpacity;
             return true;
         }
         if (tool == "eraser") {
@@ -3535,6 +3595,13 @@ private:
 
     bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
                                  std::string& error) {
+        if (action == "tool-fill") {
+            if (!std::holds_alternative<bool>(value)) {
+                error = "tool-fill expects a boolean state";
+                return false;
+            }
+            return setFillEnabled(std::get<bool>(value), error);
+        }
         if (action == "position-highlighting") {
             if (!std::holds_alternative<bool>(value)) {
                 error = "position-highlighting expects a boolean state";
@@ -3573,7 +3640,7 @@ private:
             return true;
         }
         if (action != "select-tool" || !std::holds_alternative<std::int64_t>(value)) {
-            error = "Only select-tool (integer), grid-snapping (boolean), and position-highlighting (boolean) "
+            error = "Only select-tool (integer), grid-snapping/position-highlighting/tool-fill (boolean) "
                     "action state changes are supported";
             return false;
         }
@@ -8637,6 +8704,26 @@ private:
                              }),
                              this);
             gtk_box_append(GTK_BOX(row), scale);
+        } else if (token == "TOOL_FILL") {
+            auto* toggle = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("Fill"));
+            gtk_widget_set_tooltip_text(GTK_WIDGET(toggle),
+                                        "Fill new Pen/Highlighter strokes or the selected strokes");
+            gtk_accessible_update_property(GTK_ACCESSIBLE(toggle), GTK_ACCESSIBLE_PROPERTY_LABEL, "Fill", -1);
+            gtk_toggle_button_set_active(toggle, fillToggleActive());
+            gtk_widget_set_sensitive(GTK_WIDGET(toggle), fillToggleAvailable());
+            g_object_set_data_full(G_OBJECT(toggle), "floating-toolbox-token", g_strdup(token.c_str()), g_free);
+            g_signal_connect(toggle, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 if (self->syncingBrush) {
+                                     return;
+                                 }
+                                 std::string error;
+                                 if (!self->setFillEnabled(gtk_toggle_button_get_active(button), error)) {
+                                     self->showAlert("Could not change Fill", error);
+                                 }
+                             }), this);
+            floatingFillToggles.push_back(toggle);
+            gtk_box_append(GTK_BOX(row), GTK_WIDGET(toggle));
         } else if (token == "DRAW") {
             auto* modeNames = gtk_string_list_new(nullptr);
             for (const auto& choice: prototype::floatingDrawingModeChoices) {
@@ -8690,11 +8777,6 @@ private:
             gtk_widget_set_tooltip_text(modeButton, label.c_str());
             g_object_set_data(G_OBJECT(modeButton), "floating-drawing-mode", GINT_TO_POINTER(static_cast<int>(mode)));
             g_object_set_data_full(G_OBJECT(modeButton), "floating-drawing-mode-token", g_strdup(token.c_str()), g_free);
-        } else if (token == "TOOL_FILL") {
-            auto* unsupported = gtk_button_new_with_label("Fill");
-            gtk_widget_set_sensitive(unsupported, false);
-            gtk_widget_set_tooltip_text(unsupported, "Filled native drawing shapes are not ported yet");
-            gtk_box_append(GTK_BOX(row), unsupported);
         } else if (token == "FORMAT_ALIGN_LEFT" || token == "FORMAT_ALIGN_CENTER" ||
                    token == "FORMAT_ALIGN_RIGHT") {
             const int alignment = token == "FORMAT_ALIGN_CENTER" ? 1 : token == "FORMAT_ALIGN_RIGHT" ? 2 : 0;
@@ -8926,6 +9008,7 @@ private:
             return;
         }
         floatingDrawingModeSelectors.clear();
+        floatingFillToggles.clear();
         if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
             floatingToolboxToolButtons.erase(
                     floatingToolboxToolButtons.begin() +
@@ -10184,6 +10267,10 @@ private:
                       tool == Tool::LaserPointerHighlighter ? laserHighlighterBrush :
                       tool == Tool::Latex ? latexBrush : penBrush;
         state.brush.tool = tool;
+        selectionFillEnabled = false;
+        if (!prototype::isFillableTool(tool)) {
+            state.brush.fillEnabled = false;
+        }
         if (tool == Tool::Text) {
             state.brush.color = state.textColor;
         }
@@ -11895,6 +11982,17 @@ private:
         for (auto* selector: floatingDrawingModeSelectors) {
             if (gtk_drop_down_get_selected(selector) != floatingModeIndex) {
                 gtk_drop_down_set_selected(selector, floatingModeIndex);
+            }
+        }
+        if (toolSupportsSelectionFill() && !state.hasSelectedFillableInk()) {
+            selectionFillEnabled = false;
+        }
+        const bool fillAvailable = fillToggleAvailable();
+        const bool fillActive = fillToggleActive();
+        for (auto* toggle: floatingFillToggles) {
+            gtk_widget_set_sensitive(GTK_WIDGET(toggle), fillAvailable);
+            if (gtk_toggle_button_get_active(toggle) != fillActive) {
+                gtk_toggle_button_set_active(toggle, fillActive);
             }
         }
         syncingBrush = wasSyncingBrush;
@@ -15272,7 +15370,7 @@ private:
                 {"SMART_SELECT", "PEN", "DRAW"},
                 {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER",
                  "RULER"},
-                {"FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
+                {"TOOL_FILL", "FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
                 {"DRAW_ARROW"},
         }};
         if (preferencesVerifyMode == "edit" && ((preferencesVerifyStep >= 4 && !floatingToolboxSmokeReady) ||
@@ -15505,7 +15603,8 @@ private:
                     selectTool(Tool::Pen);
                     auto* thirdConfiguredRow = gtk_widget_get_next_sibling(
                             gtk_widget_get_next_sibling(firstConfiguredRow));
-                    g_signal_emit_by_name(gtk_widget_get_first_child(thirdConfiguredRow), "clicked");
+                    auto* fineButton = gtk_widget_get_next_sibling(gtk_widget_get_first_child(thirdConfiguredRow));
+                    g_signal_emit_by_name(fineButton, "clicked");
                     require(std::abs(state.brush.width - prototype::widthsForTool(Tool::Pen)[1]) < 1e-8,
                             "Configured FINE action did not select the Pen fine-width preset");
                     auto* fourthConfiguredRow = gtk_widget_get_next_sibling(thirdConfiguredRow);
@@ -15562,6 +15661,62 @@ private:
                                     gtk_drop_down_get_selected(drawingModeCombo) ==
                                             prototype::floatingDrawingModeComboIndex(originalDrawingMode),
                             "The floating drawing-mode smoke check did not restore the selected mode");
+                    require(floatingFillToggles.size() == 1,
+                            "The configured TOOL_FILL token did not render as a toggle button");
+                    selectTool(Tool::Pen);
+                    gtk_toggle_button_set_active(floatingFillToggles.front(), true);
+                    require(state.brush.fillEnabled && penBrush.fillEnabled && importedConfig.settings.penFillEnabled,
+                            "TOOL_FILL did not enable Pen fill");
+                    const auto fillDrawingMode = state.drawingMode;
+                    state.drawingMode = prototype::DrawingMode::Rectangle;
+                    const auto fillStart = state.pageScreenPoint(state.page, 30, 30);
+                    const auto fillEnd = state.pageScreenPoint(state.page, 100, 80);
+                    require(state.begin(prototype::Device::Mouse, fillStart.x, fillStart.y),
+                            "Filled Pen rectangle did not begin");
+                    state.append(prototype::Device::Mouse, fillEnd.x, fillEnd.y);
+                    state.finish(prototype::Device::Mouse);
+                    require(!state.ink.empty() && state.ink.back().fill == importedConfig.settings.penFillOpacity,
+                            "TOOL_FILL did not apply the configured opacity to a new Pen shape");
+                    state.undo();
+                    state.drawingMode = fillDrawingMode;
+                    selectTool(Tool::Highlighter);
+                    gtk_toggle_button_set_active(floatingFillToggles.front(), true);
+                    require(state.brush.fillEnabled && highlightBrush.fillEnabled &&
+                                    importedConfig.settings.highlighterFillEnabled,
+                            "TOOL_FILL did not enable Highlighter fill");
+                    selectTool(Tool::Pen);
+                    const auto selectionDrawingMode = state.drawingMode;
+                    state.drawingMode = prototype::DrawingMode::Rectangle;
+                    const auto selectionFillStart = state.pageScreenPoint(state.page, 140, 30);
+                    const auto selectionFillEnd = state.pageScreenPoint(state.page, 210, 90);
+                    require(state.begin(prototype::Device::Mouse, selectionFillStart.x, selectionFillStart.y),
+                            "Filled Pen rectangle for selection fill did not begin");
+                    state.append(prototype::Device::Mouse, selectionFillEnd.x, selectionFillEnd.y);
+                    state.finish(prototype::Device::Mouse);
+                    const auto filledPenIndex = state.ink.size() - 1;
+                    state.selected = {filledPenIndex};
+                    selectTool(Tool::SmartSelect);
+                    require(fillToggleAvailable() && !gtk_toggle_button_get_active(floatingFillToggles.front()),
+                            "TOOL_FILL was not enabled for a selected Pen stroke");
+                    gtk_toggle_button_set_active(floatingFillToggles.front(), true);
+                    gtk_toggle_button_set_active(floatingFillToggles.front(), false);
+                    require(state.ink[filledPenIndex].fill == -1,
+                            "TOOL_FILL did not remove fill from the selected Pen stroke");
+                    state.undo();
+                    update();
+                    require(state.ink[filledPenIndex].fill == importedConfig.settings.penFillOpacity,
+                            "Undo did not restore the selected Pen stroke fill");
+                    state.redo();
+                    update();
+                    require(state.ink[filledPenIndex].fill == -1,
+                            "Redo did not remove the selected Pen stroke fill");
+                    gtk_toggle_button_set_active(floatingFillToggles.front(), true);
+                    require(state.ink[filledPenIndex].fill == importedConfig.settings.penFillOpacity,
+                            "TOOL_FILL did not fill the selected Pen stroke");
+                    selectTool(Tool::Pen);
+                    state.drawingMode = selectionDrawingMode;
+                    require(gtk_toggle_button_get_active(floatingFillToggles.front()),
+                            "TOOL_FILL did not synchronize when switching back to the filled Pen");
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     importedConfig.settings.stylusButtonTwo ==
@@ -15579,6 +15734,9 @@ private:
                                     std::abs(state.edgePanSpeed - 31.0) < 1e-8 &&
                                     std::abs(state.edgePanMaxMultiplier - 3.5) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
+                                    importedConfig.settings.penFillEnabled && importedConfig.settings.penFillOpacity == 128 &&
+                                    importedConfig.settings.highlighterFillEnabled &&
+                                    importedConfig.settings.highlighterFillOpacity == 128 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
                                     importedConfig.settings.floatingToolboxRows == floatingModeTestRows &&
@@ -15663,7 +15821,13 @@ private:
                                 "Stylus Floating Toolbox mapping changed the active tool or drew a stroke");
                         hideFloatingToolbox();
                     }
+                    while (state.canUndo()) {
+                        state.undo();
+                    }
                     selectTool(Tool::Pen);
+                    require(state.ink.empty() && !modified(),
+                            "Preferences smoke checks left a modified test document");
+                    update();
                     floatingToolboxSmokeReady = false;
                     floatingToolboxSmokeSource = g_timeout_add(
                             400,
@@ -15720,6 +15884,9 @@ private:
                                     std::abs(state.snapGridSize - 24.0) < 1e-8 &&
                                     std::abs(state.snapGridTolerance - 0.4) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
+                                    importedConfig.settings.penFillEnabled && importedConfig.settings.penFillOpacity == 128 &&
+                                    importedConfig.settings.highlighterFillEnabled &&
+                                    importedConfig.settings.highlighterFillOpacity == 128 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
                                     importedConfig.settings.floatingToolboxRows == floatingModeTestRows,
@@ -18177,6 +18344,8 @@ private:
     GtkWidget* drawingOptionsExpander = nullptr;
     GtkWidget* drawingModeDropdown = nullptr;
     std::vector<GtkDropDown*> floatingDrawingModeSelectors;
+    std::vector<GtkToggleButton*> floatingFillToggles;
+    bool selectionFillEnabled = false;
     GtkWidget* averagingDropdown = nullptr;
     GtkWidget* preprocessorDropdown = nullptr;
     std::array<GtkWidget*, 5> toolButtons{};

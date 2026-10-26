@@ -38,7 +38,7 @@ int main() {
                     prototype::floatingDrawingModeComboIndex(prototype::DrawingMode::Freehand) == 0 &&
                     !prototype::floatingDrawingModeComboMode(prototype::floatingDrawingModeChoices.size()) &&
                     !prototype::floatingDrawingModeAction("TOOL_FILL"),
-            "Drawing token aliases or unsupported fill handling changed unexpectedly");
+            "Drawing token aliases or the non-drawing fill token mapping changed unexpectedly");
 
     const auto defaultRows = prototype::defaultFloatingToolboxRows();
     require(defaultRows[0] == std::vector<std::string>({"PEN", "HIGHLIGHTER", "LASER_POINTER", "PDF_TOOL", "UNDO"}) &&
