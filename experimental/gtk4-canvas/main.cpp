@@ -81,6 +81,7 @@ struct Options {
     bool verifyPlugins = false;
     bool verifySearch = false;
     bool verifyPageLayout = false;
+    bool verifyPresentationMode = false;
     bool verifyPenLineStyle = false;
     bool verifyBeamer = false;
     bool verifyLayerActions = false;
@@ -505,6 +506,7 @@ public:
         if (!preferenceLoad.warning.empty()) {
             std::cerr << "xournalpp-gtk4-canvas: " << preferenceLoad.warning << '\n';
         }
+        presentationMode = importedConfig.settings.pageLayout.presentationMode;
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
         state.historyChangedCallback = [this](const std::vector<std::string>& snapshots) {
@@ -896,6 +898,23 @@ private:
 
     void activatePageLayoutAction(GSimpleAction* action, GVariant* parameter) {
         const std::string_view name = g_action_get_name(G_ACTION(action));
+        if (name == "presentation-mode") {
+            const bool enabled = parameter ? g_variant_get_boolean(parameter) : !presentationMode;
+            setPresentationMode(enabled);
+            g_simple_action_set_state(action, g_variant_new_boolean(presentationMode));
+            return;
+        }
+        if (name == "fullscreen") {
+            const bool current = presentationMode ? windowFullscreen : fullscreenModeActive;
+            const bool enabled = parameter ? g_variant_get_boolean(parameter) : !current;
+            setFullscreenMode(enabled);
+            g_simple_action_set_state(action, g_variant_new_boolean(presentationMode ? windowFullscreen :
+                                                                                     fullscreenModeActive));
+            return;
+        }
+        if (presentationMode) {
+            return;
+        }
         auto& settings = importedConfig.settings.pageLayout;
         bool handled = true;
         if (name == "paired-pages-mode") {
@@ -931,7 +950,6 @@ private:
         if (!handled) {
             return;
         }
-
         const int currentPage = state.page;
         state.setLayoutSettings(settings);
         if (canvas) {
@@ -941,6 +959,131 @@ private:
         if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
             showAlert("Could not save preferences", error);
         }
+        update();
+    }
+
+    const prototype::ViewModeSettings& activeViewModeSettings() const {
+        const auto preset = presentationMode ? prototype::ViewModePreset::Presentation :
+                            fullscreenModeActive ? prototype::ViewModePreset::Fullscreen :
+                                                   prototype::ViewModePreset::Default;
+        return importedConfig.settings.viewModes[static_cast<std::size_t>(preset)];
+    }
+
+    void setPageLayoutActionsEnabled(bool enabled) {
+        for (const char* name: {"paired-pages-mode", "set-layout-vertical", "set-layout-right-to-left",
+                                "set-layout-bottom-to-top", "set-columns-or-rows", "paired-pages-offset"}) {
+            if (auto* action = g_action_map_lookup_action(G_ACTION_MAP(window), name);
+                action && G_IS_SIMPLE_ACTION(action)) {
+                g_simple_action_set_enabled(G_SIMPLE_ACTION(action), enabled);
+            }
+        }
+    }
+
+    void applyCurrentViewMode() {
+        const auto& mode = activeViewModeSettings();
+        if (headerBarWidget) {
+            gtk_widget_set_visible(headerBarWidget, mode.showMenubar);
+        }
+        if (toolbarWidget) {
+            gtk_widget_set_visible(toolbarWidget, mode.showToolbar);
+        }
+        if (mainToolRailWidget) {
+            gtk_widget_set_visible(mainToolRailWidget, mode.showToolbar);
+        }
+        applyingViewMode = true;
+        if (splitView) {
+            adw_overlay_split_view_set_show_sidebar(splitView, mode.showSidebar);
+        }
+        applyingViewMode = false;
+
+        const bool usePresetFullscreen = mode.goFullscreen;
+        const bool targetFullscreen = presentationMode && presentationFullscreenOverride.has_value() ?
+                                             *presentationFullscreenOverride :
+                                             usePresetFullscreen;
+        if (window && targetFullscreen != windowFullscreen) {
+            if (targetFullscreen) {
+                gtk_window_fullscreen(GTK_WINDOW(window));
+            } else {
+                gtk_window_unfullscreen(GTK_WINDOW(window));
+            }
+            windowFullscreen = targetFullscreen;
+        }
+        if (fitPageButton) {
+            gtk_widget_set_sensitive(fitPageButton, !presentationMode);
+        }
+        for (auto* button: floatingZoomButtons) {
+            gtk_widget_set_sensitive(button, !presentationMode);
+        }
+        setPageLayoutActionsEnabled(!presentationMode);
+
+        if (auto* action = g_action_map_lookup_action(G_ACTION_MAP(window), "presentation-mode");
+            action && G_IS_SIMPLE_ACTION(action)) {
+            g_simple_action_set_state(G_SIMPLE_ACTION(action), g_variant_new_boolean(presentationMode));
+        }
+        if (auto* action = g_action_map_lookup_action(G_ACTION_MAP(window), "fullscreen");
+            action && G_IS_SIMPLE_ACTION(action)) {
+            g_simple_action_set_state(G_SIMPLE_ACTION(action),
+                                      g_variant_new_boolean(presentationMode ? windowFullscreen : fullscreenModeActive));
+        }
+    }
+
+    void fitCurrentView(double width, double height) {
+        if (presentationMode) {
+            state.fitPresentation(width, height);
+            presentationFitPage = state.page;
+        } else {
+            state.fit(width, height);
+            presentationFitPage = -1;
+        }
+    }
+
+    void setPresentationMode(bool enabled) {
+        if (presentationMode == enabled) {
+            return;
+        }
+        finishTextEditing();
+        resetInput(true);
+        presentationMode = enabled;
+        fullscreenModeActive = false;
+        presentationFullscreenOverride.reset();
+        importedConfig.settings.pageLayout.presentationMode = enabled;
+        state.setLayoutSettings(importedConfig.settings.pageLayout);
+        applyCurrentViewMode();
+
+        const int width = canvas ? gtk_widget_get_width(canvas) : 0;
+        const int height = canvas ? gtk_widget_get_height(canvas) : 0;
+        if (width > 0 && height > 0) {
+            if (enabled) {
+                fitCurrentView(width, height);
+                fitMode = true;
+            } else {
+                state.scrollToPage(state.page, width, height);
+                presentationFitPage = -1;
+                fitMode = false;
+            }
+            fitted = true;
+            lastWidth = width;
+            lastHeight = height;
+        } else {
+            fitted = false;
+            fitMode = enabled;
+        }
+
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            showAlert("Could not save Presentation Mode", error);
+        }
+        update();
+    }
+
+    void setFullscreenMode(bool enabled) {
+        if (presentationMode) {
+            presentationFullscreenOverride = enabled;
+        } else {
+            fullscreenModeActive = enabled;
+            presentationFullscreenOverride.reset();
+        }
+        applyCurrentViewMode();
         update();
     }
 
@@ -982,6 +1125,8 @@ private:
 
         const auto& settings = importedConfig.settings.pageLayout;
         addAction("paired-pages-mode", nullptr, g_variant_new_boolean(settings.pairedPages));
+        addAction("presentation-mode", G_VARIANT_TYPE_BOOLEAN, g_variant_new_boolean(presentationMode));
+        addAction("fullscreen", G_VARIANT_TYPE_BOOLEAN, g_variant_new_boolean(fullscreenModeActive));
         addAction("set-layout-vertical", G_VARIANT_TYPE_BOOLEAN, g_variant_new_boolean(settings.vertical));
         addAction("set-layout-right-to-left", G_VARIANT_TYPE_BOOLEAN,
                   g_variant_new_boolean(settings.rightToLeft));
@@ -993,6 +1138,8 @@ private:
         addAction("paired-pages-offset", G_VARIANT_TYPE_INT32, g_variant_new_int32(settings.pairedPageOffset));
 
         auto* menu = g_menu_new();
+        g_menu_append(menu, "Presentation Mode (F5)", "win.presentation-mode");
+        g_menu_append(menu, "Fullscreen (F11)", "win.fullscreen");
         g_menu_append(menu, "Pair Pages", "win.paired-pages-mode");
 
         auto* orientation = g_menu_new();
@@ -1042,7 +1189,7 @@ private:
         pageLayoutMenuButton = gtk_menu_button_new();
         gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(pageLayoutMenuButton), "view-grid-symbolic");
         gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(pageLayoutMenuButton), G_MENU_MODEL(menu));
-        gtk_widget_set_tooltip_text(pageLayoutMenuButton, "Page layout and reading direction");
+        gtk_widget_set_tooltip_text(pageLayoutMenuButton, "Page layout, reading direction, and view modes");
         gtk_accessible_update_property(GTK_ACCESSIBLE(pageLayoutMenuButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                        "Page layout", -1);
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), pageLayoutMenuButton);
@@ -1069,6 +1216,13 @@ private:
     enum class PreferenceKey : guint {
         Theme = 1,
         Sidebar,
+        FullscreenMenubar,
+        FullscreenToolbar,
+        FullscreenSidebar,
+        PresentationGoFullscreen,
+        PresentationMenubar,
+        PresentationToolbar,
+        PresentationSidebar,
         LayoutFlow,
         LayoutGridDimension,
         LayoutGridCount,
@@ -1557,6 +1711,13 @@ private:
                                       key == PreferenceKey::LayoutPairedPageOffset ||
                                       key == PreferenceKey::LayoutHorizontalDirection ||
                                       key == PreferenceKey::LayoutVerticalDirection;
+        const bool viewModePreference = key == PreferenceKey::FullscreenMenubar ||
+                                        key == PreferenceKey::FullscreenToolbar ||
+                                        key == PreferenceKey::FullscreenSidebar ||
+                                        key == PreferenceKey::PresentationGoFullscreen ||
+                                        key == PreferenceKey::PresentationMenubar ||
+                                        key == PreferenceKey::PresentationToolbar ||
+                                        key == PreferenceKey::PresentationSidebar;
         switch (key) {
             case PreferenceKey::Theme:
                 switch (adw_combo_row_get_selected(ADW_COMBO_ROW(control))) {
@@ -1573,6 +1734,36 @@ private:
                 break;
             case PreferenceKey::Sidebar:
                 settings.showSidebar = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Default)].showSidebar =
+                        settings.showSidebar;
+                break;
+            case PreferenceKey::FullscreenMenubar:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showMenubar =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::FullscreenToolbar:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showToolbar =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::FullscreenSidebar:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showSidebar =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::PresentationGoFullscreen:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].goFullscreen =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::PresentationMenubar:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showMenubar =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::PresentationToolbar:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showToolbar =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::PresentationSidebar:
+                settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showSidebar =
+                        adw_switch_row_get_active(ADW_SWITCH_ROW(control));
                 break;
             case PreferenceKey::LayoutFlow:
                 settings.pageLayout.vertical = adw_combo_row_get_selected(ADW_COMBO_ROW(control)) == 0;
@@ -1765,6 +1956,9 @@ private:
         std::string error;
         if (!prototype::saveGtk4Preferences(preferencesConfigDir, settings, error)) {
             showAlert("Could not save preferences", error);
+        }
+        if (viewModePreference) {
+            applyCurrentViewMode();
         }
         update();
     }
@@ -3485,6 +3679,10 @@ private:
     }
 
     bool setPluginZoom(double value, std::string& error) {
+        if (presentationMode) {
+            error = "Zoom is calculated per page while Presentation Mode is active";
+            return false;
+        }
         if (busy || choosingFile || messageDialog || closed || autosaving || input.active()) {
             error = "Wait for the current document operation or input gesture to finish before changing zoom";
             return false;
@@ -4898,8 +5096,40 @@ private:
                         themes, static_cast<guint>(settingsThemeIndex(importedConfig.settings.themeVariant)),
                         PreferenceKey::Theme);
         preferenceSwitch(appearanceGroup, "Show pages sidebar", "Keep page thumbnails beside the canvas",
-                         importedConfig.settings.showSidebar, PreferenceKey::Sidebar);
+                         importedConfig.settings.viewModes[
+                                 static_cast<std::size_t>(prototype::ViewModePreset::Default)].showSidebar,
+                         PreferenceKey::Sidebar);
         adw_preferences_page_add(appearance, appearanceGroup);
+
+        const auto& viewModes = importedConfig.settings.viewModes;
+        auto* fullscreenGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(fullscreenGroup, "Fullscreen view");
+        preferenceSwitch(fullscreenGroup, "Show header bar", "Keep the app header visible in fullscreen",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showMenubar,
+                         PreferenceKey::FullscreenMenubar);
+        preferenceSwitch(fullscreenGroup, "Show tool controls", "Keep the canvas toolbar and tool rail visible",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showToolbar,
+                         PreferenceKey::FullscreenToolbar);
+        preferenceSwitch(fullscreenGroup, "Show pages sidebar", "Keep page thumbnails visible in fullscreen",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showSidebar,
+                         PreferenceKey::FullscreenSidebar);
+        adw_preferences_page_add(appearance, fullscreenGroup);
+
+        auto* presentationGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(presentationGroup, "Presentation view");
+        preferenceSwitch(presentationGroup, "Use fullscreen", "Enter fullscreen when Presentation Mode starts",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].goFullscreen,
+                         PreferenceKey::PresentationGoFullscreen);
+        preferenceSwitch(presentationGroup, "Show header bar", "Keep the app header visible while presenting",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showMenubar,
+                         PreferenceKey::PresentationMenubar);
+        preferenceSwitch(presentationGroup, "Show tool controls", "Keep canvas tools visible while presenting",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showToolbar,
+                         PreferenceKey::PresentationToolbar);
+        preferenceSwitch(presentationGroup, "Show pages sidebar", "Keep page thumbnails visible while presenting",
+                         viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showSidebar,
+                         PreferenceKey::PresentationSidebar);
+        adw_preferences_page_add(appearance, presentationGroup);
         adw_preferences_dialog_add(preferencesDialog, appearance);
 
         auto* layoutPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
@@ -5608,7 +5838,7 @@ private:
     void verifyPageLayoutIntegration() {
         require(pageLayoutMenuButton != nullptr, "Page layout menu button was not created");
         auto* menu = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pageLayoutMenuButton));
-        require(menu && g_menu_model_get_n_items(menu) == 6, "Page layout menu is missing a layout control");
+        require(menu && g_menu_model_get_n_items(menu) == 8, "Page layout menu is missing a layout or view-mode action");
         for (const char* action: {"paired-pages-mode", "set-layout-vertical", "set-layout-right-to-left",
                                   "set-layout-bottom-to-top", "set-columns-or-rows", "paired-pages-offset"}) {
             require(g_action_map_lookup_action(G_ACTION_MAP(window), action) != nullptr,
@@ -5768,6 +5998,188 @@ private:
         capture("page-layout-menu", GTK_WIDGET(popover), true);
         gtk_menu_button_popdown(GTK_MENU_BUTTON(pageLayoutMenuButton));
         std::cout << "PASS: GTK4 page layout actions, Preferences, grid geometry, navigation and persistence\n";
+    }
+
+    void verifyPresentationModeIntegration() {
+        require(pageLayoutMenuButton && headerBarWidget && toolbarWidget && fitPageButton && splitView,
+                "Presentation Mode is missing its view controls");
+        auto* menu = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pageLayoutMenuButton));
+        require(menu && g_menu_model_get_n_items(menu) == 8,
+                "View menu is missing Presentation Mode or fullscreen actions");
+        for (const char* name: {"presentation-mode", "fullscreen", "paired-pages-mode", "set-layout-vertical"}) {
+            require(g_action_map_lookup_action(G_ACTION_MAP(window), name),
+                    "A Presentation Mode or layout action was not registered");
+        }
+
+        state.setPages({{420, 600}, {900, 450}, {350, 800}});
+        pageCount = 3;
+        auto layout = importedConfig.settings.pageLayout;
+        layout.presentationMode = false;
+        layout.columns = 2;
+        layout.fixedRows = false;
+        layout.vertical = false;
+        layout.pairedPages = false;
+        layout.rightToLeft = false;
+        layout.bottomToTop = false;
+        importedConfig.settings.pageLayout = layout;
+        state.setLayoutSettings(layout);
+        update();
+
+        const auto activate = [this](const char* name, GVariant* parameter) {
+            auto* action = g_action_map_lookup_action(G_ACTION_MAP(window), name);
+            require(action != nullptr, "A view-mode action disappeared during verification");
+            g_action_activate(action, parameter);
+        };
+        const auto waitForUiState = [this](auto condition, const char* message) {
+            const auto settleAt = g_get_monotonic_time() + 250000;
+            const auto deadline = settleAt + 750000;
+            while ((!condition() || g_get_monotonic_time() < settleAt) &&
+                   g_get_monotonic_time() < deadline) {
+                g_main_context_iteration(nullptr, false);
+                g_usleep(1000);
+            }
+            require(condition(), message);
+        };
+        const auto requireCurrentPageFit = [this] {
+            const auto size = state.pageSize(state.page);
+            const double width = gtk_widget_get_width(canvas);
+            const double height = gtk_widget_get_height(canvas);
+            const double expected = std::clamp(
+                    std::min(width / (size.width + 14.0), height / (size.height + 14.0)), 0.1, 8.0);
+            require(width > 0 && height > 0 && std::abs(state.zoom - expected) < 1e-8,
+                    "Presentation zoom did not fit the active page with the upstream margin");
+            const auto center = state.pageScreenPoint(state.page, size.width / 2.0, size.height / 2.0);
+            require(std::abs(center.x - width / 2.0) < 1e-7 &&
+                            std::abs(center.y - height / 2.0) < 1e-7,
+                    "Presentation Mode did not center the active page");
+        };
+
+        activate("presentation-mode", g_variant_new_boolean(true));
+        waitForUiState([this] { return gtk_window_is_fullscreen(GTK_WINDOW(window)); },
+                       "Presentation Mode did not enter GTK fullscreen");
+        require(presentationMode && state.layoutSettings.presentationMode &&
+                        state.pageLayout.columnCount() == 1 && state.pageLayout.rowCount() == 3 &&
+                        !g_action_get_enabled(g_action_map_lookup_action(G_ACTION_MAP(window), "set-layout-vertical")) &&
+                        !gtk_widget_get_sensitive(fitPageButton),
+                "Presentation Mode did not switch to one page per row or disable layout and zoom controls");
+        require(windowFullscreen && !gtk_widget_get_visible(headerBarWidget) &&
+                        gtk_widget_get_visible(toolbarWidget) && gtk_widget_get_visible(mainToolRailWidget) &&
+                        !adw_overlay_split_view_get_show_sidebar(splitView),
+                "Default Presentation Mode view visibility or fullscreen settings were not applied");
+        requireCurrentPageFit();
+        capture("presentation-mode");
+
+        const double lockedZoom = state.zoom;
+        zoom(lockedZoom * 1.5, gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0);
+        std::string zoomError;
+        require(state.zoom == lockedZoom && !setPluginZoom(lockedZoom * 1.25, zoomError) && !zoomError.empty(),
+                "Presentation Mode allowed a user or plugin zoom change");
+
+        navigateToPage(1);
+        require(state.page == 1, "Presentation navigation did not select the next page");
+        requireCurrentPageFit();
+        navigateToPage(2);
+        requireCurrentPageFit();
+        gboolean handled = false;
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Up, 0U, GdkModifierType(0), &handled);
+        require(handled && state.page == 1,
+                "Up did not navigate to the previous page in Presentation Mode");
+        requireCurrentPageFit();
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Down, 0U, GdkModifierType(0), &handled);
+        require(handled && state.page == 2,
+                "Down did not navigate to the next page in Presentation Mode");
+        requireCurrentPageFit();
+
+        openPreferences();
+        adw_preferences_dialog_set_visible_page_name(preferencesDialog, "appearance");
+        const auto preferencesSettleAt = g_get_monotonic_time() + 250000;
+        const auto preferencesReadyDeadline = preferencesSettleAt + 500000;
+        while ((!gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) ||
+                gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) <= 0 ||
+                gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) <= 0 ||
+                g_get_monotonic_time() < preferencesSettleAt) &&
+               g_get_monotonic_time() < preferencesReadyDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) &&
+                        gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) > 0 &&
+                        gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) > 0,
+                "Appearance Preferences did not map for the private GUI check");
+        for (const auto key: {PreferenceKey::PresentationGoFullscreen, PreferenceKey::PresentationMenubar,
+                              PreferenceKey::PresentationToolbar, PreferenceKey::PresentationSidebar,
+                              PreferenceKey::FullscreenMenubar, PreferenceKey::FullscreenToolbar,
+                              PreferenceKey::FullscreenSidebar}) {
+            require(preferenceControls[static_cast<std::size_t>(key)] != nullptr,
+                    "Appearance Preferences is missing a fullscreen or Presentation Mode visibility control");
+        }
+        capture("presentation-preferences", GTK_WIDGET(preferencesDialog), true);
+        auto* goFullscreen = ADW_SWITCH_ROW(
+                preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationGoFullscreen)]);
+        auto* showHeader = ADW_SWITCH_ROW(
+                preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationMenubar)]);
+        auto* showToolbar = ADW_SWITCH_ROW(
+                preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationToolbar)]);
+        auto* showSidebar = ADW_SWITCH_ROW(
+                preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationSidebar)]);
+        adw_switch_row_set_active(goFullscreen, false);
+        adw_switch_row_set_active(showHeader, true);
+        adw_switch_row_set_active(showToolbar, false);
+        adw_switch_row_set_active(showSidebar, true);
+        waitForUiState([this] { return !gtk_window_is_fullscreen(GTK_WINDOW(window)); },
+                       "Presentation view Preferences did not leave GTK fullscreen");
+        require(!windowFullscreen && gtk_widget_get_visible(headerBarWidget) &&
+                        !gtk_widget_get_visible(toolbarWidget) && !gtk_widget_get_visible(mainToolRailWidget) &&
+                        adw_overlay_split_view_get_show_sidebar(splitView),
+                "Presentation view visibility Preferences did not apply while the mode was active");
+        adw_switch_row_set_active(goFullscreen, true);
+        adw_switch_row_set_active(showHeader, false);
+        adw_switch_row_set_active(showToolbar, true);
+        adw_switch_row_set_active(showSidebar, false);
+        waitForUiState([this] { return gtk_window_is_fullscreen(GTK_WINDOW(window)); },
+                       "Presentation view Preferences did not restore GTK fullscreen");
+        require(windowFullscreen && !gtk_widget_get_visible(headerBarWidget) &&
+                        gtk_widget_get_visible(toolbarWidget) &&
+                        !adw_overlay_split_view_get_show_sidebar(splitView),
+                "Restoring Presentation Mode view settings did not update the active window");
+        adw_dialog_close(ADW_DIALOG(preferencesDialog));
+        waitForUiState([this] { return !gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)); },
+                       "Appearance Preferences did not close before the mode-exit screenshot");
+
+        prototype::ImportedSettings persisted;
+        const auto persistedResult = prototype::loadGtk4Preferences(preferencesConfigDir, persisted);
+        require(persistedResult.found && persistedResult.warning.empty() &&
+                        persisted.pageLayout.presentationMode &&
+                        persisted.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].goFullscreen &&
+                        !persisted.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showMenubar &&
+                        persisted.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showToolbar &&
+                        !persisted.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showSidebar,
+                "Presentation Mode and its view settings were not persisted");
+
+        activate("presentation-mode", g_variant_new_boolean(false));
+        waitForUiState([this] { return !gtk_window_is_fullscreen(GTK_WINDOW(window)); },
+                       "Leaving Presentation Mode did not leave GTK fullscreen");
+        require(!presentationMode && !state.layoutSettings.presentationMode &&
+                        state.layoutSettings.columns == layout.columns && !state.layoutSettings.vertical &&
+                        state.pageLayout.columnCount() == 2 && !windowFullscreen &&
+                        gtk_widget_get_visible(headerBarWidget) && gtk_widget_get_visible(toolbarWidget) &&
+                        !adw_overlay_split_view_get_show_sidebar(splitView),
+                "Leaving Presentation Mode did not restore the saved layout and default view");
+
+        activate("fullscreen", g_variant_new_boolean(true));
+        waitForUiState([this] { return gtk_window_is_fullscreen(GTK_WINDOW(window)); },
+                       "Fullscreen action did not enter GTK fullscreen");
+        require(fullscreenModeActive && windowFullscreen && !gtk_widget_get_visible(headerBarWidget) &&
+                        gtk_widget_get_visible(toolbarWidget) && adw_overlay_split_view_get_show_sidebar(splitView),
+                "Fullscreen action did not apply the fullscreen view preset");
+        activate("fullscreen", g_variant_new_boolean(false));
+        waitForUiState([this] { return !gtk_window_is_fullscreen(GTK_WINDOW(window)); },
+                       "Leaving fullscreen did not leave GTK fullscreen");
+        require(!fullscreenModeActive && !windowFullscreen && gtk_widget_get_visible(headerBarWidget) &&
+                        !adw_overlay_split_view_get_show_sidebar(splitView),
+                "Leaving fullscreen did not restore the default view preset");
+        capture("presentation-mode-exit");
+        std::cout << "PASS: GTK4 Presentation Mode per-page fit, navigation, zoom lock, fullscreen and view Preferences\n";
     }
 
     void verifySearchIntegration() {
@@ -8106,8 +8518,16 @@ private:
         }
         resetInput();
         if (canvas) {
-            state.scrollToPage(number, gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
-            fitMode = false;
+            const int width = gtk_widget_get_width(canvas);
+            const int height = gtk_widget_get_height(canvas);
+            state.scrollToPage(number, width, height);
+            fitMode = presentationMode;
+            if (presentationMode && width > 0 && height > 0) {
+                fitCurrentView(width, height);
+                fitted = true;
+                lastWidth = width;
+                lastHeight = height;
+            }
         } else {
             state.selectActivePage(number);
         }
@@ -10519,7 +10939,9 @@ private:
                           self->zoom(self->state.steppedZoom(zoomIn, false), gtk_widget_get_width(self->canvas) / 2.0,
                                      gtk_widget_get_height(self->canvas) / 2.0);
                       }));
-            g_object_set_data(G_OBJECT(gtk_widget_get_last_child(row)), "zoom-in", GINT_TO_POINTER(zoomIn));
+            auto* zoomButton = gtk_widget_get_last_child(row);
+            g_object_set_data(G_OBJECT(zoomButton), "zoom-in", GINT_TO_POINTER(zoomIn));
+            floatingZoomButtons.push_back(zoomButton);
         } else if (token.starts_with("Plugin::")) {
             const auto item = pluginRuntime ? pluginRuntime->findToolbarItem(token) : std::nullopt;
             const auto fallbackLabel = token.substr(std::string_view("Plugin::").size());
@@ -10609,6 +11031,7 @@ private:
         floatingFillOpacityButtons.clear();
         floatingPageSpinners.clear();
         floatingLayerMenus.clear();
+        floatingZoomButtons.clear();
         if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
             floatingToolboxToolButtons.erase(
                     floatingToolboxToolButtons.begin() +
@@ -12649,6 +13072,7 @@ private:
         auto* view = adw_toolbar_view_new();
         contentView = view;
         auto* header = adw_header_bar_new();
+        headerBarWidget = header;
         heading = adw_window_title_new("Blank notebook", "");
         adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), heading);
         sidebarButton = gtk_toggle_button_new();
@@ -12666,6 +13090,10 @@ private:
                                    }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), preferencesButton);
         buildPageLayoutMenu(header);
+        const char* presentationAccels[] = {"F5", nullptr};
+        const char* fullscreenAccels[] = {"F11", nullptr};
+        gtk_application_set_accels_for_action(app, "win.presentation-mode", presentationAccels);
+        gtk_application_set_accels_for_action(app, "win.fullscreen", fullscreenAccels);
         auto* pluginsManagerAction = g_simple_action_new("plugins-manager", nullptr);
         g_signal_connect(pluginsManagerAction, "activate", G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer data) {
                              static_cast<Prototype*>(data)->openPluginManager();
@@ -12718,15 +13146,17 @@ private:
                                 self->performHistoryStep(true);
                             }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), redoButton);
-        adw_header_bar_pack_end(ADW_HEADER_BAR(header), button("zoom-fit-best-symbolic", "Fit page (Ctrl+0)",
-                                                               G_CALLBACK(+[](GtkButton*, gpointer data) {
-                                                                   auto* self = static_cast<Prototype*>(data);
-                                                                   self->fitted = false;
-                                                                   self->update();
-                                                               })));
+        fitPageButton = button("zoom-fit-best-symbolic", "Fit page (Ctrl+0)",
+                               G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                   auto* self = static_cast<Prototype*>(data);
+                                   self->fitted = false;
+                                   self->update();
+                               }));
+        adw_header_bar_pack_end(ADW_HEADER_BAR(header), fitPageButton);
         adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), header);
 
         auto* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        toolbarWidget = toolbar;
         gtk_widget_add_css_class(toolbar, "toolbar");
         gtk_widget_set_halign(toolbar, GTK_ALIGN_FILL);
         gtk_widget_set_hexpand(toolbar, true);
@@ -13324,7 +13754,7 @@ private:
                              auto* self = static_cast<Prototype*>(data);
                              if (self->fitMode || !self->fitted) {
                                  self->input.cancel();
-                                 self->state.fit(width, height);
+                                 self->fitCurrentView(width, height);
                                  self->fitted = true;
                                  self->fitMode = true;
                                  self->lastWidth = width;
@@ -13348,6 +13778,23 @@ private:
         adw_overlay_split_view_set_show_sidebar(splitView, importedConfig.settings.showSidebar);
         g_object_bind_property(splitView, "show-sidebar", sidebarButton, "active",
                                GBindingFlags(G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE));
+        g_signal_connect(splitView, "notify::show-sidebar",
+                         G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->applyingViewMode || self->presentationMode || self->fullscreenModeActive) {
+                                 return;
+                             }
+                             auto& settings = self->importedConfig.settings;
+                             settings.showSidebar = adw_overlay_split_view_get_show_sidebar(
+                                     ADW_OVERLAY_SPLIT_VIEW(object));
+                             settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Default)]
+                                     .showSidebar = settings.showSidebar;
+                             std::string error;
+                             if (!prototype::saveGtk4Preferences(self->preferencesConfigDir, settings, error)) {
+                                 self->showAlert("Could not save sidebar preference", error);
+                             }
+                         }),
+                         this);
         auto* adaptive = adw_breakpoint_bin_new();
         gtk_widget_set_size_request(adaptive, 320, 240);
         auto* workspace = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -13360,6 +13807,7 @@ private:
         adw_breakpoint_bin_add_breakpoint(ADW_BREAKPOINT_BIN(adaptive), breakpoint);
         adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(view), adaptive);
         adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), view);
+        applyCurrentViewMode();
         connectInput();
         g_signal_connect(window, "close-request", G_CALLBACK(+[](GtkWindow*, gpointer data) -> gboolean {
             auto* self = static_cast<Prototype*>(data);
@@ -13397,8 +13845,9 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifySearch || options.verifyPageLayout || options.verifyPenLineStyle ||
-            options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
+        if (options.verifyPlugins || options.verifySearch || options.verifyPageLayout ||
+            options.verifyPresentationMode || options.verifyPenLineStyle || options.verifyBeamer ||
+            options.verifyLayerActions || options.verifyLatex) {
             g_timeout_add(
                     200,
                     +[](gpointer data) -> gboolean {
@@ -13411,6 +13860,8 @@ private:
                                 self->verifySearchIntegration();
                             } else if (self->options.verifyPageLayout) {
                                 self->verifyPageLayoutIntegration();
+                            } else if (self->options.verifyPresentationMode) {
+                                self->verifyPresentationModeIntegration();
                             } else if (self->options.verifyPenLineStyle) {
                                 self->verifyPenLineStyleIntegration();
                             } else if (self->options.verifyPlugins) {
@@ -13425,6 +13876,7 @@ private:
                         } catch (const std::exception& error) {
                             const char* verification = self->options.verifyLatex ? "LATEX" :
                                                        self->options.verifySearch ? "SEARCH" :
+                                                       self->options.verifyPresentationMode ? "PRESENTATION MODE" :
                                                        self->options.verifyPageLayout ? "PAGE LAYOUT" :
                                                        self->options.verifyPenLineStyle ? "PEN LINE STYLE" :
                                                        self->options.verifyBeamer ? "BEAMER" :
@@ -13474,8 +13926,8 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
-            !options.verifyPageLayout && !options.verifyPenLineStyle && !options.verifyBeamer && !options.verifyLayerActions &&
-            !options.verifyLatex) {
+            !options.verifyPageLayout && !options.verifyPresentationMode && !options.verifyPenLineStyle &&
+            !options.verifyBeamer && !options.verifyLayerActions && !options.verifyLatex) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
@@ -13725,7 +14177,7 @@ private:
     }
 
     void zoom(double value, double x, double y) {
-        if (input.active()) {
+        if (presentationMode || input.active()) {
             return;
         }
         state.zoomAt(value, x, y);
@@ -14854,7 +15306,8 @@ private:
                                  const bool touch = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(gesture), "touch-pan"));
                                  pan->x = 0;
                                  pan->y = 0;
-                                 pan->enabled = (touch || mouseEvent(GTK_EVENT_CONTROLLER(gesture))) &&
+                                 pan->enabled = !self->presentationMode &&
+                                                (touch || mouseEvent(GTK_EVENT_CONTROLLER(gesture))) &&
                                                 !self->input.active() &&
                                                 !self->state.blocksScroll(false, g_get_monotonic_time());
                              }),
@@ -14863,7 +15316,8 @@ private:
                              G_CALLBACK(+[](GtkGestureDrag* gesture, double dx, double dy, gpointer data) {
                                  auto* self = static_cast<Prototype*>(data);
                                  auto* pan = static_cast<PanState*>(g_object_get_data(G_OBJECT(gesture), "pan-state"));
-                                 if (self->input.active() || self->state.blocksScroll(false, g_get_monotonic_time())) {
+                                 if (self->presentationMode || self->input.active() ||
+                                     self->state.blocksScroll(false, g_get_monotonic_time())) {
                                      pan->enabled = false;
                                  }
                                  if (pan->enabled) {
@@ -14936,6 +15390,9 @@ private:
                             self->zoom(self->state.steppedZoom(dy < 0, true), anchor.x, anchor.y);
                         }
                     } else {
+                        if (self->presentationMode) {
+                            return true;
+                        }
                         self->state.scrollBy(dx, dy, discrete);
                         self->fitted = true;
                         self->fitMode = false;
@@ -15161,7 +15618,7 @@ private:
                         self->performHistoryStep((modifiers & GDK_SHIFT_MASK) != 0);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
                         self->performHistoryStep(true);
-                    } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0) {
+                    } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0 && !self->presentationMode) {
                         self->fitted = false;
                     } else if ((modifiers & GDK_CONTROL_MASK) &&
                                (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_minus)) {
@@ -15171,8 +15628,26 @@ private:
                         self->navigateToPage(0);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_End) {
                         self->navigateToPage(self->pageCount - 1);
+                    } else if (self->presentationMode &&
+                               !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SHIFT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_Home || key == GDK_KEY_KP_Home)) {
+                        self->navigateToPage(0);
+                    } else if (self->presentationMode &&
+                               !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SHIFT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_End || key == GDK_KEY_KP_End)) {
+                        self->navigateToPage(self->pageCount - 1);
                     } else if (key == GDK_KEY_Page_Down || key == GDK_KEY_Page_Up) {
                         self->navigateToPage(self->state.page + (key == GDK_KEY_Page_Down ? 1 : -1));
+                    } else if (self->presentationMode &&
+                               !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SHIFT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_Up || key == GDK_KEY_k || key == GDK_KEY_K ||
+                                key == GDK_KEY_Left || key == GDK_KEY_h || key == GDK_KEY_H)) {
+                        self->navigateToPage(self->state.page - 1);
+                    } else if (self->presentationMode &&
+                               !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SHIFT_MASK | GDK_SUPER_MASK)) &&
+                               (key == GDK_KEY_Down || key == GDK_KEY_j || key == GDK_KEY_J ||
+                                key == GDK_KEY_Right || key == GDK_KEY_l || key == GDK_KEY_L)) {
+                        self->navigateToPage(self->state.page + 1);
                     } else if ((modifiers & GDK_SHIFT_MASK) &&
                                !(modifiers & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) &&
                                (key == GDK_KEY_J || key == GDK_KEY_j || key == GDK_KEY_K || key == GDK_KEY_k)) {
@@ -15413,9 +15888,10 @@ private:
     }
 
     void draw(cairo_t* cr, int width, int height) {
-        if (!fitted || (fitMode && (width != lastWidth || height != lastHeight))) {
+        if (!fitted || (fitMode && (width != lastWidth || height != lastHeight)) ||
+            (presentationMode && presentationFitPage != state.page)) {
             input.cancel();
-            state.fit(width, height);
+            fitCurrentView(width, height);
             fitted = true;
             fitMode = true;
         }
@@ -20378,6 +20854,9 @@ private:
     double selectionVerifyEdgePanOffsetX = 0;
     double selectionVerifyEdgePanScreenX = 0;
     GtkWidget* contentView = nullptr;
+    GtkWidget* headerBarWidget = nullptr;
+    GtkWidget* toolbarWidget = nullptr;
+    GtkWidget* fitPageButton = nullptr;
     GtkWidget* canvas = nullptr;
     GtkWidget* canvasOverlay = nullptr;
     std::unique_ptr<prototype::TextEditorOverlay> textEditor;
@@ -20394,12 +20873,19 @@ private:
     std::vector<prototype::MainToolAction> pendingMainToolRail;
     size_t floatingToolboxStaticToolButtonCount = 0;
     std::vector<std::pair<Tool, GtkWidget*>> floatingToolboxToolButtons;
+    std::vector<GtkWidget*> floatingZoomButtons;
     prototype::Point floatingToolboxAnchor{};
     guint floatingToolboxHideSource = 0;
     guint floatingToolboxSmokeSource = 0;
     bool floatingToolboxSmokeReady = true;
     guint floatingToolboxDismissSmokeSource = 0;
     bool floatingToolboxDismissSmokeReady = true;
+    bool presentationMode = false;
+    bool fullscreenModeActive = false;
+    bool windowFullscreen = false;
+    bool applyingViewMode = false;
+    int presentationFitPage = -1;
+    std::optional<bool> presentationFullscreenOverride;
     guint floatingPageSpinTimeout = 0;
     GtkSpinButton* pendingFloatingPageSpin = nullptr;
     std::vector<std::pair<GtkSpinButton*, GtkLabel*>> floatingPageSpinners;
@@ -20617,6 +21103,8 @@ int main(int argc, char** argv) {
                 options.verifySearch = true;
             } else if (argument == "--verify-page-layout") {
                 options.verifyPageLayout = true;
+            } else if (argument == "--verify-presentation-mode") {
+                options.verifyPresentationMode = true;
             } else if (argument == "--verify-pen-line-style") {
                 options.verifyPenLineStyle = true;
             } else if (argument == "--verify-beamer") {
@@ -20645,7 +21133,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
-                                         "[--verify-page-layout] "
+                                         "[--verify-page-layout] [--verify-presentation-mode] "
                                          "[--verify-pen-line-style] [--verify-beamer] "
                                          "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
                                          "[--disable-audio] "
@@ -20668,6 +21156,12 @@ int main(int argc, char** argv) {
         if (options.verifyPageLayout && (options.smokeDirectory.empty() || !options.pdf.empty() ||
                                          !options.nativeDocument.empty() || !options.worker.empty())) {
             throw std::runtime_error("Page layout verification requires --smoke-dir without a document or worker");
+        }
+        if (options.verifyPresentationMode &&
+            (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||
+             !options.worker.empty())) {
+            throw std::runtime_error(
+                    "Presentation Mode verification requires --smoke-dir without a document or worker");
         }
         if (options.verifyPenLineStyle &&
             (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||

@@ -41,6 +41,43 @@ enum class ButtonToolAction {
     FloatingToolbox,
 };
 
+struct ViewModeSettings {
+    bool goFullscreen = false;
+    bool showMenubar = false;
+    bool showToolbar = false;
+    bool showSidebar = false;
+
+    bool operator==(const ViewModeSettings&) const = default;
+};
+
+enum class ViewModePreset : std::size_t {
+    Default = 0,
+    Fullscreen,
+    Presentation,
+};
+
+inline ViewModeSettings parseViewModeSettings(std::string_view value) {
+    ViewModeSettings settings;
+    while (!value.empty()) {
+        const auto separator = value.find(',');
+        const auto attribute = value.substr(0, separator);
+        if (attribute == "goFullscren") {
+            settings.goFullscreen = true;
+        } else if (attribute == "showMenubar") {
+            settings.showMenubar = true;
+        } else if (attribute == "showToolbar") {
+            settings.showToolbar = true;
+        } else if (attribute == "showSidebar") {
+            settings.showSidebar = true;
+        }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        value.remove_prefix(separator + 1);
+    }
+    return settings;
+}
+
 struct ImportedSettings {
     Tool activeTool = Tool::Pen;
     std::array<double, 3> penColor = behavior::defaultPenColor;
@@ -109,6 +146,11 @@ struct ImportedSettings {
     bool showSidebar = false;
     ThemeVariant themeVariant = ThemeVariant::ForceDark;
     CanvasLayoutSettings pageLayout;
+    std::array<ViewModeSettings, 3> viewModes{
+            ViewModeSettings{false, true, true, false},
+            ViewModeSettings{true, false, true, true},
+            ViewModeSettings{true, false, true, false},
+    };
     bool autosaveEnabled = true;
     int autosaveTimeoutMinutes = 3;
     std::filesystem::path colorPalettePath;
@@ -345,6 +387,16 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         if (const auto offset = parseAsciiInt(value)) {
             out.pageLayout.pairedPageOffset = static_cast<int>(std::clamp<long long>(*offset, 0, 100));
         }
+    } else if (name == "presentationMode") {
+        if (value == "true" || value == "false") {
+            out.pageLayout.presentationMode = value == "true";
+        }
+    } else if (name == "defaultViewModeAttributes") {
+        out.viewModes[static_cast<std::size_t>(ViewModePreset::Default)] = parseViewModeSettings(value);
+    } else if (name == "fullscreenViewModeAttributes") {
+        out.viewModes[static_cast<std::size_t>(ViewModePreset::Fullscreen)] = parseViewModeSettings(value);
+    } else if (name == "presentationViewModeAttributes") {
+        out.viewModes[static_cast<std::size_t>(ViewModePreset::Presentation)] = parseViewModeSettings(value);
     } else if (name == "edgePanSpeed") {
         if (const auto v = parseAsciiDouble(value); v && *v >= 0) {
             out.edgePanSpeed = std::clamp(*v, 0.0, 100.0);
@@ -434,7 +486,18 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
     } else if (name == "stabilizerFinalizeStroke") {
         out.stabilizer.finalizeStroke = (value == "true");
     } else if (name == "showSidebar") {
-        out.showSidebar = (value == "true");
+        if (value == "true" || value == "false") {
+            out.showSidebar = value == "true";
+            out.viewModes[static_cast<std::size_t>(ViewModePreset::Default)].showSidebar = out.showSidebar;
+        }
+    } else if (name == "showToolbar") {
+        if (value == "true" || value == "false") {
+            out.viewModes[static_cast<std::size_t>(ViewModePreset::Default)].showToolbar = value == "true";
+        }
+    } else if (name == "menubarVisible") {
+        if (value == "true" || value == "false") {
+            out.viewModes[static_cast<std::size_t>(ViewModePreset::Default)].showMenubar = value == "true";
+        }
     } else if (name == "themeVariant") {
         if (value == "forceLight") {
             out.themeVariant = ThemeVariant::ForceLight;

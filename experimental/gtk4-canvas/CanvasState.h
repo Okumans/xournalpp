@@ -2415,6 +2415,19 @@ public:
         }
     }
 
+    void fitPresentation(double width, double height) {
+        cancel();
+        if (!pages.empty()) {
+            selectActivePage(std::clamp(page, 0, pageCount() - 1));
+        }
+        const auto size = pageSize(page);
+        const double fitWidth = std::max(1.0, width) / (size.width + 14.0);
+        const double fitHeight = std::max(1.0, height) / (size.height + 14.0);
+        zoom = std::clamp(std::min(fitWidth, fitHeight), 0.1, 8.0);
+        offsetX = (width - size.width * zoom) / 2.0 - pageLeft(page) * zoom;
+        offsetY = (height - size.height * zoom) / 2.0 - pageTop(page) * zoom;
+    }
+
     void scrollBy(double dx, double dy, bool discrete) {
         if (!std::isfinite(dx) || !std::isfinite(dy)) {
             return;

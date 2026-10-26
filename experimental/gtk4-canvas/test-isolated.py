@@ -789,6 +789,45 @@ def verify_page_layout(args, evidence):
     return report
 
 
+def verify_presentation_mode(args, evidence):
+    run_dir = evidence / "presentation-mode"
+    config_dir = evidence / "presentation-config"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    output = run(
+        [str(args.binary.resolve()), "--config-dir", str(config_dir), "--smoke-dir", str(run_dir),
+         "--verify-presentation-mode"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 Presentation Mode per-page fit, navigation, zoom lock, fullscreen and view Preferences"
+    if marker not in output:
+        raise RuntimeError("Presentation Mode verification did not finish")
+
+    screenshots = [run_dir / "presentation-mode.png", run_dir / "presentation-preferences.png",
+                   run_dir / "presentation-mode-exit.png"]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing Presentation Mode screenshot: {screenshot}")
+
+    preferences = config_dir / "gtk4-canvas.ini"
+    saved_preferences = preferences.read_text() if preferences.is_file() else ""
+    expected_settings = ("presentation-mode=false", "[View Modes]", "presentation-go-fullscreen=true",
+                         "presentation-show-menubar=false", "presentation-show-toolbar=true",
+                         "presentation-show-sidebar=false")
+    if not all(value in saved_preferences for value in expected_settings):
+        raise RuntimeError("Presentation Mode or its view settings did not persist")
+
+    report = {
+        "screenshots": [str(path) for path in screenshots],
+        "preferences": str(preferences),
+        "checks": ["Presentation Mode action", "per-page fit and centering", "keyboard navigation",
+                   "zoom lock", "fullscreen action", "view preset Preferences", "settings persistence"],
+        "rendering": "Private headless Wayland via Cage",
+    }
+    print("PASS: private GTK4 Presentation Mode navigation, fit, fullscreen and view preferences", flush=True)
+    return report
+
+
 def verify_text_clipboard(args, evidence):
     if not args.worker:
         raise RuntimeError("Text clipboard verification requires --worker")
@@ -1217,6 +1256,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.presentation_only:
+        presentation_evidence = verify_presentation_mode(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"presentation-mode": presentation_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.page_layout_only:
         layout_evidence = verify_page_layout(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1526,6 +1572,7 @@ def main():
     parser.add_argument("--latex-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--clipboard-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--page-layout-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--presentation-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1618,6 +1665,8 @@ def main():
             command.append("--clipboard-only")
         if args.page_layout_only:
             command.append("--page-layout-only")
+        if args.presentation_only:
+            command.append("--presentation-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 
