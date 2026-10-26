@@ -22,6 +22,7 @@ struct ApplicationOptions {
     bool disableAudio = false;
     bool verifyPlugins = false;
     bool verifySearch = false;
+    bool verifyScrollMotion = false;
     bool verifySidebarPerformance = false;
     bool verifySidebarStartup = false;
     bool verifyPageLayout = false;

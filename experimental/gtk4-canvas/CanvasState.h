@@ -2522,6 +2522,23 @@ public:
         offsetY -= behavior::scrollDeltaToPixels(dy, discrete);
     }
 
+    void constrainScrollOffsets(double viewportWidth, double viewportHeight) {
+        if (!std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 ||
+            viewportHeight <= 0 || !std::isfinite(zoom) || zoom <= 0) {
+            return;
+        }
+
+        const auto constrainAxis = [](double offset, double viewportLength, double contentLength) {
+            if (contentLength <= viewportLength) {
+                return (viewportLength - contentLength) / 2.0;
+            }
+            return std::clamp(offset, viewportLength - contentLength, 0.0);
+        };
+
+        offsetX = constrainAxis(offsetX, viewportWidth, layoutWidth() * zoom);
+        offsetY = constrainAxis(offsetY, viewportHeight, layoutHeight() * zoom);
+    }
+
     void scrollToPage(int targetPage, double viewportWidth, double viewportHeight) {
         if (targetPage < 0 || (!pages.empty() && targetPage >= pageCount())) {
             return;

@@ -808,8 +808,8 @@ void Prototype::activate(GtkApplication* app) {
         scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
         requestOpenDocument(sourcePath, true);
     }
-    if (options.verifyPlugins || options.verifySearch || options.verifySidebarPerformance ||
-        options.verifySidebarStartup || options.verifyPageLayout || options.verifyPresentationMode ||
+    if (options.verifyPlugins || options.verifySearch || options.verifyScrollMotion ||
+        options.verifySidebarPerformance || options.verifySidebarStartup || options.verifyPageLayout || options.verifyPresentationMode ||
         options.verifyPenLineStyle || options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
         g_timeout_add(
                 200,
@@ -821,6 +821,8 @@ void Prototype::activate(GtkApplication* app) {
                     try {
                         if (self->options.verifySearch) {
                             self->verifySearchIntegration();
+                        } else if (self->options.verifyScrollMotion) {
+                            self->verifyScrollMotionIntegration();
                         } else if (self->options.verifySidebarPerformance) {
                             self->verifySidebarPerformanceIntegration();
                         } else if (self->options.verifySidebarStartup) {
@@ -843,6 +845,7 @@ void Prototype::activate(GtkApplication* app) {
                     } catch (const std::exception& error) {
                         const char* verification = self->options.verifyLatex              ? "LATEX" :
                                                    self->options.verifySearch             ? "SEARCH" :
+                                                   self->options.verifyScrollMotion       ? "SCROLL MOTION" :
                                                    self->options.verifySidebarPerformance ? "SIDEBAR PERFORMANCE" :
                                                    self->options.verifySidebarStartup     ? "SIDEBAR STARTUP" :
                                                    self->options.verifyPresentationMode   ? "PRESENTATION MODE" :
@@ -896,6 +899,7 @@ void Prototype::activate(GtkApplication* app) {
                 this);
     }
     if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
+        !options.verifyScrollMotion &&
         !options.verifySidebarPerformance && !options.verifySidebarStartup && !options.verifyPageLayout &&
         !options.verifyPresentationMode && !options.verifyPenLineStyle && !options.verifyBeamer &&
         !options.verifyLayerActions && !options.verifyLatex) {
@@ -1155,6 +1159,7 @@ void Prototype::ensureLaserFadeTimer() {
 }
 
 void Prototype::zoom(double value, double x, double y, bool previewRaster) {
+    cancelScrollMomentum();
     if (presentationMode || input.active()) {
         return;
     }

@@ -60,6 +60,8 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
             options.verifyPlugins = true;
         } else if (argument == "--verify-search") {
             options.verifySearch = true;
+        } else if (argument == "--verify-scroll-motion") {
+            options.verifyScrollMotion = true;
         } else if (argument == "--verify-sidebar-performance") {
             options.verifySidebarPerformance = true;
         } else if (argument == "--verify-sidebar-startup") {
@@ -96,6 +98,7 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
             throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                      "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                      "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
+                                     "[--verify-scroll-motion] "
                                      "[--verify-sidebar-performance] [--verify-sidebar-startup] "
                                      "[--verify-page-layout] [--verify-presentation-mode] "
                                      "[--verify-pen-line-style] [--verify-beamer] "
@@ -116,6 +119,11 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
     if (options.verifySearch && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                  !options.nativeDocument.empty() || !options.worker.empty())) {
         throw std::runtime_error("Search verification requires --smoke-dir and --pdf without --worker");
+    }
+    if (options.verifyScrollMotion &&
+        (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||
+         !options.worker.empty())) {
+        throw std::runtime_error("Scroll motion verification requires --smoke-dir without a document or worker");
     }
     if (options.verifySidebarPerformance && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                              !options.nativeDocument.empty() || !options.worker.empty())) {

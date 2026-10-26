@@ -789,6 +789,31 @@ def verify_page_layout(args, evidence):
     return report
 
 
+def verify_scroll_motion(args, evidence):
+    run_dir = evidence / "scroll-motion"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output = run(
+        [str(args.binary.resolve()), "--smoke-dir", str(run_dir), "--verify-scroll-motion"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 touchpad axis lock, page-grid bounds and momentum"
+    if marker not in output:
+        raise RuntimeError("GTK4 touchpad scroll motion verification did not finish")
+
+    screenshots = [run_dir / f"{name}.png" for name in
+                   ("scroll-start", "scroll-gesture", "scroll-momentum", "scroll-boundary")]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing touchpad scroll screenshot: {screenshot}")
+
+    return {
+        "screenshots": [str(path) for path in screenshots],
+        "checks": ["vertical axis lock", "release momentum", "page-grid edge clamp"],
+        "input_coverage": "Synthetic GTK controller signals; physical touchpad behavior remains unverified",
+        "rendering": "Private headless Wayland via Cage",
+    }
+
+
 def verify_presentation_mode(args, evidence):
     run_dir = evidence / "presentation-mode"
     config_dir = evidence / "presentation-config"
@@ -1365,6 +1390,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.scroll_only:
+        scroll_evidence = verify_scroll_motion(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"touchpad-scroll": scroll_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.sidebar_startup_only:
         startup_evidence = verify_sidebar_startup(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1696,6 +1728,7 @@ def main():
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--scroll-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pen-line-style-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
@@ -1791,6 +1824,8 @@ def main():
             command.append("--plugins-only")
         if args.search_only:
             command.append("--search-only")
+        if args.scroll_only:
+            command.append("--scroll-only")
         if args.canvas_smoke_only:
             command.append("--canvas-smoke-only")
         if args.pen_line_style_only:

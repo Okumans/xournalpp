@@ -22,6 +22,7 @@ void Prototype::syncPenLineStyleDropdown() {
 }
 
 void Prototype::selectTool(Tool tool) {
+    cancelScrollMomentum();
     if (tool != Tool::FloatingToolbox) {
         hideFloatingToolbox();
     }

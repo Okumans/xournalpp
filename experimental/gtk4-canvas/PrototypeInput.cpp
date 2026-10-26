@@ -308,6 +308,7 @@ void Prototype::connectInput() {
                              const bool touch = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(gesture), "touch-pan"));
                              pan->x = 0;
                              pan->y = 0;
+                             self->cancelScrollMomentum();
                              pan->enabled =
                                      !self->presentationMode && (touch || mouseEvent(GTK_EVENT_CONTROLLER(gesture))) &&
                                      !self->input.active() && !self->state.blocksScroll(false, g_get_monotonic_time());
@@ -322,13 +323,7 @@ void Prototype::connectInput() {
                                  pan->enabled = false;
                              }
                              if (pan->enabled) {
-                                 self->state.offsetX += dx - pan->x;
-                                 self->state.offsetY += dy - pan->y;
-                                 self->fitted = true;
-                                 self->fitMode = false;
-                                 self->state.syncActivePage(gtk_widget_get_width(self->canvas),
-                                                            gtk_widget_get_height(self->canvas));
-                                 self->update();
+                                 self->applyCanvasScroll(pan->x - dx, pan->y - dy, false);
                              }
                              pan->x = dx;
                              pan->y = dy;
@@ -346,6 +341,7 @@ void Prototype::connectInput() {
     g_signal_connect(pinch, "begin", G_CALLBACK(+[](GtkGesture*, GdkEventSequence*, gpointer data) {
                          auto* self = static_cast<Prototype*>(data);
                          self->smartSelectPdfGesture.reset();
+                         self->cancelScrollMomentum();
                          self->input.cancel();
                          self->state.beginPinch();
                          self->pinchZoom = self->state.zoom;
@@ -370,7 +366,17 @@ void Prototype::connectInput() {
                      this);
     addGesture(pinch);
 
-    auto* scroll = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
+    scrollController = GTK_EVENT_CONTROLLER_SCROLL(gtk_event_controller_scroll_new(
+            static_cast<GtkEventControllerScrollFlags>(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES |
+                                                        GTK_EVENT_CONTROLLER_SCROLL_KINETIC)));
+    auto* scroll = GTK_EVENT_CONTROLLER(scrollController);
+    g_signal_connect(scroll, "scroll-begin", G_CALLBACK(+[](GtkEventControllerScroll*, gpointer data) {
+                         auto* self = static_cast<Prototype*>(data);
+                         self->cancelScrollMomentum();
+                         self->scrollAxisLock.begin();
+                         self->scrollGestureAllowsMomentum = false;
+                     }),
+                     this);
     g_signal_connect(
             scroll, "scroll",
             G_CALLBACK(+[](GtkEventControllerScroll* controller, double dx, double dy, gpointer data) -> gboolean {
@@ -380,12 +386,16 @@ void Prototype::connectInput() {
                 const auto modifiers = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller)) &
                                        gtk_accelerator_get_default_mod_mask();
                 if (modifiers & ~(GDK_CONTROL_MASK | GDK_SHIFT_MASK)) {
+                    self->scrollGestureAllowsMomentum = false;
                     return true;
                 }
                 if (self->input.active() || self->state.blocksScroll(discrete, g_get_monotonic_time())) {
+                    self->scrollGestureAllowsMomentum = false;
                     return true;
                 }
                 if (gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller)) & GDK_CONTROL_MASK) {
+                    self->cancelScrollMomentum();
+                    self->scrollGestureAllowsMomentum = false;
                     if (dy != 0) {
                         const auto anchor = self->scrollAnchor(GTK_EVENT_CONTROLLER(controller));
                         const auto zoom = prototype::behavior::zoomFromScrollDelta(self->state.zoom, dy, discrete,
@@ -394,17 +404,43 @@ void Prototype::connectInput() {
                     }
                 } else {
                     if (self->presentationMode) {
+                        self->scrollGestureAllowsMomentum = false;
                         return true;
                     }
-                    self->state.scrollBy(dx, dy, discrete);
-                    self->fitted = true;
-                    self->fitMode = false;
-                    self->state.syncActivePage(gtk_widget_get_width(self->canvas), gtk_widget_get_height(self->canvas));
-                    self->update();
+                    if (discrete) {
+                        self->cancelScrollMomentum();
+                        self->scrollGestureAllowsMomentum = false;
+                        self->applyCanvasScroll(dx, dy, true);
+                    } else {
+                        self->scrollGestureAllowsMomentum = true;
+                        const auto delta =
+                                self->scrollAxisLock.filter(dx, dy, self->state.pageLayout.columnCount() > 1);
+                        self->applyCanvasScroll(delta.x, delta.y, false);
+                    }
                 }
                 return true;
             }),
             this);
+    g_signal_connect(scroll, "scroll-end", G_CALLBACK(+[](GtkEventControllerScroll*, gpointer data) {
+                         auto* self = static_cast<Prototype*>(data);
+                         if (!self->scrollGestureAllowsMomentum || self->presentationMode || self->input.active()) {
+                             return;
+                         }
+                         const auto delta = self->scrollAxisLock.finish(self->state.pageLayout.columnCount() > 1);
+                         self->applyCanvasScroll(delta.x, delta.y, false);
+                     }),
+                     this);
+    g_signal_connect(scroll, "decelerate",
+                     G_CALLBACK(+[](GtkEventControllerScroll*, double velocityX, double velocityY, gpointer data) {
+                         auto* self = static_cast<Prototype*>(data);
+                         if (self->scrollGestureAllowsMomentum && !self->presentationMode && !self->input.active() &&
+                             !self->state.blocksScroll(false, g_get_monotonic_time())) {
+                             self->startScrollMomentum(velocityX, velocityY);
+                         }
+                         self->scrollGestureAllowsMomentum = false;
+                         self->scrollAxisLock.begin();
+                     }),
+                     this);
     gtk_widget_add_controller(canvas, scroll);
 
     keys = gtk_event_controller_key_new();
@@ -709,6 +745,68 @@ void Prototype::connectInput() {
     gtk_widget_add_controller(window, keys);
 }
 
+bool Prototype::applyCanvasScroll(double dx, double dy, bool discrete) {
+    if (!canvas || presentationMode || (dx == 0 && dy == 0)) {
+        return false;
+    }
+
+    const auto oldOffsetX = state.offsetX;
+    const auto oldOffsetY = state.offsetY;
+    state.scrollBy(dx, dy, discrete);
+    const auto width = gtk_widget_get_width(canvas);
+    const auto height = gtk_widget_get_height(canvas);
+    state.constrainScrollOffsets(width, height);
+    if (state.offsetX == oldOffsetX && state.offsetY == oldOffsetY) {
+        return false;
+    }
+
+    fitted = true;
+    fitMode = false;
+    state.syncActivePage(width, height);
+    update();
+    return true;
+}
+
+void Prototype::startScrollMomentum(double velocityX, double velocityY) {
+    cancelScrollMomentum();
+    if (!canvas || presentationMode || input.active() || state.pinching ||
+        state.blocksScroll(false, g_get_monotonic_time())) {
+        return;
+    }
+
+    const auto velocity = scrollAxisLock.filterVelocity(velocityX, velocityY, state.pageLayout.columnCount() > 1);
+    if (!scrollMomentum.start(velocity.x, velocity.y)) {
+        return;
+    }
+
+    scrollMomentumTick = gtk_widget_add_tick_callback(
+            canvas,
+            +[](GtkWidget*, GdkFrameClock* clock, gpointer data) -> gboolean {
+                auto* self = static_cast<Prototype*>(data);
+                prototype::ScrollDelta delta;
+                const bool continueMotion = self->scrollMomentum.advance(gdk_frame_clock_get_frame_time(clock), delta);
+                if ((delta.x != 0 || delta.y != 0) && !self->applyCanvasScroll(delta.x, delta.y, false)) {
+                    self->scrollMomentum.stop();
+                    self->scrollMomentumTick = 0;
+                    return G_SOURCE_REMOVE;
+                }
+                if (!continueMotion) {
+                    self->scrollMomentumTick = 0;
+                    return G_SOURCE_REMOVE;
+                }
+                return G_SOURCE_CONTINUE;
+            },
+            this, nullptr);
+}
+
+void Prototype::cancelScrollMomentum() {
+    scrollMomentum.stop();
+    if (scrollMomentumTick && canvas) {
+        gtk_widget_remove_tick_callback(canvas, scrollMomentumTick);
+    }
+    scrollMomentumTick = 0;
+}
+
 void Prototype::addGesture(GtkGesture* gesture, std::optional<Device> inkOwner) {
     if (inkOwner) {
         g_object_set_data(G_OBJECT(gesture), "ink-owner", GUINT_TO_POINTER(*inkOwner == Device::Mouse ? 1 : 2));
@@ -776,6 +874,7 @@ void Prototype::stopSelectionEdgePan() {
 }
 
 void Prototype::resetInput(bool interrupted) {
+    cancelScrollMomentum();
     stopSelectionEdgePan();
     imageGesture.reset();
     smartSelectPdfGesture.reset();
@@ -873,6 +972,7 @@ void Prototype::trackPointerPosition(double x, double y) {
 
 void Prototype::begin(Device device, double x, double y, std::optional<double> pressure, bool eraserEnd,
                       uint32_t timeMs) {
+    cancelScrollMomentum();
     if (device == Device::Mouse && state.brush.tool == Tool::SmartSelect) {
         textDragHandled = true;
     }

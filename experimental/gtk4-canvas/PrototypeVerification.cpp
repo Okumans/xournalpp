@@ -1054,6 +1054,73 @@ void Prototype::verifySearchIntegration() {
     std::cout << "PASS: GTK4 document Search across PDF and editable text\n";
 }
 
+void Prototype::verifyScrollMotionIntegration() {
+    require(canvas && scrollController, "Touchpad scroll verification needs the mapped GTK scroll controller");
+    std::vector<prototype::PageSize> pages(12, {600, 800});
+    pageCount = static_cast<int>(pages.size());
+    state.setPages(std::move(pages));
+    state.zoom = 1.0;
+    state.selectActivePage(0);
+    const auto viewportWidth = gtk_widget_get_width(canvas);
+    const auto viewportHeight = gtk_widget_get_height(canvas);
+    require(viewportWidth > 0 && viewportHeight > 0, "Touchpad scroll verification canvas is not mapped");
+    state.offsetX = (viewportWidth - state.layoutWidth() * state.zoom) / 2.0;
+    state.offsetY = 0;
+    state.constrainScrollOffsets(viewportWidth, viewportHeight);
+    state.syncActivePage(viewportWidth, viewportHeight);
+    update();
+    capture("scroll-start");
+
+    const auto emitScroll = [this](double dx, double dy) {
+        gboolean handled = false;
+        g_signal_emit_by_name(scrollController, "scroll", dx, dy, &handled);
+        require(handled, "The GTK scroll controller did not handle a continuous scroll signal");
+    };
+    const auto emitScrollBegin = [this] { g_signal_emit_by_name(scrollController, "scroll-begin"); };
+    const auto emitScrollEnd = [this] { g_signal_emit_by_name(scrollController, "scroll-end"); };
+
+    const auto startX = state.offsetX;
+    const auto startY = state.offsetY;
+    emitScrollBegin();
+    emitScroll(0.25, 0.9);
+    emitScroll(0.2, 1.4);
+    emitScroll(0.4, 2.0);
+    emitScrollEnd();
+    require(state.offsetX == startX && state.offsetY < startY,
+            "A vertical touchpad gesture should move down the pages without horizontal drift");
+    capture("scroll-gesture");
+
+    const auto momentumStartY = state.offsetY;
+    g_signal_emit_by_name(scrollController, "decelerate", 0.0, 0.9);
+    const auto momentumDeadline = g_get_monotonic_time() + 900000;
+    while (state.offsetY > momentumStartY - 12 && g_get_monotonic_time() < momentumDeadline) {
+        g_main_context_iteration(nullptr, false);
+        g_usleep(1000);
+    }
+    require(state.offsetY < momentumStartY - 12 && state.offsetX == startX,
+            "GTK touchpad release velocity did not produce bounded vertical momentum");
+    capture("scroll-momentum");
+
+    const auto bottomOffset = viewportHeight - state.layoutHeight() * state.zoom;
+    state.offsetY = bottomOffset;
+    state.constrainScrollOffsets(viewportWidth, viewportHeight);
+    update();
+    emitScrollBegin();
+    emitScroll(0, 20);
+    emitScrollEnd();
+    const auto clampedOffset = state.offsetY;
+    g_signal_emit_by_name(scrollController, "decelerate", 0.0, 0.9);
+    const auto stopDeadline = g_get_monotonic_time() + 500000;
+    while (scrollMomentum.isActive() && g_get_monotonic_time() < stopDeadline) {
+        g_main_context_iteration(nullptr, false);
+        g_usleep(1000);
+    }
+    require(!scrollMomentum.isActive() && std::abs(state.offsetY - clampedOffset) < 1e-9,
+            "Touchpad momentum must stop at the page-grid boundary");
+    capture("scroll-boundary");
+    std::cout << "PASS: GTK4 touchpad axis lock, page-grid bounds and momentum\n";
+}
+
 void Prototype::verifyPenLineStyleIntegration() {
     require(lineStyleDropdown && gtk_widget_get_visible(lineStyleDropdown),
             "Pen line-style selector is not visible for the Pen tool");
