@@ -94,7 +94,7 @@ viewport dimensions in logical pixels. `app.scrollToPage()` clamps one-based pag
 numbers and supports relative offsets; `app.scrollToPos()` accepts absolute
 coordinates or relative pixel offsets (relative by default). `app.getPageLabel()`
 returns a one-based PDF page label, or
-`nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. `app.refreshPage()` clears cached page and layer surfaces plus thumbnails, redraws the canvas, and creates no undo step. `app.getActionState()` reads the current zoom, selected tool, grid-snapping and position-highlighting toggles, active tool color in legacy ARGB form, the active and per-tool size presets (`ToolSize_none` for custom or unsupported widths), eraser mode, and `tool-pen-line-style` (`plain` for the Pen tool or selected Pen strokes, otherwise `none`); other action states are not yet available. Lua plugins can also query editable strokes, text, links, and
+`nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. `app.refreshPage()` clears cached page and layer surfaces plus thumbnails, redraws the canvas, and creates no undo step. `app.getActionState()` reads the current zoom, selected tool, grid-snapping and position-highlighting toggles, active tool color in legacy ARGB form, the active and per-tool size presets (`ToolSize_none` for custom or unsupported widths), eraser mode, and `tool-pen-line-style` for the active Pen or selected Pen strokes, including mixed-style `none`; named and `cust:` styles can be changed with `app.changeActionState`. Other action states are not yet available. Lua plugins can also query editable strokes, text, links, and
 images by selection, layer, page, or
 document; returned element references remain valid across vector growth and
 value-semantic edits. `app.getFonts()` lists installed font families and the
@@ -343,10 +343,13 @@ strokes, eligible non-audio native text, and bounded native images from every
 foreground layer, regardless of visibility. It writes strokes, text, images,
 and layer metadata to bounded
 transfer files before creating the native snapshot and per-layer previews.
-Filled/dashed/non-round strokes, unsupported objects, and text or images outside
-the editable suffix stay in their original layer and z-order as visible
-non-editable content. Save, autosave, and export reconstruct the layer groups and
-reinsert editable ink, text, and images in order, preserving visibility and avoiding
+Editable Pen, non-pressure Highlighter, and opaque whiteout Eraser strokes
+preserve their native line-style arrays, pressure/fill metadata, layer, and
+z-order through the worker. Audio-linked strokes, unsupported stroke/tool
+combinations, unsupported objects, and text or images outside the editable
+suffix stay in their original layer and z-order as visible non-editable
+content. Save, autosave, and export reconstruct the layer groups and reinsert
+editable ink, text, and images in order, preserving visibility and avoiding
 duplication.
 
 The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
@@ -611,7 +614,7 @@ Rectangle (`Ctrl+Shift+R`) and lasso (`Ctrl+Shift+G`) select editable strokes, t
 
 Eight handles resize or mirror a selection; the round handle rotates it. Corner scaling preserves aspect ratio, side scaling affects one axis, and pen width scales by `sqrt(abs(sx * sy))`. Move, resize and rotate previews leave the saved model unchanged until release. Cross-page drags transfer the group above destination-page strokes. Each completed move, resize, rotation, delete or paste is one undo step.
 
-`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native round-cap pen, highlighter, whiteout strokes, rich text, links, raster images, and LaTeX images through bounded `application/xournal` streams. Mixed selections retain their cross-type stacking order; text styles, link URLs, image data, LaTeX source, and transforms survive copy, cut, paste, and duplicate. Copy publishes rendered PNG and SVG targets, plus plain text for text selections. Plain-text clipboard content pastes as an editable text object. Mixed-object cut, paste, and duplicate are grouped into one undo step. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. Resize edge snapping and edge auto-pan use the imported legacy settings. A committed rotation keeps the visible handle frame axis-aligned while subsequent resize follows the accumulated selection rotation; undo and redo restore this state. Other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V`, plus the toolbar's Duplicate action, support native pen, highlighter, whiteout strokes, rich text, links, raster images, and LaTeX images through bounded `application/xournal` streams; stroke dash arrays survive the internal codec. Mixed selections retain their cross-type stacking order; text styles, stroke dash arrays, link URLs, image data, LaTeX source, and transforms survive copy, cut, paste, and duplicate. Copy publishes rendered PNG and SVG targets, plus plain text for text selections. Plain-text clipboard content pastes as an editable text object. Mixed-object cut, paste, and duplicate are grouped into one undo step. Unsupported clipboard records are rejected atomically. `Ctrl+A` selects all supported objects on the active page, Delete/Backspace removes the current selection, and Escape clears it. Unsupported native objects remain preserved and visible in the document but are not selectable yet; shapes drawn by the prototype are ordinary editable stroke paths. Resize edge snapping and edge auto-pan use the imported legacy settings. A committed rotation keeps the visible handle frame axis-aligned while subsequent resize follows the accumulated selection rotation; undo and redo restore this state. Other clipboard formats and transforms for unsupported native objects remain pending. GUI checks use synthetic GTK events and a private GDK clipboard; physical input delivery and exchange with another running Xournal++ process remain unverified.
 
 ## PDF text selection
 

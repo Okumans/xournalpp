@@ -24,6 +24,7 @@
 #include "BehaviorDefaults.h"
 #include "CanvasDrawing.h"
 #include "CanvasImage.h"
+#include "CanvasLineStyle.h"
 #include "CanvasLayers.h"
 #include "CanvasText.h"
 
@@ -101,6 +102,13 @@ struct Brush {
     double width = behavior::penWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
     bool fillEnabled = false;
     int fillOpacity = 128;
+    LineDashPattern lineDashes;
+
+    Brush() = default;
+    Brush(Tool tool, std::array<double, 3> color, double width, bool fillEnabled = false, int fillOpacity = 128,
+          LineDashPattern lineDashes = {}):
+            tool(tool), color(color), width(width), fillEnabled(fillEnabled), fillOpacity(fillOpacity),
+            lineDashes(std::move(lineDashes)) {}
 };
 
 struct Ink {
@@ -2984,6 +2992,23 @@ public:
         return applyInkEdits(std::move(replacements), {});
     }
 
+    bool setSelectedInkLineStyle(const LineDashPattern& lineDashes) {
+        if (!validLineDashPattern(lineDashes)) {
+            return false;
+        }
+        std::vector<std::pair<size_t, Ink>> replacements;
+        for (const size_t index: selected) {
+            if (index >= ink.size() || ink[index].brush.tool != Tool::Pen ||
+                ink[index].brush.lineDashes == lineDashes) {
+                continue;
+            }
+            auto replacement = ink[index];
+            replacement.brush.lineDashes = lineDashes;
+            replacements.emplace_back(index, std::move(replacement));
+        }
+        return applyInkEdits(std::move(replacements), {});
+    }
+
     bool applyInkEdits(std::vector<std::pair<size_t, Ink>> replacements, std::vector<Ink> additions) {
         if (current || eraseGesture || selectionGesture || (replacements.empty() && additions.empty())) {
             return false;
@@ -3003,7 +3028,7 @@ public:
                 replacement.points.size() != original.points.size() || replacement.brush.tool != original.brush.tool ||
                 replacement.brush.width != original.brush.width || replacement.fill < -1 || replacement.fill > 255 ||
                 (replacement.fill >= 0 && !isFillableTool(replacement.brush.tool)) ||
-                replacement.capStyle != original.capStyle) {
+                replacement.capStyle != original.capStyle || !validLineDashPattern(replacement.brush.lineDashes)) {
                 return false;
             }
         }
@@ -3013,7 +3038,8 @@ public:
             if (addition.page < 0 || addition.page >= pageCount() || addition.points.size() < 2 ||
                 !std::isfinite(addition.brush.width) || addition.brush.width <= 0 || addition.fill < -1 ||
                 addition.fill > 255 || addition.capStyle < 0 || addition.capStyle > 2 ||
-                (addition.fill >= 0 && !isFillableTool(addition.brush.tool))) {
+                (addition.fill >= 0 && !isFillableTool(addition.brush.tool)) ||
+                !validLineDashPattern(addition.brush.lineDashes)) {
                 return false;
             }
             for (const auto& point: addition.points) {

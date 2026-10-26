@@ -80,6 +80,7 @@ struct Options {
     bool disableAudio = false;
     bool verifyPlugins = false;
     bool verifySearch = false;
+    bool verifyPenLineStyle = false;
     bool verifyBeamer = false;
     bool verifyLayerActions = false;
     bool verifyLatex = false;
@@ -508,6 +509,8 @@ public:
         input.setStabilizerConfig(importedConfig.settings.stabilizer);
         penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth,
                     importedConfig.settings.penFillEnabled, importedConfig.settings.penFillOpacity};
+        penBrush.lineDashes = prototype::parseLineStyle(importedConfig.settings.penLineStyle).value_or(
+                prototype::LineDashPattern{});
         latexBrush = {Tool::Latex, importedConfig.settings.latexColor, importedConfig.settings.penWidth};
         latexTemplatePath = importedConfig.settings.latexTemplatePath;
         if (latexTemplatePath.empty()) {
@@ -2722,7 +2725,7 @@ private:
             stroke.color = (channel(ink.brush.color[0]) << 16U) | (channel(ink.brush.color[1]) << 8U) |
                            channel(ink.brush.color[2]);
             stroke.fill = ink.fill;
-            stroke.lineStyle = "plain";
+            stroke.lineStyle = prototype::formatLineStyle(ink.brush.lineDashes);
             stroke.reference = ink.pluginReference;
             stroke.page = page;
             stroke.layer = layer;
@@ -2877,6 +2880,7 @@ private:
             stroke.brush.tool = highlighter ? Tool::Highlighter : Tool::Pen;
             stroke.brush.color = defaults.color;
             stroke.brush.width = defaults.width;
+            stroke.brush.lineDashes = defaults.lineDashes;
             if (inputStroke.width) {
                 stroke.brush.width = *inputStroke.width;
             }
@@ -2887,9 +2891,13 @@ private:
                                       static_cast<double>(color & 0xffU) / 255.0};
             }
             stroke.fill = inputStroke.fill.value_or(-1);
-            if (inputStroke.lineStyle && *inputStroke.lineStyle != "plain" && *inputStroke.lineStyle != "solid") {
-                error = "The GTK 4 stroke model does not yet support the requested line style";
-                return false;
+            if (inputStroke.lineStyle) {
+                const auto lineDashes = prototype::parseLineStyle(*inputStroke.lineStyle);
+                if (!lineDashes) {
+                    error = "The stroke has an invalid line style";
+                    return false;
+                }
+                stroke.brush.lineDashes = *lineDashes;
             }
             stroke.pressureSensitive = !inputStroke.pressure.empty() && !highlighter;
             stroke.points.reserve(inputStroke.x.size());
@@ -3779,6 +3787,37 @@ private:
         return true;
     }
 
+    size_t selectedPenStrokeCount() const {
+        return static_cast<size_t>(std::count_if(state.selected.begin(), state.selected.end(), [&](size_t index) {
+            return index < state.ink.size() && state.ink[index].brush.tool == Tool::Pen;
+        }));
+    }
+
+    std::optional<std::string> selectedPenLineStyleState() const {
+        std::optional<prototype::LineDashPattern> selectedStyle;
+        bool hasSelectedPenStroke = false;
+        bool mixedStyles = false;
+        for (const size_t index: state.selected) {
+            if (index >= state.ink.size() || state.ink[index].brush.tool != Tool::Pen) {
+                continue;
+            }
+            const auto& lineDashes = state.ink[index].brush.lineDashes;
+            if (!selectedStyle) {
+                selectedStyle = lineDashes;
+            } else if (*selectedStyle != lineDashes) {
+                mixedStyles = true;
+            }
+            hasSelectedPenStroke = true;
+        }
+        if (hasSelectedPenStroke) {
+            return mixedStyles ? std::string{"none"} : prototype::formatLineStyle(*selectedStyle);
+        }
+        if (state.brush.tool == Tool::Pen) {
+            return prototype::formatLineStyle(penBrush.lineDashes);
+        }
+        return std::nullopt;
+    }
+
     bool getPluginActionState(std::string_view action, prototype::PluginActionValue& value,
                               std::string& error) const {
         if (action == "select-tool") {
@@ -3822,14 +3861,7 @@ private:
             return true;
         }
         if (action == "tool-pen-line-style") {
-            bool selectedPenStroke = false;
-            for (const auto index: state.selected) {
-                if (index < state.ink.size() && state.ink[index].brush.tool == Tool::Pen) {
-                    selectedPenStroke = true;
-                    break;
-                }
-            }
-            value = state.brush.tool == Tool::Pen || selectedPenStroke ? std::string{"plain"} : std::string{"none"};
+            value = selectedPenLineStyleState().value_or("none");
             return true;
         }
         if (action == "tool-color") {
@@ -3878,13 +3910,13 @@ private:
         };
         const auto setShapeStyle = [&] {
             info.drawingType = pluginDrawingTypeName(state.drawingMode);
-            info.lineStyle = "plain";
         };
 
         if (tool == "active") {
             info.type = pluginToolName(state.brush.tool);
             setBrush(state.brush, prototype::widthsForTool(state.brush.tool));
             setShapeStyle();
+            info.lineStyle = prototype::formatLineStyle(state.brush.lineDashes);
             info.filled = state.brush.fillEnabled;
             info.fillOpacity = state.brush.fillOpacity;
             return true;
@@ -3892,6 +3924,7 @@ private:
         if (tool == "pen") {
             setBrush(penBrush, prototype::behavior::penWidths);
             setShapeStyle();
+            info.lineStyle = prototype::formatLineStyle(penBrush.lineDashes);
             info.filled = penBrush.fillEnabled;
             info.fillOpacity = penBrush.fillOpacity;
             return true;
@@ -3940,6 +3973,45 @@ private:
 
     bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
                                  std::string& error) {
+        if (action == "tool-pen-line-style") {
+            if (!std::holds_alternative<std::string>(value)) {
+                error = "tool-pen-line-style expects a string style";
+                return false;
+            }
+            const auto lineDashes = prototype::parseLineStyle(std::get<std::string>(value));
+            if (!lineDashes) {
+                error = "tool-pen-line-style has an invalid style";
+                return false;
+            }
+
+            const auto previousStyle = importedConfig.settings.penLineStyle;
+            importedConfig.settings.penLineStyle = prototype::formatLineStyle(*lineDashes);
+            std::string saveError;
+            if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, saveError)) {
+                importedConfig.settings.penLineStyle = previousStyle;
+                error = saveError;
+                return false;
+            }
+
+            input.cancel();
+            const bool hasSelectedPenStroke = selectedPenStrokeCount() > 0;
+            if (hasSelectedPenStroke) {
+                state.setSelectedInkLineStyle(*lineDashes);
+            }
+            penBrush.lineDashes = *lineDashes;
+            if (state.brush.tool == Tool::Pen) {
+                state.brush.lineDashes = *lineDashes;
+            } else if (hasSelectedPenStroke) {
+                state.brush.lineDashes = *lineDashes;
+                if (state.brush.tool == Tool::Highlighter) {
+                    highlightBrush.lineDashes = *lineDashes;
+                }
+            } else {
+                selectTool(Tool::Pen);
+            }
+            update();
+            return true;
+        }
         if (action == "tool-fill") {
             if (!std::holds_alternative<bool>(value)) {
                 error = "tool-fill expects a boolean state";
@@ -5357,6 +5429,56 @@ private:
         std::cout << "PASS: GTK4 document Search across PDF and editable text\n";
     }
 
+    void verifyPenLineStyleIntegration() {
+        require(lineStyleDropdown && gtk_widget_get_visible(lineStyleDropdown),
+                "Pen line-style selector is not visible for the Pen tool");
+        require(state.brush.tool == Tool::Pen &&
+                        gtk_drop_down_get_selected(GTK_DROP_DOWN(lineStyleDropdown)) == 0,
+                "The default Pen line style is not Solid");
+
+        const std::array<std::pair<guint, prototype::LineDashPattern>, 4> namedStyles{{
+                {0, {}}, {1, {6, 3}}, {2, {6, 3, 0.5, 3}}, {3, {0.5, 3}}}};
+        for (const auto& [index, expected]: namedStyles) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(lineStyleDropdown), index);
+            require(penBrush.lineDashes == expected && state.brush.lineDashes == expected,
+                    "Pen line-style selector did not apply its named dash pattern");
+            require(gtk_drop_down_get_selected(GTK_DROP_DOWN(lineStyleDropdown)) == index,
+                    "Pen line-style selector did not display its selected named pattern");
+            require(importedConfig.settings.penLineStyle == prototype::formatLineStyle(expected),
+                    "Pen line-style selector did not persist its named pattern");
+            if (index == 1) {
+                capture("pen-line-style-dash", lineStyleDropdown, true);
+            }
+        }
+
+        std::string error;
+        require(changePluginActionState("tool-pen-line-style", std::string{"cust: 1.25 2.50"}, error) &&
+                        penBrush.lineDashes == prototype::LineDashPattern{1.25, 2.5} &&
+                        gtk_drop_down_get_selected(GTK_DROP_DOWN(lineStyleDropdown)) == 4,
+                error.empty() ? "Plugin action did not set a custom Pen dash pattern" : error.c_str());
+        prototype::PluginActionValue actionState;
+        require(getPluginActionState("tool-pen-line-style", actionState, error) &&
+                        std::holds_alternative<std::string>(actionState) &&
+                        std::get<std::string>(actionState) == "cust: 1.25 2.50",
+                error.empty() ? "Plugin action state did not report the custom Pen dash pattern" : error.c_str());
+        prototype::PluginToolInfo toolInfo;
+        require(getPluginToolInfo("pen", toolInfo, error) && toolInfo.lineStyle &&
+                        *toolInfo.lineStyle == "cust: 1.25 2.50",
+                error.empty() ? "Pen tool info did not report the custom dash pattern" : error.c_str());
+        prototype::PluginToolInfo activeToolInfo;
+        require(getPluginToolInfo("active", activeToolInfo, error) && activeToolInfo.lineStyle &&
+                        *activeToolInfo.lineStyle == "cust: 1.25 2.50",
+                error.empty() ? "Active tool info did not report its custom dash pattern" : error.c_str());
+        prototype::PluginToolInfo highlighterToolInfo;
+        require(getPluginToolInfo("highlighter", highlighterToolInfo, error) && !highlighterToolInfo.lineStyle,
+                error.empty() ? "Highlighter tool info should omit the Pen-only line-style field" : error.c_str());
+
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(lineStyleDropdown), 0);
+        require(penBrush.lineDashes.empty() && importedConfig.settings.penLineStyle == "plain",
+                "Selecting Solid did not reset and persist the Pen style");
+        std::cout << "PASS: GTK4 Pen named/custom line-style selector and plugin state\n";
+    }
+
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
         const int displayDpi = pluginDisplayDpi();
@@ -5400,13 +5522,43 @@ private:
         require(pluginToolSizeState(prototype::behavior::penWidths, 1.41) == 2 &&
                         pluginToolSizeState(prototype::behavior::penWidths, 1.42) == 5,
                 "app.getActionState did not distinguish preset sizes from custom widths");
+        prototype::PluginToolInfo toolInfo;
+        std::string toolInfoError;
         const auto activeToolForLineStyle = state.brush.tool;
         state.brush.tool = Tool::Pen;
-        const bool reportsPlainPenLineStyle =
+        const auto expectedPenLineStyle = prototype::formatLineStyle(penBrush.lineDashes);
+        const bool reportsCurrentPenLineStyle =
                 getPluginActionState("tool-pen-line-style", actionState, actionStateError) &&
-                std::holds_alternative<std::string>(actionState) && std::get<std::string>(actionState) == "plain";
+                std::holds_alternative<std::string>(actionState) &&
+                std::get<std::string>(actionState) == expectedPenLineStyle;
+        const auto previousPenLineDashes = penBrush.lineDashes;
+        const auto previousActiveLineDashes = state.brush.lineDashes;
+        const auto previousPenLineStyle = importedConfig.settings.penLineStyle;
+        std::string lineStyleError;
+        if (state.selected.empty()) {
+            require(changePluginActionState("tool-pen-line-style", std::string{"dash"}, lineStyleError) &&
+                            penBrush.lineDashes == prototype::LineDashPattern{6, 3} &&
+                            getPluginActionState("tool-pen-line-style", actionState, actionStateError) &&
+                            std::get<std::string>(actionState) == "dash",
+                    lineStyleError.empty() ? "Plugin line-style action did not apply a named dash pattern" :
+                                             lineStyleError.c_str());
+            require(changePluginActionState("tool-pen-line-style", std::string{"cust: 1.25 2.50"},
+                                            lineStyleError) &&
+                            penBrush.lineDashes == prototype::LineDashPattern{1.25, 2.5} &&
+                            getPluginActionState("tool-pen-line-style", actionState, actionStateError) &&
+                            std::get<std::string>(actionState) == "cust: 1.25 2.50" &&
+                            getPluginToolInfo("pen", toolInfo, toolInfoError) && toolInfo.lineStyle &&
+                            *toolInfo.lineStyle == "cust: 1.25 2.50",
+                    lineStyleError.empty() ? "Plugin line-style action did not preserve a custom dash pattern" :
+                                             lineStyleError.c_str());
+            require(changePluginActionState("tool-pen-line-style", previousPenLineStyle, lineStyleError) &&
+                            penBrush.lineDashes == previousPenLineDashes,
+                    lineStyleError.empty() ? "Plugin line-style action could not restore the Pen setting" :
+                                             lineStyleError.c_str());
+        }
         state.brush.tool = activeToolForLineStyle;
-        require(reportsPlainPenLineStyle, "app.getActionState did not report the supported Pen line style");
+        state.brush.lineDashes = previousActiveLineDashes;
+        require(reportsCurrentPenLineStyle, "app.getActionState did not report the current Pen line style");
         require(getPluginActionState("grid-snapping", actionState, actionStateError) &&
                         std::holds_alternative<bool>(actionState) &&
                         std::get<bool>(actionState) == state.snapGridEnabled,
@@ -5441,8 +5593,6 @@ private:
         require(!getPluginActionState("missing-action-state", actionState, actionStateError) &&
                         actionStateError.find("unavailable") != std::string::npos,
                 "app.getActionState did not reject an unsupported action state");
-        prototype::PluginToolInfo toolInfo;
-        std::string toolInfoError;
         require(getPluginToolInfo("active", toolInfo, toolInfoError) && toolInfo.type &&
                         *toolInfo.type == pluginToolName(state.brush.tool) && toolInfo.sizeValue &&
                         std::abs(*toolInfo.sizeValue - state.brush.width) < 1e-9 && toolInfo.color &&
@@ -5763,6 +5913,7 @@ private:
         sample.page = state.page;
         sample.points = {{10, 20, 0.25}, {12.5, 24.5, 0.75}};
         sample.brush = {Tool::Pen, {0x12 / 255.0, 0x34 / 255.0, 0x56 / 255.0}, 2.25};
+        sample.brush.lineDashes = {1.25, 2.5};
         sample.pressureSensitive = true;
         sample.layerId = state.activeLayerId(state.page);
         sample.layerOrder = 999999;
@@ -5843,7 +5994,8 @@ private:
                         sampleOutput->y == std::vector<double>({20, 24.5}) &&
                         sampleOutput->pressure == std::vector<double>({0.25, 0.75}) &&
                         sampleOutput->tool == "pen" && std::abs(sampleOutput->width - 2.25) < 1e-9 &&
-                        sampleOutput->color == 0x123456 && sampleOutput->page == static_cast<size_t>(state.page + 1) &&
+                        sampleOutput->color == 0x123456 && sampleOutput->lineStyle == "cust: 1.25 2.50" &&
+                        sampleOutput->page == static_cast<size_t>(state.page + 1) &&
                         sampleOutput->layer == state.activeLayerId(state.page),
                 "app.getStrokes('all') did not preserve native point, pressure, style, or index values");
         for (const auto& stroke: allStrokes) {
@@ -8429,6 +8581,25 @@ private:
         const auto matched = prototype::behavior::matchToolSize(prototype::widthsForTool(state.brush.tool),
                                                                 state.brush.width);
         gtk_drop_down_set_selected(GTK_DROP_DOWN(sizeDropdown), matched ? static_cast<guint>(*matched) : 5u);
+    }
+
+    void syncPenLineStyleDropdown() {
+        if (!lineStyleDropdown) {
+            return;
+        }
+        const auto style = selectedPenLineStyleState();
+        if (!style) {
+            return;
+        }
+        const guint selected = *style == "plain" || *style == "solid" ? 0u :
+                              *style == "dash"                     ? 1u :
+                              *style == "dashdot"                  ? 2u :
+                              *style == "dot"                      ? 3u :
+                              *style == "none"                     ? 5u :
+                                                                    4u;
+        if (gtk_drop_down_get_selected(GTK_DROP_DOWN(lineStyleDropdown)) != selected) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(lineStyleDropdown), selected);
+        }
     }
 
     PopplerPage* pdfPageForPage(int page) {
@@ -11140,6 +11311,7 @@ private:
                                                     tool != Tool::Hand && tool != Tool::VerticalSpace &&
                                                     tool != Tool::Link && tool != Tool::PlayObject &&
                                                     tool != Tool::FloatingToolbox);
+        gtk_widget_set_visible(lineStyleDropdown, tool == Tool::Pen || selectedPenStrokeCount() > 0);
         gtk_widget_set_visible(selectionLabel, prototype::isSelectionTool(tool));
         gtk_widget_set_visible(selectionModeDropdown,
                                prototype::isSelectionTool(tool) || tool == Tool::VerticalSpace);
@@ -12299,6 +12471,48 @@ private:
                          }),
                          this);
         gtk_box_append(GTK_BOX(toolbar), sizeDropdown);
+        const char* const lineStyleLabels[] = {"Solid", "Dashed", "Dash dot", "Dotted", "Custom", "Mixed", nullptr};
+        lineStyleDropdown = gtk_drop_down_new_from_strings(lineStyleLabels);
+        gtk_widget_set_tooltip_text(lineStyleDropdown, "Pen line style");
+        g_signal_connect(lineStyleDropdown, "notify::selected",
+                         G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->syncingBrush) {
+                                 return;
+                             }
+                             const auto selected =
+                                     gtk_drop_down_get_selected(GTK_DROP_DOWN(self->lineStyleDropdown));
+                             std::string style;
+                             switch (selected) {
+                                 case 0:
+                                     style = "plain";
+                                     break;
+                                 case 1:
+                                     style = "dash";
+                                     break;
+                                 case 2:
+                                     style = "dashdot";
+                                     break;
+                                 case 3:
+                                     style = "dot";
+                                     break;
+                                 default:
+                                     break;
+                             }
+                             if (!style.empty()) {
+                                 std::string error;
+                                 if (!self->changePluginActionState(
+                                             "tool-pen-line-style", std::move(style), error)) {
+                                     std::cerr << "xournalpp-gtk4-canvas: " << error << '\n';
+                                 }
+                             } else {
+                                 self->syncingBrush = true;
+                                 self->syncPenLineStyleDropdown();
+                                 self->syncingBrush = false;
+                             }
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(toolbar), lineStyleDropdown);
         widthButton = gtk_spin_button_new_with_range(0.2, 36.0, 0.1);
         gtk_spin_button_set_digits(GTK_SPIN_BUTTON(widthButton), 2);
         gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(widthButton), true);
@@ -12602,8 +12816,8 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifySearch || options.verifyBeamer || options.verifyLayerActions ||
-            options.verifyLatex) {
+        if (options.verifyPlugins || options.verifySearch || options.verifyPenLineStyle || options.verifyBeamer ||
+            options.verifyLayerActions || options.verifyLatex) {
             g_timeout_add(
                     200,
                     +[](gpointer data) -> gboolean {
@@ -12614,6 +12828,8 @@ private:
                         try {
                             if (self->options.verifySearch) {
                                 self->verifySearchIntegration();
+                            } else if (self->options.verifyPenLineStyle) {
+                                self->verifyPenLineStyleIntegration();
                             } else if (self->options.verifyPlugins) {
                                 self->verifyPluginIntegration();
                             } else if (self->options.verifyBeamer) {
@@ -12624,9 +12840,12 @@ private:
                                 self->verifyLatexIntegration();
                             }
                         } catch (const std::exception& error) {
-                            std::cerr << (self->options.verifyLatex ? "LATEX" :
-                                         self->options.verifySearch ? "SEARCH" : "PLUGIN")
-                                      << " VERIFY FAILED: " << error.what() << '\n';
+                            const char* verification = self->options.verifyLatex ? "LATEX" :
+                                                       self->options.verifySearch ? "SEARCH" :
+                                                       self->options.verifyPenLineStyle ? "PEN LINE STYLE" :
+                                                       self->options.verifyBeamer ? "BEAMER" :
+                                                       self->options.verifyLayerActions ? "LAYER ACTIONS" : "PLUGIN";
+                            std::cerr << verification << " VERIFY FAILED: " << error.what() << '\n';
                             self->failed = true;
                         }
                         g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(self->window))));
@@ -12671,7 +12890,8 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
-            !options.verifyBeamer && !options.verifyLayerActions && !options.verifyLatex) {
+            !options.verifyPenLineStyle && !options.verifyBeamer && !options.verifyLayerActions &&
+            !options.verifyLatex) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
@@ -12799,6 +13019,9 @@ private:
                                                                                    "Drag to select";
             gtk_label_set_text(GTK_LABEL(selectionLabel), selectionStatus.c_str());
         }
+        if (lineStyleDropdown) {
+            gtk_widget_set_visible(lineStyleDropdown, state.brush.tool == Tool::Pen || selectedPenStrokeCount() > 0);
+        }
         if (pdfTextSelection && pdfTextSelection->finalized && pdfActionsPopover &&
             gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover))) {
             updatePdfActionsPosition(false);
@@ -12847,6 +13070,7 @@ private:
         for (auto* button: floatingFillOpacityButtons) {
             gtk_widget_set_sensitive(GTK_WIDGET(button), fillOpacityAvailableNow);
         }
+        syncPenLineStyleDropdown();
         syncingBrush = wasSyncingBrush;
         updateFloatingPageSpinners();
         updateFloatingLayerMenus();
@@ -19640,6 +19864,7 @@ private:
     std::vector<GtkWidget*> paletteSwatchButtons;
     GtkWidget* eraserModeDropdown = nullptr;
     GtkWidget* sizeDropdown = nullptr;
+    GtkWidget* lineStyleDropdown = nullptr;
     GtkWidget* widthButton = nullptr;
     GtkWidget* drawingOptionsExpander = nullptr;
     GtkWidget* drawingModeDropdown = nullptr;
@@ -19800,6 +20025,8 @@ int main(int argc, char** argv) {
                 options.verifyPlugins = true;
             } else if (argument == "--verify-search") {
                 options.verifySearch = true;
+            } else if (argument == "--verify-pen-line-style") {
+                options.verifyPenLineStyle = true;
             } else if (argument == "--verify-beamer") {
                 options.verifyBeamer = true;
             } else if (argument == "--verify-layer-actions") {
@@ -19825,7 +20052,8 @@ int main(int argc, char** argv) {
             } else {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
-                                         "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] [--verify-beamer] "
+                                         "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
+                                         "[--verify-pen-line-style] [--verify-beamer] "
                                          "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
                                          "[--disable-audio] "
                                          "[--smoke-dir DIRECTORY]");
@@ -19843,6 +20071,11 @@ int main(int argc, char** argv) {
         if (options.verifySearch && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                      !options.nativeDocument.empty() || !options.worker.empty())) {
             throw std::runtime_error("Search verification requires --smoke-dir and --pdf without --worker");
+        }
+        if (options.verifyPenLineStyle &&
+            (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||
+             !options.worker.empty())) {
+            throw std::runtime_error("Pen line-style verification requires --smoke-dir without a document or worker");
         }
         if (options.verifyBeamer && options.smokeDirectory.empty()) {
             throw std::runtime_error("Beamer verification requires --smoke-dir DIRECTORY");

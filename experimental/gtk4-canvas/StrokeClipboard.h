@@ -275,6 +275,7 @@ inline std::vector<Ink> decode(std::string_view bytes) {
         Reader::fail();
     std::vector<Ink> result;
     size_t total = 0;
+    size_t totalDashValues = 0;
     for (int n = 0; n < count; ++n) {
         in.object("Stroke");
         in.object("Element");
@@ -329,7 +330,15 @@ inline std::vector<Ink> decode(std::string_view bytes) {
             stroke.points.push_back({x, y, pressure});
         }
         in.object("LineStyle");
-        if (in.data(sizeof(double), 0) != 0)
+        const auto dashCount = in.data(sizeof(double), maxLineDashValues);
+        if (dashCount > bridge::maxTransferDashValues - totalDashValues)
+            Reader::fail();
+        totalDashValues += dashCount;
+        stroke.brush.lineDashes.reserve(dashCount);
+        for (size_t dash = 0; dash < dashCount; ++dash) {
+            stroke.brush.lineDashes.push_back(in.raw<double>());
+        }
+        if (!validLineDashPattern(stroke.brush.lineDashes))
             Reader::fail();
         in.end();
         in.end();
@@ -346,11 +355,15 @@ inline std::string encode(const std::vector<Ink>& strokes) {
         Reader::fail();
     auto packets = bridge::transferInk(strokes);
     size_t total = 0;
+    size_t totalDashValues = 0;
     for (const auto& packet: packets) {
         bridge::validate(packet);
         if (packet.points.size() < 2 || packet.points.size() > bridge::maxTransferPoints - total)
             Reader::fail();
         total += packet.points.size();
+        if (packet.lineDashes.size() > bridge::maxTransferDashValues - totalDashValues)
+            Reader::fail();
+        totalDashValues += packet.lineDashes.size();
     }
     CanvasState selection;
     selection.ink = strokes;
@@ -380,7 +393,7 @@ inline std::string encode(const std::vector<Ink>& strokes) {
     out.end();
     out.value<int>("_i", static_cast<int>(strokes.size()));
     for (const auto& stroke: strokes) {
-        if (isSelectionTool(stroke.brush.tool))
+        if (isSelectionTool(stroke.brush.tool) || !validLineDashPattern(stroke.brush.lineDashes))
             Reader::fail();
         out.object("Stroke");
         out.object("Element");
@@ -408,7 +421,10 @@ inline std::string encode(const std::vector<Ink>& strokes) {
             out.raw(z);
         }
         out.object("LineStyle");
-        out.data(0, sizeof(double));
+        out.data(stroke.brush.lineDashes.size(), sizeof(double));
+        for (double dash: stroke.brush.lineDashes) {
+            out.raw(dash);
+        }
         out.end();
         out.end();
     }

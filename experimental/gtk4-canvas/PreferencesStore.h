@@ -201,6 +201,11 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     }
 
     auto& detail = preferences_detail::readBool;
+    std::string penLineStyle;
+    preferences_detail::readString(keyFile.get(), "Pen", "line-style", penLineStyle, 512);
+    if (const auto lineDashes = parseLineStyle(penLineStyle)) {
+        settings.penLineStyle = formatLineStyle(*lineDashes);
+    }
     detail(keyFile.get(), "Tool Fill", "pen-enabled", settings.penFillEnabled);
     preferences_detail::readInt(keyFile.get(), "Tool Fill", "pen-opacity", settings.penFillOpacity, 0, 255);
     detail(keyFile.get(), "Tool Fill", "highlighter-enabled", settings.highlighterFillEnabled);
@@ -298,14 +303,15 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
 
 inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const ImportedSettings& settings,
                                 std::string& errorMessage) {
-    if (settings.latexDefaultText.size() > maxCanvasLatexSourceBytes ||
+    if (settings.latexDefaultText.size() > maxCanvasLatexSourceBytes || settings.penLineStyle.size() > 512 ||
+        !parseLineStyle(settings.penLineStyle) ||
         settings.penFillOpacity < 0 || settings.penFillOpacity > 255 || settings.highlighterFillOpacity < 0 ||
         settings.highlighterFillOpacity > 255 ||
         preferences_detail::pathToUtf8(settings.latexTemplatePath).size() > 4096 ||
         settings.latexGeneratorCommand.size() > 16384 || settings.latexSourceViewThemeId.size() > 128 ||
         settings.latexEditorFont.size() > 256 || settings.latexExternalEditorCommand.size() > 16384 ||
         settings.latexTemporaryFileExtension.size() > 64) {
-        errorMessage = "A LaTeX preference exceeds its size limit";
+        errorMessage = "A GTK 4 preference is invalid or exceeds its size limit";
         return false;
     }
     std::error_code ec;
@@ -331,6 +337,7 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     }
 
     std::unique_ptr<GKeyFile, preferences_detail::KeyFileDeleter> keyFile(g_key_file_new());
+    g_key_file_set_string(keyFile.get(), "Pen", "line-style", settings.penLineStyle.c_str());
     g_key_file_set_boolean(keyFile.get(), "Tool Fill", "pen-enabled", settings.penFillEnabled);
     g_key_file_set_integer(keyFile.get(), "Tool Fill", "pen-opacity", settings.penFillOpacity);
     g_key_file_set_boolean(keyFile.get(), "Tool Fill", "highlighter-enabled", settings.highlighterFillEnabled);

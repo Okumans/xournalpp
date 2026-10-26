@@ -6,6 +6,8 @@
 
 #include "BehaviorDefaults.h"
 #include "CanvasState.h"
+#include "model/Point.h"
+#include "model/StrokeContour.h"
 
 namespace prototype {
 
@@ -48,9 +50,14 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
         }
         cairo_fill(cr);
     }
-    if (ink.capStyle != 0 && !ink.pressureSensitive && ink.points.size() > 1) {
+    if (!ink.pressureSensitive && ink.points.size() > 1) {
         cairo_set_line_width(cr, ink.brush.width * matrix.widthScale);
         cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        if (ink.brush.lineDashes.empty()) {
+            cairo_set_dash(cr, nullptr, 0, 0);
+        } else {
+            cairo_set_dash(cr, ink.brush.lineDashes.data(), static_cast<int>(ink.brush.lineDashes.size()), 0);
+        }
         const auto start = matrix.apply(ink.points.front());
         cairo_move_to(cr, start.x, start.y);
         for (size_t i = 1; i < ink.points.size(); ++i) {
@@ -59,20 +66,26 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
         }
         cairo_stroke(cr);
     } else {
-        for (size_t i = 0; i < ink.points.size(); ++i) {
-            const auto a = matrix.apply(ink.points[i ? i - 1 : 0]);
-            const auto b = matrix.apply(ink.points[i]);
-            const auto width = ink.brush.width * matrix.widthScale *
-                               ((highlight || whiteout) ? 1.0 : (a.pressure + b.pressure) / 2);
-            if (a.x == b.x && a.y == b.y) {
-                cairo_arc(cr, b.x, b.y, width / 2, 0, 6.283185307179586);
-                cairo_fill(cr);
+        std::vector<::Point> pressurePoints;
+        pressurePoints.reserve(ink.points.size());
+        for (const auto& sample: ink.points) {
+            const auto point = matrix.apply(sample);
+            const double pressure = (highlight || whiteout || !ink.pressureSensitive) ? 1.0 : sample.pressure;
+            pressurePoints.emplace_back(point.x, point.y,
+                                        ink.brush.width * matrix.widthScale * pressure);
+        }
+        if (pressurePoints.size() == 1 ||
+            (pressurePoints.size() == 2 && pressurePoints.front().equalsPos(pressurePoints.back()))) {
+            cairo_arc(cr, pressurePoints.front().x, pressurePoints.front().y, pressurePoints.front().z / 2,
+                      0, 6.283185307179586);
+            cairo_fill(cr);
+        } else if (pressurePoints.size() > 1) {
+            if (ink.brush.lineDashes.empty()) {
+                xoj::view::StrokeContour(pressurePoints).addToCairo(cr);
             } else {
-                cairo_set_line_width(cr, width);
-                cairo_move_to(cr, a.x, a.y);
-                cairo_line_to(cr, b.x, b.y);
-                cairo_stroke(cr);
+                xoj::view::StrokeContourDashes(pressurePoints, ink.brush.lineDashes).addToCairo(cr, 0);
             }
+            cairo_fill(cr);
         }
     }
     if (highlight) {

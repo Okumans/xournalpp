@@ -113,6 +113,10 @@ void appendStroke(Layer& layer, const prototype::bridge::StrokePacket& packet) {
     stroke->setWidth(packet.width);
     stroke->setFill(packet.fill);
     stroke->setStrokeCapStyle(static_cast<StrokeCapStyle::Value>(packet.capStyle));
+    LineStyle lineStyle;
+    auto lineDashes = packet.lineDashes;
+    lineStyle.setDashes(std::move(lineDashes));
+    stroke->setLineStyle(lineStyle);
     if (packet.whiteout) {
         stroke->setColor(Color{255, 255, 255});
     } else {
@@ -363,7 +367,8 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
     const int fill = stroke->getFill();
     const int capStyle = static_cast<int>(stroke->getStrokeCapStyle());
     if (pts.size() < 2 || !std::isfinite(width) || width <= 0.0 || fill < -1 || fill > 255 || capStyle < 0 ||
-        capStyle > 2 || stroke->getLineStyle().hasDashes() || !stroke->getAudioFilename().empty()) {
+        capStyle > 2 || !prototype::validLineDashPattern(stroke->getLineStyle().getDashes()) ||
+        !stroke->getAudioFilename().empty()) {
         return std::nullopt;
     }
     const StrokeTool tool = stroke->getToolType();
@@ -398,6 +403,7 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
     packet.width = width;
     packet.fill = fill;
     packet.capStyle = capStyle;
+    packet.lineDashes = stroke->getLineStyle().getDashes();
     packet.color = {static_cast<double>((rgb >> 16U) & 0xffU) / 255.0,
                     static_cast<double>((rgb >> 8U) & 0xffU) / 255.0,
                     static_cast<double>(rgb & 0xffU) / 255.0};

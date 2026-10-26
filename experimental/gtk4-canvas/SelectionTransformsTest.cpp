@@ -560,6 +560,7 @@ int main(int argc, char** argv) {
         mixedStroke.layerId = 1;
         mixedStroke.originLayer = 0;
         mixedStroke.layerOrder = 1;
+        mixedStroke.brush.lineDashes = {6, 3, 0.5, 3};
         auto mixedText = clipboardText;
         mixedText.layerOrder = 2;
         auto mixedImage = clipboardImage;
@@ -578,6 +579,7 @@ int main(int argc, char** argv) {
                       std::holds_alternative<CanvasImage>(decodedMixed[2]) &&
                       std::holds_alternative<TextItem>(decodedMixed[3]) &&
                       std::get<Ink>(decodedMixed[0]).points == mixedStroke.points &&
+                      std::get<Ink>(decodedMixed[0]).brush.lineDashes == mixedStroke.brush.lineDashes &&
                       std::get<TextItem>(decodedMixed[1]).styleRuns == mixedText.styleRuns &&
                       std::get<CanvasImage>(decodedMixed[2]).encodedData == mixedImage.encodedData &&
                       std::get<TextItem>(decodedMixed[3]).linkUrl == mixedLink.linkUrl,

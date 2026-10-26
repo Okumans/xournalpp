@@ -44,6 +44,7 @@ int main() {
 
     prototype::ImportedSettings saved;
     saved.themeVariant = prototype::ThemeVariant::ForceDark;
+    saved.penLineStyle = "cust: 2.50 1.25";
     saved.penFillEnabled = true;
     saved.penFillOpacity = 192;
     saved.highlighterFillEnabled = false;
@@ -101,6 +102,7 @@ int main() {
     require(loadedResult.found && loadedResult.warning.empty(), "Saved GTK 4 preferences could not be loaded");
     require(loaded.themeVariant == prototype::ThemeVariant::ForceDark && !loaded.showSidebar &&
                     loaded.penFillEnabled && loaded.penFillOpacity == 192 && !loaded.highlighterFillEnabled &&
+                    loaded.penLineStyle == saved.penLineStyle &&
                     loaded.highlighterFillOpacity == 64 &&
                     !loaded.pressureSensitivity && near(loaded.minimumPressure, 0.17) && loaded.highlightPosition &&
                     loaded.cursorHighlightColor == saved.cursorHighlightColor &&
@@ -134,6 +136,11 @@ int main() {
     error.clear();
     require(!prototype::saveGtk4Preferences(directory, oversized, error) && !error.empty(),
             "Saving must refuse LaTeX preference values above their size limits");
+    auto invalidLineStyle = saved;
+    invalidLineStyle.penLineStyle = "cust: 0 0";
+    error.clear();
+    require(!prototype::saveGtk4Preferences(directory, invalidLineStyle, error) && !error.empty(),
+            "Saving must refuse an invalid Pen line style");
 
     const auto preferencePath = directory / "gtk4-canvas.ini";
     const auto outside = directory / "outside.ini";

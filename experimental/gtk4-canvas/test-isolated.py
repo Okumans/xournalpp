@@ -490,13 +490,15 @@ def verify_plugins(args, evidence):
                  PATH=str(fake_bin) + os.pathsep + os.environ.get("PATH", "")),
     )
     expected = (
-        "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, document Search, "
+        "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
         "HighlightPosition, QuickScreenshot region capture/clipboard, Export PDF/SVG/PNG, ImageActions, "
         "FitToContent page resizing, SpaceForNotes page insertion, "
         "ToggleGrid paper changes, and background undo/redo"
     )
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
+    if "PASS: GTK4 document Search across PDF and editable text" not in result:
+        raise RuntimeError("GTK 4 document Search plugin action did not complete")
     if "PASS: GTK4 plugin toolbar action and placeholder registration, rendering, and updates" not in result:
         raise RuntimeError("GTK 4 private plugin toolbar action or placeholder did not render or update")
     screenshots = ["plugins-menu", "plugins-manager", "search-native-text", "position-highlight-on", "space-for-notes-pdf-gaps",
@@ -552,6 +554,33 @@ def verify_search(args, evidence):
     return {
         "fixture_pdf": str(pdf),
         "screenshot": str(screenshot),
+        "rendering": "Private headless Wayland via Cage",
+    }
+
+
+def verify_pen_line_style(args, evidence):
+    directory = evidence / "pen-line-style"
+    shutil.rmtree(directory, ignore_errors=True)
+    config = directory / "config"
+    output = directory / "run"
+    config.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+    result = run(
+        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+         "--verify-pen-line-style"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    if "PASS: GTK4 Pen named/custom line-style selector and plugin state" not in result:
+        raise RuntimeError("GTK 4 Pen line-style selector integration did not complete")
+    screenshot = output / "pen-line-style-dash.png"
+    if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+        raise RuntimeError(f"Missing Pen line-style screenshot: {screenshot}")
+    settings = config / "gtk4-canvas.ini"
+    if not settings.is_file() or "line-style=plain" not in settings.read_text(encoding="utf-8"):
+        raise RuntimeError("Pen line-style preference was not persisted after the selector reset")
+    return {
+        "screenshot": str(screenshot),
+        "persisted_default": "plain",
         "rendering": "Private headless Wayland via Cage",
     }
 
@@ -1193,6 +1222,13 @@ def inside(args):
              "rendering": "Private headless Wayland via Cage"},
             indent=2) + "\n")
         return
+    if args.pen_line_style_only:
+        line_style_evidence = verify_pen_line_style(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"pen-line-style": line_style_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.play_object_only:
         play_evidence = verify_play_object(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1440,6 +1476,7 @@ def main():
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--pen-line-style-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--latex-only", action="store_true", help=argparse.SUPPRESS)
@@ -1524,6 +1561,8 @@ def main():
             command.append("--plugins-only")
         if args.search_only:
             command.append("--search-only")
+        if args.pen_line_style_only:
+            command.append("--pen-line-style-only")
         if args.beamer_only:
             command.append("--beamer-only")
         if args.layer_actions_only:
