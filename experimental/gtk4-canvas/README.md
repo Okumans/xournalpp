@@ -89,7 +89,7 @@ viewport dimensions in logical pixels. `app.scrollToPage()` clamps one-based pag
 numbers and supports relative offsets; `app.scrollToPos()` accepts absolute
 coordinates or relative pixel offsets (relative by default). `app.getPageLabel()`
 returns a one-based PDF page label, or
-`nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. `app.refreshPage()` clears cached page and layer surfaces plus thumbnails, redraws the canvas, and creates no undo step. Lua plugins can also query editable strokes, text, links, and
+`nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. `app.refreshPage()` clears cached page and layer surfaces plus thumbnails, redraws the canvas, and creates no undo step. `app.getActionState()` reads the current zoom, selected tool, grid-snapping and position-highlighting toggles, and active tool color in legacy ARGB form; other action states are not yet available. Lua plugins can also query editable strokes, text, links, and
 images by selection, layer, page, or
 document; returned element references remain valid across vector growth and
 value-semantic edits. `app.getFonts()` lists installed font families and the

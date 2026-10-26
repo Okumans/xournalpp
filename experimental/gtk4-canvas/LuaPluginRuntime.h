@@ -187,6 +187,7 @@ enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
 
 struct PluginRuntimeHost {
     std::function<bool(const std::optional<std::string>&, std::uint32_t, bool, std::string&)> changeToolColor;
+    std::function<bool(std::string_view, PluginActionValue&, std::string&)> getActionState;
     std::function<bool(std::string_view, const PluginActionValue&, std::string&)> changeActionState;
     std::function<bool(std::string_view, std::string&)> activateAction;
     std::function<bool(std::string_view, std::string_view, std::string&)> changeCurrentPageBackground;
@@ -272,6 +273,7 @@ public:
 
     static int luaRegisterUi(lua_State* state);
     static int luaChangeToolColor(lua_State* state);
+    static int luaGetActionState(lua_State* state);
     static int luaChangeActionState(lua_State* state);
     static int luaActivateAction(lua_State* state);
     static int luaChangeCurrentPageBackground(lua_State* state);
@@ -320,6 +322,7 @@ private:
     bool call(Plugin& plugin, std::string_view function, const char* argument);
     bool changeToolColor(const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                          std::string& error);
+    bool getActionState(std::string_view action, PluginActionValue& value, std::string& error) const;
     bool changeActionState(std::string_view action, const PluginActionValue& value, std::string& error);
     bool activateAction(std::string_view action, std::string& error);
     bool changeCurrentPageBackground(std::string_view format, std::string_view config, std::string& error);

@@ -1544,6 +1544,8 @@ private:
         host.changeToolColor = [this](const auto& tool, std::uint32_t color, bool selection, std::string& error) {
             return changePluginToolColor(tool, color, selection, error);
         };
+        host.getActionState = [this](std::string_view action, prototype::PluginActionValue& value,
+                                     std::string& error) { return getPluginActionState(action, value, error); };
         host.changeActionState = [this](std::string_view action, const prototype::PluginActionValue& value,
                                         std::string& error) { return changePluginActionState(action, value, error); };
         host.activateAction = [this](std::string_view action, std::string& error) {
@@ -3215,6 +3217,103 @@ private:
         return true;
     }
 
+    std::int64_t pluginSelectedToolState() const {
+        switch (state.brush.tool) {
+            case Tool::Pen:
+                // Drawing modes have separate upstream actions; SELECT_TOOL remains TOOL_PEN.
+                return 1;
+            case Tool::Eraser:
+                return 2;
+            case Tool::Highlighter:
+                return 3;
+            case Tool::Text:
+                return 4;
+            case Tool::SelectRectangle:
+                return state.selectionAcrossLayers ? 8 : 6;
+            case Tool::SelectLasso:
+                return state.selectionAcrossLayers ? 9 : 7;
+            case Tool::SelectObject:
+                return 10;
+            case Tool::PlayObject:
+                return 11;
+            case Tool::VerticalSpace:
+                return 12;
+            case Tool::Hand:
+                return 13;
+            case Tool::SelectPdfTextLinear:
+                return 21;
+            case Tool::SelectPdfTextRect:
+                return 22;
+            case Tool::LaserPointerPen:
+                return 23;
+            case Tool::LaserPointerHighlighter:
+                return 24;
+            case Tool::Link:
+                return 25;
+            case Tool::Latex:
+                return 26;
+            case Tool::SmartSelect:
+                return 27;
+            case Tool::FloatingToolbox:
+                return 19;
+        }
+        return 0;
+    }
+
+    bool getPluginActionState(std::string_view action, prototype::PluginActionValue& value,
+                              std::string& error) const {
+        if (action == "select-tool") {
+            value = pluginSelectedToolState();
+            return true;
+        }
+        if (action == "grid-snapping") {
+            value = state.snapGridEnabled;
+            return true;
+        }
+        if (action == "position-highlighting") {
+            value = importedConfig.settings.highlightPosition;
+            return true;
+        }
+        if (action == "zoom") {
+            value = state.zoom;
+            return true;
+        }
+        if (action == "tool-color") {
+            std::array<double, 3> color = state.brush.color;
+            if (state.brush.tool == Tool::Text) {
+                color = state.textColor;
+            } else if (state.brush.tool == Tool::Latex) {
+                color = latexBrush.color;
+            } else if (state.brush.tool == Tool::Pen) {
+                color = penBrush.color;
+            } else if (state.brush.tool == Tool::Highlighter) {
+                color = highlightBrush.color;
+            } else if (state.brush.tool == Tool::LaserPointerPen) {
+                color = laserPenBrush.color;
+            } else if (state.brush.tool == Tool::LaserPointerHighlighter) {
+                color = laserHighlighterBrush.color;
+            } else if (state.brush.tool == Tool::Eraser || state.brush.tool == Tool::Hand ||
+                       state.brush.tool == Tool::Link || state.brush.tool == Tool::PlayObject ||
+                       state.brush.tool == Tool::VerticalSpace || state.brush.tool == Tool::FloatingToolbox) {
+                // The master action state is an opaque 0xAARRGGBB Color even while disabled.
+                value = std::int64_t{0xff000000U};
+                return true;
+            }
+
+            const auto channel = [](double component) {
+                return static_cast<std::uint32_t>(std::lround(std::clamp(component, 0.0, 1.0) * 255.0));
+            };
+            const auto red = channel(color[0]);
+            const auto green = channel(color[1]);
+            const auto blue = channel(color[2]);
+            value = static_cast<std::int64_t>(0xff000000U | (red << 16U) | (green << 8U) | blue);
+            return true;
+        }
+
+        error = "Action state is unavailable in this GTK 4 host: " + std::string(action);
+        return false;
+    }
+
     bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
                                  std::string& error) {
         if (action == "position-highlighting") {
@@ -4386,6 +4485,47 @@ private:
         const int displayDpi = pluginDisplayDpi();
         require(displayDpi >= 36 && displayDpi <= 720,
                 "app.getDisplayDpi did not return a bounded monitor DPI value or fallback");
+        prototype::PluginActionValue actionState;
+        std::string actionStateError;
+        require(getPluginActionState("zoom", actionState, actionStateError) &&
+                        std::holds_alternative<double>(actionState) &&
+                        std::abs(std::get<double>(actionState) - state.zoom) < 1e-9,
+                actionStateError.empty() ? "app.getActionState did not report the current zoom" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("grid-snapping", actionState, actionStateError) &&
+                        std::holds_alternative<bool>(actionState) &&
+                        std::get<bool>(actionState) == state.snapGridEnabled,
+                actionStateError.empty() ? "app.getActionState did not report grid snapping" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("position-highlighting", actionState, actionStateError) &&
+                        std::holds_alternative<bool>(actionState) &&
+                        std::get<bool>(actionState) == importedConfig.settings.highlightPosition,
+                actionStateError.empty() ? "app.getActionState did not report position highlighting" :
+                                           actionStateError.c_str());
+        require(getPluginActionState("select-tool", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) == pluginSelectedToolState(),
+                actionStateError.empty() ? "app.getActionState did not report the current tool" :
+                                           actionStateError.c_str());
+        if (state.brush.tool == Tool::Pen) {
+            const auto drawingMode = state.drawingMode;
+            state.drawingMode = prototype::DrawingMode::Rectangle;
+            const bool reportsPenDuringShapeDrawing =
+                    getPluginActionState("select-tool", actionState, actionStateError) &&
+                    std::holds_alternative<std::int64_t>(actionState) && std::get<std::int64_t>(actionState) == 1;
+            state.drawingMode = drawingMode;
+            require(reportsPenDuringShapeDrawing,
+                    "app.getActionState select-tool confused the Pen tool with a drawing-mode action");
+        }
+        require(getPluginActionState("tool-color", actionState, actionStateError) &&
+                        std::holds_alternative<std::int64_t>(actionState) &&
+                        std::get<std::int64_t>(actionState) >= 0 &&
+                        std::get<std::int64_t>(actionState) <= 0xffffffff,
+                actionStateError.empty() ? "app.getActionState did not report the active tool color" :
+                                           actionStateError.c_str());
+        require(!getPluginActionState("missing-action-state", actionState, actionStateError) &&
+                        actionStateError.find("unavailable") != std::string::npos,
+                "app.getActionState did not reject an unsupported action state");
         require(nativeSession && !nativeSession->pdfPageLabels.empty(),
                 "Plugin integration fixture has no PDF page labels");
         const auto refreshPageRevision = state.revision();
