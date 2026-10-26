@@ -5,12 +5,16 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <map>
+#include <regex>
 #include <set>
 #include <system_error>
 
 #include <glib.h>
+#include <pango/pangocairo.h>
 
 extern "C" {
 #include <lauxlib.h>
@@ -78,6 +82,64 @@ std::vector<std::filesystem::path> splitPaths(std::string_view value) {
         start = end + 1;
     }
     return paths;
+}
+
+std::vector<std::string> listFontFamilies(std::string& error) {
+    PangoFontMap* fontMap = pango_cairo_font_map_get_default();
+    if (!fontMap) {
+        error = "Failed to get font map";
+        return {};
+    }
+
+    PangoFontFamily** pangoFamilies = nullptr;
+    int familyCount = 0;
+    pango_font_map_list_families(fontMap, &pangoFamilies, &familyCount);
+
+    std::vector<std::string> families;
+    families.reserve(static_cast<std::size_t>(std::max(0, familyCount)));
+    for (int index = 0; index < familyCount; ++index) {
+        const char* name = pango_font_family_get_name(pangoFamilies[index]);
+        if (name) {
+            families.emplace_back(name);
+        }
+    }
+    g_free(pangoFamilies);
+    return families;
+}
+
+bool isFontDescriptionAvailable(std::string_view description, const std::vector<std::string>& families) {
+    if (description.empty()) {
+        return false;
+    }
+
+    PangoFontMap* fontMap = pango_cairo_font_map_get_default();
+    if (!fontMap) {
+        return false;
+    }
+
+    PangoContext* context = pango_font_map_create_context(fontMap);
+    if (!context) {
+        return false;
+    }
+
+    const std::string descriptionText(description);
+    PangoFontDescription* parsed = pango_font_description_from_string(descriptionText.c_str());
+    if (!parsed) {
+        g_object_unref(context);
+        return false;
+    }
+
+    const char* family = pango_font_description_get_family(parsed);
+    const bool familyAvailable = !family || std::find(families.begin(), families.end(), family) != families.end();
+    PangoFont* font = familyAvailable ? pango_font_map_load_font(fontMap, context, parsed) : nullptr;
+    const bool available = font != nullptr;
+
+    if (font) {
+        g_object_unref(font);
+    }
+    pango_font_description_free(parsed);
+    g_object_unref(context);
+    return available;
 }
 
 std::string normalizedPath(const std::filesystem::path& path) {
@@ -386,6 +448,9 @@ int luaOpenApp(lua_State* state) {
             {"getDisplayDpi", LuaPluginRuntime::luaGetDisplayDpi},
             {"getPageLabel", LuaPluginRuntime::luaGetPageLabel},
             {"getColorPalette", LuaPluginRuntime::luaGetColorPalette},
+            {"getFonts", LuaPluginRuntime::luaGetFonts},
+            {"getFont", LuaPluginRuntime::luaGetFont},
+            {"setFont", LuaPluginRuntime::luaSetFont},
             {"getScrollPos", LuaPluginRuntime::luaGetScrollPos},
             {"scrollToPage", LuaPluginRuntime::luaScrollToPage},
             {"scrollToPos", LuaPluginRuntime::luaScrollToPos},
@@ -977,6 +1042,51 @@ bool LuaPluginRuntime::getColorPalette(std::vector<PluginPaletteColor>& palette,
     return true;
 }
 
+bool LuaPluginRuntime::getFonts(PluginFontList& fonts, std::string& error) const {
+    fonts.families = listFontFamilies(error);
+    if (!error.empty()) {
+        return false;
+    }
+
+    PluginFont current;
+    if (!getFont(current, error)) {
+        return false;
+    }
+
+    const auto found = std::find(fonts.families.begin(), fonts.families.end(), current.name);
+    if (found != fonts.families.end()) {
+        fonts.current = static_cast<std::size_t>(std::distance(fonts.families.begin(), found)) + 1;
+    } else {
+        fonts.current.reset();
+    }
+    return true;
+}
+
+bool LuaPluginRuntime::getFont(PluginFont& font, std::string& error) const {
+    if (!host.getFont) {
+        error = "Text font queries are unavailable in this GTK 4 host";
+        return false;
+    }
+    font = host.getFont();
+    if (!std::isfinite(font.size) || font.size <= 0) {
+        error = "The GTK 4 host returned an invalid text font";
+        return false;
+    }
+    return true;
+}
+
+bool LuaPluginRuntime::setFont(const PluginFont& font, std::string& error) {
+    if (!host.setFont) {
+        error = "Text font changes are unavailable in this GTK 4 host";
+        return false;
+    }
+    if (!std::isfinite(font.size) || font.size <= 0) {
+        error = "Font size must be a finite positive number";
+        return false;
+    }
+    return host.setFont(font, error);
+}
+
 bool LuaPluginRuntime::getScrollPosition(PluginScrollPosition& position, std::string& error) const {
     if (!host.getScrollPosition) {
         error = "Scroll position queries are unavailable in this GTK 4 host";
@@ -1548,6 +1658,150 @@ int LuaPluginRuntime::luaGetColorPalette(lua_State* state) {
         lua_rawseti(state, -2, static_cast<lua_Integer>(index + 1));
     }
     return 1;
+}
+
+int LuaPluginRuntime::luaGetFonts(lua_State* state) {
+    lua_settop(state, 0);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    PluginFontList fonts;
+    std::string error;
+    if (!plugin->runtime->getFonts(fonts, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading available fonts failed" : error.c_str());
+    }
+
+    lua_createtable(state, 0, 2);
+    lua_createtable(state, static_cast<int>(fonts.families.size()), 0);
+    for (std::size_t index = 0; index < fonts.families.size(); ++index) {
+        lua_pushlstring(state, fonts.families[index].data(), fonts.families[index].size());
+        lua_rawseti(state, -2, static_cast<lua_Integer>(index + 1));
+    }
+    lua_setfield(state, -2, "families");
+    if (fonts.current) {
+        lua_pushinteger(state, static_cast<lua_Integer>(*fonts.current));
+    } else {
+        lua_pushnil(state);
+    }
+    lua_setfield(state, -2, "current");
+    return 1;
+}
+
+int LuaPluginRuntime::luaGetFont(lua_State* state) {
+    lua_settop(state, 0);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    PluginFont font;
+    std::string error;
+    if (!plugin->runtime->getFont(font, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading the text font failed" : error.c_str());
+    }
+
+    lua_createtable(state, 0, 2);
+    lua_pushlstring(state, font.name.data(), font.name.size());
+    lua_setfield(state, -2, "name");
+    lua_pushnumber(state, font.size);
+    lua_setfield(state, -2, "size");
+    return 1;
+}
+
+int LuaPluginRuntime::luaSetFont(lua_State* state) {
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+    if (lua_gettop(state) < 1) {
+        return luaL_error(state, "setFont requires one argument (string or table)");
+    }
+
+    PluginFont font;
+    if (lua_isstring(state, 1)) {
+        const char* fontDescription = luaL_checkstring(state, 1);
+        std::string fontMapError;
+        const auto families = listFontFamilies(fontMapError);
+        if (!fontMapError.empty() || !isFontDescriptionAvailable(fontDescription, families)) {
+            return luaL_error(state, "Font description '%s' is not valid or not available on this system",
+                              fontDescription);
+        }
+
+        static const std::regex descriptionPattern{"^(.*) (\\d+[.]?\\d*)$"};
+        std::smatch match;
+        const std::string descriptionText(fontDescription);
+        if (!std::regex_search(descriptionText, match, descriptionPattern)) {
+            return luaL_error(state, "Invalid font specification");
+        }
+        font.name = match[1].str();
+        font.size = std::strtod(match[2].str().c_str(), nullptr);
+        if (font.name.empty() || !std::isfinite(font.size) || font.size <= 0) {
+            return luaL_error(state, "Invalid font specification");
+        }
+    } else if (lua_istable(state, 1)) {
+        lua_getfield(state, 1, "name");
+        lua_getfield(state, 1, "size");
+        const bool hasName = !lua_isnil(state, -2);
+        const bool hasSize = !lua_isnil(state, -1);
+        if (!hasName && !hasSize) {
+            lua_pop(state, 2);
+            return luaL_error(state, "Font table must contain at least 'name' or 'size' field");
+        }
+
+        std::string error;
+        if (!plugin->runtime->getFont(font, error)) {
+            lua_pop(state, 2);
+            return luaL_error(state, "%s", error.empty() ? "Reading the text font failed" : error.c_str());
+        }
+
+        if (hasName) {
+            if (!lua_isstring(state, -2)) {
+                lua_pop(state, 2);
+                return luaL_error(state, "Font name must be a string");
+            }
+            std::size_t nameLength = 0;
+            const char* name = lua_tolstring(state, -2, &nameLength);
+            if (nameLength == 0) {
+                lua_pop(state, 2);
+                return luaL_error(state, "Font name cannot be empty");
+            }
+            font.name.assign(name, nameLength);
+
+            std::string fontMapError;
+            const auto families = listFontFamilies(fontMapError);
+            if (!fontMapError.empty() || std::find(families.begin(), families.end(), font.name) == families.end()) {
+                lua_pop(state, 2);
+                return luaL_error(state, "Font family '%s' is not available on this system", font.name.c_str());
+            }
+        }
+
+        if (hasSize) {
+            if (!lua_isnumber(state, -1)) {
+                lua_pop(state, 2);
+                return luaL_error(state, "Font size must be a number");
+            }
+            font.size = lua_tonumber(state, -1);
+            if (!std::isfinite(font.size)) {
+                lua_pop(state, 2);
+                return luaL_error(state, "Font size must be a finite number");
+            }
+            if (font.size <= 0) {
+                lua_pop(state, 2);
+                return luaL_error(state, "Font size must be positive");
+            }
+        }
+        lua_pop(state, 2);
+    } else {
+        return luaL_error(state, "Font must be either a string or a table with 'name' and/or 'size' fields");
+    }
+
+    std::string error;
+    if (!plugin->runtime->setFont(font, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Changing the text font failed" : error.c_str());
+    }
+    return 0;
 }
 
 int LuaPluginRuntime::luaGetFolder(lua_State* state) {
