@@ -229,8 +229,11 @@ These user-requested follow-ups remain:
   was 19.17 ms. The append path copied about 9.7 MB for Pen and 10.1 MB for
   Highlighter. This did not reproduce the reported slowdown, but input samples
   remain synthetic and do not cover a physical pen or longer real-world
-  sessions. The 421 ms measurement has not been repeated; editable-page
-  snapshots and hardware-renderer measurements remain outstanding.
+  sessions. Phase 126 repeated the run against the same PDF: Pen p95 was
+  16.78 ms (24.95 ms max), Highlighter p95 was 17.79 ms (22.74 ms max), and
+  Smart Select drag p95 was 16.35 ms. The 421 ms standalone debug measurement
+  has not been repeated; editable-page snapshots and hardware-renderer
+  measurements remain outstanding.
 - A page-raster task previously failed as a whole if writing one of its optional
   medium/low-detail copies failed, discarding an already-rendered primary page.
   Optional tiers now fail independently and are omitted while the requested
@@ -239,8 +242,11 @@ These user-requested follow-ups remain:
   also include the subprocess exit status or signal. A fault-injection test
   verifies that a blocked medium tier preserves full/low rasters and that a
   blocked primary output reports its tier/path. The original intermittent
-  failure was not reproduced on the current machine, so the underlying cause
-  of the user's prior environment-specific failures remains unconfirmed.
+  failure was not reproduced on the current machine. Phase 126 also opened the
+  user's 775-page PDF in private Cage, rendered the initial sidebar thumbnail,
+  and completed fast-scroll thumbnail rendering without a worker error. The
+  private harness uses its own temporary directory, so the cause of the user's
+  prior environment-specific write failures remains unconfirmed.
 - Phase 122 centralizes GTK4 canvas cursors around the active tool and pointer
   action. The private Cage `--cursor-only` check reads the mapped widget cursor
   after synthetic motion over editable text, selection move/resize/rotate
