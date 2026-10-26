@@ -1335,44 +1335,121 @@ void Prototype::verifyScrollMotionIntegration() {
 
 void Prototype::verifySmartSelectPerformanceIntegration() {
     require(canvas && mouse, "Smart Select performance verification needs the mapped canvas drag controller");
+    if (document && pageList && splitView) {
+        adw_overlay_split_view_set_show_sidebar(splitView, true);
+        const auto sidebarDeadline = g_get_monotonic_time() + 10000000;
+        while ((!gtk_widget_get_mapped(GTK_WIDGET(pageList)) || !thumbnailRenderer.find(0) ||
+                thumbnailRenderer.pendingCount() > 0 || thumbnailRenderer.activeCount() > 0) &&
+               g_get_monotonic_time() < sidebarDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(gtk_widget_get_mapped(GTK_WIDGET(pageList)) && thumbnailRenderer.find(0) &&
+                        thumbnailRenderer.pendingCount() == 0 && thumbnailRenderer.activeCount() == 0,
+                "The Pages sidebar did not finish rendering visible PDF thumbnails before the ink measurement");
+    }
     const int viewportWidth = gtk_widget_get_width(canvas);
     const int viewportHeight = gtk_widget_get_height(canvas);
     require(viewportWidth > 0 && viewportHeight > 0, "Smart Select performance canvas is not mapped");
 
-    state.setPages({{600, 800}});
-    pageCount = 1;
+    require(options.pdf.empty() || (document && pageCount > 0),
+            "The requested PDF was not loaded for the ink performance check");
+    if (!document || pageCount <= 0) {
+        state.setPages({{600, 800}});
+        pageCount = 1;
+    }
+    CanvasLayoutSettings testLayout;
+    state.setLayoutSettings(testLayout);
     state.selectActivePage(0);
-    state.zoom = 1.0;
-    state.offsetX = (viewportWidth - state.layoutWidth() * state.zoom) / 2.0;
-    state.offsetY = (viewportHeight - state.layoutHeight() * state.zoom) / 2.0;
+    const auto pageSize = state.pageSize(0);
+    require(std::isfinite(pageSize.width) && std::isfinite(pageSize.height) && pageSize.width > 0 &&
+                    pageSize.height > 0,
+            "Smart Select performance page has invalid dimensions");
+    state.zoom =
+            std::clamp(std::min({0.75, viewportWidth / pageSize.width, viewportHeight / pageSize.height}), 0.1, 8.0);
+    state.offsetX = (viewportWidth - pageSize.width * state.zoom) / 2.0 - state.pageLeft(0) * state.zoom;
+    state.offsetY = (viewportHeight - pageSize.height * state.zoom) / 2.0 - state.pageTop(0) * state.zoom;
     state.constrainScrollOffsets(viewportWidth, viewportHeight);
     state.syncActivePage(viewportWidth, viewportHeight);
     fitMode = false;
     fitted = true;
-    selectTool(Tool::SmartSelect);
 
     constexpr size_t strokeCount = 40;
     constexpr size_t pointsPerStroke = 128;
+    constexpr size_t pointsPerFrame = 16;
     state.ink.clear();
-    state.ink.reserve(strokeCount);
-    for (size_t strokeIndex = 0; strokeIndex < strokeCount; ++strokeIndex) {
-        prototype::Ink stroke;
-        stroke.page = 0;
-        stroke.layerId = state.activeLayerId(0);
-        stroke.originLayer = state.activeLayerOrigin(0);
-        stroke.layerOrder = strokeIndex;
-        stroke.brush = {Tool::Highlighter, {1, 0.85, 0.05}, 10};
-        stroke.points.reserve(pointsPerStroke);
-        for (size_t pointIndex = 0; pointIndex < pointsPerStroke; ++pointIndex) {
-            const double progress = static_cast<double>(pointIndex) / (pointsPerStroke - 1);
-            const double x = 70 + progress * 460;
-            const double y = 80 + strokeIndex * 16 + std::sin(progress * 8 * G_PI) * 3;
-            stroke.points.push_back({x, y, 1});
+    state.ink.reserve(strokeCount * 2);
+    inkRasterCache.clear();
+
+    const auto waitForFrame = [this](int previousPaints, long long started, std::string_view description) {
+        const auto deadline = started + 500000;
+        while (paints <= previousPaints && g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(500);
         }
-        state.ink.push_back(std::move(stroke));
+        const auto errorMessage = std::string(description) + " did not produce a GTK canvas frame";
+        require(paints > previousPaints, errorMessage.c_str());
+        return (g_get_monotonic_time() - started) / 1000.0;
+    };
+    const auto measureInkTool = [&](Tool tool, std::vector<double>& frameLatencyMs) {
+        selectTool(tool);
+        const size_t firstStroke = state.ink.size();
+        const size_t bytesCopiedBefore = inkRasterCache.stats().bytesCopied;
+        frameLatencyMs.reserve(strokeCount * pointsPerStroke / pointsPerFrame);
+
+        for (size_t strokeIndex = 0; strokeIndex < strokeCount; ++strokeIndex) {
+            const double verticalProgress = static_cast<double>(strokeIndex) / (strokeCount - 1);
+            const double localY = pageSize.height * (0.1 + verticalProgress * 0.8);
+            const auto start = state.pageScreenPoint(0, pageSize.width * 0.12, localY);
+            const auto end = state.pageScreenPoint(0, pageSize.width * 0.88, localY);
+            g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+            require(input.active(), "The mouse drawing controller did not begin the ink stroke");
+
+            for (size_t framePoint = 0; framePoint < pointsPerStroke; framePoint += pointsPerFrame) {
+                const int previousPaints = paints;
+                const auto started = g_get_monotonic_time();
+                const size_t endPoint = std::min(pointsPerStroke, framePoint + pointsPerFrame);
+                for (size_t pointIndex = framePoint; pointIndex < endPoint; ++pointIndex) {
+                    const double progress = static_cast<double>(pointIndex + 1) / pointsPerStroke;
+                    const double dx = (end.x - start.x) * progress;
+                    const double dy = (end.y - start.y) * progress + std::sin(progress * 8 * G_PI) * 2.0;
+                    g_signal_emit_by_name(mouse, "drag-update", dx, dy);
+                }
+                frameLatencyMs.push_back(waitForFrame(previousPaints, started, "Ink drawing"));
+            }
+
+            g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+            const int previousPaints = paints;
+            const auto started = g_get_monotonic_time();
+            waitForFrame(previousPaints, started, "Finishing an ink stroke");
+            require(state.ink.size() == firstStroke + strokeIndex + 1,
+                    "The mouse drawing controller did not commit the expected ink stroke");
+        }
+
+        const size_t bytesCopied = inkRasterCache.stats().bytesCopied - bytesCopiedBefore;
+        std::sort(frameLatencyMs.begin(), frameLatencyMs.end());
+        const auto p95Index = (frameLatencyMs.size() * 95 + 99) / 100 - 1;
+        const std::array<double, 3> summary{frameLatencyMs[frameLatencyMs.size() / 2], frameLatencyMs[p95Index],
+                                            frameLatencyMs.back()};
+        return std::pair{summary, bytesCopied};
+    };
+
+    std::vector<double> penFrameLatencyMs;
+    const auto [penLatency, penBytesCopied] = measureInkTool(Tool::Pen, penFrameLatencyMs);
+    std::vector<double> highlighterFrameLatencyMs;
+    const size_t highlighterStart = state.ink.size();
+    const auto [highlighterLatency, highlighterBytesCopied] =
+            measureInkTool(Tool::Highlighter, highlighterFrameLatencyMs);
+    require(state.ink.size() == highlighterStart + strokeCount,
+            "The Highlighter drawing performance fixture did not commit all strokes");
+    capture("smart-select-performance-ink");
+
+    state.selected.clear();
+    for (size_t i = highlighterStart; i < state.ink.size(); ++i) {
+        state.selected.push_back(i);
     }
-    state.selectAllOnPage();
     require(state.selected.size() == strokeCount, "Smart Select performance fixture did not select every stroke");
+    selectTool(Tool::SmartSelect);
     update();
     capture("smart-select-performance-selected");
 
@@ -1408,10 +1485,22 @@ void Prototype::verifySmartSelectPerformanceIntegration() {
     const double medianMs = frameLatencyMs[frameLatencyMs.size() / 2];
     const double p95Ms = frameLatencyMs[(frameLatencyMs.size() * 95 + 99) / 100 - 1];
     const double maxMs = frameLatencyMs.back();
-    require(p95Ms < 100 && maxMs < 250,
-            "Smart Select drag exceeded the 100 ms p95 / 250 ms maximum-frame responsiveness limit");
+    std::cout << "RESULT: GTK4 live ink frame latency pen_median_ms=" << penLatency[0]
+              << " pen_p95_ms=" << penLatency[1] << " pen_max_ms=" << penLatency[2]
+              << " pen_cache_bytes_copied=" << penBytesCopied << " highlighter_median_ms=" << highlighterLatency[0]
+              << " highlighter_p95_ms=" << highlighterLatency[1] << " highlighter_max_ms=" << highlighterLatency[2]
+              << " highlighter_cache_bytes_copied=" << highlighterBytesCopied
+              << " (40 strokes per tool, 128 points each)\n";
     std::cout << "PASS: GTK4 Smart Select drag raster-cache frame latency median_ms=" << medianMs << " p95_ms=" << p95Ms
               << " max_ms=" << maxMs << " (40 highlighter strokes, 128 points each)\n";
+    if (options.pdf.empty()) {
+        require(penLatency[1] < 100 && penLatency[2] < 250,
+                "Pen drawing exceeded the 100 ms p95 / 250 ms frame responsiveness limit");
+        require(highlighterLatency[1] < 100 && highlighterLatency[2] < 250,
+                "Highlighter drawing exceeded the 100 ms p95 / 250 ms frame responsiveness limit");
+        require(p95Ms < 100 && maxMs < 250,
+                "Smart Select drag exceeded the 100 ms p95 / 250 ms maximum-frame responsiveness limit");
+    }
 }
 
 void Prototype::verifyPenLineStyleIntegration() {
