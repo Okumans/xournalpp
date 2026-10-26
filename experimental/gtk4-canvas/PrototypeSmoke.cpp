@@ -498,11 +498,25 @@ gboolean Prototype::smoke() {
                                              }),
                         "Text tool did not exclusively show its selected state");
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), 24.0);
+                auto* textSettings = gtk_widget_get_settings(textEditor->widget());
+                g_object_get(textSettings, "gtk-cursor-aspect-ratio", &smokeCursorAspectRatioBeforeTextEditor, nullptr);
                 const auto createAt = state.pageScreenPoint(0, blank->x, blank->y);
                 g_signal_emit_by_name(textClick, "released", 1, createAt.x, createAt.y);
                 require(textEditor->active(), "Text tool click did not open an inline editor");
+                int initialEditorHeight = 0;
+                gtk_widget_get_size_request(textEditor->widget(), &smokeTextEditorInitialWidth, &initialEditorHeight);
+                gdouble activeCursorAspectRatio = 0;
+                g_object_get(textSettings, "gtk-cursor-aspect-ratio", &activeCursorAspectRatio, nullptr);
+                require(smokeTextEditorInitialWidth >= 40 && smokeTextEditorInitialWidth <= 64 &&
+                                initialEditorHeight >= 24 && activeCursorAspectRatio >= 0.3,
+                        "A new text editor did not start compact with a visible caret");
                 auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
                 gtk_text_buffer_set_text(buffer, "GTK rich π", -1);
+                int liveEditorWidth = 0;
+                int liveEditorHeight = 0;
+                gtk_widget_get_size_request(textEditor->widget(), &liveEditorWidth, &liveEditorHeight);
+                require(liveEditorWidth > smokeTextEditorInitialWidth && liveEditorHeight >= 24,
+                        "The inline text box did not grow with its live text layout");
                 GtkTextIter selectionStart;
                 GtkTextIter selectionEnd;
                 gtk_text_buffer_get_bounds(buffer, &selectionStart, &selectionEnd);
@@ -527,10 +541,37 @@ gboolean Prototype::smoke() {
         }
         case 9: {
             require(textEditor->active(), "Inline text editor closed before its render capture");
+            int requestedWidth = 0;
+            int requestedHeight = 0;
+            gtk_widget_get_size_request(textEditor->widget(), &requestedWidth, &requestedHeight);
+            const auto layoutItem = textEditor->layoutItem();
+            const auto [naturalWidth, naturalHeight] = prototype::textNaturalSize(layoutItem);
+            const auto screen = state.pageScreenPoint(layoutItem.page, layoutItem.x, layoutItem.y);
+            const double availableWidth = std::max(40.0, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - 8.0);
+            const double contentWidth =
+                    layoutItem.wrapWidth >= 0 ? layoutItem.wrapWidth * state.zoom : naturalWidth * state.zoom;
+            const int expectedWidth = static_cast<int>(std::ceil(std::clamp(contentWidth + 8.0, 40.0, availableWidth)));
+            const int expectedHeight = static_cast<int>(std::ceil(std::max(24.0, naturalHeight * state.zoom + 6.0)));
+            gdouble activeCursorAspectRatio = 0;
+            g_object_get(gtk_widget_get_settings(textEditor->widget()), "gtk-cursor-aspect-ratio",
+                         &activeCursorAspectRatio, nullptr);
+            require(requestedWidth == expectedWidth && requestedHeight == expectedHeight &&
+                            requestedWidth > smokeTextEditorInitialWidth && activeCursorAspectRatio >= 0.3,
+                    "Inline text editor geometry or active caret sizing does not match the live Pango layout");
             capture("text-editor");
             auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+            GtkTextIter caret;
+            gtk_text_buffer_get_end_iter(buffer, &caret);
+            gtk_text_buffer_place_cursor(buffer, &caret);
+            gtk_widget_grab_focus(textEditor->widget());
+            capture("text-editor-caret", textEditor->widget(), true);
             const auto newTextIndex = state.texts.size();
             finishTextEditing();
+            gdouble restoredCursorAspectRatio = 0;
+            g_object_get(gtk_widget_get_settings(textEditor->widget()), "gtk-cursor-aspect-ratio",
+                         &restoredCursorAspectRatio, nullptr);
+            require(std::abs(restoredCursorAspectRatio - smokeCursorAspectRatioBeforeTextEditor) < 1e-6,
+                    "Finishing inline text editing did not restore the system caret setting");
             require(state.texts.size() == newTextIndex + 1 && state.texts.back().text == "GTK rich π" &&
                             state.texts.back().fontSize == 24.0 && !state.texts.back().styleRuns.empty() &&
                             state.texts.back().styleRuns[0].color == 0xffd02010U &&

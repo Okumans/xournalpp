@@ -218,13 +218,15 @@ void Prototype::updateTextEditorPosition() {
         return;
     }
     textEditor->setZoom(state.zoom);
-    const auto screen = state.pageScreenPoint(item->page, item->x, item->y);
-    const auto [measuredWidth, measuredHeight] = prototype::measureText(*item);
+    const auto layoutItem = textEditor->layoutItem();
+    const auto screen = state.pageScreenPoint(layoutItem.page, layoutItem.x, layoutItem.y);
+    const auto [naturalWidth, naturalHeight] = prototype::textNaturalSize(layoutItem);
     const double availableWidth = std::max(40.0, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - 8.0);
-    const double requestedWidth = item->wrapWidth >= 0 ? item->wrapWidth * state.zoom + 16.0 :
-                                                         std::max(180.0, (measuredWidth + 20.0) * state.zoom);
-    const int width = static_cast<int>(std::clamp(requestedWidth, 40.0, availableWidth));
-    const int height = static_cast<int>(std::max(36.0, (measuredHeight + 16.0) * state.zoom));
+    const double contentWidth =
+            layoutItem.wrapWidth >= 0 ? layoutItem.wrapWidth * state.zoom : naturalWidth * state.zoom;
+    const double requestedWidth = contentWidth + 8.0;
+    const int width = static_cast<int>(std::ceil(std::clamp(requestedWidth, 40.0, availableWidth)));
+    const int height = static_cast<int>(std::ceil(std::max(24.0, naturalHeight * state.zoom + 6.0)));
     textEditor->position(screen.x, screen.y, width, height);
 }
 

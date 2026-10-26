@@ -1520,7 +1520,7 @@ def inside(args):
         screenshots = ("initial", "ink", "tools", "shift-strokes", "eraser-shift", "eraser-split", "eraser-whiteout", "zoom", "drawing-controls",
                        "shape-tools", "shape-recognized", "spline-tools", "narrow", "sidebar")
         if args.worker:
-            screenshots += ("text-editor", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
+            screenshots += ("text-editor", "text-editor-caret", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",
@@ -1650,6 +1650,12 @@ def inside(args):
         narrow_width = struct.unpack(">I", (output / "narrow.png").read_bytes()[16:20])[0]
         if not 0 < narrow_width < initial_width:
             raise RuntimeError("Screenshot did not capture a narrower viewport")
+    if args.canvas_smoke_only:
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"canvas-smoke": results},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.worker:
         verify_crash_recovery(args, evidence, copy, root)
         verify_settings_import(args, evidence, copy)
@@ -1690,6 +1696,7 @@ def main():
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pen-line-style-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
@@ -1705,6 +1712,8 @@ def main():
     args.evidence.mkdir(parents=True, exist_ok=True)
     if args.pdf_text_selection_only and not args.worker:
         raise RuntimeError("PDF text annotation persistence checks require --worker")
+    if args.canvas_smoke_only and not args.worker:
+        raise RuntimeError("Canvas smoke requires --worker to exercise the text editor")
     if args.link_only and not args.worker:
         raise RuntimeError("Native Link tool checks require --worker")
     if args.laser_only and not args.worker:
@@ -1782,6 +1791,8 @@ def main():
             command.append("--plugins-only")
         if args.search_only:
             command.append("--search-only")
+        if args.canvas_smoke_only:
+            command.append("--canvas-smoke-only")
         if args.pen_line_style_only:
             command.append("--pen-line-style-only")
         if args.beamer_only:
