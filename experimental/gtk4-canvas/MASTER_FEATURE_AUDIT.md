@@ -87,9 +87,11 @@ Continue in this order after the active ink-cache slice:
    synthetic deltas first, then verify the behavior on the user's physical
    touchpad; synthetic input alone is not physical-device parity.
 3. Finish the other deferred user reports below, including ink frame-time on
-   the user's PDF, search highlight geometry/responsiveness, raster-worker
-   failures, Smart Select drag performance, cursor feedback, and remaining
-   Eraser parity. Keep the audit updated as each issue is verified.
+   the user's PDF, long-document Search responsiveness, raster-worker failures,
+   Smart Select drag performance, cursor feedback, and remaining Eraser parity.
+   Search highlight geometry has now been visually checked against the user's
+   PDF in private Cage; keep the audit updated as each remaining issue is
+   verified.
 4. Migrate native `.xopp` loading and saving into the GTK 4 process, reusing the
    existing document model/serialization where possible and removing the
    separate GTK 3 worker dependency. Record deliberate compatibility changes
@@ -103,8 +105,13 @@ Continue in this order after the active ink-cache slice:
 
 Document search must remain Enter-driven: typing edits the query and clears
 stale results, while Enter or an explicit next/previous action starts a
-page-at-a-time idle scan. Phase 109 implements this; keep it covered by the
-focused private Search check while addressing the other search issues.
+page-at-a-time idle scan. Phase 109 implements this. A focused private Cage
+check now accepts a real PDF, query, and zero-based page, waits for a valid
+full-detail background raster, verifies the result rectangles against
+Poppler, and captures the visible overlay. On the user's 775-page PDF, searching
+for `computer` on page 12 found eight matches; the captured boxes align with the
+chapter heading and body text. This verifies geometry on that document, while
+long-document search latency remains a separate follow-up.
 
 These user-requested follow-ups remain:
 

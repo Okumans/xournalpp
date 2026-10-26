@@ -930,7 +930,99 @@ void Prototype::verifySidebarStartupIntegration() {
     std::cout << "PASS: GTK4 LOD cache limits trim rasters and zoom thresholds select visible detail\n";
 }
 
+void Prototype::verifySearchOverlayGeometry() {
+    const int pageNumber = options.verifySearchPage;
+    const std::string& query = options.verifySearchQuery;
+    require(!query.empty() && pageNumber >= 0 && pageNumber < pageCount,
+            "Search geometry verification needs a query and an in-range PDF page");
+    require(searchController.entry() && searchController.widget(),
+            "Search geometry verification needs the GTK search bar");
+
+    const int originalPage = state.page;
+    navigateToPage(pageNumber);
+    openSearchBar();
+    require(gtk_search_bar_get_search_mode(GTK_SEARCH_BAR(searchController.widget())),
+            "PDF Search geometry verification could not open the search bar");
+
+    const auto mappedDeadline = g_get_monotonic_time() + 750000;
+    while ((!gtk_widget_get_mapped(searchController.widget()) || gtk_widget_get_width(searchController.widget()) <= 0 ||
+            gtk_widget_get_height(searchController.widget()) <= 0) &&
+           g_get_monotonic_time() < mappedDeadline) {
+        g_main_context_iteration(nullptr, false);
+        g_usleep(1000);
+    }
+    require(gtk_widget_get_mapped(searchController.widget()) && gtk_widget_get_width(searchController.widget()) > 0,
+            "PDF Search geometry entry did not map in the window");
+
+    gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), query.c_str());
+    searchNext();
+    const auto resultDeadline = g_get_monotonic_time() + 8000000;
+    const auto activeMatchOnPage = [this, pageNumber] {
+        const auto& active = searchController.activeMatch();
+        return active && *active < searchController.matches().size() &&
+               searchController.matches()[*active].page == pageNumber;
+    };
+    while (!activeMatchOnPage() && g_get_monotonic_time() < resultDeadline) {
+        g_main_context_iteration(nullptr, false);
+        g_usleep(1000);
+    }
+    require(activeMatchOnPage(), "PDF Search did not find a match on the requested page");
+
+    auto* pdfPage = pdfPageForSearch(pageNumber);
+    require(pdfPage != nullptr, "PDF Search geometry verification could not access the source page");
+    double pageHeight = 0;
+    poppler_page_get_size(pdfPage, nullptr, &pageHeight);
+    GList* results = poppler_page_find_text(pdfPage, query.c_str());
+    std::vector<SearchMatch> expected;
+    for (GList* result = results; result; result = result->next) {
+        const auto* rectangle = static_cast<const PopplerRectangle*>(result->data);
+        if (!rectangle || !std::isfinite(rectangle->x1) || !std::isfinite(rectangle->y1) ||
+            !std::isfinite(rectangle->x2) || !std::isfinite(rectangle->y2)) {
+            continue;
+        }
+        expected.push_back({pageNumber, std::min(rectangle->x1, rectangle->x2),
+                            pageHeight - std::max(rectangle->y1, rectangle->y2), std::max(rectangle->x1, rectangle->x2),
+                            pageHeight - std::min(rectangle->y1, rectangle->y2)});
+    }
+    g_list_free_full(results, [](gpointer data) { poppler_rectangle_free(static_cast<PopplerRectangle*>(data)); });
+    g_object_unref(pdfPage);
+
+    std::vector<SearchMatch> actual;
+    for (const auto& match: searchController.matches()) {
+        if (match.page == pageNumber) {
+            actual.push_back(match);
+        }
+    }
+    require(!expected.empty() && actual.size() == expected.size(),
+            "PDF Search result count did not match Poppler's source-page matches");
+    for (size_t index = 0; index < expected.size(); ++index) {
+        const auto& want = expected[index];
+        const auto& got = actual[index];
+        require(std::abs(want.x0 - got.x0) < 0.1 && std::abs(want.y0 - got.y0) < 0.1 &&
+                        std::abs(want.x1 - got.x1) < 0.1 && std::abs(want.y1 - got.y1) < 0.1,
+                "PDF Search overlay rectangle differs from the source-page match coordinates");
+    }
+
+    const int deviceScale = canvas ? gtk_widget_get_scale_factor(canvas) : 1;
+    require(waitForCanvasRaster(pageNumber, canvasRenderScale(pageNumber, deviceScale), 15000),
+            "PDF Search geometry verification timed out waiting for the page background raster");
+    const auto* raster = canvasRenderer.find(pageNumber);
+    require(raster && raster->background && cairo_surface_status(raster->background.get()) == CAIRO_STATUS_SUCCESS,
+            "PDF Search geometry verification found no valid background raster to compare against");
+    waitForNextWindowFrame();
+    capture("search-pdf-geometry");
+    closeSearchBar();
+    navigateToPage(originalPage);
+    update();
+    std::cout << "PASS: GTK4 PDF Search overlay geometry matches Poppler page " << pageNumber + 1 << " ("
+              << expected.size() << " matches)\n";
+}
+
 void Prototype::verifySearchIntegration() {
+    if (!options.verifySearchQuery.empty()) {
+        verifySearchOverlayGeometry();
+        return;
+    }
     require(pageCount >= 2 && searchController.entry() && searchController.widget(),
             "Search integration needs the two-page PDF and GTK search bar");
     const int originalPage = state.page;

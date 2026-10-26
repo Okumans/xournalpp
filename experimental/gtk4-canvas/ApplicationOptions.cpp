@@ -60,6 +60,16 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
             options.verifyPlugins = true;
         } else if (argument == "--verify-search") {
             options.verifySearch = true;
+        } else if (argument == "--verify-search-query" && i + 1 < argc) {
+            options.verifySearchQuery = argv[++i];
+        } else if (argument == "--verify-search-page" && i + 1 < argc) {
+            const std::string_view raw = argv[++i];
+            int parsed = 0;
+            const auto [end, error] = std::from_chars(raw.data(), raw.data() + raw.size(), parsed);
+            if (error != std::errc{} || end != raw.data() + raw.size() || parsed < 0) {
+                throw std::runtime_error("Search verification page must be zero or greater");
+            }
+            options.verifySearchPage = parsed;
         } else if (argument == "--verify-scroll-motion") {
             options.verifyScrollMotion = true;
         } else if (argument == "--verify-smart-select-performance") {
@@ -99,7 +109,8 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
         } else {
             throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                      "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
-                                     "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
+                                     "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search "
+                                     "[--verify-search-query TEXT --verify-search-page PAGE]] "
                                      "[--verify-scroll-motion] "
                                      "[--verify-smart-select-performance] "
                                      "[--verify-sidebar-performance] [--verify-sidebar-startup] "
@@ -122,6 +133,9 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
     if (options.verifySearch && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                  !options.nativeDocument.empty() || !options.worker.empty())) {
         throw std::runtime_error("Search verification requires --smoke-dir and --pdf without --worker");
+    }
+    if (!options.verifySearchQuery.empty() && !options.verifySearch) {
+        throw std::runtime_error("Search verification query requires --verify-search");
     }
     if (options.verifyScrollMotion && (options.smokeDirectory.empty() || !options.pdf.empty() ||
                                        !options.nativeDocument.empty() || !options.worker.empty())) {
