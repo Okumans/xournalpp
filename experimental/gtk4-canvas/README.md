@@ -183,8 +183,10 @@ The `DRAW` token adds a synchronized mode dropdown with Freehand and all eight
 master drawing modes. `TOOL_FILL` is a synchronized toggle for Pen and
 Highlighter: it fills new strokes using each tool's imported opacity and applies
 fill changes to selected Pen/Highlighter strokes with undo support. Its enabled
-state and per-tool opacity persist in `gtk4-canvas.ini`; the separate
-`FILL_OPACITY` action and other unknown tokens remain disabled. Stylus side buttons
+state and per-tool opacity persist in `gtk4-canvas.ini`. `FILL_OPACITY` opens a
+modal live-preview chooser for the active Pen or Highlighter and saves the
+selected 5–100% opacity; plugins can open the same chooser with
+`app.activateAction("fill-opacity")`. Other unknown tokens remain disabled. Stylus side buttons
 can temporarily select Pen, Highlighter, Eraser, or Hand while held. Releasing a
 mapped button restores the toolbar tool. A Floating Toolbox mapping opens the panel at the pointer without
 changing the active tool. Secondary tools stay under More tools. The panel closes

@@ -351,7 +351,8 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
             raise RuntimeError("GTK 4 Preferences modified settings.xml or the imported toolbar.ini")
 
     for name in (
-            "main-tool-rail-default", "preferences-dialog", "preferences-latex", "preferences-input", "preferences-behavior", "preferences-toolbar",
+            "main-tool-rail-default", "preferences-dialog", "preferences-latex", "preferences-input",
+            "preferences-behavior", "preferences-toolbar",
             "preferences-edited", "preferences-reloaded"):
         path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
         if not path.is_file() or path.stat().st_size < 1000:
@@ -364,9 +365,10 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
                      "border-color=3232484847", "border-width=2",
                      "main-tool-rail=SMART_SELECT,TEXT,PEN,HAND", "row-1=SMART_SELECT,PEN,DRAW",
                      "row-2=ZOOM_SLIDER,DRAW_DOUBLE_ARROW,DRAW_COORDINATE_SYSTEM,DRAW_SPLINE,SHAPE_RECOGNIZER,RULER",
-                     "row-3=TOOL_FILL,FINE,DRAW_RECTANGLE,DRAW_ELLIPSE", "row-4=DRAW_ARROW",
-                     "[Tool Fill]", "pen-enabled=true", "pen-opacity=128", "highlighter-enabled=true",
-                     "highlighter-opacity=128",
+                     "row-3=TOOL_FILL,FINE,DRAW_RECTANGLE,DRAW_ELLIPSE",
+                     "row-4=DRAW_ARROW,FILL_OPACITY",
+                     "[Tool Fill]", "pen-enabled=true", "pen-opacity=163", "highlighter-enabled=true",
+                     "highlighter-opacity=102",
                      "[LaTeX]", "auto-check-dependencies=false", "use-external-editor=true",
                      "external-editor-auto-confirm=true", "temporary-file-extension=tex"):
         if expected not in stored:

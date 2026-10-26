@@ -3434,6 +3434,187 @@ private:
         return true;
     }
 
+    bool fillOpacityAvailable() const { return prototype::isFillableTool(state.brush.tool); }
+
+    bool setFillOpacity(Tool tool, int opacity, std::string& error) {
+        if (!prototype::isFillableTool(tool) || opacity < 0 || opacity > 255) {
+            error = "Fill opacity is available for Pen or Highlighter and must be between 0 and 255";
+            return false;
+        }
+
+        const auto previousSettings = importedConfig.settings;
+        const auto previousBrush = state.brush;
+        const auto previousPenBrush = penBrush;
+        const auto previousHighlightBrush = highlightBrush;
+        if (tool == Tool::Pen) {
+            importedConfig.settings.penFillOpacity = opacity;
+            penBrush.fillOpacity = opacity;
+        } else {
+            importedConfig.settings.highlighterFillOpacity = opacity;
+            highlightBrush.fillOpacity = opacity;
+        }
+        if (state.brush.tool == tool) {
+            state.brush.fillOpacity = opacity;
+        }
+
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            importedConfig.settings = previousSettings;
+            state.brush = previousBrush;
+            penBrush = previousPenBrush;
+            highlightBrush = previousHighlightBrush;
+            update();
+            return false;
+        }
+
+        update();
+        return true;
+    }
+
+    void closeFillOpacityDialog(bool apply) {
+        auto* dialog = fillOpacityDialog;
+        if (!dialog) {
+            return;
+        }
+        const Tool tool = fillOpacityTarget;
+        const int percent = fillOpacityScale ?
+                                    static_cast<int>(std::lround(gtk_range_get_value(fillOpacityScale))) :
+                                    50;
+        const int opacity = static_cast<int>(std::lround(percent * 2.55));
+        fillOpacityDialog = nullptr;
+        fillOpacityScale = nullptr;
+        fillOpacityPreview = nullptr;
+        fillOpacityCancelButton = nullptr;
+        fillOpacityApplyButton = nullptr;
+        adw_dialog_force_close(dialog);
+        if (apply) {
+            std::string error;
+            if (!setFillOpacity(tool, opacity, error)) {
+                showAlert("Could not change fill opacity", error);
+            }
+        }
+    }
+
+    bool openFillOpacityDialog(std::string& error) {
+        if (closed || busy || choosingFile || messageDialog) {
+            error = "Wait for the current document operation to finish before changing fill opacity";
+            return false;
+        }
+        if (!fillOpacityAvailable()) {
+            error = "Fill opacity is available for Pen and Highlighter";
+            return false;
+        }
+        if (fillOpacityDialog) {
+            adw_dialog_present(fillOpacityDialog, window);
+            return true;
+        }
+
+        fillOpacityTarget = state.brush.tool;
+        const int initialOpacity = fillOpacityTarget == Tool::Pen ? importedConfig.settings.penFillOpacity :
+                                                                   importedConfig.settings.highlighterFillOpacity;
+        fillOpacityDialog = ADW_DIALOG(adw_dialog_new());
+        adw_dialog_set_title(fillOpacityDialog, "Opacity settings");
+        adw_dialog_set_content_width(fillOpacityDialog, 360);
+        adw_dialog_set_presentation_mode(fillOpacityDialog, ADW_DIALOG_FLOATING);
+
+        auto* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+        gtk_widget_set_margin_top(content, 12);
+        gtk_widget_set_margin_bottom(content, 12);
+        gtk_widget_set_margin_start(content, 12);
+        gtk_widget_set_margin_end(content, 12);
+        adw_dialog_set_child(fillOpacityDialog, content);
+
+        auto* description = gtk_label_new(nullptr);
+        const char* toolName = fillOpacityTarget == Tool::Pen ? "Pen" : "Highlighter";
+        const std::string descriptionMarkup = std::string("<b>") + toolName +
+                                              " Options</b>\nSelect opacity for: Fill color";
+        gtk_label_set_markup(GTK_LABEL(description), descriptionMarkup.c_str());
+        gtk_label_set_xalign(GTK_LABEL(description), 0);
+        gtk_box_append(GTK_BOX(content), description);
+
+        auto* previewRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+        fillOpacityPreview = GTK_DRAWING_AREA(gtk_drawing_area_new());
+        gtk_drawing_area_set_content_width(fillOpacityPreview, 70);
+        gtk_drawing_area_set_content_height(fillOpacityPreview, 50);
+        gtk_drawing_area_set_draw_func(
+                fillOpacityPreview,
+                +[](GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
+                    auto* self = static_cast<Prototype*>(data);
+                    cairo_set_source_rgb(cr, 1, 1, 1);
+                    cairo_paint(cr);
+                    const int percent = self->fillOpacityScale ?
+                                                static_cast<int>(std::lround(
+                                                        gtk_range_get_value(GTK_RANGE(self->fillOpacityScale)))) :
+                                                50;
+                    const double alpha = std::lround(percent * 2.55) / 255.0;
+                    cairo_set_source_rgba(cr, 0, 128.0 / 255.0, 0, alpha);
+                    cairo_rectangle(cr, 10, 10, std::max(0, width - 20), std::max(0, height - 20));
+                    cairo_fill(cr);
+                    if (self->fillOpacityTarget == Tool::Pen) {
+                        cairo_set_source_rgb(cr, 0, 128.0 / 255.0, 0);
+                        cairo_set_line_width(cr, 5);
+                        cairo_rectangle(cr, 10, 10, std::max(0, width - 20), std::max(0, height - 20));
+                        cairo_stroke(cr);
+                    }
+                },
+                this, nullptr);
+        gtk_box_append(GTK_BOX(previewRow), GTK_WIDGET(fillOpacityPreview));
+
+        fillOpacityScale = GTK_RANGE(gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 5, 100, 1));
+        gtk_widget_set_hexpand(GTK_WIDGET(fillOpacityScale), true);
+        gtk_widget_set_size_request(GTK_WIDGET(fillOpacityScale), 190, -1);
+        gtk_scale_set_draw_value(GTK_SCALE(fillOpacityScale), true);
+        gtk_scale_set_digits(GTK_SCALE(fillOpacityScale), 0);
+        gtk_scale_set_format_value_func(
+                GTK_SCALE(fillOpacityScale),
+                +[](GtkScale*, double value, gpointer) { return g_strdup_printf("%.0f%%", value); }, nullptr, nullptr);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(fillOpacityScale), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "Fill opacity", -1);
+        gtk_range_set_value(fillOpacityScale, initialOpacity / 2.55);
+        g_signal_connect(fillOpacityScale, "value-changed",
+                         G_CALLBACK(+[](GtkRange*, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->fillOpacityPreview) {
+                                 gtk_widget_queue_draw(GTK_WIDGET(self->fillOpacityPreview));
+                             }
+                         }),
+                         this);
+        gtk_box_append(GTK_BOX(previewRow), GTK_WIDGET(fillOpacityScale));
+        gtk_box_append(GTK_BOX(content), previewRow);
+        auto* actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_halign(actions, GTK_ALIGN_END);
+        fillOpacityCancelButton = GTK_BUTTON(gtk_button_new_with_label("Cancel"));
+        fillOpacityApplyButton = GTK_BUTTON(gtk_button_new_with_label("OK"));
+        gtk_widget_add_css_class(GTK_WIDGET(fillOpacityApplyButton), "suggested-action");
+        gtk_box_append(GTK_BOX(actions), GTK_WIDGET(fillOpacityCancelButton));
+        gtk_box_append(GTK_BOX(actions), GTK_WIDGET(fillOpacityApplyButton));
+        gtk_box_append(GTK_BOX(content), actions);
+        adw_dialog_set_default_widget(fillOpacityDialog, GTK_WIDGET(fillOpacityApplyButton));
+        g_signal_connect(fillOpacityCancelButton, "clicked",
+                         G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->closeFillOpacityDialog(false);
+                         }),
+                         this);
+        g_signal_connect(fillOpacityApplyButton, "clicked",
+                         G_CALLBACK(+[](GtkButton*, gpointer data) {
+                             static_cast<Prototype*>(data)->closeFillOpacityDialog(true);
+                         }),
+                         this);
+        g_signal_connect(fillOpacityDialog, "closed",
+                         G_CALLBACK(+[](AdwDialog* dialog, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->fillOpacityDialog == dialog) {
+                                 self->fillOpacityDialog = nullptr;
+                                 self->fillOpacityScale = nullptr;
+                                 self->fillOpacityPreview = nullptr;
+                                 self->fillOpacityCancelButton = nullptr;
+                                 self->fillOpacityApplyButton = nullptr;
+                             }
+                         }),
+                         this);
+        adw_dialog_present(fillOpacityDialog, window);
+        return true;
+    }
+
     bool getPluginActionState(std::string_view action, prototype::PluginActionValue& value,
                               std::string& error) const {
         if (action == "select-tool") {
@@ -4194,6 +4375,8 @@ private:
                 return false;
             }
             openSearchBar();
+        } else if (action == "fill-opacity") {
+            return openFillOpacityDialog(error);
         } else if (action == "goto-next") {
             navigateToPage(state.page + 1);
         } else if (action == "goto-previous") {
@@ -8724,6 +8907,23 @@ private:
                              }), this);
             floatingFillToggles.push_back(toggle);
             gtk_box_append(GTK_BOX(row), GTK_WIDGET(toggle));
+        } else if (token == "FILL_OPACITY") {
+            auto* opacityButton = gtk_button_new_with_label("Opacity");
+            gtk_widget_add_css_class(opacityButton, "flat");
+            gtk_widget_set_tooltip_text(opacityButton, "Set fill opacity for Pen or Highlighter");
+            gtk_accessible_update_property(GTK_ACCESSIBLE(opacityButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                           "Fill opacity", -1);
+            gtk_widget_set_sensitive(opacityButton, fillOpacityAvailable());
+            g_object_set_data_full(G_OBJECT(opacityButton), "floating-toolbox-token", g_strdup(token.c_str()), g_free);
+            g_signal_connect(opacityButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 std::string error;
+                                 if (!self->openFillOpacityDialog(error)) {
+                                     self->showAlert("Could not change fill opacity", error);
+                                 }
+                             }), this);
+            floatingFillOpacityButtons.push_back(GTK_BUTTON(opacityButton));
+            gtk_box_append(GTK_BOX(row), opacityButton);
         } else if (token == "DRAW") {
             auto* modeNames = gtk_string_list_new(nullptr);
             for (const auto& choice: prototype::floatingDrawingModeChoices) {
@@ -9009,6 +9209,7 @@ private:
         }
         floatingDrawingModeSelectors.clear();
         floatingFillToggles.clear();
+        floatingFillOpacityButtons.clear();
         if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
             floatingToolboxToolButtons.erase(
                     floatingToolboxToolButtons.begin() +
@@ -11994,6 +12195,10 @@ private:
             if (gtk_toggle_button_get_active(toggle) != fillActive) {
                 gtk_toggle_button_set_active(toggle, fillActive);
             }
+        }
+        const bool fillOpacityAvailableNow = fillOpacityAvailable();
+        for (auto* button: floatingFillOpacityButtons) {
+            gtk_widget_set_sensitive(GTK_WIDGET(button), fillOpacityAvailableNow);
         }
         syncingBrush = wasSyncingBrush;
         if (pageList) {
@@ -15371,7 +15576,7 @@ private:
                 {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER",
                  "RULER"},
                 {"TOOL_FILL", "FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
-                {"DRAW_ARROW"},
+                {"DRAW_ARROW", "FILL_OPACITY"},
         }};
         if (preferencesVerifyMode == "edit" && ((preferencesVerifyStep >= 4 && !floatingToolboxSmokeReady) ||
                                                 (preferencesVerifyStep >= 5 && !floatingToolboxDismissSmokeReady))) {
@@ -15717,6 +15922,41 @@ private:
                     state.drawingMode = selectionDrawingMode;
                     require(gtk_toggle_button_get_active(floatingFillToggles.front()),
                             "TOOL_FILL did not synchronize when switching back to the filled Pen");
+                    require(floatingFillOpacityButtons.size() == 1 &&
+                                    gtk_widget_get_sensitive(GTK_WIDGET(floatingFillOpacityButtons.front())),
+                            "The configured FILL_OPACITY token did not render as an enabled action");
+                    std::string opacityActionError;
+                    require(activatePluginAction("fill-opacity", opacityActionError) && fillOpacityDialog &&
+                                    fillOpacityTarget == Tool::Pen,
+                            opacityActionError.empty() ? "The fill-opacity plugin action did not open the Pen dialog" :
+                                                        opacityActionError.c_str());
+                    auto* fillOpacityAdjustment = gtk_range_get_adjustment(fillOpacityScale);
+                    require(gtk_adjustment_get_lower(fillOpacityAdjustment) == 5 &&
+                                    gtk_adjustment_get_upper(fillOpacityAdjustment) == 100,
+                            "The fill-opacity chooser did not use the master 5–100 percent range");
+                    gtk_range_set_value(fillOpacityScale, 75);
+                    g_signal_emit_by_name(fillOpacityCancelButton, "clicked");
+                    require(!fillOpacityDialog && importedConfig.settings.penFillOpacity == 128 &&
+                                    penBrush.fillOpacity == 128,
+                            "Cancelling the Pen fill-opacity dialog changed its stored value");
+                    g_signal_emit_by_name(floatingFillOpacityButtons.front(), "clicked");
+                    require(fillOpacityDialog && fillOpacityTarget == Tool::Pen,
+                            "The floating FILL_OPACITY button did not open the Pen dialog");
+                    gtk_range_set_value(fillOpacityScale, 64);
+                    g_signal_emit_by_name(fillOpacityApplyButton, "clicked");
+                    require(!fillOpacityDialog && importedConfig.settings.penFillOpacity == 163 &&
+                                    penBrush.fillOpacity == 163 && state.brush.fillOpacity == 163,
+                            "Applying Pen fill opacity did not update and persist the 64 percent value");
+                    selectTool(Tool::Highlighter);
+                    g_signal_emit_by_name(floatingFillOpacityButtons.front(), "clicked");
+                    require(fillOpacityDialog && fillOpacityTarget == Tool::Highlighter,
+                            "The floating FILL_OPACITY button did not open the Highlighter dialog");
+                    gtk_range_set_value(fillOpacityScale, 40);
+                    g_signal_emit_by_name(fillOpacityApplyButton, "clicked");
+                    require(!fillOpacityDialog && importedConfig.settings.highlighterFillOpacity == 102 &&
+                                    highlightBrush.fillOpacity == 102 && state.brush.fillOpacity == 102,
+                            "Applying Highlighter fill opacity did not update and persist the 40 percent value");
+                    selectTool(Tool::Pen);
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
                                     importedConfig.settings.stylusButtonTwo ==
@@ -15734,9 +15974,9 @@ private:
                                     std::abs(state.edgePanSpeed - 31.0) < 1e-8 &&
                                     std::abs(state.edgePanMaxMultiplier - 3.5) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
-                                    importedConfig.settings.penFillEnabled && importedConfig.settings.penFillOpacity == 128 &&
+                                    importedConfig.settings.penFillEnabled && importedConfig.settings.penFillOpacity == 163 &&
                                     importedConfig.settings.highlighterFillEnabled &&
-                                    importedConfig.settings.highlighterFillOpacity == 128 &&
+                                    importedConfig.settings.highlighterFillOpacity == 102 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
                                     importedConfig.settings.floatingToolboxRows == floatingModeTestRows &&
@@ -15884,9 +16124,9 @@ private:
                                     std::abs(state.snapGridSize - 24.0) < 1e-8 &&
                                     std::abs(state.snapGridTolerance - 0.4) < 1e-8 &&
                                     importedConfig.settings.autosaveTimeoutMinutes == 9 &&
-                                    importedConfig.settings.penFillEnabled && importedConfig.settings.penFillOpacity == 128 &&
+                                    importedConfig.settings.penFillEnabled && importedConfig.settings.penFillOpacity == 163 &&
                                     importedConfig.settings.highlighterFillEnabled &&
-                                    importedConfig.settings.highlighterFillOpacity == 128 &&
+                                    importedConfig.settings.highlighterFillOpacity == 102 &&
                                     std::abs(importedConfig.settings.zoomStep - 0.22) < 1e-8 &&
                                     std::abs(importedConfig.settings.snapRotationTolerance - 0.45) < 1e-8 &&
                                     importedConfig.settings.floatingToolboxRows == floatingModeTestRows,
@@ -18345,7 +18585,14 @@ private:
     GtkWidget* drawingModeDropdown = nullptr;
     std::vector<GtkDropDown*> floatingDrawingModeSelectors;
     std::vector<GtkToggleButton*> floatingFillToggles;
+    std::vector<GtkButton*> floatingFillOpacityButtons;
     bool selectionFillEnabled = false;
+    AdwDialog* fillOpacityDialog = nullptr;
+    GtkRange* fillOpacityScale = nullptr;
+    GtkDrawingArea* fillOpacityPreview = nullptr;
+    GtkButton* fillOpacityCancelButton = nullptr;
+    GtkButton* fillOpacityApplyButton = nullptr;
+    Tool fillOpacityTarget = Tool::Pen;
     GtkWidget* averagingDropdown = nullptr;
     GtkWidget* preprocessorDropdown = nullptr;
     std::array<GtkWidget*, 5> toolButtons{};
