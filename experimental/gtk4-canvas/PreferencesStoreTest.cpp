@@ -72,6 +72,16 @@ int main() {
     saved.pressureMultiplier = 1.75;
     saved.zoomStep = 0.22;
     saved.scrollZoomStep = 0.035;
+    saved.preloadPagesBefore = 4;
+    saved.preloadPagesAfter = 6;
+    saved.fullDetailCachePages = 6;
+    saved.mediumDetailCachePages = 20;
+    saved.mediumDetailCacheMegabytes = 48;
+    saved.lowDetailCachePages = 96;
+    saved.lowDetailCacheMegabytes = 64;
+    saved.overviewZoomThresholdPercent = 42;
+    saved.lowDetailZoomThresholdPercent = 22;
+    saved.preloadDetail = prototype::CanvasPreloadDetail::Low;
     saved.edgePanSpeed = 31;
     saved.edgePanMaxMultiplier = 3.5;
     saved.textAlignment = 2;
@@ -129,6 +139,12 @@ int main() {
                     loaded.cursorHighlightBorderColor == saved.cursorHighlightBorderColor &&
                     near(loaded.cursorHighlightBorderWidth, 2.0) && near(loaded.pressureMultiplier, 1.75) &&
                     near(loaded.zoomStep, 0.22) && near(loaded.scrollZoomStep, 0.035) &&
+                    loaded.preloadPagesBefore == 4 && loaded.preloadPagesAfter == 6 &&
+                    loaded.fullDetailCachePages == 6 && loaded.mediumDetailCachePages == 20 &&
+                    loaded.mediumDetailCacheMegabytes == 48 && loaded.lowDetailCachePages == 96 &&
+                    loaded.lowDetailCacheMegabytes == 64 && loaded.overviewZoomThresholdPercent == 42 &&
+                    loaded.lowDetailZoomThresholdPercent == 22 &&
+                    loaded.preloadDetail == prototype::CanvasPreloadDetail::Low &&
                     near(loaded.edgePanSpeed, 31) && near(loaded.edgePanMaxMultiplier, 3.5) && !loaded.snapRotation &&
                     loaded.textAlignment == saved.textAlignment && loaded.textJustify == saved.textJustify &&
                     near(loaded.snapRotationTolerance, 0.45) && !loaded.snapGrid && near(loaded.snapGridSize, 23.5) &&

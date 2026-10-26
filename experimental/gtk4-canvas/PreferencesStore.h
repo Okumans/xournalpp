@@ -259,6 +259,29 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     preferences_detail::readDouble(keyFile.get(), "Navigation", "zoom-step", settings.zoomStep, 0.005, 2.0);
     preferences_detail::readDouble(keyFile.get(), "Navigation", "scroll-zoom-step", settings.scrollZoomStep, 0.005,
                                    2.0);
+    int preloadPagesBefore = static_cast<int>(settings.preloadPagesBefore);
+    int preloadPagesAfter = static_cast<int>(settings.preloadPagesAfter);
+    preferences_detail::readInt(keyFile.get(), "Navigation", "preload-pages-before", preloadPagesBefore, 0, 99);
+    preferences_detail::readInt(keyFile.get(), "Navigation", "preload-pages-after", preloadPagesAfter, 0, 99);
+    settings.preloadPagesBefore = static_cast<unsigned int>(preloadPagesBefore);
+    settings.preloadPagesAfter = static_cast<unsigned int>(preloadPagesAfter);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "full-detail-cache-pages",
+                                settings.fullDetailCachePages, 1, 8);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "medium-detail-cache-pages",
+                                settings.mediumDetailCachePages, 1, 64);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "medium-detail-cache-megabytes",
+                                settings.mediumDetailCacheMegabytes, 1, 512);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "low-detail-cache-pages",
+                                settings.lowDetailCachePages, 1, 512);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "low-detail-cache-megabytes",
+                                settings.lowDetailCacheMegabytes, 1, 512);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "overview-zoom-threshold-percent",
+                                settings.overviewZoomThresholdPercent, 5, 100);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "low-detail-zoom-threshold-percent",
+                                settings.lowDetailZoomThresholdPercent, 5, 50);
+    int preloadDetail = static_cast<int>(settings.preloadDetail);
+    preferences_detail::readInt(keyFile.get(), "Rendering", "preload-detail", preloadDetail, 0, 2);
+    settings.preloadDetail = static_cast<CanvasPreloadDetail>(preloadDetail);
     preferences_detail::readDouble(keyFile.get(), "Navigation", "edge-pan-speed", settings.edgePanSpeed, 0.0, 100.0);
     preferences_detail::readDouble(keyFile.get(), "Navigation", "edge-pan-max-multiplier",
                                    settings.edgePanMaxMultiplier, 0.1, 10.0);
@@ -410,6 +433,22 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_double(keyFile.get(), "Input", "pressure-multiplier", settings.pressureMultiplier);
     g_key_file_set_double(keyFile.get(), "Navigation", "zoom-step", settings.zoomStep);
     g_key_file_set_double(keyFile.get(), "Navigation", "scroll-zoom-step", settings.scrollZoomStep);
+    g_key_file_set_integer(keyFile.get(), "Navigation", "preload-pages-before",
+                           static_cast<int>(settings.preloadPagesBefore));
+    g_key_file_set_integer(keyFile.get(), "Navigation", "preload-pages-after",
+                           static_cast<int>(settings.preloadPagesAfter));
+    g_key_file_set_integer(keyFile.get(), "Rendering", "full-detail-cache-pages", settings.fullDetailCachePages);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "medium-detail-cache-pages", settings.mediumDetailCachePages);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "medium-detail-cache-megabytes",
+                           settings.mediumDetailCacheMegabytes);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "low-detail-cache-pages", settings.lowDetailCachePages);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "low-detail-cache-megabytes",
+                           settings.lowDetailCacheMegabytes);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "overview-zoom-threshold-percent",
+                           settings.overviewZoomThresholdPercent);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "low-detail-zoom-threshold-percent",
+                           settings.lowDetailZoomThresholdPercent);
+    g_key_file_set_integer(keyFile.get(), "Rendering", "preload-detail", static_cast<int>(settings.preloadDetail));
     g_key_file_set_double(keyFile.get(), "Navigation", "edge-pan-speed", settings.edgePanSpeed);
     g_key_file_set_double(keyFile.get(), "Navigation", "edge-pan-max-multiplier", settings.edgePanMaxMultiplier);
     g_key_file_set_double(keyFile.get(), "Selection", "rotation-snap-tolerance", settings.snapRotationTolerance);
