@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -82,6 +83,7 @@ struct Options {
     bool verifyPlugins = false;
     bool verifySearch = false;
     bool verifySidebarPerformance = false;
+    bool verifySidebarStartup = false;
     bool verifyPageLayout = false;
     bool verifyPresentationMode = false;
     bool verifyPenLineStyle = false;
@@ -124,6 +126,7 @@ struct PageCacheEntry {
 
 constexpr int pageThumbnailWidth = 112;
 constexpr int pageThumbnailHeight = 150;
+std::string thumbnailWorkerExecutable;
 
 struct ThumbnailLayerSource {
     size_t origin = 0;
@@ -133,6 +136,8 @@ struct ThumbnailLayerSource {
 struct ThumbnailRequest {
     int page = -1;
     uint64_t generation = 0;
+    uint64_t requestId = 0;
+    double priority = std::numeric_limits<double>::infinity();
     prototype::PageSize pageSize;
     std::string backgroundPath;
     std::vector<ThumbnailLayerSource> layers;
@@ -145,6 +150,15 @@ struct ThumbnailPreview {
     std::map<size_t, std::unique_ptr<cairo_surface_t, SurfaceDeleter>> layers;
 };
 
+struct ThumbnailTask;
+
+struct ThumbnailWidgetReference {
+    ThumbnailWidgetReference() { g_weak_ref_init(&reference, nullptr); }
+    ~ThumbnailWidgetReference() { g_weak_ref_clear(&reference); }
+
+    GWeakRef reference;
+};
+
 struct ThumbnailRendererState {
     ThumbnailRendererState() { g_weak_ref_init(&pageList, nullptr); }
     ~ThumbnailRendererState() { g_weak_ref_clear(&pageList); }
@@ -153,33 +167,134 @@ struct ThumbnailRendererState {
     std::map<int, ThumbnailPreview> previews;
     std::map<int, uint64_t> pending;
     std::map<int, uint64_t> failed;
+    std::map<int, double> visiblePages;
+    std::map<int, std::unique_ptr<ThumbnailWidgetReference>> boundThumbnails;
     std::deque<ThumbnailRequest> queue;
+    std::vector<std::shared_ptr<ThumbnailTask>> activeTasks;
+    std::vector<int> lastDispatchOrder;
+    size_t offscreenCancellations = 0;
     uint64_t generation = 0;
+    uint64_t requestSequence = 0;
     uint64_t stamp = 0;
-    size_t active = 0;
+    int selectedPage = -1;
+    guint dispatchSource = 0;
     bool stopping = false;
 };
 
 struct ThumbnailTask {
     ThumbnailRequest request;
     ThumbnailPreview preview;
+    std::string outputDirectory;
+    std::string renderError;
+    GSubprocess* process = nullptr;
+    bool cancelled = false;
 };
 
+struct ThumbnailCompletion {
+    std::shared_ptr<ThumbnailRendererState> state;
+    std::shared_ptr<ThumbnailTask> task;
+};
+
+void scheduleThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state);
 void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state);
+
+std::string thumbnailLayerPath(const std::filesystem::path& directory, size_t origin) {
+    return (directory / ("layer-" + std::to_string(origin) + ".png")).string();
+}
+
+void writeThumbnailTask(const ThumbnailTask& task) {
+    const std::filesystem::path directory(task.outputDirectory);
+    const auto backgroundPath = (directory / "background.png").string();
+    if (cairo_surface_write_to_png(task.preview.background.get(), backgroundPath.c_str()) != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error("Cannot write sidebar thumbnail background");
+    }
+    for (const auto& [origin, surface]: task.preview.layers) {
+        if (cairo_surface_write_to_png(surface.get(), thumbnailLayerPath(directory, origin).c_str()) !=
+            CAIRO_STATUS_SUCCESS) {
+            throw std::runtime_error("Cannot write sidebar thumbnail layer");
+        }
+    }
+    std::ofstream scale(directory / "scale.txt");
+    scale << std::setprecision(17) << task.preview.scale;
+    if (!scale) {
+        throw std::runtime_error("Cannot write sidebar thumbnail scale");
+    }
+    if (!task.renderError.empty()) {
+        std::ofstream error(directory / "error.txt");
+        error << task.renderError;
+        if (!error) {
+            throw std::runtime_error("Cannot write sidebar thumbnail error");
+        }
+    }
+}
+
+int runThumbnailWorker(int argc, char** argv);
+
+void loadThumbnailTask(ThumbnailTask& task) {
+    const std::filesystem::path directory(task.outputDirectory);
+    const auto backgroundPath = (directory / "background.png").string();
+    task.preview.background.reset(cairo_image_surface_create_from_png(backgroundPath.c_str()));
+    if (cairo_surface_status(task.preview.background.get()) != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error("Cannot load sidebar thumbnail background");
+    }
+    std::ifstream scale(directory / "scale.txt");
+    if (!(scale >> task.preview.scale) || !std::isfinite(task.preview.scale)) {
+        throw std::runtime_error("Cannot load sidebar thumbnail scale");
+    }
+    std::ifstream renderError(directory / "error.txt");
+    if (renderError) {
+        std::getline(renderError, task.renderError, '\0');
+    }
+    for (const auto& layer: task.request.layers) {
+        const auto path = thumbnailLayerPath(directory, layer.origin);
+        if (!std::filesystem::exists(path)) {
+            continue;
+        }
+        auto surface = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(cairo_image_surface_create_from_png(path.c_str()));
+        if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
+            throw std::runtime_error("Cannot load sidebar thumbnail layer");
+        }
+        task.preview.layers.emplace(layer.origin, std::move(surface));
+    }
+}
+
+void removeThumbnailTaskFiles(const ThumbnailTask& task) {
+    std::error_code error;
+    std::filesystem::remove_all(task.outputDirectory, error);
+}
+
+double thumbnailPriority(const ThumbnailRendererState& state, int page) {
+    if (page == state.selectedPage) {
+        return -1;
+    }
+    if (const auto found = state.visiblePages.find(page); found != state.visiblePages.end()) {
+        return found->second;
+    }
+    return std::numeric_limits<double>::infinity();
+}
+
+void sortThumbnailQueue(ThumbnailRendererState& state) {
+    std::stable_sort(state.queue.begin(), state.queue.end(), [](const auto& left, const auto& right) {
+        return left.priority < right.priority;
+    });
+}
 
 void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
                          const std::shared_ptr<ThumbnailTask>& task, const std::string& error) {
-    if (state->active > 0) {
-        --state->active;
+    const auto active = std::find(state->activeTasks.begin(), state->activeTasks.end(), task);
+    if (active != state->activeTasks.end()) {
+        state->activeTasks.erase(active);
     }
     if (const auto found = state->pending.find(task->request.page);
-        found != state->pending.end() && found->second == task->request.generation) {
+        found != state->pending.end() && found->second == task->request.requestId) {
         state->pending.erase(found);
     }
+    removeThumbnailTaskFiles(*task);
     if (state->stopping) {
+        scheduleThumbnailTasks(state);
         return;
     }
-    if (task->request.generation == state->generation) {
+    if (!task->cancelled && task->request.generation == state->generation) {
         if (!task->preview.background) {
             if (state->failed.size() == 16) {
                 state->failed.erase(state->failed.begin());
@@ -200,13 +315,20 @@ void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
             if (!error.empty()) {
                 std::cerr << "GTK4 page thumbnail partially rendered: " << error << '\n';
             }
+            if (const auto found = state->boundThumbnails.find(task->request.page);
+                found != state->boundThumbnails.end()) {
+                if (auto* thumbnail = GTK_WIDGET(g_weak_ref_get(&found->second->reference))) {
+                    gtk_widget_queue_draw(thumbnail);
+                    g_object_unref(thumbnail);
+                }
+            }
             if (auto* list = GTK_WIDGET(g_weak_ref_get(&state->pageList))) {
                 gtk_widget_queue_draw(list);
                 g_object_unref(list);
             }
         }
     }
-    startThumbnailTasks(state);
+    scheduleThumbnailTasks(state);
 }
 
 PopplerDocument* openThumbnailDocument(const std::string& path) {
@@ -312,26 +434,153 @@ void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
             }
         }
     }
-    if (!firstError.empty()) {
-        throw std::runtime_error(firstError);
+    task->renderError = std::move(firstError);
+}
+
+int runThumbnailWorker(int argc, char** argv) {
+    try {
+        auto task = std::make_shared<ThumbnailTask>();
+        for (int index = 2; index < argc; ++index) {
+            const std::string_view argument(argv[index]);
+            if (argument == "--page" && index + 1 < argc) {
+                task->request.page = std::stoi(argv[++index]);
+            } else if (argument == "--width" && index + 1 < argc) {
+                task->request.pageSize.width = std::stod(argv[++index]);
+            } else if (argument == "--height" && index + 1 < argc) {
+                task->request.pageSize.height = std::stod(argv[++index]);
+            } else if (argument == "--background" && index + 1 < argc) {
+                task->request.backgroundPath = argv[++index];
+            } else if (argument == "--layer" && index + 2 < argc) {
+                const auto origin = static_cast<size_t>(std::stoull(argv[++index]));
+                task->request.layers.push_back({origin, argv[++index]});
+            } else if (argument == "--output-dir" && index + 1 < argc) {
+                task->outputDirectory = argv[++index];
+            } else {
+                throw std::runtime_error("Invalid sidebar thumbnail worker arguments");
+            }
+        }
+        if (task->request.page < 0 || task->outputDirectory.empty()) {
+            throw std::runtime_error("Incomplete sidebar thumbnail worker request");
+        }
+        renderThumbnailTask(task);
+        writeThumbnailTask(*task);
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
     }
 }
 
+void completeThumbnailProcess(GObject* source, GAsyncResult* result, gpointer data) {
+    std::unique_ptr<ThumbnailCompletion> completion(static_cast<ThumbnailCompletion*>(data));
+    const auto& state = completion->state;
+    const auto& task = completion->task;
+    GError* waitError = nullptr;
+    const bool waited = g_subprocess_wait_finish(G_SUBPROCESS(source), result, &waitError);
+    std::string error;
+    if (!task->cancelled && !waited) {
+        error = waitError ? waitError->message : "Sidebar thumbnail process failed";
+    } else if (!task->cancelled && !g_subprocess_get_successful(G_SUBPROCESS(source))) {
+        error = "Sidebar thumbnail renderer exited unsuccessfully";
+    }
+    g_clear_error(&waitError);
+    if (task->process) {
+        g_object_unref(task->process);
+        task->process = nullptr;
+    }
+    if (!task->cancelled && error.empty()) {
+        try {
+            loadThumbnailTask(*task);
+            error = task->renderError;
+        } catch (const std::exception& loadError) {
+            error = loadError.what();
+        }
+    }
+    finishThumbnailTask(state, task, error);
+}
+
 void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
-    // shortcut: cap at two active and 12 queued renders; raise after measuring large real PDFs.
-    while (!state->stopping && state->active < 2 && !state->queue.empty()) {
-        auto request = std::move(state->queue.back());
-        state->queue.pop_back();
-        if (request.generation != state->generation) {
+    if (state->activeTasks.empty()) {
+        state->lastDispatchOrder.clear();
+    }
+    while (!state->stopping && state->activeTasks.size() < 2 && !state->queue.empty()) {
+        auto request = std::move(state->queue.front());
+        state->queue.pop_front();
+        if (request.generation != state->generation ||
+            (!state->visiblePages.empty() && !state->visiblePages.contains(request.page))) {
+            if (const auto found = state->pending.find(request.page);
+                found != state->pending.end() && found->second == request.requestId) {
+                state->pending.erase(found);
+            }
             continue;
         }
         auto task = std::make_shared<ThumbnailTask>();
         task->request = std::move(request);
-        ++state->active;
-        prototype::bridge::documentJob(
-                [task] { renderThumbnailTask(task); },
-                [state, task](const std::string& error) { finishThumbnailTask(state, task, error); });
+        GError* directoryError = nullptr;
+        auto* outputDirectory = g_dir_make_tmp("xournalpp-sidebar-thumb-XXXXXX", &directoryError);
+        if (!outputDirectory) {
+            const std::string error = directoryError ? directoryError->message : "Cannot create thumbnail directory";
+            g_clear_error(&directoryError);
+            finishThumbnailTask(state, task, error);
+            continue;
+        }
+        task->outputDirectory = outputDirectory;
+        g_free(outputDirectory);
+
+        std::vector<std::string> arguments{thumbnailWorkerExecutable,
+                                           "--gtk4-sidebar-thumbnail-worker",
+                                           "--page",
+                                           std::to_string(task->request.page),
+                                           "--width",
+                                           std::to_string(task->request.pageSize.width),
+                                           "--height",
+                                           std::to_string(task->request.pageSize.height),
+                                           "--output-dir",
+                                           task->outputDirectory};
+        if (!task->request.backgroundPath.empty()) {
+            arguments.push_back("--background");
+            arguments.push_back(task->request.backgroundPath);
+        }
+        for (const auto& layer: task->request.layers) {
+            arguments.push_back("--layer");
+            arguments.push_back(std::to_string(layer.origin));
+            arguments.push_back(layer.path);
+        }
+        std::vector<const gchar*> argumentPointers;
+        argumentPointers.reserve(arguments.size() + 1);
+        for (const auto& argument: arguments) {
+            argumentPointers.push_back(argument.c_str());
+        }
+        argumentPointers.push_back(nullptr);
+        GError* spawnError = nullptr;
+        task->process = g_subprocess_newv(argumentPointers.data(), G_SUBPROCESS_FLAGS_STDOUT_SILENCE, &spawnError);
+        if (!task->process) {
+            const std::string error = spawnError ? spawnError->message : "Cannot start sidebar thumbnail renderer";
+            g_clear_error(&spawnError);
+            finishThumbnailTask(state, task, error);
+            continue;
+        }
+        state->activeTasks.push_back(task);
+        state->lastDispatchOrder.push_back(task->request.page);
+        auto* process = task->process;
+        g_subprocess_wait_async(process, nullptr, completeThumbnailProcess, new ThumbnailCompletion{state, task});
     }
+}
+
+void scheduleThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
+    if (state->stopping || state->dispatchSource) {
+        return;
+    }
+    state->dispatchSource = g_idle_add_full(
+            G_PRIORITY_DEFAULT_IDLE,
+            +[](gpointer data) -> gboolean {
+                auto state = *static_cast<std::shared_ptr<ThumbnailRendererState>*>(data);
+                state->dispatchSource = 0;
+                startThumbnailTasks(state);
+                return G_SOURCE_REMOVE;
+            },
+            new std::shared_ptr<ThumbnailRendererState>(state),
+            +[](gpointer data) { delete static_cast<std::shared_ptr<ThumbnailRendererState>*>(data); });
 }
 
 class PageThumbnailRenderer {
@@ -341,9 +590,42 @@ public:
         state->stopping = true;
         state->queue.clear();
         state->pending.clear();
+        if (state->dispatchSource) {
+            g_source_remove(state->dispatchSource);
+            state->dispatchSource = 0;
+        }
+        for (const auto& task: state->activeTasks) {
+            task->cancelled = true;
+            if (task->process) {
+                g_subprocess_force_exit(task->process);
+            }
+        }
     }
 
     void setPageList(GtkWidget* list) { g_weak_ref_set(&state->pageList, G_OBJECT(list)); }
+
+    void bindThumbnailWidget(int page, GtkWidget* widget) {
+        auto& reference = state->boundThumbnails[page];
+        if (!reference) {
+            reference = std::make_unique<ThumbnailWidgetReference>();
+        }
+        g_weak_ref_set(&reference->reference, G_OBJECT(widget));
+    }
+
+    void unbindThumbnailWidget(int page, GtkWidget* widget) {
+        const auto found = state->boundThumbnails.find(page);
+        if (found == state->boundThumbnails.end()) {
+            return;
+        }
+        auto* bound = GTK_WIDGET(g_weak_ref_get(&found->second->reference));
+        const bool matches = bound == widget;
+        if (bound) {
+            g_object_unref(bound);
+        }
+        if (matches) {
+            state->boundThumbnails.erase(found);
+        }
+    }
 
     void invalidate() {
         ++state->generation;
@@ -351,28 +633,77 @@ public:
         state->pending.clear();
         state->failed.clear();
         state->queue.clear();
+        for (const auto& task: state->activeTasks) {
+            task->cancelled = true;
+            if (task->process) {
+                g_subprocess_force_exit(task->process);
+            }
+        }
+    }
+
+    void setVisiblePages(std::map<int, double> visiblePages, int selectedPage) {
+        if (visiblePages.empty()) {
+            return;
+        }
+        state->visiblePages = std::move(visiblePages);
+        state->selectedPage = state->visiblePages.contains(selectedPage) ? selectedPage : -1;
+        for (auto it = state->queue.begin(); it != state->queue.end();) {
+            if (const auto priority = thumbnailPriority(*state, it->page); std::isfinite(priority)) {
+                it->priority = priority;
+                ++it;
+            } else {
+                if (const auto found = state->pending.find(it->page);
+                    found != state->pending.end() && found->second == it->requestId) {
+                    state->pending.erase(found);
+                }
+                ++state->offscreenCancellations;
+                it = state->queue.erase(it);
+            }
+        }
+        sortThumbnailQueue(*state);
+        for (const auto& task: state->activeTasks) {
+            if (!state->visiblePages.contains(task->request.page)) {
+                if (!task->cancelled) {
+                    task->cancelled = true;
+                    ++state->offscreenCancellations;
+                }
+                if (const auto found = state->pending.find(task->request.page);
+                    found != state->pending.end() && found->second == task->request.requestId) {
+                    state->pending.erase(found);
+                }
+                if (task->process) {
+                    g_subprocess_force_exit(task->process);
+                }
+            }
+        }
+        scheduleThumbnailTasks(state);
     }
 
     void request(ThumbnailRequest request) {
         const auto generation = state->generation;
-        if (state->previews.contains(request.page) ||
-            (state->pending.contains(request.page) && state->pending.at(request.page) == generation) ||
+        request.priority = thumbnailPriority(*state, request.page);
+        if (!state->visiblePages.empty() && !std::isfinite(request.priority)) {
+            return;
+        }
+        if (state->previews.contains(request.page) || state->pending.contains(request.page) ||
             (state->failed.contains(request.page) && state->failed.at(request.page) == generation)) {
             return;
         }
         request.generation = generation;
-        state->pending[request.page] = generation;
+        request.requestId = ++state->requestSequence;
+        state->pending[request.page] = request.requestId;
         state->queue.push_back(std::move(request));
-        // Drop old requests first so a fast scroll cannot leave a long stale-render queue.
+        sortThumbnailQueue(*state);
+        // shortcut: keep 12 visible requests queued; grow only if large-document measurements justify it.
         while (state->queue.size() > 12) {
-            const auto dropped = state->queue.front();
-            state->queue.pop_front();
+            const auto dropped = state->queue.back();
+            state->queue.pop_back();
             if (const auto found = state->pending.find(dropped.page);
-                found != state->pending.end() && found->second == dropped.generation) {
+                found != state->pending.end() && found->second == dropped.requestId) {
                 state->pending.erase(found);
             }
         }
-        startThumbnailTasks(state);
+        scheduleThumbnailTasks(state);
     }
 
     const ThumbnailPreview* find(int page) {
@@ -386,6 +717,28 @@ public:
 
     bool empty() const { return state->previews.empty(); }
     size_t pendingCount() const { return state->pending.size(); }
+    size_t activeCount() const { return state->activeTasks.size(); }
+    size_t offscreenCancellations() const { return state->offscreenCancellations; }
+    bool hasPending(int page) const { return state->pending.contains(page); }
+    bool hasFailed(int page) const { return state->failed.contains(page); }
+
+    int nextQueuedPage() const { return state->queue.empty() ? -1 : state->queue.front().page; }
+
+    int preferredVisiblePage() const {
+        if (state->selectedPage >= 0) {
+            return state->selectedPage;
+        }
+        if (state->visiblePages.empty()) {
+            return -1;
+        }
+        return std::min_element(state->visiblePages.begin(), state->visiblePages.end(),
+                                [](const auto& left, const auto& right) { return left.second < right.second; })
+                ->first;
+    }
+
+    int firstDispatchedPage() const {
+        return state->lastDispatchOrder.empty() ? -1 : state->lastDispatchOrder.front();
+    }
 
 private:
     std::shared_ptr<ThumbnailRendererState> state;
@@ -6484,6 +6837,13 @@ private:
                     "An asynchronous page thumbnail did not finish within five seconds");
         };
         waitForThumbnail(0);
+        const auto initialThumbnailsDeadline = g_get_monotonic_time() + 5000000;
+        while (thumbnailRenderer.pendingCount() > 0 && g_get_monotonic_time() < initialThumbnailsDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(thumbnailRenderer.pendingCount() == 0,
+                "The initial visible sidebar thumbnails did not drain their render queue");
         const auto maxMappedRows = static_cast<size_t>(gtk_widget_get_height(GTK_WIDGET(pageList)) / 180 + 3);
         const auto [firstPage, lastPage] = pageRange();
         std::cout << "SIDEBAR OPEN: pages=" << pageCount << " realized=" << thumbnailWidgets.size()
@@ -6504,6 +6864,54 @@ private:
         double maxFrameMilliseconds = 0;
         size_t maxPendingCount = 0;
         require(scrollable > 0, "The 10000-page sidebar has no scrollable range");
+
+        thumbnailRenderer.invalidate();
+        sidebarCanvasRenderSuppressed = true;
+        pageCache.clear();
+        layerPageCache.clear();
+        gtk_adjustment_set_value(adjustment, lower + scrollable / 2.0);
+        gtk_widget_queue_draw(GTK_WIDGET(pageList));
+        waitForNextWindowFrame();
+        prioritizeVisibleSidebarThumbnails();
+        const int preferredSidebarPage = thumbnailRenderer.preferredVisiblePage();
+        require(preferredSidebarPage >= 0 && preferredSidebarPage != state.page,
+                "Independent sidebar scrolling did not choose a page away from the canvas page");
+        const auto dispatchDeadline = g_get_monotonic_time() + 1000000;
+        while (thumbnailRenderer.firstDispatchedPage() < 0 && g_get_monotonic_time() < dispatchDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(thumbnailRenderer.firstDispatchedPage() == preferredSidebarPage,
+                "The sidebar scheduler did not dispatch the nearest visible page first");
+        waitForThumbnail(preferredSidebarPage);
+        require(pageCache.empty() && layerPageCache.empty(),
+                "Sidebar thumbnails depended on the main canvas PDF cache");
+        const size_t cancellationsBeforeScroll = thumbnailRenderer.offscreenCancellations();
+        const int offscreenPage = pageCount + 1;
+        thumbnailRenderer.setVisiblePages({{offscreenPage, 0}}, -1);
+        ThumbnailRequest offscreenRequest;
+        offscreenRequest.page = offscreenPage;
+        offscreenRequest.pageSize = {595, 842};
+        thumbnailRenderer.request(std::move(offscreenRequest));
+        thumbnailRenderer.setVisiblePages({{offscreenPage + 1, 0}}, -1);
+        require(thumbnailRenderer.offscreenCancellations() > cancellationsBeforeScroll &&
+                        thumbnailRenderer.pendingCount() == 0,
+                "The sidebar scheduler retained work after its pages left the viewport");
+        const auto cancelledTasksDeadline = g_get_monotonic_time() + 5000000;
+        while (thumbnailRenderer.activeCount() > 0 && g_get_monotonic_time() < cancelledTasksDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(thumbnailRenderer.activeCount() == 0,
+                "Offscreen thumbnail renderer processes did not stop after cancellation");
+        std::cout << "SIDEBAR INDEPENDENT: canvas_page=" << state.page << " thumbnail_page="
+                  << preferredSidebarPage << " first_dispatch=" << thumbnailRenderer.firstDispatchedPage()
+                  << " offscreen_cancelled="
+                  << thumbnailRenderer.offscreenCancellations() - cancellationsBeforeScroll << '\n';
+        sidebarCanvasRenderSuppressed = false;
+        update();
+        waitForNextWindowFrame();
+
         for (int frame = 1; frame <= 32; ++frame) {
             gtk_adjustment_set_value(adjustment, lower + scrollable * frame / 32.0);
             const auto frameStarted = g_get_monotonic_time();
@@ -6511,7 +6919,7 @@ private:
             const double frameMilliseconds = (g_get_monotonic_time() - frameStarted) / 1000.0;
             maxFrameMilliseconds = std::max(maxFrameMilliseconds, frameMilliseconds);
             maxPendingCount = std::max(maxPendingCount, thumbnailRenderer.pendingCount());
-            require(frameMilliseconds < 500 && maxPendingCount <= 14,
+            require(frameMilliseconds < 500 && maxPendingCount <= 6,
                     "Rapid sidebar scrolling blocked the GTK frame or queued unbounded thumbnail work");
         }
         waitForThumbnail(pageCount - 1);
@@ -6556,6 +6964,100 @@ private:
         waitForNextWindowFrame();
         require(rasterizations > cachedRasters, "Settled smooth zoom did not refresh the page raster");
         std::cout << "PASS: GTK4 pages sidebar realizes a bounded number of thumbnails for 10000 PDF pages\n";
+    }
+
+    void verifySidebarStartupIntegration() {
+        require(document && pageList && splitView && pageCount > 0,
+                "Sidebar startup check did not load its PDF");
+        require(adw_overlay_split_view_get_show_sidebar(splitView),
+                "Sidebar startup check did not start with the Pages sidebar open");
+        const auto deadline = g_get_monotonic_time() + 6000000;
+        while ((!thumbnailRenderer.find(0) || sidebarStartupReadyDraws == 0) &&
+               g_get_monotonic_time() < deadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(thumbnailRenderer.find(0) && sidebarStartupReadyDraws > 0,
+                "The first page thumbnail did not render and redraw without input");
+        require(gtk_widget_get_width(GTK_WIDGET(pageList)) >= pageThumbnailWidth,
+                "The Pages sidebar did not finish opening for the no-input startup check");
+        capture("sidebar-startup-no-input");
+        std::cout << "PASS: GTK4 sidebar renders its first visible thumbnail without input\n";
+
+        const int canvasPage = state.page;
+        require(pageCount > 36, "The content-heavy sidebar PDF needs at least 37 pages");
+        const int targetPage = 24;
+        auto* pageScroll = GTK_SCROLLED_WINDOW(gtk_widget_get_parent(GTK_WIDGET(pageList)));
+        auto* adjustment = gtk_scrolled_window_get_vadjustment(pageScroll);
+        const double lower = gtk_adjustment_get_lower(adjustment);
+        const double scrollable =
+                gtk_adjustment_get_upper(adjustment) - lower - gtk_adjustment_get_page_size(adjustment);
+        require(scrollable > 0,
+                "The content-heavy sidebar PDF has no range for the fast-scroll check");
+        const std::array<int, 3> scrollStops{targetPage, targetPage + 12, targetPage};
+        for (const int stopPage: scrollStops) {
+            const double targetValue = lower + scrollable * stopPage / (pageCount - 1.0);
+            for (int frame = 1; frame <= 4; ++frame) {
+                gtk_adjustment_set_value(adjustment, lower + (targetValue - lower) * frame / 4.0);
+                waitForNextWindowFrame();
+            }
+        }
+        prioritizeVisibleSidebarThumbnails();
+        const auto mappedVisiblePages = [this] {
+            std::vector<int> pages;
+            const int viewportHeight = gtk_widget_get_height(GTK_WIDGET(pageList));
+            for (auto* thumbnail: thumbnailWidgets) {
+                const int page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(thumbnail), "page"));
+                graphene_rect_t bounds{};
+                if (page >= 0 && gtk_widget_get_mapped(thumbnail) &&
+                    gtk_widget_compute_bounds(thumbnail, GTK_WIDGET(pageList), &bounds) &&
+                    bounds.origin.y + bounds.size.height > 0 && bounds.origin.y < viewportHeight) {
+                    pages.push_back(page);
+                }
+            }
+            std::sort(pages.begin(), pages.end());
+            return pages;
+        };
+        std::vector<int> visiblePages;
+        const auto stopDeadline = g_get_monotonic_time() + 10000000;
+        const auto visibleThumbnailsReady = [this, &visiblePages, &mappedVisiblePages, targetPage] {
+            visiblePages = mappedVisiblePages();
+            return std::find(visiblePages.begin(), visiblePages.end(), targetPage) != visiblePages.end() &&
+                   std::all_of(visiblePages.begin(), visiblePages.end(),
+                               [this](int page) { return thumbnailRenderer.find(page) != nullptr; });
+        };
+        while (!visibleThumbnailsReady() && g_get_monotonic_time() < stopDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        const bool targetPageVisible =
+                std::find(visiblePages.begin(), visiblePages.end(), targetPage) != visiblePages.end();
+        const bool allVisibleThumbnailsReady =
+                std::all_of(visiblePages.begin(), visiblePages.end(),
+                            [this](int page) { return thumbnailRenderer.find(page) != nullptr; });
+        if (state.page != canvasPage || !targetPageVisible || !allVisibleThumbnailsReady) {
+            std::cerr << "SIDEBAR FAST STOP FAILED: initial_canvas_page=" << canvasPage + 1
+                      << " canvas_page=" << state.page + 1 << " target_visible="
+                      << targetPageVisible << " visible=";
+            for (const int page: visiblePages) {
+                const char* status = thumbnailRenderer.find(page) ? "ready" :
+                                     thumbnailRenderer.hasPending(page) ? "pending" :
+                                     thumbnailRenderer.hasFailed(page) ? "failed" : "missing";
+                std::cerr << page + 1 << ':' << status << ',';
+            }
+            std::cerr << " pending_total=" << thumbnailRenderer.pendingCount()
+                      << " active=" << thumbnailRenderer.activeCount()
+                      << " next=" << thumbnailRenderer.nextQueuedPage() << '\n';
+        }
+        require(state.page == canvasPage && targetPageVisible && allVisibleThumbnailsReady,
+                "Visible sidebar thumbnails did not all finish after fast scrolling stopped");
+        capture("sidebar-fast-scroll-stop");
+        std::cout << "SIDEBAR FAST STOP: canvas_page=" << state.page << " visible_pages=";
+        for (const int page: visiblePages) {
+            std::cout << page + 1 << ',';
+        }
+        std::cout << " rendered=" << visiblePages.size() << '\n';
+        std::cout << "PASS: GTK4 sidebar renders visible thumbnails after fast scrolling stops\n";
     }
 
     void verifySearchIntegration() {
@@ -12962,6 +13464,7 @@ private:
             gtk_string_list_append(pages, label.c_str());
         }
         auto* selection = gtk_single_selection_new(G_LIST_MODEL(pages));
+        gtk_single_selection_set_autoselect(selection, false);
         g_signal_connect(selection, "notify::selected",
                          G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
@@ -12987,7 +13490,9 @@ private:
                              gtk_drawing_area_set_draw_func(
                                      GTK_DRAWING_AREA(preview),
                                      +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer owner) {
-                                         static_cast<Prototype*>(owner)->drawThumbnail(
+                                         auto* self = static_cast<Prototype*>(owner);
+                                         self->prioritizeVisibleSidebarThumbnails();
+                                         self->drawThumbnail(
                                                  cr, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(area), "page")), width,
                                                  height);
                                      },
@@ -13012,6 +13517,9 @@ private:
                              gtk_label_set_text(label, gtk_string_object_get_string(
                                                               GTK_STRING_OBJECT(gtk_list_item_get_item(item))));
                              self->thumbnailWidgets.push_back(preview);
+                             self->thumbnailRenderer.bindThumbnailWidget(static_cast<int>(page), preview);
+                             self->prioritizeVisibleSidebarThumbnails();
+                             self->requestSidebarThumbnail(static_cast<int>(page));
                              gtk_widget_queue_draw(preview);
                          }),
                          this);
@@ -13019,6 +13527,8 @@ private:
                                                             gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
                              auto* preview = GTK_WIDGET(g_object_get_data(G_OBJECT(item), "thumbnail"));
+                             const int page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(preview), "page"));
+                             self->thumbnailRenderer.unbindThumbnailWidget(page, preview);
                              const auto found = std::find(self->thumbnailWidgets.begin(), self->thumbnailWidgets.end(),
                                                           preview);
                              if (found != self->thumbnailWidgets.end()) {
@@ -13358,35 +13868,72 @@ private:
         update();
     }
 
+    void prioritizeVisibleSidebarThumbnails() {
+        if (!pageList) {
+            return;
+        }
+        const int viewportHeight = gtk_widget_get_height(GTK_WIDGET(pageList));
+        if (viewportHeight <= 0) {
+            return;
+        }
+        const double viewportCenter = viewportHeight / 2.0;
+        std::map<int, double> visiblePages;
+        for (auto* thumbnail: thumbnailWidgets) {
+            const int page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(thumbnail), "page"));
+            if (page < 0 || !gtk_widget_get_mapped(thumbnail)) {
+                continue;
+            }
+            graphene_rect_t bounds{};
+            if (!gtk_widget_compute_bounds(thumbnail, GTK_WIDGET(pageList), &bounds) ||
+                bounds.origin.y + bounds.size.height <= 0 || bounds.origin.y >= viewportHeight) {
+                continue;
+            }
+            const double center = bounds.origin.y + bounds.size.height / 2.0;
+            visiblePages.emplace(page, std::abs(center - viewportCenter));
+        }
+        thumbnailRenderer.setVisiblePages(std::move(visiblePages), state.page);
+    }
+
+    void requestSidebarThumbnail(int number) {
+        if (number < 0 || number >= pageCount) {
+            return;
+        }
+        if (thumbnailRenderer.find(number)) {
+            return;
+        }
+        const auto& pageLayers = state.layersForPage(number);
+        ThumbnailRequest request;
+        request.page = number;
+        request.pageSize = state.pageSize(number);
+        if (document && pageLayers.backgroundVisible) {
+            request.backgroundPath = nativeSession ? nativeSession->previewPath().string() : sourcePath;
+        }
+        if (nativeSession) {
+            for (const auto& layer: pageLayers.layers) {
+                if (!layer.visible) {
+                    continue;
+                }
+                for (const size_t origin: layer.origins) {
+                    if (origin < nativeSession->layerPreviewPaths.size() &&
+                        std::none_of(request.layers.begin(), request.layers.end(),
+                                     [origin](const ThumbnailLayerSource& source) { return source.origin == origin; })) {
+                        request.layers.push_back({origin, nativeSession->layerPreviewPaths[origin].string()});
+                    }
+                }
+            }
+        }
+        thumbnailRenderer.request(std::move(request));
+    }
+
     void drawThumbnail(cairo_t* cr, int number, int width, int height) {
         if (number < 0 || number >= pageCount) {
             return;
         }
+        requestSidebarThumbnail(number);
         const auto& pageLayers = state.layersForPage(number);
         const auto* preview = thumbnailRenderer.find(number);
-        if (!preview) {
-            ThumbnailRequest request;
-            request.page = number;
-            request.pageSize = state.pageSize(number);
-            if (document && pageLayers.backgroundVisible) {
-                request.backgroundPath = nativeSession ? nativeSession->previewPath().string() : sourcePath;
-            }
-            if (nativeSession) {
-                for (const auto& layer: pageLayers.layers) {
-                    if (!layer.visible) {
-                        continue;
-                    }
-                    for (const size_t origin: layer.origins) {
-                        if (origin < nativeSession->layerPreviewPaths.size() &&
-                            std::none_of(
-                                    request.layers.begin(), request.layers.end(),
-                                    [origin](const ThumbnailLayerSource& source) { return source.origin == origin; })) {
-                            request.layers.push_back({origin, nativeSession->layerPreviewPaths[origin].string()});
-                        }
-                    }
-                }
-            }
-            thumbnailRenderer.request(std::move(request));
+        if (options.verifySidebarStartup && number == 0 && preview && preview->background) {
+            ++sidebarStartupReadyDraws;
         }
         cairo_save(cr);
         cairo_translate(cr, (width - pageThumbnailWidth) / 2.0, (height - pageThumbnailHeight) / 2.0);
@@ -14272,7 +14819,8 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifySearch || options.verifySidebarPerformance || options.verifyPageLayout ||
+        if (options.verifyPlugins || options.verifySearch || options.verifySidebarPerformance ||
+            options.verifySidebarStartup || options.verifyPageLayout ||
             options.verifyPresentationMode || options.verifyPenLineStyle || options.verifyBeamer ||
             options.verifyLayerActions || options.verifyLatex) {
             g_timeout_add(
@@ -14287,6 +14835,8 @@ private:
                                 self->verifySearchIntegration();
                             } else if (self->options.verifySidebarPerformance) {
                                 self->verifySidebarPerformanceIntegration();
+                            } else if (self->options.verifySidebarStartup) {
+                                self->verifySidebarStartupIntegration();
                             } else if (self->options.verifyPageLayout) {
                                 self->verifyPageLayoutIntegration();
                             } else if (self->options.verifyPresentationMode) {
@@ -14306,6 +14856,7 @@ private:
                             const char* verification = self->options.verifyLatex ? "LATEX" :
                                                        self->options.verifySearch ? "SEARCH" :
                                                        self->options.verifySidebarPerformance ? "SIDEBAR PERFORMANCE" :
+                                                       self->options.verifySidebarStartup ? "SIDEBAR STARTUP" :
                                                        self->options.verifyPresentationMode ? "PRESENTATION MODE" :
                                                        self->options.verifyPageLayout ? "PAGE LAYOUT" :
                                                        self->options.verifyPenLineStyle ? "PEN LINE STYLE" :
@@ -16403,6 +16954,9 @@ private:
             }
             cairo_set_source_rgba(cr, 0.25, 0.28, 0.33, 0.55);
             cairo_fill(cr);
+        }
+        if (sidebarCanvasRenderSuppressed) {
+            return;
         }
         bool drewAny = false;
         for (const int i: state.visiblePageIndices(width, height)) {
@@ -21482,6 +22036,8 @@ private:
     GtkListView* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     PageThumbnailRenderer thumbnailRenderer;
+    size_t sidebarStartupReadyDraws = 0;
+    bool sidebarCanvasRenderSuppressed = false;
     GtkWidget* layerRows = nullptr;
     GtkWidget* layerAddButton = nullptr;
     GtkWidget* layerDeleteButton = nullptr;
@@ -21553,6 +22109,18 @@ private:
 
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string_view(argv[1]) == "--gtk4-sidebar-thumbnail-worker") {
+            return runThumbnailWorker(argc, argv);
+        }
+        const std::filesystem::path executable(argv[0]);
+        if (executable.has_parent_path()) {
+            thumbnailWorkerExecutable = std::filesystem::absolute(executable).string();
+        } else if (auto* resolved = g_find_program_in_path(argv[0])) {
+            thumbnailWorkerExecutable = resolved;
+            g_free(resolved);
+        } else {
+            throw std::runtime_error("Cannot locate the sidebar thumbnail renderer");
+        }
         Options options;
         for (int i = 1; i < argc; ++i) {
             const std::string argument = argv[i];
@@ -21592,6 +22160,8 @@ int main(int argc, char** argv) {
                 options.verifySearch = true;
             } else if (argument == "--verify-sidebar-performance") {
                 options.verifySidebarPerformance = true;
+            } else if (argument == "--verify-sidebar-startup") {
+                options.verifySidebarStartup = true;
             } else if (argument == "--verify-page-layout") {
                 options.verifyPageLayout = true;
             } else if (argument == "--verify-presentation-mode") {
@@ -21624,7 +22194,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
-                                         "[--verify-sidebar-performance] "
+                                         "[--verify-sidebar-performance] [--verify-sidebar-startup] "
                                          "[--verify-page-layout] [--verify-presentation-mode] "
                                          "[--verify-pen-line-style] [--verify-beamer] "
                                          "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
@@ -21650,6 +22220,11 @@ int main(int argc, char** argv) {
              !options.worker.empty())) {
             throw std::runtime_error(
                     "Sidebar performance verification requires --smoke-dir and --pdf without --worker");
+        }
+        if (options.verifySidebarStartup &&
+            (options.smokeDirectory.empty() || options.pdf.empty() || !options.nativeDocument.empty() ||
+             !options.worker.empty())) {
+            throw std::runtime_error("Sidebar startup verification requires --smoke-dir and --pdf without --worker");
         }
         if (options.verifyPageLayout && (options.smokeDirectory.empty() || !options.pdf.empty() ||
                                          !options.nativeDocument.empty() || !options.worker.empty())) {
