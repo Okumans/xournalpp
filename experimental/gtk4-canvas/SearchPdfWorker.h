@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -19,9 +20,13 @@ struct SearchPdfPageSources {
     std::vector<std::vector<SearchPdfSource>> layers;
 };
 
-struct SearchPdfScanRequest {
+struct SearchPdfPageRequest {
     std::string query;
-    std::vector<SearchPdfPageSources> pages;
+    // Search requests are deliberately limited to one page. The controller
+    // submits the next page only after this one has completed.
+    SearchPdfPageSources page;
+    const void* documentIdentity = nullptr;
+    size_t documentRevision = 0;
     // Keeps staged native PDF paths valid until the worker has stopped using them.
     std::shared_ptr<const void> sourceLifetime;
 };
@@ -37,11 +42,10 @@ struct SearchPdfPageResult {
     int page = 0;
     std::vector<SearchPdfMatch> backgroundMatches;
     std::vector<std::vector<SearchPdfMatch>> layerMatches;
-    bool finished = false;
     std::string error;
 };
 
-// Owns its Poppler documents on a dedicated thread and publishes completed pages.
+// Owns its Poppler documents on a dedicated thread and publishes one page per request.
 class SearchPdfWorker {
 public:
     SearchPdfWorker();
@@ -50,7 +54,7 @@ public:
     SearchPdfWorker(const SearchPdfWorker&) = delete;
     SearchPdfWorker& operator=(const SearchPdfWorker&) = delete;
 
-    uint64_t submit(SearchPdfScanRequest request);
+    uint64_t submit(SearchPdfPageRequest request);
     void cancel();
     std::optional<SearchPdfPageResult> takeResult(uint64_t generation);
 
