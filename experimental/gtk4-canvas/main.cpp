@@ -562,6 +562,11 @@ public:
             g_source_remove(floatingToolboxSmokeSource);
             floatingToolboxSmokeSource = 0;
         }
+        if (floatingPageSpinTimeout) {
+            g_source_remove(floatingPageSpinTimeout);
+            floatingPageSpinTimeout = 0;
+        }
+        pendingFloatingPageSpin = nullptr;
         if (floatingToolboxDismissSmokeSource) {
             g_source_remove(floatingToolboxDismissSmokeSource);
             floatingToolboxDismissSmokeSource = 0;
@@ -8867,6 +8872,47 @@ private:
                           auto* self = static_cast<Prototype*>(data);
                           g_signal_emit_by_name(self->redoButton, "clicked");
                       }));
+        } else if (token == "PAGE_SPIN") {
+            auto* pageControl = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+            auto* pageLabel = gtk_label_new("Page");
+            auto* spin = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(1, std::max(1, pageCount), 1));
+            gtk_spin_button_set_numeric(spin, true);
+            gtk_spin_button_set_digits(spin, 0);
+            gtk_editable_set_width_chars(GTK_EDITABLE(spin), 4);
+            gtk_widget_set_tooltip_text(GTK_WIDGET(spin), "Go to page");
+            gtk_accessible_update_property(GTK_ACCESSIBLE(spin), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                           "Current page number", -1);
+            auto* status = GTK_LABEL(gtk_label_new(""));
+            gtk_widget_add_css_class(GTK_WIDGET(status), "dim-label");
+            floatingPageSpinners.emplace_back(spin, status);
+            g_signal_connect(spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* changed, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 if (self->syncingPage) {
+                                     return;
+                                 }
+                                 if (self->floatingPageSpinTimeout) {
+                                     g_source_remove(self->floatingPageSpinTimeout);
+                                 }
+                                 self->pendingFloatingPageSpin = changed;
+                                 self->floatingPageSpinTimeout = g_timeout_add(
+                                         100,
+                                         +[](gpointer timeoutData) -> gboolean {
+                                             auto* self = static_cast<Prototype*>(timeoutData);
+                                             self->floatingPageSpinTimeout = 0;
+                                             auto* pending = std::exchange(self->pendingFloatingPageSpin, nullptr);
+                                             if (pending && !self->closed) {
+                                                 self->navigateToPage(
+                                                         gtk_spin_button_get_value_as_int(pending) - 1);
+                                             }
+                                             return G_SOURCE_REMOVE;
+                                         },
+                                         self);
+                             }),
+                             this);
+            gtk_box_append(GTK_BOX(pageControl), pageLabel);
+            gtk_box_append(GTK_BOX(pageControl), GTK_WIDGET(spin));
+            gtk_box_append(GTK_BOX(pageControl), GTK_WIDGET(status));
+            gtk_box_append(GTK_BOX(row), pageControl);
         } else if (token == "ZOOM_SLIDER") {
             auto* scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 25.0, 400.0, 5.0);
             gtk_widget_set_size_request(scale, 132, -1);
@@ -9207,9 +9253,15 @@ private:
         if (!floatingToolboxRowsContainer) {
             return;
         }
+        if (floatingPageSpinTimeout) {
+            g_source_remove(floatingPageSpinTimeout);
+            floatingPageSpinTimeout = 0;
+        }
+        pendingFloatingPageSpin = nullptr;
         floatingDrawingModeSelectors.clear();
         floatingFillToggles.clear();
         floatingFillOpacityButtons.clear();
+        floatingPageSpinners.clear();
         if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
             floatingToolboxToolButtons.erase(
                     floatingToolboxToolButtons.begin() +
@@ -12201,6 +12253,7 @@ private:
             gtk_widget_set_sensitive(GTK_WIDGET(button), fillOpacityAvailableNow);
         }
         syncingBrush = wasSyncingBrush;
+        updateFloatingPageSpinners();
         if (pageList) {
             syncingPage = true;
             gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, state.page));
@@ -12214,6 +12267,33 @@ private:
         gtk_widget_queue_draw(canvas);
         syncAudioControls();
         ensureLaserFadeTimer();
+    }
+
+    void updateFloatingPageSpinners() {
+        const bool wasSyncingPage = syncingPage;
+        syncingPage = true;
+
+        const int count = std::max(0, pageCount);
+        const int current = count > 0 ? std::clamp(state.page + 1, 1, count) : 0;
+        std::string status = "of " + std::to_string(count);
+        if (nativeSession && state.page >= 0 &&
+            static_cast<std::size_t>(state.page) < nativeSession->pdfPageMap.size()) {
+            const int pdfPage = nativeSession->pdfPageMap[static_cast<std::size_t>(state.page)];
+            if (pdfPage >= 0) {
+                status += ", PDF Page " + std::to_string(pdfPage + 1);
+            }
+        }
+
+        for (const auto& [spin, label]: floatingPageSpinners) {
+            gtk_spin_button_set_range(spin, count > 0 ? 1 : 0, count);
+            if (spin != pendingFloatingPageSpin) {
+                gtk_spin_button_set_value(spin, current);
+            }
+            gtk_label_set_text(label, status.c_str());
+            gtk_widget_set_sensitive(GTK_WIDGET(spin), count > 0);
+        }
+
+        syncingPage = wasSyncingPage;
     }
 
     void ensureLaserFadeTimer() {
@@ -15572,7 +15652,7 @@ private:
     gboolean smokePreferencesVerify() {
         const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
         const prototype::FloatingToolboxRows floatingModeTestRows = {{
-                {"SMART_SELECT", "PEN", "DRAW"},
+                {"SMART_SELECT", "PEN", "DRAW", "PAGE_SPIN"},
                 {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER",
                  "RULER"},
                 {"TOOL_FILL", "FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
@@ -16067,6 +16147,9 @@ private:
                     selectTool(Tool::Pen);
                     require(state.ink.empty() && !modified(),
                             "Preferences smoke checks left a modified test document");
+                    state.setPages({{595, 842}, {595, 842}, {595, 842}});
+                    pageCount = state.pageCount();
+                    state.selectActivePage(0);
                     update();
                     floatingToolboxSmokeReady = false;
                     floatingToolboxSmokeSource = g_timeout_add(
@@ -16075,16 +16158,79 @@ private:
                                 auto* self = static_cast<Prototype*>(data);
                                 self->showFloatingToolbox(gtk_widget_get_width(self->canvas) / 2.0,
                                                           gtk_widget_get_height(self->canvas) / 2.0);
+                                const bool pageSpinnerReady = self->floatingPageSpinners.size() == 1 &&
+                                        gtk_spin_button_get_value_as_int(self->floatingPageSpinners.front().first) == 1 &&
+                                        gtk_adjustment_get_lower(gtk_spin_button_get_adjustment(
+                                                self->floatingPageSpinners.front().first)) == 1 &&
+                                        gtk_adjustment_get_upper(gtk_spin_button_get_adjustment(
+                                                self->floatingPageSpinners.front().first)) == 3 &&
+                                        std::string(gtk_label_get_text(self->floatingPageSpinners.front().second)) ==
+                                                "of 3";
                                 self->floatingToolboxSmokeReady = gtk_widget_get_visible(self->floatingToolbox) &&
-                                                                  self->floatingToolboxToolButtons.size() >= 15;
+                                                                  self->floatingToolboxToolButtons.size() >= 15 &&
+                                                                  pageSpinnerReady;
                                 self->floatingToolboxSmokeSource = 0;
                                 return G_SOURCE_REMOVE;
                             },
                             this);
                     break;
                 }
-                case 4:
+                case 4: {
                     require(floatingToolboxSmokeReady, "Floating toolbox did not open with the expected tool actions");
+                    require(floatingPageSpinners.size() == 1 && state.page == 0 &&
+                                    gtk_spin_button_get_value_as_int(floatingPageSpinners.front().first) == 1 &&
+                                    std::string(gtk_label_get_text(floatingPageSpinners.front().second)) == "of 3",
+                            "PAGE_SPIN did not expose the current page and page count");
+                    floatingToolboxSmokeReady = false;
+                    gtk_spin_button_set_value(floatingPageSpinners.front().first, 3);
+                    floatingToolboxSmokeSource = g_timeout_add(
+                            180,
+                            +[](gpointer data) -> gboolean {
+                                auto* self = static_cast<Prototype*>(data);
+                                self->floatingToolboxSmokeSource = 0;
+                                if (self->state.page != 2 ||
+                                    gtk_spin_button_get_value_as_int(self->floatingPageSpinners.front().first) != 3 ||
+                                    std::string(gtk_label_get_text(GTK_LABEL(self->pageLabel))) != "3 / 3") {
+                                    std::cerr << "SMOKE FAILED: PAGE_SPIN did not navigate to the selected page: page="
+                                              << self->state.page << " spin="
+                                              << gtk_spin_button_get_value_as_int(
+                                                         self->floatingPageSpinners.front().first)
+                                              << " label=" << gtk_label_get_text(GTK_LABEL(self->pageLabel))
+                                              << '\n';
+                                    self->failed = true;
+                                    g_application_quit(G_APPLICATION(gtk_window_get_application(
+                                            GTK_WINDOW(self->window))));
+                                    return G_SOURCE_REMOVE;
+                                }
+                                gtk_spin_button_set_value(self->floatingPageSpinners.front().first, 1);
+                                self->floatingToolboxSmokeSource = g_timeout_add(
+                                        180,
+                                        +[](gpointer verifyData) -> gboolean {
+                                            auto* self = static_cast<Prototype*>(verifyData);
+                                            self->floatingToolboxSmokeSource = 0;
+                                            if (self->state.page != 0 ||
+                                                gtk_spin_button_get_value_as_int(
+                                                        self->floatingPageSpinners.front().first) != 1 ||
+                                                std::string(gtk_label_get_text(GTK_LABEL(self->pageLabel))) !=
+                                                        "1 / 3") {
+                                                std::cerr << "SMOKE FAILED: PAGE_SPIN did not follow page navigation\n";
+                                                self->failed = true;
+                                                g_application_quit(G_APPLICATION(gtk_window_get_application(
+                                                        GTK_WINDOW(self->window))));
+                                                return G_SOURCE_REMOVE;
+                                            }
+                                            self->floatingToolboxSmokeReady = true;
+                                            return G_SOURCE_REMOVE;
+                                        },
+                                        self);
+                                return G_SOURCE_REMOVE;
+                            },
+                            this);
+                    break;
+                }
+                case 5:
+                    require(floatingToolboxSmokeReady,
+                            "PAGE_SPIN navigation and synchronization did not finish");
                     capture("floating-toolbox");
                     floatingToolboxDismissSmokeReady = false;
                     scheduleFloatingToolboxHide();
@@ -16098,13 +16244,15 @@ private:
                             },
                             this);
                     break;
-                default:
+                case 6:
                     require(floatingToolboxDismissSmokeReady,
                             "Floating toolbox did not close after the pointer-leave delay");
                     capture("preferences-edited");
                     std::cout << "PASS: Adw Preferences editing, legacy stylus mapping import and persistent GTK 4 settings\n";
                     gtk_window_close(GTK_WINDOW(window));
                     return G_SOURCE_REMOVE;
+                default:
+                    return G_SOURCE_CONTINUE;
             }
         } else if (preferencesVerifyMode == "reload") {
             switch (preferencesVerifyStep++) {
@@ -18531,6 +18679,9 @@ private:
     bool floatingToolboxSmokeReady = true;
     guint floatingToolboxDismissSmokeSource = 0;
     bool floatingToolboxDismissSmokeReady = true;
+    guint floatingPageSpinTimeout = 0;
+    GtkSpinButton* pendingFloatingPageSpin = nullptr;
+    std::vector<std::pair<GtkSpinButton*, GtkLabel*>> floatingPageSpinners;
     std::array<GtkWidget*, 2> laserButtons{};
     GtkWidget* audioControls = nullptr;
     GtkWidget* audioBackButton = nullptr;
