@@ -146,10 +146,9 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
                                        !options.nativeDocument.empty() || !options.worker.empty())) {
         throw std::runtime_error("Scroll motion verification requires --smoke-dir without a document or worker");
     }
-    if (options.verifySmartSelectPerformance && (options.smokeDirectory.empty() || !options.pdf.empty() ||
-                                                 !options.nativeDocument.empty() || !options.worker.empty())) {
-        throw std::runtime_error(
-                "Smart Select performance verification requires --smoke-dir without a document or worker");
+    if (options.verifySmartSelectPerformance &&
+        (options.smokeDirectory.empty() || !options.nativeDocument.empty() || !options.worker.empty())) {
+        throw std::runtime_error("Smart Select performance verification requires --smoke-dir without a worker");
     }
     if (options.verifySidebarPerformance && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                              !options.nativeDocument.empty() || !options.worker.empty())) {

@@ -832,28 +832,49 @@ def verify_scroll_motion(args, evidence):
 def verify_smart_select_performance(args, evidence):
     run_dir = evidence / "smart-select-performance"
     run_dir.mkdir(parents=True, exist_ok=True)
+    command = [str(args.binary.resolve()), "--smoke-dir", str(run_dir), "--verify-smart-select-performance"]
+    if args.smart_select_pdf:
+        command.extend(["--pdf", str(args.smart_select_pdf.resolve())])
     output = run(
-        [str(args.binary.resolve()), "--smoke-dir", str(run_dir), "--verify-smart-select-performance"],
+        command,
         env=dict(os.environ, G_DEBUG="fatal-criticals"),
     )
     marker = "PASS: GTK4 Smart Select drag raster-cache frame latency"
     if marker not in output:
         raise RuntimeError("GTK4 Smart Select performance verification did not finish")
 
-    screenshots = [run_dir / "smart-select-performance-selected.png",
+    screenshots = [run_dir / "smart-select-performance-ink.png",
+                   run_dir / "smart-select-performance-selected.png",
                    run_dir / "smart-select-performance-moved.png"]
     for screenshot in screenshots:
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing Smart Select performance screenshot: {screenshot}")
 
-    match = re.search(r"median_ms=([0-9.]+) p95_ms=([0-9.]+) max_ms=([0-9.]+)", output)
+    match = re.search(
+        r"Smart Select drag raster-cache frame latency median_ms=([0-9.]+) p95_ms=([0-9.]+) max_ms=([0-9.]+)",
+        output,
+    )
     if not match:
         raise RuntimeError("Smart Select performance verification did not report frame latency")
+    ink_match = re.search(
+        r"live ink frame latency pen_median_ms=([0-9.]+) pen_p95_ms=([0-9.]+) pen_max_ms=([0-9.]+) "
+        r"pen_cache_bytes_copied=(\d+) highlighter_median_ms=([0-9.]+) highlighter_p95_ms=([0-9.]+) "
+        r"highlighter_max_ms=([0-9.]+) highlighter_cache_bytes_copied=(\d+)", output)
+    if not ink_match:
+        raise RuntimeError("Ink drawing verification did not report live frame latency")
     return {
         "screenshots": [str(path) for path in screenshots],
+        "document": str(args.smart_select_pdf.resolve()) if args.smart_select_pdf else "synthetic page",
+        "ink_frame_latency_ms": {
+            "pen": {"median": float(ink_match.group(1)), "p95": float(ink_match.group(2)),
+                    "max": float(ink_match.group(3))},
+            "highlighter": {"median": float(ink_match.group(5)), "p95": float(ink_match.group(6)),
+                            "max": float(ink_match.group(7))},
+        },
+        "ink_cache_bytes_copied": {"pen": int(ink_match.group(4)), "highlighter": int(ink_match.group(8))},
         "frame_latency_ms": {"median": float(match.group(1)), "p95": float(match.group(2)),
                               "max": float(match.group(3))},
-        "checks": ["40 selected highlighter strokes", "128 points per stroke",
+        "checks": ["40 pen strokes and 40 highlighter strokes", "128 points per stroke",
                    "GTK Smart Select drag-controller path", "24 painted preview frames",
                    "translated cache pixel parity in ink-renderer test"],
         "input_coverage": "Synthetic GTK gesture-controller signals; no physical input claim",
@@ -1790,6 +1811,7 @@ def main():
                         help="Wait for and measure a full page-by-page search scan")
     parser.add_argument("--scroll-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smart-select-performance-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--smart-select-pdf", type=Path, help="PDF to use for the ink performance check")
     parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pen-line-style-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
@@ -1822,6 +1844,8 @@ def main():
         raise RuntimeError("Text clipboard verification requires --worker")
     if args.sidebar_startup_only and not args.sidebar_startup_pdf:
         raise RuntimeError("Sidebar startup verification requires --sidebar-startup-pdf")
+    if args.smart_select_pdf and (not args.smart_select_performance_only or not args.smart_select_pdf.is_file()):
+        raise RuntimeError("--smart-select-pdf requires --smart-select-performance-only and an existing PDF")
     if args.search_query and not args.search_pdf:
         raise RuntimeError("--search-query requires --search-pdf")
     if args.search_pdf and (not args.search_query or args.search_page < 0 or not args.search_pdf.is_file()):
@@ -1905,6 +1929,8 @@ def main():
             command.append("--scroll-only")
         if args.smart_select_performance_only:
             command.append("--smart-select-performance-only")
+        if args.smart_select_pdf:
+            command.extend(["--smart-select-pdf", str(args.smart_select_pdf.resolve())])
         if args.canvas_smoke_only:
             command.append("--canvas-smoke-only")
         if args.pen_line_style_only:
