@@ -67,6 +67,7 @@ private:
     void setStatus(const std::string& text);
     void cancelSearch();
     void beginSearch(std::string query, int direction);
+    uint64_t submitSearchPage(int page);
     void queryEdited();
     static gboolean processSearchPageCallback(gpointer data);
     void appendTextSearchMatches(const prototype::TextItem& item, const std::string& query,

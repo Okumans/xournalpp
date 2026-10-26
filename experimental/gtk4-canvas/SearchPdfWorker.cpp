@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
-#include <deque>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -18,10 +17,13 @@ namespace {
 
 class SearchDocuments {
 public:
-    ~SearchDocuments() {
+    ~SearchDocuments() { clear(); }
+
+    void clear() {
         for (const auto& entry: documents) {
             g_object_unref(entry.second);
         }
+        documents.clear();
     }
 
     PopplerDocument* get(const std::string& path) {
@@ -96,19 +98,20 @@ std::vector<SearchPdfMatch> findMatches(SearchDocuments& documents, const Search
 }  // namespace
 
 struct SearchPdfWorker::Impl {
-    static constexpr size_t maxBufferedPageResults = 4;
-
     struct Job {
         uint64_t generation;
-        SearchPdfScanRequest request;
+        SearchPdfPageRequest request;
     };
 
     std::mutex mutex;
     std::condition_variable condition;
     std::optional<Job> pending;
-    std::deque<std::pair<uint64_t, SearchPdfPageResult>> results;
+    std::optional<std::pair<uint64_t, SearchPdfPageResult>> publishedResult;
     uint64_t generation = 0;
     bool stopping = false;
+    SearchDocuments documents;
+    const void* documentIdentity = nullptr;
+    size_t documentRevision = 0;
     std::thread thread;
 
     Impl(): thread([this] { run(); }) {}
@@ -131,13 +134,11 @@ struct SearchPdfWorker::Impl {
 
     bool publish(uint64_t candidate, SearchPdfPageResult result) {
         std::unique_lock lock(mutex);
-        condition.wait(lock, [this, candidate] {
-            return stopping || generation != candidate || results.size() < maxBufferedPageResults;
-        });
+        condition.wait(lock, [this, candidate] { return stopping || generation != candidate || !publishedResult; });
         if (stopping || generation != candidate) {
             return false;
         }
-        results.emplace_back(candidate, std::move(result));
+        publishedResult.emplace(candidate, std::move(result));
         return true;
     }
 
@@ -148,6 +149,7 @@ struct SearchPdfWorker::Impl {
                 std::unique_lock lock(mutex);
                 condition.wait(lock, [this] { return stopping || pending.has_value(); });
                 if (stopping) {
+                    documents.clear();
                     return;
                 }
                 job = std::move(pending);
@@ -159,42 +161,40 @@ struct SearchPdfWorker::Impl {
     }
 
     void process(const Job& job) {
-        SearchDocuments documents;
-        for (const auto& pageSources: job.request.pages) {
-            if (!isCurrent(job.generation)) {
-                return;
-            }
-
-            SearchPdfPageResult result;
-            result.page = pageSources.page;
-            result.layerMatches.resize(pageSources.layers.size());
-            try {
-                if (pageSources.background) {
-                    result.backgroundMatches = findMatches(documents, *pageSources.background, job.request.query);
-                }
-                for (size_t layer = 0; layer < pageSources.layers.size(); ++layer) {
-                    for (const auto& source: pageSources.layers[layer]) {
-                        if (!isCurrent(job.generation)) {
-                            return;
-                        }
-                        auto sourceMatches = findMatches(documents, source, job.request.query);
-                        auto& layerMatches = result.layerMatches[layer];
-                        layerMatches.insert(layerMatches.end(), sourceMatches.begin(), sourceMatches.end());
-                    }
-                }
-            } catch (const std::exception& exception) {
-                result.error = exception.what();
-                publish(job.generation, std::move(result));
-                return;
-            }
-            if (!publish(job.generation, std::move(result))) {
-                return;
-            }
+        if (!isCurrent(job.generation)) {
+            return;
+        }
+        if (documentIdentity != job.request.documentIdentity || documentRevision != job.request.documentRevision) {
+            documents.clear();
+            documentIdentity = job.request.documentIdentity;
+            documentRevision = job.request.documentRevision;
         }
 
-        SearchPdfPageResult finished;
-        finished.finished = true;
-        publish(job.generation, std::move(finished));
+        SearchPdfPageResult result;
+        result.page = job.request.page.page;
+        result.layerMatches.resize(job.request.page.layers.size());
+        try {
+            if (job.request.page.background) {
+                result.backgroundMatches = findMatches(documents, *job.request.page.background, job.request.query);
+            }
+            for (size_t layer = 0; layer < job.request.page.layers.size(); ++layer) {
+                for (const auto& source: job.request.page.layers[layer]) {
+                    if (!isCurrent(job.generation)) {
+                        return;
+                    }
+                    auto sourceMatches = findMatches(documents, source, job.request.query);
+                    auto& layerMatches = result.layerMatches[layer];
+                    layerMatches.insert(layerMatches.end(), sourceMatches.begin(), sourceMatches.end());
+                }
+            }
+        } catch (const std::exception& exception) {
+            result.error = exception.what();
+            publish(job.generation, std::move(result));
+            return;
+        }
+        if (!publish(job.generation, std::move(result))) {
+            return;
+        }
     }
 };
 
@@ -202,11 +202,11 @@ SearchPdfWorker::SearchPdfWorker(): impl(std::make_unique<Impl>()) {}
 
 SearchPdfWorker::~SearchPdfWorker() = default;
 
-uint64_t SearchPdfWorker::submit(SearchPdfScanRequest request) {
+uint64_t SearchPdfWorker::submit(SearchPdfPageRequest request) {
     std::lock_guard lock(impl->mutex);
     const uint64_t generation = ++impl->generation;
     impl->pending = Impl::Job{generation, std::move(request)};
-    impl->results.clear();
+    impl->publishedResult.reset();
     impl->condition.notify_all();
     return generation;
 }
@@ -215,17 +215,17 @@ void SearchPdfWorker::cancel() {
     std::lock_guard lock(impl->mutex);
     ++impl->generation;
     impl->pending.reset();
-    impl->results.clear();
+    impl->publishedResult.reset();
     impl->condition.notify_all();
 }
 
 std::optional<SearchPdfPageResult> SearchPdfWorker::takeResult(uint64_t generation) {
     std::lock_guard lock(impl->mutex);
-    if (impl->results.empty() || impl->results.front().first != generation) {
+    if (!impl->publishedResult || impl->publishedResult->first != generation) {
         return std::nullopt;
     }
-    auto result = std::move(impl->results.front().second);
-    impl->results.pop_front();
+    auto result = std::move(impl->publishedResult->second);
+    impl->publishedResult.reset();
     impl->condition.notify_all();
     return result;
 }

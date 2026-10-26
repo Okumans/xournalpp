@@ -126,21 +126,23 @@ each phase lands:
    implement and validate the chosen direction against the compact default
    tool layout and customizability requirements above.
 
-Document search must remain Enter-driven: typing edits the query and clears
-stale results, while Enter or an explicit next/previous action starts a
-page-at-a-time scan. Phase 109 implements the interaction. Phase 116 moves PDF
-text lookup to a dedicated worker that owns its Poppler documents, publishes
-bounded page batches, and lets GTK add editable-text matches and update the
-overlay on the main thread. Replacing or closing a query cancels the active
+Document search remains Enter-driven: typing edits the query and clears stale
+results, while Enter or an explicit next/previous action starts a page-at-a-time
+scan. Phase 109 implements the interaction. Phase 116 moved PDF text lookup to
+a dedicated worker. Phase 120 submits only the next page, waits for its result,
+then prepares and submits another; it never creates a document-wide PDF request
+on the GTK thread. The worker retains Poppler documents across those page
+requests for the same document revision. GTK adds editable-text matches and
+updates overlays as each page arrives, so the first match can be used while the
+remaining pages scan. Replacing or closing a query cancels the active
 generation, and a native document session remains alive until its queued PDF
 paths are no longer in use. The focused private Cage check accepts a real PDF,
 query, and zero-based page, waits for a valid full-detail background raster,
-verifies the result rectangles against Poppler, and captures the visible
-overlay. On the user's 775-page PDF, searching for `computer` on page 12 found
-eight matches aligned with the chapter heading and body text. A full scan of
-all 775 pages delivered its first result in about 20 ms, completed in 7.6 seconds,
-and kept the GTK heartbeat gap below 24 ms. Long-document Search responsiveness
-is now covered by that private check; physical-device input remains unverified.
+verifies result rectangles against Poppler, and captures the visible overlay.
+On the user's 775-page PDF, searching for `computer` on page 12 found eight
+matches aligned with the chapter heading and body text. The page-by-page scan
+returned its first result in 9.9 ms, completed in 9.13 seconds, and measured a
+22.54 ms maximum GTK heartbeat gap. Physical-device input remains unverified.
 
 These user-requested follow-ups remain:
 

@@ -312,38 +312,37 @@ void Gtk4SearchController::beginSearch(std::string query, int direction) {
     const int startPage = std::clamp(searchStartPage, 0, pageCountInt - 1);
     searchScanPage = searchScanDirection > 0 ? startPage : (startPage + pageCountInt - 1) % pageCountInt;
 
-    SearchPdfScanRequest scanRequest;
-    scanRequest.query = searchQuery;
-    scanRequest.sourceLifetime = host.searchDocumentLifetime();
-    scanRequest.pages.reserve(pageCount);
-    for (int scanned = 0; scanned < pageCountInt; ++scanned) {
-        const int pageNumber = (searchScanPage + scanned * searchScanDirection + pageCountInt * 2) % pageCountInt;
-        const auto& layers = host.searchCanvasState().layersForPage(pageNumber).layers;
-
-        SearchPdfPageSources pageSources;
-        pageSources.page = pageNumber;
-        pageSources.background = host.searchBackgroundPdfSource(pageNumber);
-        pageSources.layers.resize(layers.size());
-        for (size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
-            if (!layers[layerIndex].visible) {
-                continue;
-            }
-            for (const size_t origin: layers[layerIndex].origins) {
-                if (auto source = host.searchLayerPdfSource(pageNumber, origin)) {
-                    pageSources.layers[layerIndex].push_back(std::move(*source));
-                }
-            }
-        }
-        scanRequest.pages.push_back(std::move(pageSources));
-    }
-
     searchPagesScanned = 0;
     searchInProgress = true;
     setStatus("Searching document…");
     host.updateSearchCanvas();
-    searchPdfGeneration = searchPdfWorker.submit(std::move(scanRequest));
+    searchPdfGeneration = submitSearchPage(searchScanPage);
     searchPollSource =
             g_timeout_add_full(G_PRIORITY_DEFAULT, 8, &Gtk4SearchController::processSearchPageCallback, this, nullptr);
+}
+
+uint64_t Gtk4SearchController::submitSearchPage(int pageNumber) {
+    SearchPdfPageRequest request;
+    request.query = searchQuery;
+    request.sourceLifetime = host.searchDocumentLifetime();
+    request.documentIdentity = host.searchDocumentIdentity();
+    request.documentRevision = host.searchCanvasState().revision();
+
+    const auto& layers = host.searchCanvasState().layersForPage(pageNumber).layers;
+    request.page.page = pageNumber;
+    request.page.background = host.searchBackgroundPdfSource(pageNumber);
+    request.page.layers.resize(layers.size());
+    for (size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
+        if (!layers[layerIndex].visible) {
+            continue;
+        }
+        for (const size_t origin: layers[layerIndex].origins) {
+            if (auto source = host.searchLayerPdfSource(pageNumber, origin)) {
+                request.page.layers[layerIndex].push_back(std::move(*source));
+            }
+        }
+    }
+    return searchPdfWorker.submit(std::move(request));
 }
 
 void Gtk4SearchController::queryEdited() {
@@ -401,19 +400,6 @@ gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
         self->setStatus("Search failed: " + result->error);
         return G_SOURCE_REMOVE;
     }
-    if (result->finished) {
-        self->searchInProgress = false;
-        self->searchPollSource = 0;
-        if (!self->searchMatches.empty() && self->pendingNavigationDirection != 0) {
-            const size_t target = self->pendingNavigationDirection > 0 ? 0 : self->searchMatches.size() - 1;
-            self->pendingNavigationDirection = 0;
-            self->activateMatch(target);
-        } else {
-            self->updateStatus();
-        }
-        return G_SOURCE_REMOVE;
-    }
-
     std::vector<SearchMatch> pageMatches;
     std::string error;
     if (!self->appendPageSearchMatches(*result, pageMatches, error)) {
@@ -438,9 +424,10 @@ gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
 
     if (!self->activeSearchMatch && self->searchMatches.size() > firstNewMatch) {
         self->activateMatch(firstNewMatch);
-    } else if (self->pendingNavigationDirection > 0 && self->searchMatches.size() > firstNewMatch) {
+    } else if (self->pendingNavigationDirection != 0 && self->searchMatches.size() > firstNewMatch) {
+        const size_t target = self->pendingNavigationDirection > 0 ? firstNewMatch : self->searchMatches.size() - 1;
         self->pendingNavigationDirection = 0;
-        self->activateMatch(firstNewMatch);
+        self->activateMatch(target);
     }
     if (!pageMatches.empty()) {
         self->host.updateSearchCanvas();
@@ -449,6 +436,21 @@ gboolean Gtk4SearchController::processSearchPageCallback(gpointer data) {
     const int pageCount = self->searchResultPageCount;
     self->searchScanPage = (result->page + self->searchScanDirection + pageCount) % pageCount;
     self->updateStatus();
+
+    if (self->searchPagesScanned >= self->searchResultPageCount) {
+        self->searchInProgress = false;
+        self->searchPollSource = 0;
+        if (!self->searchMatches.empty() && self->pendingNavigationDirection != 0) {
+            const size_t target = self->pendingNavigationDirection > 0 ? 0 : self->searchMatches.size() - 1;
+            self->pendingNavigationDirection = 0;
+            self->activateMatch(target);
+        } else {
+            self->updateStatus();
+        }
+        return G_SOURCE_REMOVE;
+    }
+
+    self->searchPdfGeneration = self->submitSearchPage(self->searchScanPage);
     return G_SOURCE_CONTINUE;
 }
 
@@ -467,7 +469,8 @@ void Gtk4SearchController::updateStatus() {
     }
     if (!activeSearchMatch) {
         if (searchInProgress) {
-            setStatus("Searching document…");
+            setStatus("Searching page " + std::to_string(searchPagesScanned + 1) + " of " +
+                      std::to_string(searchResultPageCount) + "…");
         } else if (searchHasRun) {
             gtk_widget_add_css_class(GTK_WIDGET(searchEntry), "error");
             setStatus("Text not found, searched on all pages");
@@ -484,7 +487,10 @@ void Gtk4SearchController::updateStatus() {
     setStatus((matchesOnPage == 1 ? "Text found once on page " :
                                     "Text found " + std::to_string(matchesOnPage) + " times on page ") +
               std::to_string(match.page + 1) + " (" + std::to_string(resultOnPage) + " of " +
-              std::to_string(matchesOnPage) + ")" + (searchInProgress ? " · Searching…" : ""));
+              std::to_string(matchesOnPage) + ")" +
+              (searchInProgress ? " · Searching " + std::to_string(searchPagesScanned) + " of " +
+                                          std::to_string(searchResultPageCount) + " pages…" :
+                                  ""));
 }
 
 void Gtk4SearchController::ensureMatchesFresh() {
