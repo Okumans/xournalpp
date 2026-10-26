@@ -468,6 +468,8 @@ def verify_plugins(args, evidence):
         "disabled=\n"
         "[Floating Toolbox]\n"
         "row-1=Plugin::GTK4_TEST_ACTION,Plugin::GTK4_TEST_STATUS\n"
+        "row-2=FORMAT_BOLD,FORMAT_ITALIC,FORMAT_UNDERLINE,FORMAT_STRIKETHROUGH,"
+        "FORMAT_SUPERSCRIPT,FORMAT_SUBSCRIPT\n"
     )
     (config / "gtk4-canvas.ini").write_text(
         plugin_config, encoding="utf-8")

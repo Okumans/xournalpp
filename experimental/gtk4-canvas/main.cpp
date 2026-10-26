@@ -4690,6 +4690,60 @@ private:
                 "QuickScreenshot did not publish PNG data to the GTK clipboard");
     }
 
+    void verifyFloatingToolboxTextFormats() {
+        using Format = prototype::TextEditorOverlay::Format;
+        const std::pair<const char*, Format> formats[] = {
+                {"FORMAT_BOLD", Format::Bold},
+                {"FORMAT_ITALIC", Format::Italic},
+                {"FORMAT_UNDERLINE", Format::Underline},
+                {"FORMAT_STRIKETHROUGH", Format::Strikethrough},
+                {"FORMAT_SUPERSCRIPT", Format::Superscript},
+                {"FORMAT_SUBSCRIPT", Format::Subscript},
+        };
+
+        for (const auto& [token, format]: formats) {
+            auto* button = findWidgetByData(floatingToolboxRowsContainer,
+                                            "gtk4-floating-text-format", token);
+            require(button && GTK_IS_BUTTON(button), "Configured floating text-format action did not render");
+
+            prototype::TextItem draft;
+            draft.text = "Floating toolbar format";
+            textEditor->begin(std::move(draft), std::nullopt, state.zoom);
+            auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+            GtkTextIter start;
+            GtkTextIter end;
+            gtk_text_buffer_get_bounds(buffer, &start, &end);
+            gtk_text_buffer_select_range(buffer, &end, &start);
+            g_signal_emit_by_name(button, "clicked");
+            const auto completion = textEditor->finish();
+            updateTextToolbarVisibility();
+            require(completion && completion->hasContent,
+                    "Floating text-format action ended the inline edit without its text");
+
+            const auto run = std::find_if(completion->item.styleRuns.begin(), completion->item.styleRuns.end(),
+                                          [](const prototype::TextStyleRun& candidate) {
+                                              return candidate.start == 0 && candidate.end > 0;
+                                          });
+            require(run != completion->item.styleRuns.end(), "Floating text-format action produced no style run");
+
+            bool applied = false;
+            if (format == Format::Bold || format == Format::Italic) {
+                auto* font = pango_font_description_from_string(run->fontName.c_str());
+                applied = format == Format::Bold ?
+                                  pango_font_description_get_weight(font) >= PANGO_WEIGHT_SEMIBOLD :
+                                  pango_font_description_get_style(font) != PANGO_STYLE_NORMAL;
+                pango_font_description_free(font);
+            } else {
+                const std::uint32_t attribute = format == Format::Underline ? 1U :
+                                                format == Format::Strikethrough ? 2U :
+                                                format == Format::Superscript ? 4U : 8U;
+                applied = (run->attributes & attribute) != 0;
+            }
+            require(applied, "Floating text-format action did not apply its registered format");
+        }
+        std::cout << "PASS: GTK4 floating toolbox rich-text formatting actions\n";
+    }
+
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
         const int displayDpi = pluginDisplayDpi();
@@ -5505,6 +5559,7 @@ private:
                     "Empty plugin toolbar placeholder value did not fall back to its ID");
             std::cout << "PASS: GTK4 plugin toolbar action and placeholder registration, rendering, and updates\n";
         }
+        verifyFloatingToolboxTextFormats();
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
@@ -8023,6 +8078,56 @@ private:
             gtk_widget_set_sensitive(unsupported, false);
             gtk_widget_set_tooltip_text(unsupported, "Filled native drawing shapes are not ported yet");
             gtk_box_append(GTK_BOX(row), unsupported);
+        } else if (token.starts_with("FORMAT_")) {
+            using Format = prototype::TextEditorOverlay::Format;
+            std::optional<Format> format;
+            const char* label = nullptr;
+            const char* tooltip = nullptr;
+            if (token == "FORMAT_BOLD") {
+                format = Format::Bold;
+                label = "Bold";
+                tooltip = "Bold text (Ctrl+B)";
+            } else if (token == "FORMAT_ITALIC") {
+                format = Format::Italic;
+                label = "Italic";
+                tooltip = "Italic text (Ctrl+I)";
+            } else if (token == "FORMAT_UNDERLINE") {
+                format = Format::Underline;
+                label = "Underline";
+                tooltip = "Underline text (Ctrl+U)";
+            } else if (token == "FORMAT_STRIKETHROUGH") {
+                format = Format::Strikethrough;
+                label = "Strikethrough";
+                tooltip = "Strikethrough text (Ctrl+Shift+K)";
+            } else if (token == "FORMAT_SUPERSCRIPT") {
+                format = Format::Superscript;
+                label = "Superscript";
+                tooltip = "Superscript text (Ctrl+.)";
+            } else if (token == "FORMAT_SUBSCRIPT") {
+                format = Format::Subscript;
+                label = "Subscript";
+                tooltip = "Subscript text (Ctrl+,)";
+            }
+
+            if (!format) {
+                auto* unsupported = gtk_button_new_with_label(token.c_str());
+                gtk_widget_set_sensitive(unsupported, false);
+                gtk_widget_set_tooltip_text(unsupported, "This text formatting action is not ported yet");
+                gtk_box_append(GTK_BOX(row), unsupported);
+            } else {
+                addButton(label, G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                              auto* self = static_cast<Prototype*>(data);
+                              const auto selectedFormat = static_cast<Format>(GPOINTER_TO_INT(
+                                      g_object_get_data(G_OBJECT(button), "floating-text-format")));
+                              self->applyTextFormat(selectedFormat);
+                          }));
+                auto* formatButton = gtk_widget_get_last_child(row);
+                gtk_widget_set_tooltip_text(formatButton, tooltip);
+                g_object_set_data(G_OBJECT(formatButton), "floating-text-format",
+                                  GINT_TO_POINTER(static_cast<int>(*format)));
+                g_object_set_data_full(G_OBJECT(formatButton), "gtk4-floating-text-format",
+                                       g_strdup(token.c_str()), g_free);
+            }
         } else if (token == "FINE" || token == "MEDIUM" || token == "THICK" || token == "VERY_FINE" ||
                    token == "VERY_THICK") {
             const guint preset = token == "VERY_FINE" ? 0u : token == "FINE" ? 1u : token == "MEDIUM" ? 2u :
