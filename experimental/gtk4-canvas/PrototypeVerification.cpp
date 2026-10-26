@@ -1335,6 +1335,19 @@ void Prototype::verifyScrollMotionIntegration() {
 
 void Prototype::verifySmartSelectPerformanceIntegration() {
     require(canvas && mouse, "Smart Select performance verification needs the mapped canvas drag controller");
+    if (document && pageList && splitView) {
+        adw_overlay_split_view_set_show_sidebar(splitView, true);
+        const auto sidebarDeadline = g_get_monotonic_time() + 10000000;
+        while ((!gtk_widget_get_mapped(GTK_WIDGET(pageList)) || !thumbnailRenderer.find(0) ||
+                thumbnailRenderer.pendingCount() > 0 || thumbnailRenderer.activeCount() > 0) &&
+               g_get_monotonic_time() < sidebarDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(gtk_widget_get_mapped(GTK_WIDGET(pageList)) && thumbnailRenderer.find(0) &&
+                        thumbnailRenderer.pendingCount() == 0 && thumbnailRenderer.activeCount() == 0,
+                "The Pages sidebar did not finish rendering visible PDF thumbnails before the ink measurement");
+    }
     const int viewportWidth = gtk_widget_get_width(canvas);
     const int viewportHeight = gtk_widget_get_height(canvas);
     require(viewportWidth > 0 && viewportHeight > 0, "Smart Select performance canvas is not mapped");

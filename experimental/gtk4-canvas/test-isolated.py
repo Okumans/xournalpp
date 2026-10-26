@@ -862,6 +862,11 @@ def verify_smart_select_performance(args, evidence):
         r"highlighter_max_ms=([0-9.]+) highlighter_cache_bytes_copied=(\d+)", output)
     if not ink_match:
         raise RuntimeError("Ink drawing verification did not report live frame latency")
+    checks = ["40 pen strokes and 40 highlighter strokes", "128 points per stroke",
+              "GTK Smart Select drag-controller path", "24 painted preview frames",
+              "translated cache pixel parity in ink-renderer test"]
+    if args.smart_select_pdf:
+        checks.append("Pages sidebar visible with its initial thumbnail queue drained")
     return {
         "screenshots": [str(path) for path in screenshots],
         "document": str(args.smart_select_pdf.resolve()) if args.smart_select_pdf else "synthetic page",
@@ -874,9 +879,7 @@ def verify_smart_select_performance(args, evidence):
         "ink_cache_bytes_copied": {"pen": int(ink_match.group(4)), "highlighter": int(ink_match.group(8))},
         "frame_latency_ms": {"median": float(match.group(1)), "p95": float(match.group(2)),
                               "max": float(match.group(3))},
-        "checks": ["40 pen strokes and 40 highlighter strokes", "128 points per stroke",
-                   "GTK Smart Select drag-controller path", "24 painted preview frames",
-                   "translated cache pixel parity in ink-renderer test"],
+        "checks": checks,
         "input_coverage": "Synthetic GTK gesture-controller signals; no physical input claim",
         "rendering": "Private headless Wayland via Cage",
     }

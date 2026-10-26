@@ -199,11 +199,12 @@ These user-requested follow-ups remain:
   frame time on the user's PDF. Phase 113's private Cage check moved 40
   Highlighter strokes with 128 points each over 24 painted frames; its final
   software-renderer run measured 15.87 ms median, 18.17 ms p95, and 18.22 ms
-  maximum. Phase 119 adds a private Cage run that loads a 775-page PDF and
-  draws 40 Pen plus 40 Highlighter strokes through the GTK drag-controller
-  path. Its software-renderer p95 was 16.94 ms for Pen, 19.04 ms for
-  Highlighter, and 16.59 ms for Smart Select movement; the maximum ink frame
-  was 22.06 ms. The append path copied about 9.7 MB for Pen and 10.1 MB for
+  maximum. Phase 119 adds a private Cage run that loads a 775-page PDF, opens
+  the Pages sidebar, drains its visible thumbnail queue, and draws 40 Pen plus
+  40 Highlighter strokes through the GTK drag-controller path. Its
+  software-renderer p95 was 16.68 ms for Pen, 18.05 ms for
+  Highlighter, and 16.74 ms for Smart Select movement; the maximum ink frame
+  was 19.17 ms. The append path copied about 9.7 MB for Pen and 10.1 MB for
   Highlighter. This did not reproduce the reported slowdown, but input samples
   remain synthetic and do not cover a physical pen or longer real-world
   sessions. The 421 ms measurement has not been repeated; editable-page
