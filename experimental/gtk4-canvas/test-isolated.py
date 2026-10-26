@@ -910,14 +910,16 @@ def verify_pdf_text_selection(args, evidence):
     )
     expected = (
         "PASS: GTK Smart Select PDF delegation, threshold and modifier routing, linear/rectangle/word/line "
-        "selection, clipboard, marker presets and opacity, annotations, undo/redo and native save"
+        "selection, toolbar placement and dismissal/reopen, clipboard, marker presets and opacity, annotations, "
+        "undo/redo and native save"
     )
     if expected not in result:
         raise RuntimeError("GTK PDF text selection verification did not finish")
 
     for name in (
         "smart-select-pdf-text", "smart-select-shift-rectangle",
-        "pdf-text-linear-selection", "pdf-text-rectangle-selection", "pdf-text-word-selection",
+        "pdf-text-linear-selection", "pdf-text-toolbar-reopened", "pdf-text-rectangle-selection",
+        "pdf-text-word-selection",
         "pdf-text-line-selection", "pdf-text-highlight", "pdf-text-underline", "pdf-text-strikethrough",
         "pdf-text-highlight-presets", "pdf-text-highlight-recolored", "pdf-text-marker-opacity-control",
     ):
@@ -944,6 +946,43 @@ def verify_pdf_text_selection(args, evidence):
 
     print("PASS: private GTK4 PDF selection, actions and native PDF-backed XOPP save", flush=True)
     return str(output)
+
+
+def verify_pdf_text_toolbar(args, evidence):
+    directory = evidence / "pdf-text-toolbar"
+    fixture_dir = directory / "fixture"
+    output = directory / "run"
+    shutil.rmtree(directory, ignore_errors=True)
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+
+    source_pdf = Path(__file__).resolve().parents[2] / "test" / "files" / "cjk" / "测试.pdf"
+    pdf = fixture_dir / source_pdf.name
+    shutil.copyfile(source_pdf, pdf)
+    pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()
+
+    result = run(
+        [str(args.binary.resolve()), "--pdf", str(pdf), "--smoke-dir", str(output)],
+        env=dict(os.environ, G_DEBUG="fatal-criticals", XOURNALPP_PDF_TEXT_SELECTION_VERIFY_MODE="toolbar-only"),
+    )
+    expected = "PASS: GTK PDF text toolbar placement, input/zoom dismissal, and selection reopen"
+    if expected not in result:
+        raise RuntimeError("GTK PDF text toolbar verification did not finish")
+
+    screenshots = [output / f"{name}.png" for name in
+                   ("pdf-text-toolbar-placement", "pdf-text-toolbar-reopened")]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing PDF text toolbar screenshot: {screenshot}")
+    if hashlib.sha256(pdf.read_bytes()).hexdigest() != pdf_hash:
+        raise RuntimeError("PDF toolbar verification modified its input fixture")
+
+    report = {"pdf": str(pdf), "pdf_sha256": pdf_hash,
+              "screenshots": [str(path) for path in screenshots],
+              "input_coverage": "Synthetic mouse controller signals; no physical hardware events",
+              "rendering": "Private headless Wayland via Cage"}
+    print("PASS: private GTK4 PDF toolbar placement, zoom dismissal and selection reopen", flush=True)
+    return report
 
 
 def verify_links(args, evidence):
@@ -1188,6 +1227,13 @@ def inside(args):
              "rendering": "Private headless Wayland via Cage"},
             indent=2) + "\n")
         return
+    if args.pdf_toolbar_only:
+        toolbar_evidence = verify_pdf_text_toolbar(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"pdf-text-toolbar": toolbar_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.selection_only:
         selection_evidence = verify_selection_modes(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1387,6 +1433,7 @@ def main():
     parser.add_argument("--image-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--selection-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdf-text-selection-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--pdf-toolbar-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--link-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--laser-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--play-object-only", action="store_true", help=argparse.SUPPRESS)
@@ -1463,6 +1510,8 @@ def main():
             command.append("--selection-only")
         if args.pdf_text_selection_only:
             command.append("--pdf-text-selection-only")
+        if args.pdf_toolbar_only:
+            command.append("--pdf-toolbar-only")
         if args.link_only:
             command.append("--link-only")
         if args.laser_only:
