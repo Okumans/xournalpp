@@ -108,6 +108,7 @@ struct ImportedSettings {
 
     bool showSidebar = false;
     ThemeVariant themeVariant = ThemeVariant::ForceDark;
+    CanvasLayoutSettings pageLayout;
     bool autosaveEnabled = true;
     int autosaveTimeoutMinutes = 3;
     std::filesystem::path colorPalettePath;
@@ -311,6 +312,38 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         // Settings.cpp stores zoomStepScroll in percent (default 2.0 -> 0.02).
         if (const auto pct = parseAsciiDouble(value); pct && *pct > 0.0) {
             out.scrollZoomStep = std::clamp(*pct / 100.0, 0.005, 2.0);
+        }
+    } else if (name == "numColumns") {
+        if (const auto count = parseAsciiInt(value)) {
+            out.pageLayout.columns = static_cast<std::size_t>(std::clamp<long long>(*count, 1, 4096));
+        }
+    } else if (name == "numRows") {
+        if (const auto count = parseAsciiInt(value)) {
+            out.pageLayout.rows = static_cast<std::size_t>(std::clamp<long long>(*count, 1, 4096));
+        }
+    } else if (name == "viewFixedRows") {
+        if (value == "true" || value == "false") {
+            out.pageLayout.fixedRows = value == "true";
+        }
+    } else if (name == "layoutVertical") {
+        if (value == "true" || value == "false") {
+            out.pageLayout.vertical = value == "true";
+        }
+    } else if (name == "layoutRightToLeft") {
+        if (value == "true" || value == "false") {
+            out.pageLayout.rightToLeft = value == "true";
+        }
+    } else if (name == "layoutBottomToTop") {
+        if (value == "true" || value == "false") {
+            out.pageLayout.bottomToTop = value == "true";
+        }
+    } else if (name == "showPairedPages") {
+        if (value == "true" || value == "false") {
+            out.pageLayout.pairedPages = value == "true";
+        }
+    } else if (name == "numPairsOffset") {
+        if (const auto offset = parseAsciiInt(value)) {
+            out.pageLayout.pairedPageOffset = static_cast<int>(std::clamp<long long>(*offset, 0, 100));
         }
     } else if (name == "edgePanSpeed") {
         if (const auto v = parseAsciiDouble(value); v && *v >= 0) {
@@ -800,6 +833,7 @@ inline SettingsImportResult importSettingsFromConfigDir(const std::filesystem::p
 }
 
 inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSettings& settings) {
+    state.setLayoutSettings(settings.pageLayout);
     state.pressureSensitivity = settings.pressureSensitivity;
     state.minimumPressure = settings.minimumPressure;
     state.pressureMultiplier = settings.pressureMultiplier;

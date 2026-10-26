@@ -50,6 +50,15 @@ int main() {
     saved.highlighterFillEnabled = false;
     saved.highlighterFillOpacity = 64;
     saved.showSidebar = false;
+    saved.pageLayout.columns = 4;
+    saved.pageLayout.rows = 3;
+    saved.pageLayout.fixedRows = true;
+    saved.pageLayout.pairedPages = true;
+    saved.pageLayout.pairedPageOffset = 37;
+    saved.pageLayout.vertical = false;
+    saved.pageLayout.rightToLeft = true;
+    saved.pageLayout.bottomToTop = true;
+    saved.pageLayout.presentationMode = true;
     saved.pressureSensitivity = false;
     saved.highlightPosition = true;
     saved.cursorHighlightColor = 0x7f123456U;
@@ -101,6 +110,12 @@ int main() {
     const auto loadedResult = prototype::loadGtk4Preferences(directory, loaded);
     require(loadedResult.found && loadedResult.warning.empty(), "Saved GTK 4 preferences could not be loaded");
     require(loaded.themeVariant == prototype::ThemeVariant::ForceDark && !loaded.showSidebar &&
+                    loaded.pageLayout.columns == saved.pageLayout.columns &&
+                    loaded.pageLayout.rows == saved.pageLayout.rows && loaded.pageLayout.fixedRows &&
+                    loaded.pageLayout.pairedPages &&
+                    loaded.pageLayout.pairedPageOffset == saved.pageLayout.pairedPageOffset &&
+                    !loaded.pageLayout.vertical && loaded.pageLayout.rightToLeft &&
+                    loaded.pageLayout.bottomToTop && loaded.pageLayout.presentationMode &&
                     loaded.penFillEnabled && loaded.penFillOpacity == 192 && !loaded.highlighterFillEnabled &&
                     loaded.penLineStyle == saved.penLineStyle &&
                     loaded.highlighterFillOpacity == 64 &&

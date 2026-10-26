@@ -59,6 +59,14 @@ int main() {
   <property name="stabilizerMass" value="6"/>
   <property name="stabilizerFinalizeStroke" value="false"/>
   <property name="showSidebar" value="false"/>
+  <property name="numColumns" value="3"/>
+  <property name="numRows" value="2"/>
+  <property name="viewFixedRows" value="true"/>
+  <property name="layoutVertical" value="false"/>
+  <property name="layoutRightToLeft" value="true"/>
+  <property name="layoutBottomToTop" value="true"/>
+  <property name="showPairedPages" value="true"/>
+  <property name="numPairsOffset" value="37"/>
   <property name="themeVariant" value="forceDark"/>
   <property name="autosaveEnabled" value="true"/>
   <property name="autosaveTimeout" value="7"/>
@@ -160,6 +168,15 @@ int main() {
             "Shape recognizer or stroke stabilizer settings mismatch");
     prototype::CanvasState importedState;
     prototype::applyImportedSettingsToCanvas(importedState, s);
+    require(s.pageLayout.columns == 3 && s.pageLayout.rows == 2 && s.pageLayout.fixedRows &&
+                    s.pageLayout.pairedPages && s.pageLayout.pairedPageOffset == 37 && !s.pageLayout.vertical &&
+                    s.pageLayout.rightToLeft && s.pageLayout.bottomToTop,
+            "Legacy page-layout settings were not imported");
+    require(importedState.layoutSettings.columns == 3 && importedState.layoutSettings.rows == 2 &&
+                    importedState.layoutSettings.fixedRows && importedState.layoutSettings.pairedPages &&
+                    importedState.layoutSettings.pairedPageOffset == 37 && !importedState.layoutSettings.vertical &&
+                    importedState.layoutSettings.rightToLeft && importedState.layoutSettings.bottomToTop,
+            "Page-layout settings were not applied to the canvas state");
     require(near(importedState.shapeRecognizerMinSize, 32), "Shape recognizer minimum size was not applied to canvas state");
     require(near(importedState.snapRotationTolerance, 0.65), "Rotation tolerance was not applied to canvas state");
     require(near(importedState.edgePanSpeed, 37) && near(importedState.edgePanMaxMultiplier, 2.5),

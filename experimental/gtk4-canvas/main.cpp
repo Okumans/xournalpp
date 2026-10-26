@@ -80,6 +80,7 @@ struct Options {
     bool disableAudio = false;
     bool verifyPlugins = false;
     bool verifySearch = false;
+    bool verifyPageLayout = false;
     bool verifyPenLineStyle = false;
     bool verifyBeamer = false;
     bool verifyLayerActions = false;
@@ -893,6 +894,161 @@ private:
 
     void showError(const std::string& message) { showAlert("Document operation failed", message); }
 
+    void activatePageLayoutAction(GSimpleAction* action, GVariant* parameter) {
+        const std::string_view name = g_action_get_name(G_ACTION(action));
+        auto& settings = importedConfig.settings.pageLayout;
+        bool handled = true;
+        if (name == "paired-pages-mode") {
+            settings.pairedPages = parameter ? g_variant_get_boolean(parameter) : !settings.pairedPages;
+            g_simple_action_set_state(action, g_variant_new_boolean(settings.pairedPages));
+        } else if (name == "set-layout-vertical") {
+            settings.vertical = g_variant_get_boolean(parameter);
+            g_simple_action_set_state(action, g_variant_new_boolean(settings.vertical));
+        } else if (name == "set-layout-right-to-left") {
+            settings.rightToLeft = g_variant_get_boolean(parameter);
+            g_simple_action_set_state(action, g_variant_new_boolean(settings.rightToLeft));
+        } else if (name == "set-layout-bottom-to-top") {
+            settings.bottomToTop = g_variant_get_boolean(parameter);
+            g_simple_action_set_state(action, g_variant_new_boolean(settings.bottomToTop));
+        } else if (name == "set-columns-or-rows") {
+            const int selection = g_variant_get_int32(parameter);
+            if (selection > 0) {
+                settings.columns = static_cast<std::size_t>(selection);
+                settings.fixedRows = false;
+            } else if (selection < 0) {
+                settings.rows = static_cast<std::size_t>(-selection);
+                settings.fixedRows = true;
+            }
+            const int current = settings.fixedRows ? -static_cast<int>(settings.rows) :
+                                                     static_cast<int>(settings.columns);
+            g_simple_action_set_state(action, g_variant_new_int32(current));
+        } else if (name == "paired-pages-offset") {
+            settings.pairedPageOffset = std::clamp(g_variant_get_int32(parameter), 0, 100);
+            g_simple_action_set_state(action, g_variant_new_int32(settings.pairedPageOffset));
+        } else {
+            handled = false;
+        }
+        if (!handled) {
+            return;
+        }
+
+        const int currentPage = state.page;
+        state.setLayoutSettings(settings);
+        if (canvas) {
+            state.scrollToPage(currentPage, gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
+        }
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            showAlert("Could not save preferences", error);
+        }
+        update();
+    }
+
+    void syncPageLayoutActions() {
+        const auto& settings = importedConfig.settings.pageLayout;
+        const auto setState = [this](const char* name, GVariant* value) {
+            auto* action = g_action_map_lookup_action(G_ACTION_MAP(window), name);
+            if (action && G_IS_SIMPLE_ACTION(action)) {
+                g_simple_action_set_state(G_SIMPLE_ACTION(action), value);
+            }
+        };
+        setState("paired-pages-mode", g_variant_new_boolean(settings.pairedPages));
+        setState("set-layout-vertical", g_variant_new_boolean(settings.vertical));
+        setState("set-layout-right-to-left", g_variant_new_boolean(settings.rightToLeft));
+        setState("set-layout-bottom-to-top", g_variant_new_boolean(settings.bottomToTop));
+        const int gridState = settings.fixedRows ? -static_cast<int>(settings.rows) :
+                                                   static_cast<int>(settings.columns);
+        setState("set-columns-or-rows", g_variant_new_int32(gridState));
+        setState("paired-pages-offset", g_variant_new_int32(settings.pairedPageOffset));
+    }
+
+    void buildPageLayoutMenu(GtkWidget* header) {
+        const auto addAction = [this](const char* name, const GVariantType* parameterType, GVariant* initialState) {
+            auto* action = g_simple_action_new_stateful(name, parameterType, initialState);
+            g_signal_connect(action, "activate", G_CALLBACK(+[](GSimpleAction* action, GVariant* parameter,
+                                                                 gpointer data) {
+                                 static_cast<Prototype*>(data)->activatePageLayoutAction(action, parameter);
+                             }),
+                             this);
+            g_action_map_add_action(G_ACTION_MAP(window), G_ACTION(action));
+            g_object_unref(action);
+        };
+        const auto addTargetItem = [](GMenu* menu, const char* label, const char* action, GVariant* target) {
+            auto* item = g_menu_item_new(label, action);
+            g_menu_item_set_attribute_value(item, "target", target);
+            g_menu_append_item(menu, item);
+            g_object_unref(item);
+        };
+
+        const auto& settings = importedConfig.settings.pageLayout;
+        addAction("paired-pages-mode", nullptr, g_variant_new_boolean(settings.pairedPages));
+        addAction("set-layout-vertical", G_VARIANT_TYPE_BOOLEAN, g_variant_new_boolean(settings.vertical));
+        addAction("set-layout-right-to-left", G_VARIANT_TYPE_BOOLEAN,
+                  g_variant_new_boolean(settings.rightToLeft));
+        addAction("set-layout-bottom-to-top", G_VARIANT_TYPE_BOOLEAN,
+                  g_variant_new_boolean(settings.bottomToTop));
+        const int gridState = settings.fixedRows ? -static_cast<int>(settings.rows) :
+                                                   static_cast<int>(settings.columns);
+        addAction("set-columns-or-rows", G_VARIANT_TYPE_INT32, g_variant_new_int32(gridState));
+        addAction("paired-pages-offset", G_VARIANT_TYPE_INT32, g_variant_new_int32(settings.pairedPageOffset));
+
+        auto* menu = g_menu_new();
+        g_menu_append(menu, "Pair Pages", "win.paired-pages-mode");
+
+        auto* orientation = g_menu_new();
+        addTargetItem(orientation, "Horizontal", "win.set-layout-vertical", g_variant_new_boolean(false));
+        addTargetItem(orientation, "Vertical", "win.set-layout-vertical", g_variant_new_boolean(true));
+        g_menu_append_submenu(menu, "Page Flow", G_MENU_MODEL(orientation));
+        g_object_unref(orientation);
+
+        auto* horizontalDirection = g_menu_new();
+        addTargetItem(horizontalDirection, "Left to Right", "win.set-layout-right-to-left",
+                      g_variant_new_boolean(false));
+        addTargetItem(horizontalDirection, "Right to Left", "win.set-layout-right-to-left",
+                      g_variant_new_boolean(true));
+        g_menu_append_submenu(menu, "Horizontal Reading", G_MENU_MODEL(horizontalDirection));
+        g_object_unref(horizontalDirection);
+
+        auto* verticalDirection = g_menu_new();
+        addTargetItem(verticalDirection, "Top to Bottom", "win.set-layout-bottom-to-top",
+                      g_variant_new_boolean(false));
+        addTargetItem(verticalDirection, "Bottom to Top", "win.set-layout-bottom-to-top",
+                      g_variant_new_boolean(true));
+        g_menu_append_submenu(menu, "Vertical Reading", G_MENU_MODEL(verticalDirection));
+        g_object_unref(verticalDirection);
+
+        auto* grid = g_menu_new();
+        auto* columns = g_menu_new();
+        auto* rows = g_menu_new();
+        for (int count = 1; count <= 8; ++count) {
+            const auto columnLabel = std::to_string(count) + (count == 1 ? " Column" : " Columns");
+            const auto rowLabel = std::to_string(count) + (count == 1 ? " Row" : " Rows");
+            addTargetItem(columns, columnLabel.c_str(), "win.set-columns-or-rows", g_variant_new_int32(count));
+            addTargetItem(rows, rowLabel.c_str(), "win.set-columns-or-rows", g_variant_new_int32(-count));
+        }
+        g_menu_append_submenu(grid, "Set Columns", G_MENU_MODEL(columns));
+        g_menu_append_submenu(grid, "Set Rows", G_MENU_MODEL(rows));
+        g_menu_append_submenu(menu, "Page Grid", G_MENU_MODEL(grid));
+        g_object_unref(columns);
+        g_object_unref(rows);
+        g_object_unref(grid);
+
+        auto* pairOffset = g_menu_new();
+        addTargetItem(pairOffset, "0 pages", "win.paired-pages-offset", g_variant_new_int32(0));
+        addTargetItem(pairOffset, "1 page", "win.paired-pages-offset", g_variant_new_int32(1));
+        g_menu_append_submenu(menu, "First Spread Offset", G_MENU_MODEL(pairOffset));
+        g_object_unref(pairOffset);
+
+        pageLayoutMenuButton = gtk_menu_button_new();
+        gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(pageLayoutMenuButton), "view-grid-symbolic");
+        gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(pageLayoutMenuButton), G_MENU_MODEL(menu));
+        gtk_widget_set_tooltip_text(pageLayoutMenuButton, "Page layout and reading direction");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(pageLayoutMenuButton), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       "Page layout", -1);
+        adw_header_bar_pack_start(ADW_HEADER_BAR(header), pageLayoutMenuButton);
+        g_object_unref(menu);
+    }
+
     static GdkRGBA unpackArgbColor(std::uint32_t color) {
         return {
                 static_cast<float>((color >> 16U) & 0xffU) / 255.0F,
@@ -913,6 +1069,13 @@ private:
     enum class PreferenceKey : guint {
         Theme = 1,
         Sidebar,
+        LayoutFlow,
+        LayoutGridDimension,
+        LayoutGridCount,
+        LayoutPairedPages,
+        LayoutPairedPageOffset,
+        LayoutHorizontalDirection,
+        LayoutVerticalDirection,
         MainToolRail,
         PressureSensitivity,
         MinimumPressure,
@@ -1387,6 +1550,13 @@ private:
             return;
         }
         auto& settings = importedConfig.settings;
+        const bool layoutPreference = key == PreferenceKey::LayoutFlow ||
+                                      key == PreferenceKey::LayoutGridDimension ||
+                                      key == PreferenceKey::LayoutGridCount ||
+                                      key == PreferenceKey::LayoutPairedPages ||
+                                      key == PreferenceKey::LayoutPairedPageOffset ||
+                                      key == PreferenceKey::LayoutHorizontalDirection ||
+                                      key == PreferenceKey::LayoutVerticalDirection;
         switch (key) {
             case PreferenceKey::Theme:
                 switch (adw_combo_row_get_selected(ADW_COMBO_ROW(control))) {
@@ -1403,6 +1573,48 @@ private:
                 break;
             case PreferenceKey::Sidebar:
                 settings.showSidebar = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LayoutFlow:
+                settings.pageLayout.vertical = adw_combo_row_get_selected(ADW_COMBO_ROW(control)) == 0;
+                break;
+            case PreferenceKey::LayoutGridDimension: {
+                const bool fixedRows = adw_combo_row_get_selected(ADW_COMBO_ROW(control)) == 1;
+                if (settings.pageLayout.fixedRows != fixedRows) {
+                    auto* countControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutGridCount)];
+                    const int count = countControl ?
+                                              gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(countControl)) :
+                                              1;
+                    if (fixedRows) {
+                        settings.pageLayout.rows = static_cast<std::size_t>(std::clamp(count, 1, 8));
+                    } else {
+                        settings.pageLayout.columns = static_cast<std::size_t>(std::clamp(count, 1, 8));
+                    }
+                    settings.pageLayout.fixedRows = fixedRows;
+                }
+                break;
+            }
+            case PreferenceKey::LayoutGridCount: {
+                const auto count = static_cast<std::size_t>(
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 1, 8));
+                if (settings.pageLayout.fixedRows) {
+                    settings.pageLayout.rows = count;
+                } else {
+                    settings.pageLayout.columns = count;
+                }
+                break;
+            }
+            case PreferenceKey::LayoutPairedPages:
+                settings.pageLayout.pairedPages = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
+                break;
+            case PreferenceKey::LayoutPairedPageOffset:
+                settings.pageLayout.pairedPageOffset =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 0, 100);
+                break;
+            case PreferenceKey::LayoutHorizontalDirection:
+                settings.pageLayout.rightToLeft = adw_combo_row_get_selected(ADW_COMBO_ROW(control)) == 1;
+                break;
+            case PreferenceKey::LayoutVerticalDirection:
+                settings.pageLayout.bottomToTop = adw_combo_row_get_selected(ADW_COMBO_ROW(control)) == 1;
                 break;
             case PreferenceKey::PressureSensitivity:
                 settings.pressureSensitivity = adw_switch_row_get_active(ADW_SWITCH_ROW(control));
@@ -1532,6 +1744,12 @@ private:
         }
 
         prototype::applyImportedSettingsToCanvas(state, settings);
+        if (layoutPreference) {
+            syncPageLayoutActions();
+            if (canvas) {
+                state.scrollToPage(state.page, gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
+            }
+        }
         input.setStabilizerConfig(settings.stabilizer);
         effectiveAutosaveSeconds = settings.effectiveAutosaveSeconds();
         scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
@@ -4684,6 +4902,47 @@ private:
         adw_preferences_page_add(appearance, appearanceGroup);
         adw_preferences_dialog_add(preferencesDialog, appearance);
 
+        auto* layoutPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+        adw_preferences_page_set_name(layoutPage, "page-layout");
+        adw_preferences_page_set_title(layoutPage, "Page Layout");
+        adw_preferences_page_set_icon_name(layoutPage, "view-grid-symbolic");
+        auto* layoutFlowGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(layoutFlowGroup, "Page flow and grid");
+        static const char* const pageFlowModes[] = {"Vertical", "Horizontal", nullptr};
+        preferenceCombo(layoutFlowGroup, "Page flow", "Choose how pages advance through the grid",
+                        pageFlowModes, importedConfig.settings.pageLayout.vertical ? 0 : 1,
+                        PreferenceKey::LayoutFlow);
+        static const char* const gridDimensions[] = {"Columns", "Rows", nullptr};
+        preferenceCombo(layoutFlowGroup, "Grid count applies to", "Choose a fixed column or row count",
+                        gridDimensions, importedConfig.settings.pageLayout.fixedRows ? 1 : 0,
+                        PreferenceKey::LayoutGridDimension);
+        const auto& pageLayout = importedConfig.settings.pageLayout;
+        preferenceSpin(layoutFlowGroup, "Grid size", "Set the number of columns or rows",
+                       static_cast<double>(pageLayout.fixedRows ? pageLayout.rows : pageLayout.columns), 1, 8, 1, 0,
+                       "", PreferenceKey::LayoutGridCount);
+        adw_preferences_page_add(layoutPage, layoutFlowGroup);
+
+        auto* pairedGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(pairedGroup, "Paired pages");
+        preferenceSwitch(pairedGroup, "Show facing pages", "Place adjacent pages in two-page spreads",
+                         pageLayout.pairedPages, PreferenceKey::LayoutPairedPages);
+        preferenceSpin(pairedGroup, "First spread offset", "Usually 0 or 1; the legacy setting allows 0–100",
+                       pageLayout.pairedPageOffset, 0, 100, 1, 0, "pages", PreferenceKey::LayoutPairedPageOffset);
+        adw_preferences_page_add(layoutPage, pairedGroup);
+
+        auto* readingGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(readingGroup, "Reading direction");
+        static const char* const horizontalDirections[] = {"Left to right", "Right to left", nullptr};
+        preferenceCombo(readingGroup, "Horizontal reading", "Choose the page order across columns",
+                        horizontalDirections, pageLayout.rightToLeft ? 1 : 0,
+                        PreferenceKey::LayoutHorizontalDirection);
+        static const char* const verticalDirections[] = {"Top to bottom", "Bottom to top", nullptr};
+        preferenceCombo(readingGroup, "Vertical reading", "Choose the page order down rows",
+                        verticalDirections, pageLayout.bottomToTop ? 1 : 0,
+                        PreferenceKey::LayoutVerticalDirection);
+        adw_preferences_page_add(layoutPage, readingGroup);
+        adw_preferences_dialog_add(preferencesDialog, layoutPage);
+
         auto* latexPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
         adw_preferences_page_set_name(latexPage, "latex");
         adw_preferences_page_set_title(latexPage, "LaTeX");
@@ -5344,6 +5603,171 @@ private:
                 "Floating text-justify action was not retained in the text item");
 
         std::cout << "PASS: GTK4 floating toolbox text alignment and justification actions\n";
+    }
+
+    void verifyPageLayoutIntegration() {
+        require(pageLayoutMenuButton != nullptr, "Page layout menu button was not created");
+        auto* menu = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pageLayoutMenuButton));
+        require(menu && g_menu_model_get_n_items(menu) == 6, "Page layout menu is missing a layout control");
+        for (const char* action: {"paired-pages-mode", "set-layout-vertical", "set-layout-right-to-left",
+                                  "set-layout-bottom-to-top", "set-columns-or-rows", "paired-pages-offset"}) {
+            require(g_action_map_lookup_action(G_ACTION_MAP(window), action) != nullptr,
+                    "Page layout menu action was not registered");
+        }
+
+        state.setPages({{260, 320}, {220, 280}, {280, 350}, {240, 300}});
+        pageCount = 4;
+        prototype::CanvasLayoutSettings settings;
+        settings.columns = 1;
+        settings.vertical = true;
+        state.setLayoutSettings(settings);
+        update();
+        require(pageLabel && std::string(gtk_label_get_text(GTK_LABEL(pageLabel))) == "1 / 4",
+                "Page layout test document did not update the visible page count");
+
+        const auto activate = [this](const char* name, GVariant* parameter) {
+            auto* action = g_action_map_lookup_action(G_ACTION_MAP(window), name);
+            require(action != nullptr, "Page layout action disappeared during activation");
+            g_action_activate(action, parameter);
+        };
+        activate("set-columns-or-rows", g_variant_new_int32(2));
+        require(state.pageLayout.columnCount() == 2 && state.pageLayout.rowCount() == 2,
+                "Selecting two vertical columns did not build a two-by-two page grid");
+        activate("set-columns-or-rows", g_variant_new_int32(-2));
+        require(state.layoutSettings.fixedRows && state.pageLayout.rowCount() == 2 &&
+                        state.pageLayout.columnCount() == 2,
+                "Selecting two fixed rows did not build the configured page grid");
+        activate("set-columns-or-rows", g_variant_new_int32(2));
+
+        activate("set-layout-vertical", g_variant_new_boolean(false));
+        require(state.pageLayout.gridPosition(0).column == 0 && state.pageLayout.gridPosition(1).column == 1 &&
+                        state.pageLayout.gridPosition(2).row == 1,
+                "Horizontal flow did not fill columns before advancing rows");
+
+        activate("set-layout-right-to-left", g_variant_new_boolean(true));
+        require(state.pageLayout.gridPosition(0).column == 1,
+                "Right-to-left reading did not reverse horizontal page order");
+        activate("set-layout-bottom-to-top", g_variant_new_boolean(true));
+        require(state.pageLayout.gridPosition(0).row == 1,
+                "Bottom-to-top reading did not reverse vertical page order");
+        activate("set-layout-right-to-left", g_variant_new_boolean(false));
+        activate("set-layout-bottom-to-top", g_variant_new_boolean(false));
+
+        activate("paired-pages-mode", nullptr);
+        require(state.layoutSettings.pairedPages && state.pageLayout.gridPosition(0).column == 1 &&
+                        state.pageLayout.gridPosition(1).row == 1 && state.pageLayout.gridPosition(2).column == 1,
+                "Paired-page mode or its first-spread offset did not map pages correctly");
+        activate("paired-pages-offset", g_variant_new_int32(0));
+        require(state.pageLayout.gridPosition(0).column == 0 && state.pageLayout.gridPosition(1).column == 1,
+                "Changing paired-page offset did not move the first spread");
+
+        activate("paired-pages-mode", nullptr);
+        activate("paired-pages-offset", g_variant_new_int32(1));
+        activate("set-layout-vertical", g_variant_new_boolean(true));
+        activate("set-columns-or-rows", g_variant_new_int32(2));
+        require(state.pageLayout.gridPosition(0).column == 0 && state.pageLayout.gridPosition(1).row == 1 &&
+                        state.pageLayout.gridPosition(2).column == 1,
+                "Returning to the two-column layout did not restore page reading order");
+
+        const auto point = state.pageScreenPoint(2, 100, 120);
+        const auto hit = state.hitPage(point.x, point.y);
+        require(hit && hit->page == 2 && std::abs(hit->local.x - 100) < 1e-6 &&
+                        std::abs(hit->local.y - 120) < 1e-6,
+                "Canvas input did not map a grid page hit back to page-local coordinates");
+
+        prototype::ImportedSettings persisted;
+        const auto loaded = prototype::loadGtk4Preferences(preferencesConfigDir, persisted);
+        require(loaded.found && loaded.warning.empty() && persisted.pageLayout.columns == 2 &&
+                        !persisted.pageLayout.fixedRows && persisted.pageLayout.vertical &&
+                        !persisted.pageLayout.pairedPages && persisted.pageLayout.pairedPageOffset == 1,
+                "Page layout actions were not persisted in GTK 4 preferences");
+
+        update();
+        capture("page-layout-grid");
+
+        openPreferences();
+        adw_preferences_dialog_set_visible_page_name(preferencesDialog, "page-layout");
+        const auto preferencesSettleAt = g_get_monotonic_time() + 250000;
+        const auto preferencesReadyDeadline = preferencesSettleAt + 500000;
+        while ((!gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) ||
+                gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) <= 0 ||
+                gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) <= 0 ||
+                g_get_monotonic_time() < preferencesSettleAt) &&
+               g_get_monotonic_time() < preferencesReadyDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) &&
+                        gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) > 0 &&
+                        gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) > 0,
+                "Page Layout Preferences did not map for the private GUI check");
+        auto* flowControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutFlow)];
+        auto* dimensionControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutGridDimension)];
+        auto* countControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutGridCount)];
+        auto* pairedControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutPairedPages)];
+        auto* offsetControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutPairedPageOffset)];
+        auto* horizontalDirectionControl =
+                preferenceControls[static_cast<size_t>(PreferenceKey::LayoutHorizontalDirection)];
+        auto* verticalDirectionControl =
+                preferenceControls[static_cast<size_t>(PreferenceKey::LayoutVerticalDirection)];
+        require(flowControl && dimensionControl && countControl && pairedControl && offsetControl &&
+                        horizontalDirectionControl && verticalDirectionControl,
+                "Page Layout Preferences is missing a layout, grid, offset, or reading-direction control");
+
+        adw_combo_row_set_selected(ADW_COMBO_ROW(dimensionControl), 1);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(countControl), 3);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(flowControl), 1);
+        adw_switch_row_set_active(ADW_SWITCH_ROW(pairedControl), true);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(offsetControl), 1);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(horizontalDirectionControl), 1);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(verticalDirectionControl), 1);
+        require(state.layoutSettings.fixedRows && state.layoutSettings.rows == 3 &&
+                        !state.layoutSettings.vertical && state.layoutSettings.pairedPages &&
+                        state.layoutSettings.pairedPageOffset == 1 && state.layoutSettings.rightToLeft &&
+                        state.layoutSettings.bottomToTop && state.pageLayout.rowCount() == 3 &&
+                        state.pageLayout.gridPosition(0).column == 0 && state.pageLayout.gridPosition(0).row == 2,
+                "Page Layout Preferences did not apply the grid, paired offset, and reading directions");
+
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(offsetControl), 37);
+        require(state.layoutSettings.pairedPageOffset == 37,
+                "Page Layout Preferences did not retain the full legacy paired-page offset range");
+        auto* offsetAction = g_action_map_lookup_action(G_ACTION_MAP(window), "paired-pages-offset");
+        auto* gridAction = g_action_map_lookup_action(G_ACTION_MAP(window), "set-columns-or-rows");
+        require(offsetAction && gridAction, "Page Layout Preferences lost its synchronized menu actions");
+        auto* offsetActionState = g_action_get_state(offsetAction);
+        auto* gridActionState = g_action_get_state(gridAction);
+        require(offsetActionState && g_variant_get_int32(offsetActionState) == 37 && gridActionState &&
+                        g_variant_get_int32(gridActionState) == -3,
+                "Page Layout Preferences did not synchronize the menu's offset and row-count actions");
+        g_clear_pointer(&offsetActionState, g_variant_unref);
+        g_clear_pointer(&gridActionState, g_variant_unref);
+
+        prototype::ImportedSettings preferenceRoundTrip;
+        const auto preferenceRoundTripResult =
+                prototype::loadGtk4Preferences(preferencesConfigDir, preferenceRoundTrip);
+        require(preferenceRoundTripResult.found && preferenceRoundTripResult.warning.empty() &&
+                        preferenceRoundTrip.pageLayout.fixedRows && preferenceRoundTrip.pageLayout.rows == 3 &&
+                        !preferenceRoundTrip.pageLayout.vertical && preferenceRoundTrip.pageLayout.pairedPages &&
+                        preferenceRoundTrip.pageLayout.pairedPageOffset == 37 &&
+                        preferenceRoundTrip.pageLayout.rightToLeft && preferenceRoundTrip.pageLayout.bottomToTop,
+                "Page Layout Preferences did not persist all configured layout values");
+        capture("page-layout-preferences", GTK_WIDGET(preferencesDialog), true);
+
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(offsetControl), 1);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(horizontalDirectionControl), 0);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(verticalDirectionControl), 0);
+        adw_switch_row_set_active(ADW_SWITCH_ROW(pairedControl), false);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(flowControl), 0);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(dimensionControl), 0);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(countControl), 2);
+        adw_dialog_close(ADW_DIALOG(preferencesDialog));
+
+        gtk_menu_button_popup(GTK_MENU_BUTTON(pageLayoutMenuButton));
+        auto* popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(pageLayoutMenuButton));
+        require(popover && gtk_widget_get_visible(GTK_WIDGET(popover)), "Page layout menu did not open");
+        capture("page-layout-menu", GTK_WIDGET(popover), true);
+        gtk_menu_button_popdown(GTK_MENU_BUTTON(pageLayoutMenuButton));
+        std::cout << "PASS: GTK4 page layout actions, Preferences, grid geometry, navigation and persistence\n";
     }
 
     void verifySearchIntegration() {
@@ -12241,6 +12665,7 @@ private:
                                        static_cast<Prototype*>(data)->openPreferences();
                                    }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), preferencesButton);
+        buildPageLayoutMenu(header);
         auto* pluginsManagerAction = g_simple_action_new("plugins-manager", nullptr);
         g_signal_connect(pluginsManagerAction, "activate", G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer data) {
                              static_cast<Prototype*>(data)->openPluginManager();
@@ -12972,8 +13397,8 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifySearch || options.verifyPenLineStyle || options.verifyBeamer ||
-            options.verifyLayerActions || options.verifyLatex) {
+        if (options.verifyPlugins || options.verifySearch || options.verifyPageLayout || options.verifyPenLineStyle ||
+            options.verifyBeamer || options.verifyLayerActions || options.verifyLatex) {
             g_timeout_add(
                     200,
                     +[](gpointer data) -> gboolean {
@@ -12984,6 +13409,8 @@ private:
                         try {
                             if (self->options.verifySearch) {
                                 self->verifySearchIntegration();
+                            } else if (self->options.verifyPageLayout) {
+                                self->verifyPageLayoutIntegration();
                             } else if (self->options.verifyPenLineStyle) {
                                 self->verifyPenLineStyleIntegration();
                             } else if (self->options.verifyPlugins) {
@@ -12998,6 +13425,7 @@ private:
                         } catch (const std::exception& error) {
                             const char* verification = self->options.verifyLatex ? "LATEX" :
                                                        self->options.verifySearch ? "SEARCH" :
+                                                       self->options.verifyPageLayout ? "PAGE LAYOUT" :
                                                        self->options.verifyPenLineStyle ? "PEN LINE STYLE" :
                                                        self->options.verifyBeamer ? "BEAMER" :
                                                        self->options.verifyLayerActions ? "LAYER ACTIONS" : "PLUGIN";
@@ -13046,7 +13474,7 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
-            !options.verifyPenLineStyle && !options.verifyBeamer && !options.verifyLayerActions &&
+            !options.verifyPageLayout && !options.verifyPenLineStyle && !options.verifyBeamer && !options.verifyLayerActions &&
             !options.verifyLatex) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
@@ -19899,6 +20327,7 @@ private:
     GtkWidget* nextPageButton = nullptr;
     GtkWidget* pageButton = nullptr;
     GtkWidget* preferencesButton = nullptr;
+    GtkWidget* pageLayoutMenuButton = nullptr;
     GtkWidget* pluginsMenuButton = nullptr;
     GtkWidget* insertPageButton = nullptr;
     GtkWidget* deletePageButton = nullptr;
@@ -20186,6 +20615,8 @@ int main(int argc, char** argv) {
                 options.verifyPlugins = true;
             } else if (argument == "--verify-search") {
                 options.verifySearch = true;
+            } else if (argument == "--verify-page-layout") {
+                options.verifyPageLayout = true;
             } else if (argument == "--verify-pen-line-style") {
                 options.verifyPenLineStyle = true;
             } else if (argument == "--verify-beamer") {
@@ -20214,6 +20645,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
+                                         "[--verify-page-layout] "
                                          "[--verify-pen-line-style] [--verify-beamer] "
                                          "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
                                          "[--disable-audio] "
@@ -20232,6 +20664,10 @@ int main(int argc, char** argv) {
         if (options.verifySearch && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                      !options.nativeDocument.empty() || !options.worker.empty())) {
             throw std::runtime_error("Search verification requires --smoke-dir and --pdf without --worker");
+        }
+        if (options.verifyPageLayout && (options.smokeDirectory.empty() || !options.pdf.empty() ||
+                                         !options.nativeDocument.empty() || !options.worker.empty())) {
+            throw std::runtime_error("Page layout verification requires --smoke-dir without a document or worker");
         }
         if (options.verifyPenLineStyle &&
             (options.smokeDirectory.empty() || !options.pdf.empty() || !options.nativeDocument.empty() ||

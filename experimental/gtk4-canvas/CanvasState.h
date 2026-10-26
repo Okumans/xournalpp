@@ -26,6 +26,7 @@
 #include "CanvasImage.h"
 #include "CanvasLineStyle.h"
 #include "CanvasLayers.h"
+#include "CanvasPageLayout.h"
 #include "CanvasText.h"
 
 namespace prototype {
@@ -171,6 +172,8 @@ public:
     int page = 0;
     std::uint64_t pageStructureGeneration = 0;
     std::vector<PageSize> pages;
+    CanvasLayoutSettings layoutSettings;
+    CanvasPageLayout pageLayout;
     std::vector<PageLayers> pageLayers{PageLayers{}};
     Brush brush;
     DrawingMode drawingMode = DrawingMode::Freehand;
@@ -2287,50 +2290,41 @@ public:
         if (!pages.empty()) {
             selectActivePage(std::clamp(page, 0, pageCount() - 1));
         }
+        rebuildPageLayout();
+    }
+
+    void setLayoutSettings(const CanvasLayoutSettings& settings) {
+        layoutSettings = settings;
+        rebuildPageLayout();
+    }
+
+    void rebuildPageLayout() {
+        pageLayout.configure(pages, layoutSettings, pageGap);
     }
 
     double layoutWidth() const {
         if (pages.empty()) {
             return pageWidth;
         }
-        double width = 1.0;
-        for (const auto& entry: pages) {
-            width = std::max(width, entry.width);
-        }
-        return width;
+        return pageLayout.layoutWidth();
     }
 
     double layoutHeight() const {
         if (pages.empty()) {
             return pageHeight;
         }
-        double height = 0.0;
-        for (size_t i = 0; i < pages.size(); ++i) {
-            if (i) {
-                height += pageGap;
-            }
-            height += pages[i].height;
-        }
-        return height;
+        return pageLayout.layoutHeight();
     }
 
     double pageLeft(int index) const {
         if (pages.empty()) {
             return 0.0;
         }
-        return 0.5 * (layoutWidth() - pageSize(index).width);
+        return pageLayout.pageLeft(index, pages);
     }
 
     double pageTop(int index) const {
-        if (pages.empty() || index <= 0) {
-            return 0.0;
-        }
-        const size_t limit = std::min(static_cast<size_t>(index), pages.size());
-        double top = 0.0;
-        for (size_t i = 0; i < limit; ++i) {
-            top += pages[i].height + pageGap;
-        }
-        return top;
+        return pageLayout.pageTop(index, pages);
     }
 
     double activeEraserWidth() const { return brush.tool == Tool::Eraser ? brush.width : eraserWidth; }
@@ -2374,22 +2368,14 @@ public:
             return std::nullopt;
         }
         const auto doc = documentPoint(x, y, pressure);
-        if (!std::isfinite(doc.x) || !std::isfinite(doc.y) || doc.y < 0) {
+        if (!std::isfinite(doc.x) || !std::isfinite(doc.y)) {
             return std::nullopt;
         }
-        double top = 0.0;
-        for (int i = 0; i < static_cast<int>(pages.size()); ++i) {
-            const auto& sz = pages[static_cast<size_t>(i)];
-            if (doc.y <= top + sz.height) {
-                const Point local{doc.x - pageLeft(i), doc.y - top, doc.pressure};
-                if (local.x >= 0 && local.x <= sz.width && local.y >= 0) {
-                    return PageHit{i, local};
-                }
-                return std::nullopt;
-            }
-            top += sz.height + pageGap;
+        const auto index = pageLayout.pageAt(doc.x, doc.y, pages);
+        if (!index) {
+            return std::nullopt;
         }
-        return std::nullopt;
+        return PageHit{*index, {doc.x - pageLeft(*index), doc.y - pageTop(*index), doc.pressure}};
     }
 
     std::optional<PageHit> hitSelectionHandle(double x, double y) const {
@@ -2420,7 +2406,12 @@ public:
             offsetY = (height - pageHeight * zoom) / 2;
         } else {
             offsetX = (width - layoutWidth() * zoom) / 2;
-            offsetY = (height - sz.height * zoom) / 2 - pageTop(page) * zoom;
+            if (pageLayout.columnCount() > 1) {
+                offsetX = (width - sz.width * zoom) / 2 - pageLeft(page) * zoom;
+                offsetY = (height - sz.height * zoom) / 2 - pageTop(page) * zoom;
+            } else {
+                offsetY = (height - sz.height * zoom) / 2 - pageTop(page) * zoom;
+            }
         }
     }
 
@@ -2442,6 +2433,15 @@ public:
         if (pages.empty()) {
             offsetX = (viewportWidth - pageWidth * zoom) / 2;
             offsetY = (viewportHeight - pageHeight * zoom) / 2;
+            return;
+        }
+        if (pageLayout.columnCount() > 1) {
+            const double left = pageLeft(page) * zoom;
+            const double top = pageTop(page) * zoom;
+            offsetX = sz.width * zoom + 64 <= viewportWidth ?
+                              (viewportWidth - sz.width * zoom) / 2 - left : 24.0 - left;
+            offsetY = sz.height * zoom + 48 <= viewportHeight ?
+                              (viewportHeight - sz.height * zoom) / 2 - top : 24.0 - top;
             return;
         }
         if (sz.width * zoom + 64 <= viewportWidth) {
@@ -2621,6 +2621,7 @@ public:
         clearSelection();
         pages.erase(pages.begin() + removeIndex);
         ++pageStructureGeneration;
+        rebuildPageLayout();
         if (static_cast<size_t>(removeIndex) < pageLayers.size()) {
             pageLayers.erase(pageLayers.begin() + removeIndex);
         }
@@ -4186,6 +4187,7 @@ private:
         shiftTexts(texts, pageIndex);
         shiftImages(images, pageIndex);
         selectActivePage(pageIndex);
+        rebuildPageLayout();
     }
 
     void restorePageSnapshot(const PageSnapshot& snapshot) {
@@ -4853,6 +4855,7 @@ private:
             const auto& change = *edit.pageSizeChange;
             if (change.page >= 0 && static_cast<size_t>(change.page) < pages.size()) {
                 pages[static_cast<size_t>(change.page)] = forward ? change.after : change.before;
+                rebuildPageLayout();
                 if (change.page == page) {
                     pageWidth = pages[static_cast<size_t>(page)].width;
                     pageHeight = pages[static_cast<size_t>(page)].height;
