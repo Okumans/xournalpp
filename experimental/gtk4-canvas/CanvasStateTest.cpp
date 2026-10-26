@@ -867,6 +867,13 @@ static void scrollDeltaUnits() {
     state.scrollBy(-1, 2, true);
     check(std::abs(state.offsetX - 133.75) < 1e-9 && std::abs(state.offsetY - 132.5) < 1e-9,
           "discrete wheel detents should retain their existing 35-pixel movement");
+    check(std::abs(behavior::zoomFromScrollDelta(1.0, -1.0, true) - 1.02) < 1e-12 &&
+                  std::abs(behavior::zoomFromScrollDelta(1.0, -35.0, false) - 1.02) < 1e-12,
+          "discrete wheel and 35-pixel smooth zoom deltas should retain the two-percent step");
+    check(std::abs(behavior::zoomFromScrollDelta(1.0, -17.5, false) - std::sqrt(1.02)) < 1e-12 &&
+                  std::abs(behavior::zoomFromScrollDelta(
+                                   behavior::zoomFromScrollDelta(1.0, -17.5, false), 17.5, false) - 1.0) < 1e-12,
+          "half-step touchpad zoom should be continuous and reverse back to the starting zoom");
     state.scrollBy(std::numeric_limits<double>::infinity(), 10, false);
     check(std::abs(state.offsetX - 133.75) < 1e-9 && std::abs(state.offsetY - 132.5) < 1e-9,
           "non-finite scroll deltas should not move the canvas");
