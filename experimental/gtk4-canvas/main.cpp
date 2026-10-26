@@ -12205,8 +12205,7 @@ private:
                             self->zoom(self->state.steppedZoom(dy < 0, true), anchor.x, anchor.y);
                         }
                     } else {
-                        self->state.offsetX -= dx * 35;
-                        self->state.offsetY -= dy * 35;
+                        self->state.scrollBy(dx, dy, discrete);
                         self->fitted = true;
                         self->fitMode = false;
                         self->state.syncActivePage(gtk_widget_get_width(self->canvas),

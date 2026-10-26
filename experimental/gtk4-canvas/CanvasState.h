@@ -2369,6 +2369,14 @@ public:
         }
     }
 
+    void scrollBy(double dx, double dy, bool discrete) {
+        if (!std::isfinite(dx) || !std::isfinite(dy)) {
+            return;
+        }
+        offsetX -= behavior::scrollDeltaToPixels(dx, discrete);
+        offsetY -= behavior::scrollDeltaToPixels(dy, discrete);
+    }
+
     void scrollToPage(int targetPage, double viewportWidth, double viewportHeight) {
         if (targetPage < 0 || (!pages.empty() && targetPage >= pageCount())) {
             return;
