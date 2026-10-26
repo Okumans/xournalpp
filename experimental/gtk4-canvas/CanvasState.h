@@ -679,13 +679,14 @@ public:
             return false;
         }
         const size_t pageIndex = static_cast<size_t>(page);
-        auto before = captureLayerMutation(page);
-        const size_t insertion = pageLayers[pageIndex].selectedLayer;
-        if (pageLayers[pageIndex].layers.size() >= 1000) {
+        auto& pageState = pageLayers[pageIndex];
+        const size_t selectedLayer = pageState.selectedLayer;
+        if (pageState.layers.size() >= 1000 || selectedLayer == 0 || selectedLayer > pageState.layers.size()) {
             return false;
         }
-        const size_t origin = nextLayerOrigin(pageLayers[pageIndex]);
-        auto& pageState = pageLayers[pageIndex];
+        auto before = captureLayerMutation(page);
+        const size_t insertion = selectedLayer;
+        const size_t origin = nextLayerOrigin(pageState);
         pageState.layers.insert(pageState.layers.begin() + static_cast<std::ptrdiff_t>(insertion),
                                 CanvasLayer{"Layer " + std::to_string(pageState.layers.size() + 1), true, {origin}});
         pageState.selectedLayer = insertion + 1;
@@ -704,6 +705,44 @@ public:
                 ++image.layerId;
             }
         }
+        recordLayerMutation(std::move(before));
+        clearSelection();
+        return true;
+    }
+
+    bool addLayerBelowCurrent() {
+        if (page < 0 || static_cast<size_t>(page) >= pageLayers.size()) {
+            return false;
+        }
+        const size_t pageIndex = static_cast<size_t>(page);
+        auto& pageState = pageLayers[pageIndex];
+        const size_t selectedLayer = pageState.selectedLayer;
+        if (pageState.layers.size() >= 1000 || selectedLayer == 0 || selectedLayer > pageState.layers.size()) {
+            return false;
+        }
+
+        auto before = captureLayerMutation(page);
+        const size_t insertion = selectedLayer - 1;
+        const size_t origin = nextLayerOrigin(pageState);
+        pageState.layers.insert(pageState.layers.begin() + static_cast<std::ptrdiff_t>(insertion),
+                                CanvasLayer{"Layer " + std::to_string(pageState.layers.size() + 1), true, {origin}});
+        pageState.selectedLayer = selectedLayer;
+        for (auto& stroke: ink) {
+            if (stroke.page == page && stroke.layerId >= selectedLayer) {
+                ++stroke.layerId;
+            }
+        }
+        for (auto& text: texts) {
+            if (text.page == page && text.layerId >= selectedLayer) {
+                ++text.layerId;
+            }
+        }
+        for (auto& image: images) {
+            if (image.page == page && image.layerId >= selectedLayer) {
+                ++image.layerId;
+            }
+        }
+
         recordLayerMutation(std::move(before));
         clearSelection();
         return true;

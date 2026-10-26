@@ -801,6 +801,15 @@ static void layerManagement() {
     check(state.layerVisible(1, 2) && state.layerVisible(0, 2),
           "undo should restore the addressed page without changing the active page");
 
+    check(state.selectLayer(0, 2) && state.addLayerBelowCurrent(),
+          "adding a layer below should insert between the selected layer and its lower neighbor");
+    check(state.layersForPage(0).layers.size() == 3 && state.activeLayerId(0) == 2 &&
+                  state.activeLayerOrigin(0) == 2 && state.ink[1].layerId == 3,
+          "adding a layer below should keep the new layer selected and shift existing object IDs");
+    state.undo();
+    check(state.layersForPage(0).layers.size() == 2 && state.activeLayerId(0) == 2 && state.ink[1].layerId == 2,
+          "undoing a layer insertion below should restore the original stack and object IDs");
+
     check(state.selectLayer(0, 1) && state.addLayerAboveCurrent(),
           "adding a layer should insert directly above the selected layer");
     check(state.layersForPage(0).layers.size() == 3 && state.activeLayerId(0) == 2 &&
