@@ -170,12 +170,13 @@ Input, Behavior, and Toolbar pages. Color scheme, page-sidebar visibility,
 pressure thresholds, stylus side-button actions, autosave cadence, and
 keyboard/wheel zoom steps save immediately to `gtk4-canvas.ini` in the selected
 configuration directory. These values take precedence over imported GTK 3
-settings. Preferences > Toolbar edits the main rail order and the four floating
-toolbox rows. Smart Select must remain in the rail; omitted actions stay under
-More tools. Floating-toolbox rows import read-only from `toolbar.ini` and both
-customization paths save only to `gtk4-canvas.ini`, without changing
-`settings.xml` or `toolbar.ini`. Common actions such as Pen, Highlighter, Laser
-Pointer, PDF selection, Undo, zoom, drawing modes, palette colors, rich-text
+settings. Preferences > Toolbar lets you drag tools between the visible main
+rail and More tools, reorder the rail, and edit the four floating-toolbox rows.
+Smart Select stays in the rail; omitted actions stay under More tools. Floating-
+toolbox rows import read-only from `toolbar.ini`, and customization saves only
+to `gtk4-canvas.ini`, without changing `settings.xml` or `toolbar.ini`. Common
+actions such as Pen, Highlighter, Laser Pointer, PDF selection, Undo, zoom,
+drawing modes, palette colors, rich-text
 formatting, and text alignment/justification work in the floating rows. The
 master `RULER`, rectangle, ellipse, arrow, double-arrow, coordinate-system,
 spline, and stroke-recognizer drawing tokens select their matching modes.
@@ -598,8 +599,9 @@ horizontal, and grid page layouts;
 page insert/delete undo; native geometric objects and full shape-recognizer
 parity; audio recording/device preferences and media lifecycle, vertical-space
 insertion, LaTeX dependency-check semantics and invalid-source recovery, and the
-general floating toolbox; complete per-device settings and toolbar customization; and
-the remaining bundled plugin actions. Accessibility, physical input, platform
+general floating toolbox; complete per-device settings and legacy floating-
+toolbar drag/drop customization; and the remaining bundled plugin actions.
+Accessibility, physical input, platform
 packaging, GPU rendering, and platform-specific validation are also still
 required before replacing the existing application.
 
