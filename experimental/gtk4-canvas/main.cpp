@@ -1562,6 +1562,10 @@ private:
             return getPluginPageLabel(pageNumber, label, error);
         };
         host.getColorPalette = [this] { return getPluginColorPalette(); };
+        host.getFont = [this] { return prototype::PluginFont{state.textFontName, state.textFontSize}; };
+        host.setFont = [this](const prototype::PluginFont& font, std::string& error) {
+            return setPluginFont(font, error);
+        };
         host.getScrollPosition = [this] { return getPluginScrollPosition(); };
         host.scrollToPage = [this](int page, bool relative, std::string& error) {
             return scrollPluginToPage(page, relative, error);
@@ -2926,6 +2930,48 @@ private:
             palette.push_back({swatch.name, (red << 16) | (green << 8) | blue});
         }
         return palette;
+    }
+
+    bool setPluginFont(const prototype::PluginFont& font, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed) {
+            error = "Wait for the current document operation to finish before changing the text font";
+            return false;
+        }
+        if (font.name.empty() || !std::isfinite(font.size) || font.size <= 0) {
+            error = "The requested text font is invalid";
+            return false;
+        }
+
+        state.textFontName = font.name;
+        state.textFontSize = font.size;
+
+        if (textEditor && textEditor->active()) {
+            textEditor->setBaseFont(font.name, font.size);
+            updateTextEditorPosition();
+        } else if (!state.selectedTexts.empty()) {
+            if (state.updateSelectedTexts([&](prototype::TextItem& item) {
+                    item.fontName = font.name;
+                    item.fontSize = font.size;
+                    const auto [width, height] = prototype::textNaturalSize(item);
+                    item.layoutWidth = width;
+                    item.layoutHeight = height;
+                })) {
+                thumbnails.clear();
+                update();
+            }
+        }
+
+        if (textFontEntry && gtk_editable_get_text(GTK_EDITABLE(textFontEntry)) != font.name) {
+            gtk_editable_set_text(GTK_EDITABLE(textFontEntry), font.name.c_str());
+        }
+        if (textFontSize) {
+            const double minimum = std::min(1.0, font.size);
+            const double maximum = std::max(512.0, font.size);
+            gtk_spin_button_set_range(GTK_SPIN_BUTTON(textFontSize), minimum, maximum);
+            gtk_spin_button_set_value(GTK_SPIN_BUTTON(textFontSize), font.size);
+        }
+        update();
+        return true;
     }
 
     prototype::PluginScrollPosition getPluginScrollPosition() const {
@@ -4348,6 +4394,28 @@ private:
             require(pluginPalette[index].name == swatch.name && pluginPalette[index].color == expectedColor,
                     "app.getColorPalette lost a swatch name or 24-bit color value");
         }
+        require(state.selectedTexts.empty() && (!textEditor || !textEditor->active()),
+                "Plugin font verification unexpectedly started with selected or editing text");
+        const prototype::PluginFont originalPluginFont{state.textFontName, state.textFontSize};
+        const auto originalFontRevision = state.revision();
+        const bool originalFontCanUndo = state.canUndo();
+        const bool originalFontCanRedo = state.canRedo();
+        const auto historyRemainsUnchanged = [&] {
+            return state.revision() == originalFontRevision && state.canUndo() == originalFontCanUndo &&
+                   state.canRedo() == originalFontCanRedo;
+        };
+        std::string fontError;
+        const prototype::PluginFont changedPluginFont{originalPluginFont.name, originalPluginFont.size + 1};
+        require(setPluginFont(changedPluginFont, fontError) && state.textFontName == changedPluginFont.name &&
+                        state.textFontSize == changedPluginFont.size &&
+                        std::abs(gtk_spin_button_get_value(GTK_SPIN_BUTTON(textFontSize)) - changedPluginFont.size) <
+                                1e-9 &&
+                        historyRemainsUnchanged(),
+                fontError.empty() ? "app.setFont did not update GTK4 text defaults without document history" :
+                                    fontError.c_str());
+        require(setPluginFont(originalPluginFont, fontError) && state.textFontName == originalPluginFont.name &&
+                        state.textFontSize == originalPluginFont.size && historyRemainsUnchanged(),
+                fontError.empty() ? "app.setFont did not restore the original text defaults" : fontError.c_str());
         const auto savedZoom = state.zoom;
         const auto savedOffsetX = state.offsetX;
         const auto savedOffsetY = state.offsetY;

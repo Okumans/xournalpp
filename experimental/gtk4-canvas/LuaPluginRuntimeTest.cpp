@@ -6,6 +6,7 @@
 #include <limits>
 #include <string>
 
+#include <pango/pangocairo.h>
 #include <unistd.h>
 
 #include "LuaPluginRuntime.h"
@@ -53,6 +54,20 @@ int main() {
                     g_setenv("XDG_DATA_HOME", xdgDataString.c_str(), TRUE) &&
                     g_setenv("XDG_STATE_HOME", xdgStateString.c_str(), TRUE),
             "Could not isolate the XDG roots for plugin folder tests");
+
+    std::vector<std::string> systemFontFamilies;
+    if (auto* fontMap = pango_cairo_font_map_get_default()) {
+        PangoFontFamily** families = nullptr;
+        int familyCount = 0;
+        pango_font_map_list_families(fontMap, &families, &familyCount);
+        for (int index = 0; index < familyCount; ++index) {
+            if (const char* name = pango_font_family_get_name(families[index])) {
+                systemFontFamilies.emplace_back(name);
+            }
+        }
+        g_free(families);
+    }
+    require(!systemFontFamilies.empty(), "Pango did not report any system fonts for the font API tests");
 
     const auto colorCycle = root / "ColorCycle";
     writePlugin(colorCycle,
@@ -447,6 +462,52 @@ int main() {
                 "function absolutePosition() app.scrollToPos(200.25, 50.5, false) end\n"
                 "function defaultRelative() app.scrollToPos(5, 7, 'false') end\n"
                 "function fractionalPage() app.scrollToPage(1.5) end\n");
+    const auto fontApiPlugin = root / "FontApiPlugin";
+    writePlugin(fontApiPlugin,
+                "[about]\ndescription=Read and change text fonts\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read fonts', callback='readFonts'})\n"
+                "  app.registerUi({menu='Set font size', callback='setSize'})\n"
+                "  app.registerUi({menu='Set font name', callback='setName'})\n"
+                "  app.registerUi({menu='Set font description', callback='setDescription'})\n"
+                "  app.registerUi({menu='Reject missing font family', callback='badFamily'})\n"
+                "  app.registerUi({menu='Reject incomplete font description', callback='badDescription'})\n"
+                "  app.registerUi({menu='Reject empty font table', callback='emptyTable'})\n"
+                "  app.registerUi({menu='Reject nonfinite font size', callback='nonfiniteSize'})\n"
+                "  app.registerUi({menu='Reject wrong font type', callback='wrongType'})\n"
+                "end\n"
+                "function readFonts()\n"
+                "  local fonts = app.getFonts()\n"
+                "  local font = app.getFont()\n"
+                "  assert(#fonts.families > 0 and fonts.current == 1)\n"
+                "  assert(font.name == fonts.families[fonts.current] and font.size == 12.5)\n"
+                "end\n"
+                "function setSize()\n"
+                "  local before = app.getFont()\n"
+                "  app.setFont({size=13.25})\n"
+                "  local after = app.getFont()\n"
+                "  assert(after.name == before.name and after.size == 13.25)\n"
+                "end\n"
+                "function setName()\n"
+                "  local fonts = app.getFonts()\n"
+                "  local before = app.getFont()\n"
+                "  local name = fonts.families[2] or fonts.families[1]\n"
+                "  app.setFont({name=name})\n"
+                "  local after = app.getFont()\n"
+                "  assert(after.name == name and after.size == before.size)\n"
+                "end\n"
+                "function setDescription()\n"
+                "  local fonts = app.getFonts()\n"
+                "  app.setFont(fonts.families[1] .. ' 14')\n"
+                "  local after = app.getFont()\n"
+                "  assert(after.name == fonts.families[1] and after.size == 14)\n"
+                "end\n"
+                "function badFamily() app.setFont({name='GTK4 Canvas Missing Family 123'}) end\n"
+                "function badDescription() app.setFont('GTK4 Canvas Missing Family 12') end\n"
+                "function emptyTable() app.setFont({}) end\n"
+                "function nonfiniteSize() app.setFont({size=0/0}) end\n"
+                "function wrongType() app.setFont(true) end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -455,15 +516,17 @@ int main() {
                 "[about]\ndescription=Invalid\n[default]\nenabled=false\n[plugin]\nmainfile=../outside.lua\n", "");
 
     prototype::LuaPluginRuntime runtime;
-    runtime.discover({root}, colorCycle.string() + "," + layerActionsPlugin.string() + "," +
-                                     quickScreenshotPlugin.string() + "," + textLinkCreationPlugin.string() + "," +
-                                     imageCreationPlugin.string() + "," + splineCreationPlugin.string() + "," +
-                                     zoomApiPlugin.string() + "," + folderApiPlugin.string() + "," +
-                                     currentPageApiPlugin.string() + "," + pageLabelApiPlugin.string() + "," +
-                                     colorPaletteApiPlugin.string() + "," + currentLayerApiPlugin.string() + "," +
-                                     scrollApiPlugin.string(), {});
+    runtime.discover({root},
+                     colorCycle.string() + "," + layerActionsPlugin.string() + "," + quickScreenshotPlugin.string() +
+                             "," + textLinkCreationPlugin.string() + "," + imageCreationPlugin.string() + "," +
+                             splineCreationPlugin.string() + "," + zoomApiPlugin.string() + "," +
+                             folderApiPlugin.string() + "," + currentPageApiPlugin.string() + "," +
+                             pageLabelApiPlugin.string() + "," + colorPaletteApiPlugin.string() + "," +
+                             currentLayerApiPlugin.string() + "," + scrollApiPlugin.string() + "," +
+                             fontApiPlugin.string(),
+                     {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 24, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 25, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -513,6 +576,8 @@ int main() {
     std::string pluginFolderPaths;
     std::string pageLabelResult;
     std::string paletteSummary;
+    prototype::PluginFont currentPluginFont{systemFontFamilies.front(), 12.5};
+    std::size_t fontChangeCount = 0;
     std::vector<std::string> activatedActions;
     double zoomValue = 1.25;
     std::size_t currentPageNumber = 2;
@@ -589,6 +654,12 @@ int main() {
             {"Rosewater", 0xdc8a78U},
     };
     host.getColorPalette = [&] { return testPalette; };
+    host.getFont = [&] { return currentPluginFont; };
+    host.setFont = [&](const prototype::PluginFont& font, std::string&) {
+        currentPluginFont = font;
+        ++fontChangeCount;
+        return true;
+    };
     host.getScrollPosition = [&] { return scrollPosition; };
     host.scrollToPage = [&](int pageNumber, bool relative, std::string&) {
         const auto requestedPage = relative ? static_cast<std::int64_t>(currentScrollPageNumber - 1) + pageNumber :
@@ -944,6 +1015,32 @@ int main() {
                     runtime.findPlugin("ScrollApiPlugin")->error.find("number has no integer representation") !=
                             std::string::npos,
             "app.scrollToPage accepted a fractional page number");
+    require(runtime.invokeMenu("FontApiPlugin", 0),
+            "app.getFonts/app.getFont did not return the available font families and current font");
+    require(runtime.invokeMenu("FontApiPlugin", 1) && currentPluginFont.name == systemFontFamilies.front() &&
+                    currentPluginFont.size == 13.25,
+            "app.setFont did not apply a partial size change while preserving the font name");
+    require(runtime.invokeMenu("FontApiPlugin", 2) && currentPluginFont.size == 13.25,
+            "app.setFont did not apply a partial name change while preserving the font size");
+    require(runtime.invokeMenu("FontApiPlugin", 3) && currentPluginFont.name == systemFontFamilies.front() &&
+                    currentPluginFont.size == 14 && fontChangeCount == 3,
+            "app.setFont did not parse and apply a Pango font description");
+    require(!runtime.invokeMenu("FontApiPlugin", 4) &&
+                    runtime.findPlugin("FontApiPlugin")->error.find("not available on this system") !=
+                            std::string::npos,
+            "app.setFont accepted a family that is not installed");
+    require(!runtime.invokeMenu("FontApiPlugin", 5) &&
+                    runtime.findPlugin("FontApiPlugin")->error.find("Font description") != std::string::npos,
+            "app.setFont accepted a description with a missing font family");
+    require(!runtime.invokeMenu("FontApiPlugin", 6) &&
+                    runtime.findPlugin("FontApiPlugin")->error.find("at least 'name' or 'size'") != std::string::npos,
+            "app.setFont accepted an empty font table");
+    require(!runtime.invokeMenu("FontApiPlugin", 7) &&
+                    runtime.findPlugin("FontApiPlugin")->error.find("finite number") != std::string::npos,
+            "app.setFont accepted a nonfinite size");
+    require(!runtime.invokeMenu("FontApiPlugin", 8) &&
+                    runtime.findPlugin("FontApiPlugin")->error.find("either a string or a table") != std::string::npos,
+            "app.setFont accepted a value that is neither a string nor a table");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1152,8 +1249,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 74 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 21,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 83 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 22,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

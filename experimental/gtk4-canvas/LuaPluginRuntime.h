@@ -166,6 +166,16 @@ struct PluginPaletteColor {
     std::uint32_t color = 0;
 };
 
+struct PluginFont {
+    std::string name;
+    double size = 12;
+};
+
+struct PluginFontList {
+    std::vector<std::string> families;
+    std::optional<std::size_t> current;
+};
+
 struct PluginScrollPosition {
     double x = 0;
     double y = 0;
@@ -185,6 +195,8 @@ struct PluginRuntimeHost {
     std::function<int()> getDisplayDpi;
     std::function<bool(std::size_t, std::string&, std::string&)> getPageLabel;
     std::function<std::vector<PluginPaletteColor>()> getColorPalette;
+    std::function<PluginFont()> getFont;
+    std::function<bool(const PluginFont&, std::string&)> setFont;
     std::function<PluginScrollPosition()> getScrollPosition;
     std::function<bool(int, bool, std::string&)> scrollToPage;
     std::function<bool(double, double, bool, std::string&)> scrollToPosition;
@@ -268,6 +280,9 @@ public:
     static int luaGetDisplayDpi(lua_State* state);
     static int luaGetPageLabel(lua_State* state);
     static int luaGetColorPalette(lua_State* state);
+    static int luaGetFonts(lua_State* state);
+    static int luaGetFont(lua_State* state);
+    static int luaSetFont(lua_State* state);
     static int luaGetScrollPos(lua_State* state);
     static int luaScrollToPage(lua_State* state);
     static int luaScrollToPos(lua_State* state);
@@ -311,6 +326,9 @@ private:
     bool getDisplayDpi(int& dpi, std::string& error) const;
     bool getPageLabel(std::size_t pageNumber, std::string& label, std::string& error) const;
     bool getColorPalette(std::vector<PluginPaletteColor>& palette, std::string& error) const;
+    bool getFonts(PluginFontList& fonts, std::string& error) const;
+    bool getFont(PluginFont& font, std::string& error) const;
+    bool setFont(const PluginFont& font, std::string& error);
     bool getScrollPosition(PluginScrollPosition& position, std::string& error) const;
     bool scrollToPage(int page, bool relative, std::string& error);
     bool scrollToPosition(double x, double y, bool relative, std::string& error);

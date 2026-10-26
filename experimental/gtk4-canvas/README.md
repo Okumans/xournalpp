@@ -92,7 +92,12 @@ returns a one-based PDF page label, or
 `nil, message` when the page is out of range. `app.getColorPalette()` returns the ordered palette entries with names and 24-bit RGB colors. Lua plugins can also query editable strokes, text, links, and
 images by selection, layer, page, or
 document; returned element references remain valid across vector growth and
-value-semantic edits. `app.addToSelection()` and `app.clearSelection()` support
+value-semantic edits. `app.getFonts()` lists installed font families and the
+one-based index of the current family, when it is installed. `app.getFont()`
+returns the current default family and size. `app.setFont()` accepts a Pango font
+description or a table with a family, size, or both; it changes text defaults and
+applies formatting to selected text or the active text editor. Formatting
+selected text creates one undo step. `app.addToSelection()` and `app.clearSelection()` support
 reference-based selection workflows. `app.addTexts()` and `app.addLinks()` create
 editable text and URL links on the current layer, use configured font/color
 defaults, return stable references, and support grouped, individual, and
