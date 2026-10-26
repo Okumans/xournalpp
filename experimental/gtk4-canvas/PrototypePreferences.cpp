@@ -36,7 +36,7 @@ GtkWidget* Prototype::preferenceCombo(AdwPreferencesGroup* group, const char* ti
                          self->changePreference(key, GTK_WIDGET(object));
                      }),
                      this);
-    preferenceControls[static_cast<size_t>(key)] = GTK_WIDGET(row);
+    preferencesUi.controls[static_cast<size_t>(key)] = GTK_WIDGET(row);
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return GTK_WIDGET(row);
 }
@@ -55,7 +55,7 @@ GtkWidget* Prototype::preferenceSwitch(AdwPreferencesGroup* group, const char* t
                          self->changePreference(key, GTK_WIDGET(object));
                      }),
                      this);
-    preferenceControls[static_cast<size_t>(key)] = GTK_WIDGET(row);
+    preferencesUi.controls[static_cast<size_t>(key)] = GTK_WIDGET(row);
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return GTK_WIDGET(row);
 }
@@ -88,7 +88,7 @@ GtkWidget* Prototype::preferenceSpin(AdwPreferencesGroup* group, const char* tit
                          self->changePreference(key, GTK_WIDGET(button));
                      }),
                      this);
-    preferenceControls[static_cast<size_t>(key)] = GTK_WIDGET(spin);
+    preferencesUi.controls[static_cast<size_t>(key)] = GTK_WIDGET(spin);
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return GTK_WIDGET(spin);
 }
@@ -115,7 +115,7 @@ GtkWidget* Prototype::preferenceColor(AdwPreferencesGroup* group, const char* ti
                          self->changePreference(key, GTK_WIDGET(object));
                      }),
                      this);
-    preferenceControls[static_cast<size_t>(key)] = button;
+    preferencesUi.controls[static_cast<size_t>(key)] = button;
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return GTK_WIDGET(button);
 }
@@ -132,7 +132,7 @@ GtkWidget* Prototype::preferenceTextEntry(AdwPreferencesGroup* group, const char
     gtk_widget_set_size_request(entry, 240, -1);
     adw_action_row_add_suffix(row, entry);
     adw_action_row_set_activatable_widget(row, entry);
-    preferenceControls[static_cast<size_t>(key)] = entry;
+    preferencesUi.controls[static_cast<size_t>(key)] = entry;
     if (key == PreferenceKey::LatexDefaultText || key == PreferenceKey::LatexGeneratorCommand ||
         key == PreferenceKey::LatexExternalEditorCommand || key == PreferenceKey::LatexTemporaryFileExtension) {
         g_signal_connect(entry, "changed", G_CALLBACK(+[](GtkEditable*, gpointer data) {
@@ -154,7 +154,7 @@ GtkWidget* Prototype::preferenceTemplatePath(AdwPreferencesGroup* group, const s
     gtk_editable_set_width_chars(GTK_EDITABLE(entry), 28);
     gtk_widget_set_size_request(entry, 240, -1);
     gtk_widget_set_hexpand(entry, true);
-    latexTemplatePathEntry = entry;
+    preferencesUi.latexTemplatePathEntry = entry;
     g_signal_connect(entry, "changed", G_CALLBACK(+[](GtkEditable*, gpointer data) {
                          static_cast<Prototype*>(data)->markLatexTextPreferencesPending();
                      }),
@@ -170,7 +170,7 @@ GtkWidget* Prototype::preferenceTemplatePath(AdwPreferencesGroup* group, const s
     gtk_box_append(GTK_BOX(box), browse);
     adw_action_row_add_suffix(row, box);
     adw_action_row_set_activatable_widget(row, entry);
-    preferenceControls[static_cast<size_t>(PreferenceKey::LatexTemplatePath)] = entry;
+    preferencesUi.controls[static_cast<size_t>(PreferenceKey::LatexTemplatePath)] = entry;
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return entry;
 }
@@ -194,7 +194,7 @@ GtkWidget* Prototype::preferenceFont(AdwPreferencesGroup* group, const char* tit
                                                                          GTK_WIDGET(object));
                      }),
                      this);
-    preferenceControls[static_cast<size_t>(PreferenceKey::LatexEditorFont)] = GTK_WIDGET(button);
+    preferencesUi.controls[static_cast<size_t>(PreferenceKey::LatexEditorFont)] = GTK_WIDGET(button);
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return GTK_WIDGET(button);
 }
@@ -205,8 +205,8 @@ GtkWidget* Prototype::preferenceLatexTheme(AdwPreferencesGroup* group, const std
     adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Choose colors for LaTeX source highlighting");
     auto* model = gtk_string_list_new(nullptr);
     gtk_string_list_append(model, "System default");
-    latexSourceViewThemeIds.clear();
-    latexSourceViewThemeIds.emplace_back();
+    preferencesUi.latexSourceViewThemeIds.clear();
+    preferencesUi.latexSourceViewThemeIds.emplace_back();
     guint selectedIndex = 0;
 #ifdef GTK4_CANVAS_HAVE_SOURCEVIEW
     auto* manager = gtk_source_style_scheme_manager_get_default();
@@ -217,8 +217,8 @@ GtkWidget* Prototype::preferenceLatexTheme(AdwPreferencesGroup* group, const std
             if (!scheme) {
                 continue;
             }
-            const auto index = static_cast<guint>(latexSourceViewThemeIds.size());
-            latexSourceViewThemeIds.emplace_back(*id);
+            const auto index = static_cast<guint>(preferencesUi.latexSourceViewThemeIds.size());
+            preferencesUi.latexSourceViewThemeIds.emplace_back(*id);
             gtk_string_list_append(model, gtk_source_style_scheme_get_name(scheme));
             if (selectedTheme == *id) {
                 selectedIndex = index;
@@ -240,7 +240,7 @@ GtkWidget* Prototype::preferenceLatexTheme(AdwPreferencesGroup* group, const std
                          self->changePreference(PreferenceKey::LatexSourceViewTheme, GTK_WIDGET(object));
                      }),
                      this);
-    preferenceControls[static_cast<size_t>(PreferenceKey::LatexSourceViewTheme)] = GTK_WIDGET(row);
+    preferencesUi.controls[static_cast<size_t>(PreferenceKey::LatexSourceViewTheme)] = GTK_WIDGET(row);
     adw_preferences_group_add(group, GTK_WIDGET(row));
     return GTK_WIDGET(row);
 }
@@ -255,7 +255,7 @@ bool Prototype::applyFloatingToolboxRows() {
     const auto previousRows = importedConfig.settings.floatingToolboxRows;
     prototype::FloatingToolboxRows rows;
     for (std::size_t index = 0; index < keys.size(); ++index) {
-        auto* entry = preferenceControls[static_cast<size_t>(keys[index])];
+        auto* entry = preferencesUi.controls[static_cast<size_t>(keys[index])];
         const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
         auto parsed = prototype::parseFloatingToolboxRow(raw ? raw : "");
         if (!parsed) {
@@ -280,7 +280,7 @@ bool Prototype::applyFloatingToolboxRows() {
 }
 
 bool Prototype::applyMainToolRail() {
-    auto* entry = preferenceControls[static_cast<size_t>(PreferenceKey::MainToolRail)];
+    auto* entry = preferencesUi.controls[static_cast<size_t>(PreferenceKey::MainToolRail)];
     const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
     const auto parsed = prototype::parseMainToolRail(raw ? raw : "");
     if (!parsed) {
@@ -299,7 +299,7 @@ bool Prototype::applyMainToolRail() {
         showAlert("Could not save toolbar preferences", error);
         return false;
     }
-    pendingMainToolRail = *parsed;
+    preferencesUi.pendingMainToolRail = *parsed;
     rebuildMainToolRailEditor();
     rebuildMainToolRail();
     return true;
@@ -392,12 +392,12 @@ void Prototype::rebuildMainToolRailEditor() {
             gtk_list_box_remove(GTK_LIST_BOX(list), row);
         }
     }
-    for (const auto action: pendingMainToolRail) {
+    for (const auto action: preferencesUi.pendingMainToolRail) {
         gtk_list_box_append(GTK_LIST_BOX(mainToolRailVisibleList), createMainToolRailEditorRow(action));
     }
     for (const auto& entry: prototype::mainToolRailNames) {
-        if (std::find(pendingMainToolRail.begin(), pendingMainToolRail.end(), entry.first) !=
-            pendingMainToolRail.end()) {
+        if (std::find(preferencesUi.pendingMainToolRail.begin(), preferencesUi.pendingMainToolRail.end(), entry.first) !=
+            preferencesUi.pendingMainToolRail.end()) {
             continue;
         }
         gtk_list_box_append(GTK_LIST_BOX(mainToolRailAvailableList), createMainToolRailEditorRow(entry.first));
@@ -406,20 +406,20 @@ void Prototype::rebuildMainToolRailEditor() {
 
 bool Prototype::applyMainToolRailDrop(std::string_view actionToken, bool toRail, std::size_t targetIndex) {
     const auto action = prototype::parseMainToolRailToken(actionToken);
-    auto* entry = preferenceControls[static_cast<size_t>(PreferenceKey::MainToolRail)];
+    auto* entry = preferencesUi.controls[static_cast<size_t>(PreferenceKey::MainToolRail)];
     const char* rawLayout = gtk_editable_get_text(GTK_EDITABLE(entry));
     const auto parsedLayout = prototype::parseMainToolRail(rawLayout ? rawLayout : "");
     if (!action || !parsedLayout) {
         return false;
     }
-    if (pendingMainToolRail != *parsedLayout) {
-        pendingMainToolRail = *parsedLayout;
+    if (preferencesUi.pendingMainToolRail != *parsedLayout) {
+        preferencesUi.pendingMainToolRail = *parsedLayout;
         rebuildMainToolRailEditor();
     }
-    if (!prototype::moveMainToolRailAction(pendingMainToolRail, *action, toRail, targetIndex)) {
+    if (!prototype::moveMainToolRailAction(preferencesUi.pendingMainToolRail, *action, toRail, targetIndex)) {
         return false;
     }
-    const auto serialized = prototype::serializeMainToolRail(pendingMainToolRail);
+    const auto serialized = prototype::serializeMainToolRail(preferencesUi.pendingMainToolRail);
     gtk_editable_set_text(GTK_EDITABLE(entry), serialized.c_str());
     gtk_widget_remove_css_class(entry, "error");
     rebuildMainToolRailEditor();
@@ -442,7 +442,7 @@ bool Prototype::emitMainToolRailDropForTest(GtkWidget* list, std::string_view ac
 }
 
 void Prototype::changePreference(PreferenceKey key, GtkWidget* control) {
-    if (syncingPreferenceControls) {
+    if (preferencesUi.syncingControls) {
         return;
     }
     auto& settings = importedConfig.settings;
@@ -515,7 +515,7 @@ void Prototype::changePreference(PreferenceKey key, GtkWidget* control) {
         case PreferenceKey::LayoutGridDimension: {
             const bool fixedRows = adw_combo_row_get_selected(ADW_COMBO_ROW(control)) == 1;
             if (settings.pageLayout.fixedRows != fixedRows) {
-                auto* countControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutGridCount)];
+                auto* countControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutGridCount)];
                 const int count = countControl ? gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(countControl)) : 1;
                 if (fixedRows) {
                     settings.pageLayout.rows = static_cast<std::size_t>(std::clamp(count, 1, 8));
@@ -574,10 +574,10 @@ void Prototype::changePreference(PreferenceKey key, GtkWidget* control) {
             break;
         case PreferenceKey::LatexSourceViewTheme: {
             const auto selected = adw_combo_row_get_selected(ADW_COMBO_ROW(control));
-            if (selected >= latexSourceViewThemeIds.size()) {
+            if (selected >= preferencesUi.latexSourceViewThemeIds.size()) {
                 return;
             }
-            settings.latexSourceViewThemeId = latexSourceViewThemeIds[selected];
+            settings.latexSourceViewThemeId = preferencesUi.latexSourceViewThemeIds[selected];
             break;
         }
         case PreferenceKey::LatexSourceViewAutoIndent:
@@ -754,7 +754,7 @@ void Prototype::changePreference(PreferenceKey key, GtkWidget* control) {
 void Prototype::chooseLatexTemplate() {
     auto* dialog = gtk_file_dialog_new();
     gtk_file_dialog_set_title(dialog, "Choose a TeX template");
-    const char* currentPath = gtk_editable_get_text(GTK_EDITABLE(latexTemplatePathEntry));
+    const char* currentPath = gtk_editable_get_text(GTK_EDITABLE(preferencesUi.latexTemplatePathEntry));
     if (currentPath && *currentPath) {
         GFile* currentFile = g_file_new_for_path(currentPath);
         gtk_file_dialog_set_initial_file(dialog, currentFile);
@@ -772,7 +772,7 @@ void Prototype::chooseLatexTemplate() {
                 if (file) {
                     gchar* path = g_file_get_path(file);
                     if (path) {
-                        gtk_editable_set_text(GTK_EDITABLE(context->first->latexTemplatePathEntry), path);
+                        gtk_editable_set_text(GTK_EDITABLE(context->first->preferencesUi.latexTemplatePathEntry), path);
                         g_free(path);
                     } else {
                         context->first->showAlert("Template must be a local file",
@@ -788,7 +788,7 @@ void Prototype::chooseLatexTemplate() {
 
 bool Prototype::applyLatexPreferences() {
     auto entryText = [this](PreferenceKey key) {
-        auto* entry = preferenceControls[static_cast<size_t>(key)];
+        auto* entry = preferencesUi.controls[static_cast<size_t>(key)];
         const char* text = entry ? gtk_editable_get_text(GTK_EDITABLE(entry)) : "";
         return std::string(text ? text : "");
     };
@@ -840,30 +840,30 @@ bool Prototype::applyLatexPreferences() {
 #endif
     }
     updateLatexPreferenceSensitivity();
-    if (latexSettingsApplyStatus) {
-        gtk_label_set_text(GTK_LABEL(latexSettingsApplyStatus), "Saved");
-        gtk_widget_add_css_class(latexSettingsApplyStatus, "success");
-        gtk_widget_remove_css_class(latexSettingsApplyStatus, "error");
-        gtk_widget_remove_css_class(latexSettingsApplyStatus, "dim-label");
+    if (preferencesUi.latexSettingsApplyStatus) {
+        gtk_label_set_text(GTK_LABEL(preferencesUi.latexSettingsApplyStatus), "Saved");
+        gtk_widget_add_css_class(preferencesUi.latexSettingsApplyStatus, "success");
+        gtk_widget_remove_css_class(preferencesUi.latexSettingsApplyStatus, "error");
+        gtk_widget_remove_css_class(preferencesUi.latexSettingsApplyStatus, "dim-label");
     }
     return true;
 }
 
 void Prototype::markLatexTextPreferencesPending() {
-    if (!latexSettingsApplyStatus) {
+    if (!preferencesUi.latexSettingsApplyStatus) {
         return;
     }
-    gtk_label_set_text(GTK_LABEL(latexSettingsApplyStatus), "Unsaved changes");
-    gtk_widget_add_css_class(latexSettingsApplyStatus, "dim-label");
-    gtk_widget_remove_css_class(latexSettingsApplyStatus, "success");
-    gtk_widget_remove_css_class(latexSettingsApplyStatus, "error");
+    gtk_label_set_text(GTK_LABEL(preferencesUi.latexSettingsApplyStatus), "Unsaved changes");
+    gtk_widget_add_css_class(preferencesUi.latexSettingsApplyStatus, "dim-label");
+    gtk_widget_remove_css_class(preferencesUi.latexSettingsApplyStatus, "success");
+    gtk_widget_remove_css_class(preferencesUi.latexSettingsApplyStatus, "error");
 }
 
 void Prototype::updateLatexPreferenceSensitivity() {
     const auto& settings = importedConfig.settings;
     const bool sourceEditorEnabled = !settings.latexUseExternalEditor;
     const auto setSensitive = [this](PreferenceKey key, bool sensitive) {
-        if (auto* control = preferenceControls[static_cast<size_t>(key)]) {
+        if (auto* control = preferencesUi.controls[static_cast<size_t>(key)]) {
             gtk_widget_set_sensitive(control, sensitive);
         }
     };
@@ -892,31 +892,31 @@ void Prototype::testLatexSetup() {
         showAlert("Choose a TeX template", "Select a template file before checking the LaTeX setup.");
         return;
     }
-    gtk_widget_set_sensitive(latexSetupTestButton, false);
-    gtk_label_set_text(GTK_LABEL(latexSetupTestStatus), "Compiling the sample formula…");
-    gtk_widget_remove_css_class(latexSetupTestStatus, "success");
-    gtk_widget_remove_css_class(latexSetupTestStatus, "error");
+    gtk_widget_set_sensitive(preferencesUi.latexSetupTestButton, false);
+    gtk_label_set_text(GTK_LABEL(preferencesUi.latexSetupTestStatus), "Compiling the sample formula…");
+    gtk_widget_remove_css_class(preferencesUi.latexSetupTestStatus, "success");
+    gtk_widget_remove_css_class(preferencesUi.latexSetupTestStatus, "error");
     const auto& settings = importedConfig.settings;
     prototype::LatexEditor::testConfiguration(
             latexTemplatePath, settings.latexGeneratorCommand, settings.latexDefaultText, latexBrush.color,
             [this](bool success, std::string message) {
-                gtk_widget_set_sensitive(latexSetupTestButton, true);
-                gtk_label_set_text(GTK_LABEL(latexSetupTestStatus),
+                gtk_widget_set_sensitive(preferencesUi.latexSetupTestButton, true);
+                gtk_label_set_text(GTK_LABEL(preferencesUi.latexSetupTestStatus),
                                    success ? "LaTeX setup is ready" : "LaTeX setup needs attention");
-                gtk_widget_add_css_class(latexSetupTestStatus, success ? "success" : "error");
+                gtk_widget_add_css_class(preferencesUi.latexSetupTestStatus, success ? "success" : "error");
                 showAlert(success ? "LaTeX setup works" : "LaTeX setup failed", message);
             });
 }
 
 void Prototype::openPreferences() {
-    if (preferencesDialog) {
-        adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
+    if (preferencesUi.dialog) {
+        adw_dialog_present(ADW_DIALOG(preferencesUi.dialog), window);
         return;
     }
 
-    preferencesDialog = ADW_PREFERENCES_DIALOG(g_object_ref_sink(adw_preferences_dialog_new()));
-    adw_preferences_dialog_set_search_enabled(preferencesDialog, true);
-    pendingMainToolRail = importedConfig.settings.mainToolRail;
+    preferencesUi.dialog = ADW_PREFERENCES_DIALOG(g_object_ref_sink(adw_preferences_dialog_new()));
+    adw_preferences_dialog_set_search_enabled(preferencesUi.dialog, true);
+    preferencesUi.pendingMainToolRail = importedConfig.settings.mainToolRail;
 
     auto* appearance = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     adw_preferences_page_set_name(appearance, "appearance");
@@ -962,7 +962,7 @@ void Prototype::openPreferences() {
                      viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showSidebar,
                      PreferenceKey::PresentationSidebar);
     adw_preferences_page_add(appearance, presentationGroup);
-    adw_preferences_dialog_add(preferencesDialog, appearance);
+    adw_preferences_dialog_add(preferencesUi.dialog, appearance);
 
     auto* layoutPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     adw_preferences_page_set_name(layoutPage, "page-layout");
@@ -999,7 +999,7 @@ void Prototype::openPreferences() {
     preferenceCombo(readingGroup, "Vertical reading", "Choose the page order down rows", verticalDirections,
                     pageLayout.bottomToTop ? 1 : 0, PreferenceKey::LayoutVerticalDirection);
     adw_preferences_page_add(layoutPage, readingGroup);
-    adw_preferences_dialog_add(preferencesDialog, layoutPage);
+    adw_preferences_dialog_add(preferencesUi.dialog, layoutPage);
 
     auto* latexPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     adw_preferences_page_set_name(latexPage, "latex");
@@ -1022,15 +1022,15 @@ void Prototype::openPreferences() {
     auto* latexTestRow = ADW_ACTION_ROW(adw_action_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(latexTestRow), "Test the template and compiler");
     adw_action_row_set_subtitle(latexTestRow, "Compile the default formula without changing the document");
-    latexSetupTestStatus = gtk_label_new("");
-    gtk_widget_add_css_class(latexSetupTestStatus, "dim-label");
-    gtk_widget_set_margin_end(latexSetupTestStatus, 8);
-    adw_action_row_add_suffix(latexTestRow, latexSetupTestStatus);
-    latexSetupTestButton = gtk_button_new_with_label("Test setup");
-    g_signal_connect(latexSetupTestButton, "clicked",
+    preferencesUi.latexSetupTestStatus = gtk_label_new("");
+    gtk_widget_add_css_class(preferencesUi.latexSetupTestStatus, "dim-label");
+    gtk_widget_set_margin_end(preferencesUi.latexSetupTestStatus, 8);
+    adw_action_row_add_suffix(latexTestRow, preferencesUi.latexSetupTestStatus);
+    preferencesUi.latexSetupTestButton = gtk_button_new_with_label("Test setup");
+    g_signal_connect(preferencesUi.latexSetupTestButton, "clicked",
                      G_CALLBACK(+[](GtkButton*, gpointer data) { static_cast<Prototype*>(data)->testLatexSetup(); }),
                      this);
-    adw_action_row_add_suffix(latexTestRow, latexSetupTestButton);
+    adw_action_row_add_suffix(latexTestRow, preferencesUi.latexSetupTestButton);
     adw_preferences_group_add(latexGenerationGroup, GTK_WIDGET(latexTestRow));
     adw_preferences_page_add(latexPage, latexGenerationGroup);
 
@@ -1086,25 +1086,25 @@ void Prototype::openPreferences() {
     auto* latexSaveRow = ADW_ACTION_ROW(adw_action_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(latexSaveRow), "Save LaTeX settings");
     adw_action_row_set_subtitle(latexSaveRow, "Switches and selectors save as you change them");
-    latexSettingsApplyStatus = gtk_label_new("");
-    gtk_widget_add_css_class(latexSettingsApplyStatus, "dim-label");
-    gtk_widget_set_margin_end(latexSettingsApplyStatus, 8);
-    adw_action_row_add_suffix(latexSaveRow, latexSettingsApplyStatus);
-    latexSettingsApplyButton = gtk_button_new_with_label("Apply");
-    g_signal_connect(latexSettingsApplyButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+    preferencesUi.latexSettingsApplyStatus = gtk_label_new("");
+    gtk_widget_add_css_class(preferencesUi.latexSettingsApplyStatus, "dim-label");
+    gtk_widget_set_margin_end(preferencesUi.latexSettingsApplyStatus, 8);
+    adw_action_row_add_suffix(latexSaveRow, preferencesUi.latexSettingsApplyStatus);
+    preferencesUi.latexSettingsApplyButton = gtk_button_new_with_label("Apply");
+    g_signal_connect(preferencesUi.latexSettingsApplyButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
                          auto* self = static_cast<Prototype*>(data);
                          if (self->applyLatexPreferences()) {
-                             gtk_label_set_text(GTK_LABEL(self->latexSettingsApplyStatus), "Saved");
-                             gtk_widget_add_css_class(self->latexSettingsApplyStatus, "success");
-                             gtk_widget_remove_css_class(self->latexSettingsApplyStatus, "error");
+                             gtk_label_set_text(GTK_LABEL(self->preferencesUi.latexSettingsApplyStatus), "Saved");
+                             gtk_widget_add_css_class(self->preferencesUi.latexSettingsApplyStatus, "success");
+                             gtk_widget_remove_css_class(self->preferencesUi.latexSettingsApplyStatus, "error");
                          }
                      }),
                      this);
-    adw_action_row_add_suffix(latexSaveRow, latexSettingsApplyButton);
+    adw_action_row_add_suffix(latexSaveRow, preferencesUi.latexSettingsApplyButton);
     adw_preferences_group_add(latexSaveGroup, GTK_WIDGET(latexSaveRow));
     adw_preferences_page_add(latexPage, latexSaveGroup);
 
-    adw_preferences_dialog_add(preferencesDialog, latexPage);
+    adw_preferences_dialog_add(preferencesUi.dialog, latexPage);
     updateLatexPreferenceSensitivity();
 
     auto* inputPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
@@ -1148,7 +1148,7 @@ void Prototype::openPreferences() {
                    importedConfig.settings.cursorHighlightBorderWidth, 0.0, 30.0, 1.0, 0, "px",
                    PreferenceKey::CursorHighlightBorderWidth);
     adw_preferences_page_add(inputPage, highlightGroup);
-    adw_preferences_dialog_add(preferencesDialog, inputPage);
+    adw_preferences_dialog_add(preferencesUi.dialog, inputPage);
 
     auto* behavior = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     adw_preferences_page_set_name(behavior, "behavior");
@@ -1227,7 +1227,7 @@ void Prototype::openPreferences() {
     preferenceSpin(selectionGroup, "Grid snap tolerance", "How close a boundary must be to snap",
                    importedConfig.settings.snapGridTolerance, 0.0, 1.0, 0.05, 2, "", PreferenceKey::SnapGridTolerance);
     adw_preferences_page_add(behavior, selectionGroup);
-    adw_preferences_dialog_add(preferencesDialog, behavior);
+    adw_preferences_dialog_add(preferencesUi.dialog, behavior);
 
     auto* toolbarPage = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     adw_preferences_page_set_name(toolbarPage, "toolbar");
@@ -1270,7 +1270,7 @@ void Prototype::openPreferences() {
     adw_action_row_add_suffix(applyRow, applyButton);
     adw_preferences_group_add(toolboxGroup, GTK_WIDGET(applyRow));
     adw_preferences_page_add(toolbarPage, toolboxGroup);
-    adw_preferences_dialog_add(preferencesDialog, toolbarPage);
+    adw_preferences_dialog_add(preferencesUi.dialog, toolbarPage);
 
     auto* mainRailGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
     adw_preferences_group_set_title(mainRailGroup, "Main tool rail");
@@ -1285,8 +1285,8 @@ void Prototype::openPreferences() {
                          auto* self = static_cast<Prototype*>(data);
                          const char* raw = gtk_editable_get_text(editable);
                          const auto parsed = prototype::parseMainToolRail(raw ? raw : "");
-                         if (parsed && self->pendingMainToolRail != *parsed) {
-                             self->pendingMainToolRail = *parsed;
+                         if (parsed && self->preferencesUi.pendingMainToolRail != *parsed) {
+                             self->preferencesUi.pendingMainToolRail = *parsed;
                              self->rebuildMainToolRailEditor();
                          }
                      }),
@@ -1342,7 +1342,7 @@ void Prototype::openPreferences() {
     adw_preferences_group_add(mainRailEditorGroup, mainRailEditor);
     rebuildMainToolRailEditor();
     adw_preferences_page_add(toolbarPage, mainRailEditorGroup);
-    adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
+    adw_dialog_present(ADW_DIALOG(preferencesUi.dialog), window);
 }
 
 }  // namespace prototype::gtk4
