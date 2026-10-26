@@ -954,6 +954,10 @@ public:
                selectionFrame->textIndices == selectedTexts && selectionFrame->imageIndices == selectedImages;
     }
 
+    double selectionRotation() const {
+        return selectionFrameMatchesCurrentSelection() ? selectionFrame->rotation : 0;
+    }
+
     bool selectionCanEdgePan() const {
         return selectionGesture && selectionGesture->moving && selectionGesture->handle < 0;
     }

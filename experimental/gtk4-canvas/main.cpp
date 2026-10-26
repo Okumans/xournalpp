@@ -1546,6 +1546,9 @@ private:
         };
         host.getActionState = [this](std::string_view action, prototype::PluginActionValue& value,
                                      std::string& error) { return getPluginActionState(action, value, error); };
+        host.getToolInfo = [this](std::string_view tool, prototype::PluginToolInfo& info, std::string& error) {
+            return getPluginToolInfo(tool, info, error);
+        };
         host.changeActionState = [this](std::string_view action, const prototype::PluginActionValue& value,
                                         std::string& error) { return changePluginActionState(action, value, error); };
         host.activateAction = [this](std::string_view action, std::string& error) {
@@ -2307,6 +2310,59 @@ private:
         if (normalized == "showfloatingtoolbox")
             return Tool::FloatingToolbox;
         return std::nullopt;
+    }
+
+    static std::string_view pluginToolName(Tool tool) {
+        switch (tool) {
+            case Tool::Pen: return "pen";
+            case Tool::Highlighter: return "highlighter";
+            case Tool::Eraser: return "eraser";
+            case Tool::SelectRectangle: return "selectRect";
+            case Tool::SelectLasso: return "selectRegion";
+            case Tool::SmartSelect: return "smartSelect";
+            case Tool::Text: return "text";
+            case Tool::SelectObject: return "selectObject";
+            case Tool::Hand: return "hand";
+            case Tool::SelectPdfTextLinear: return "selectPdfTextLinear";
+            case Tool::SelectPdfTextRect: return "selectPdfTextRect";
+            case Tool::VerticalSpace: return "verticalSpace";
+            case Tool::Link: return "link";
+            case Tool::LaserPointerPen: return "laserPointerPen";
+            case Tool::LaserPointerHighlighter: return "laserPointerHighlighter";
+            case Tool::PlayObject: return "playObject";
+            case Tool::FloatingToolbox: return "showFloatingToolbox";
+            case Tool::Latex: return "latex";
+        }
+        return "none";
+    }
+
+    static std::string_view pluginDrawingTypeName(prototype::DrawingMode mode) {
+        switch (mode) {
+            case prototype::DrawingMode::Freehand: return "default";
+            case prototype::DrawingMode::Line: return "line";
+            case prototype::DrawingMode::Rectangle: return "rectangle";
+            case prototype::DrawingMode::Ellipse: return "ellipse";
+            case prototype::DrawingMode::Arrow: return "arrow";
+            case prototype::DrawingMode::DoubleArrow: return "doubleArrow";
+            case prototype::DrawingMode::CoordinateSystem: return "drawCoordinateSystem";
+            case prototype::DrawingMode::ShapeRecognizer: return "strokeRecognizer";
+            case prototype::DrawingMode::Spline: return "spline";
+        }
+        return "default";
+    }
+
+    static std::string_view pluginToolSizeName(const std::array<double, 5>& widths, double width) {
+        static constexpr std::array<std::string_view, 5> names{
+                "veryThin", "thin", "medium", "thick", "veryThick"};
+        const auto size = prototype::behavior::matchToolSize(widths, width);
+        return size ? names[static_cast<size_t>(*size)] : std::string_view{"none"};
+    }
+
+    static std::uint32_t pluginRgbColor(const std::array<double, 3>& color) {
+        const auto channel = [](double component) {
+            return static_cast<std::uint32_t>(std::lround(std::clamp(component, 0.0, 1.0) * 255.0));
+        };
+        return (channel(color[0]) << 16U) | (channel(color[1]) << 8U) | channel(color[2]);
     }
 
     bool changePluginToolColor(const std::optional<std::string>& toolName, std::uint32_t color, bool selection,
@@ -3363,6 +3419,75 @@ private:
 
         error = "Action state is unavailable in this GTK 4 host: " + std::string(action);
         return false;
+    }
+
+    bool getPluginToolInfo(std::string_view tool, prototype::PluginToolInfo& info, std::string& error) const {
+        using prototype::PluginToolInfo;
+
+        const auto setBrush = [&](const prototype::Brush& brush, const std::array<double, 5>& widths) {
+            info.sizeName = pluginToolSizeName(widths, brush.width);
+            info.sizeValue = brush.width;
+            info.color = pluginRgbColor(brush.color);
+        };
+        const auto setShapeStyle = [&] {
+            info.drawingType = pluginDrawingTypeName(state.drawingMode);
+            info.lineStyle = "plain";
+        };
+
+        if (tool == "active") {
+            info.type = pluginToolName(state.brush.tool);
+            setBrush(state.brush, prototype::widthsForTool(state.brush.tool));
+            setShapeStyle();
+            info.fillOpacity = 128;
+            return true;
+        }
+        if (tool == "pen") {
+            setBrush(penBrush, prototype::behavior::penWidths);
+            setShapeStyle();
+            info.filled = false;
+            info.fillOpacity = 128;
+            return true;
+        }
+        if (tool == "highlighter") {
+            setBrush(highlightBrush, prototype::behavior::highlighterWidths);
+            setShapeStyle();
+            info.filled = false;
+            info.fillOpacity = 128;
+            return true;
+        }
+        if (tool == "eraser") {
+            info.eraserType = state.eraserMode == prototype::EraserMode::Standard ? "default" :
+                              state.eraserMode == prototype::EraserMode::Whiteout ? "whiteout" : "deleteStroke";
+            setBrush(eraserBrush, prototype::behavior::eraserWidths);
+            return true;
+        }
+        if (tool == "text") {
+            info.fontName = state.textFontName;
+            info.fontSize = state.textFontSize;
+            info.color = pluginRgbColor(state.textColor);
+            return true;
+        }
+        if (tool == "selection") {
+            if (!state.hasSelection()) {
+                error = "There is no selection!";
+                return false;
+            }
+            const auto bounds = state.selectionBox();
+            if (!bounds) {
+                error = "Selection bounds are unavailable";
+                return false;
+            }
+            const prototype::PluginToolRectangle rectangle{
+                    bounds->x0, bounds->y0, bounds->x1 - bounds->x0, bounds->y1 - bounds->y0};
+            info.boundingBox = rectangle;
+            info.originalBounds = rectangle;
+            info.snappedBounds = rectangle;
+            info.rotation = state.selectionRotation();
+            return true;
+        }
+
+        // The upstream API returns an empty table for an unknown query mode.
+        return true;
     }
 
     bool changePluginActionState(std::string_view action, const prototype::PluginActionValue& value,
@@ -4615,6 +4740,32 @@ private:
         require(!getPluginActionState("missing-action-state", actionState, actionStateError) &&
                         actionStateError.find("unavailable") != std::string::npos,
                 "app.getActionState did not reject an unsupported action state");
+        prototype::PluginToolInfo toolInfo;
+        std::string toolInfoError;
+        require(getPluginToolInfo("active", toolInfo, toolInfoError) && toolInfo.type &&
+                        *toolInfo.type == pluginToolName(state.brush.tool) && toolInfo.sizeValue &&
+                        std::abs(*toolInfo.sizeValue - state.brush.width) < 1e-9 && toolInfo.color &&
+                        *toolInfo.color == pluginRgbColor(state.brush.color),
+                toolInfoError.empty() ? "app.getToolInfo did not report the active GTK4 tool" :
+                                        toolInfoError.c_str());
+        require(getPluginToolInfo("pen", toolInfo, toolInfoError) && toolInfo.sizeValue &&
+                        std::abs(*toolInfo.sizeValue - penBrush.width) < 1e-9 && toolInfo.color &&
+                        *toolInfo.color == pluginRgbColor(penBrush.color) && toolInfo.filled == false,
+                toolInfoError.empty() ? "app.getToolInfo did not report Pen settings" : toolInfoError.c_str());
+        require(getPluginToolInfo("highlighter", toolInfo, toolInfoError) && toolInfo.sizeValue &&
+                        std::abs(*toolInfo.sizeValue - highlightBrush.width) < 1e-9 && toolInfo.color &&
+                        *toolInfo.color == pluginRgbColor(highlightBrush.color),
+                toolInfoError.empty() ? "app.getToolInfo did not report Highlighter settings" :
+                                       toolInfoError.c_str());
+        require(getPluginToolInfo("eraser", toolInfo, toolInfoError) && toolInfo.eraserType &&
+                        toolInfo.sizeValue && std::abs(*toolInfo.sizeValue - eraserBrush.width) < 1e-9,
+                toolInfoError.empty() ? "app.getToolInfo did not report Eraser settings" :
+                                       toolInfoError.c_str());
+        require(getPluginToolInfo("text", toolInfo, toolInfoError) && toolInfo.fontName &&
+                        *toolInfo.fontName == state.textFontName && toolInfo.fontSize &&
+                        std::abs(*toolInfo.fontSize - state.textFontSize) < 1e-9 && toolInfo.color &&
+                        *toolInfo.color == pluginRgbColor(state.textColor),
+                toolInfoError.empty() ? "app.getToolInfo did not report Text settings" : toolInfoError.c_str());
         require(nativeSession && !nativeSession->pdfPageLabels.empty(),
                 "Plugin integration fixture has no PDF page labels");
         const auto refreshPageRevision = state.revision();

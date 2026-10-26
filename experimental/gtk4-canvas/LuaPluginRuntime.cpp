@@ -440,6 +440,7 @@ int luaOpenApp(lua_State* state) {
             {"registerUi", LuaPluginRuntime::luaRegisterUi},
             {"changeToolColor", LuaPluginRuntime::luaChangeToolColor},
             {"getActionState", LuaPluginRuntime::luaGetActionState},
+            {"getToolInfo", LuaPluginRuntime::luaGetToolInfo},
             {"changeActionState", LuaPluginRuntime::luaChangeActionState},
             {"activateAction", LuaPluginRuntime::luaActivateAction},
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
@@ -994,6 +995,14 @@ bool LuaPluginRuntime::getActionState(std::string_view action, PluginActionValue
     return host.getActionState(action, value, error);
 }
 
+bool LuaPluginRuntime::getToolInfo(std::string_view tool, PluginToolInfo& info, std::string& error) const {
+    if (!host.getToolInfo) {
+        error = "Tool information is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getToolInfo(tool, info, error);
+}
+
 bool LuaPluginRuntime::changeActionState(std::string_view action, const PluginActionValue& value, std::string& error) {
     if (!host.changeActionState) {
         error = "Action state changes are unavailable in this GTK 4 host";
@@ -1532,6 +1541,118 @@ int LuaPluginRuntime::luaGetActionState(lua_State* state) {
         lua_pushnumber(state, *number);
     } else if (const auto* text = std::get_if<std::string>(&value)) {
         lua_pushlstring(state, text->data(), text->size());
+    }
+    return 1;
+}
+
+int LuaPluginRuntime::luaGetToolInfo(lua_State* state) {
+    const char* tool = luaL_checkstring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    PluginToolInfo info;
+    std::string error;
+    if (!plugin->runtime->getToolInfo(tool, info, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading tool information failed" : error.c_str());
+    }
+
+    lua_newtable(state);
+    const auto setString = [state](const char* key, const std::optional<std::string>& value) {
+        if (value) {
+            lua_pushlstring(state, value->data(), value->size());
+            lua_setfield(state, -2, key);
+        }
+    };
+    const auto setNumber = [state](const char* key, const std::optional<double>& value) {
+        if (value) {
+            lua_pushnumber(state, *value);
+            lua_setfield(state, -2, key);
+        }
+    };
+    const auto setInteger = [state](const char* key, const std::optional<std::uint32_t>& value) {
+        if (value) {
+            lua_pushinteger(state, static_cast<lua_Integer>(*value & 0x00ffffffU));
+            lua_setfield(state, -2, key);
+        }
+    };
+    const auto setSize = [state, &info] {
+        if (!info.sizeName && !info.sizeValue) {
+            return;
+        }
+        lua_newtable(state);
+        if (info.sizeName) {
+            lua_pushlstring(state, info.sizeName->data(), info.sizeName->size());
+            lua_setfield(state, -2, "name");
+        }
+        if (info.sizeValue) {
+            lua_pushnumber(state, *info.sizeValue);
+            lua_setfield(state, -2, "value");
+        }
+        lua_setfield(state, -2, "size");
+    };
+    const auto setRectangle = [state](const char* key, const std::optional<PluginToolRectangle>& rectangle) {
+        if (!rectangle) {
+            return;
+        }
+        lua_newtable(state);
+        lua_pushnumber(state, rectangle->width);
+        lua_setfield(state, -2, "width");
+        lua_pushnumber(state, rectangle->height);
+        lua_setfield(state, -2, "height");
+        lua_pushnumber(state, rectangle->x);
+        lua_setfield(state, -2, "x");
+        lua_pushnumber(state, rectangle->y);
+        lua_setfield(state, -2, "y");
+        lua_setfield(state, -2, key);
+    };
+
+    if (tool == std::string_view{"active"}) {
+        setString("type", info.type);
+        setSize();
+        setInteger("color", info.color);
+        setString("drawingType", info.drawingType);
+        setString("lineStyle", info.lineStyle);
+        if (info.fillOpacity) {
+            lua_pushinteger(state, *info.fillOpacity);
+            lua_setfield(state, -2, "fillOpacity");
+        }
+    } else if (tool == std::string_view{"pen"} || tool == std::string_view{"highlighter"}) {
+        setSize();
+        setInteger("color", info.color);
+        setString("drawingType", info.drawingType);
+        setString("lineStyle", info.lineStyle);
+        if (info.filled) {
+            lua_pushboolean(state, *info.filled);
+            lua_setfield(state, -2, "filled");
+        }
+        if (info.fillOpacity) {
+            lua_pushinteger(state, *info.fillOpacity);
+            lua_setfield(state, -2, "fillOpacity");
+        }
+    } else if (tool == std::string_view{"eraser"}) {
+        setString("type", info.eraserType);
+        setSize();
+    } else if (tool == std::string_view{"text"}) {
+        setInteger("color", info.color);
+        if (info.fontName || info.fontSize) {
+            lua_newtable(state);
+            if (info.fontName) {
+                lua_pushlstring(state, info.fontName->data(), info.fontName->size());
+                lua_setfield(state, -2, "name");
+            }
+            if (info.fontSize) {
+                lua_pushnumber(state, *info.fontSize);
+                lua_setfield(state, -2, "size");
+            }
+            lua_setfield(state, -2, "font");
+        }
+    } else if (tool == std::string_view{"selection"}) {
+        setRectangle("boundingBox", info.boundingBox);
+        setRectangle("originalBounds", info.originalBounds);
+        setRectangle("snappedBounds", info.snappedBounds);
+        setNumber("rotation", info.rotation);
     }
     return 1;
 }
