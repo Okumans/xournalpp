@@ -27,8 +27,46 @@ target_include_directories(gtk4-stroke-contour PUBLIC
                            "${XOURNALPP_REPO_ROOT}/src/core" "${XOURNALPP_REPO_ROOT}/src/util/include")
 target_link_libraries(gtk4-stroke-contour PUBLIC PkgConfig::CAIRO PkgConfig::GLIB)
 
-add_executable(xournalpp-gtk4-canvas main.cpp PageRasterRenderer.cpp InkRasterCache.cpp ClipboardRenderer.cpp
-               LuaPluginRuntime.cpp CanvasImageActions.cpp LatexEditor.cpp)
+add_executable(
+    xournalpp-gtk4-canvas
+    main.cpp
+    ApplicationOptions.cpp
+    Prototype.cpp
+    PrototypeCanvasObjects.cpp
+    PrototypeCanvasView.cpp
+    PrototypeClipboard.cpp
+    PrototypeDocuments.cpp
+    PrototypeFeatureVerification.cpp
+    PrototypeFloatingToolbox.cpp
+    Gtk4SearchController.cpp
+    PrototypeInput.cpp
+    PrototypeLinks.cpp
+    PrototypePdfTextSelection.cpp
+    PrototypePluginActions.cpp
+    PrototypePluginDocument.cpp
+    PrototypePluginObjects.cpp
+    PrototypePluginRuntime.cpp
+    PrototypePluginTools.cpp
+    PrototypePluginVerification.cpp
+    PrototypePreferences.cpp
+    PrototypeRendering.cpp
+    PrototypeSearch.cpp
+    PrototypeSidebar.cpp
+    PrototypeSmoke.cpp
+    PrototypeSmokeDocuments.cpp
+    PrototypeSmokeDrawing.cpp
+    PrototypeSmokeObjects.cpp
+    PrototypeSmokePreferences.cpp
+    PrototypeSmokeSelection.cpp
+    PrototypeTextEditing.cpp
+    PrototypeToolRail.cpp
+    PrototypeVerification.cpp
+    PageRasterRenderer.cpp
+    InkRasterCache.cpp
+    ClipboardRenderer.cpp
+    LuaPluginRuntime.cpp
+    CanvasImageActions.cpp
+    LatexEditor.cpp)
 target_include_directories(xournalpp-gtk4-canvas PRIVATE
                            "${XOURNALPP_REPO_ROOT}/src/core" "${XOURNALPP_REPO_ROOT}/src/util/include")
 target_compile_features(xournalpp-gtk4-canvas PRIVATE cxx_std_20)
