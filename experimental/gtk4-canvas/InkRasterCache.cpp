@@ -237,7 +237,8 @@ struct InkRasterCache::Impl {
         return result;
     }
 
-    bool drawCommitted(cairo_t* cr, const std::vector<const Ink*>& strokes, double requestedScale) {
+    bool drawCommitted(cairo_t* cr, const std::vector<const Ink*>& strokes, double requestedScale,
+                       const cairo_matrix_t* transform) {
         if (strokes.empty() || !std::isfinite(requestedScale) ||
             std::any_of(strokes.begin(), strokes.end(), [](const Ink* stroke) { return !stroke; })) {
             ++counters.fallbacks;
@@ -264,7 +265,7 @@ struct InkRasterCache::Impl {
             existing->second.stamp = ++nextStamp;
             existing->second.usedFrame = frame;
             ++counters.hits;
-            blit(cr, existing->second);
+            blit(cr, existing->second, transform);
             return true;
         }
 
@@ -301,7 +302,7 @@ struct InkRasterCache::Impl {
                     existing->second.stamp = ++nextStamp;
                     existing->second.usedFrame = frame;
                     ++counters.extensions;
-                    blit(cr, existing->second);
+                    blit(cr, existing->second, transform);
                     return true;
                 }
                 // appendRunInPlace may have partially changed the surface before Cairo reported an error.
@@ -352,7 +353,7 @@ struct InkRasterCache::Impl {
         } else {
             ++counters.renders;
         }
-        blit(cr, inserted->second);
+        blit(cr, inserted->second, transform);
         return true;
     }
 
@@ -661,8 +662,11 @@ struct InkRasterCache::Impl {
         return updated;
     }
 
-    static void blit(cairo_t* cr, const CachedInkRun& raster) {
+    static void blit(cairo_t* cr, const CachedInkRun& raster, const cairo_matrix_t* transform = nullptr) {
         cairo_save(cr);
+        if (transform) {
+            cairo_transform(cr, transform);
+        }
         cairo_translate(cr, raster.x, raster.y);
         cairo_scale(cr, 1.0 / raster.scale, 1.0 / raster.scale);
         cairo_set_source_surface(cr, raster.surface.get(), 0, 0);
@@ -728,8 +732,9 @@ void InkRasterCache::beginFrame(const std::vector<int>& visiblePages) { impl->be
 void InkRasterCache::endFrame() { impl->endFrame(); }
 void InkRasterCache::clear() { impl->clear(); }
 void InkRasterCache::clearActive() { impl->clearActive(); }
-bool InkRasterCache::drawCommitted(cairo_t* cr, const std::vector<const Ink*>& strokes, double requestedScale) {
-    return impl->drawCommitted(cr, strokes, requestedScale);
+bool InkRasterCache::drawCommitted(cairo_t* cr, const std::vector<const Ink*>& strokes, double requestedScale,
+                                   const cairo_matrix_t* transform) {
+    return impl->drawCommitted(cr, strokes, requestedScale, transform);
 }
 bool InkRasterCache::drawActive(cairo_t* cr, const Ink& stroke, double requestedScale, double visibleX0,
                                 double visibleY0, double visibleX1, double visibleY1, bool appendOnly) {

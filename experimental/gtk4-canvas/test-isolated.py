@@ -814,6 +814,38 @@ def verify_scroll_motion(args, evidence):
     }
 
 
+def verify_smart_select_performance(args, evidence):
+    run_dir = evidence / "smart-select-performance"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output = run(
+        [str(args.binary.resolve()), "--smoke-dir", str(run_dir), "--verify-smart-select-performance"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 Smart Select drag raster-cache frame latency"
+    if marker not in output:
+        raise RuntimeError("GTK4 Smart Select performance verification did not finish")
+
+    screenshots = [run_dir / "smart-select-performance-selected.png",
+                   run_dir / "smart-select-performance-moved.png"]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing Smart Select performance screenshot: {screenshot}")
+
+    match = re.search(r"median_ms=([0-9.]+) p95_ms=([0-9.]+) max_ms=([0-9.]+)", output)
+    if not match:
+        raise RuntimeError("Smart Select performance verification did not report frame latency")
+    return {
+        "screenshots": [str(path) for path in screenshots],
+        "frame_latency_ms": {"median": float(match.group(1)), "p95": float(match.group(2)),
+                              "max": float(match.group(3))},
+        "checks": ["40 selected highlighter strokes", "128 points per stroke",
+                   "GTK Smart Select drag-controller path", "24 painted preview frames",
+                   "translated cache pixel parity in ink-renderer test"],
+        "input_coverage": "Synthetic GTK gesture-controller signals; no physical input claim",
+        "rendering": "Private headless Wayland via Cage",
+    }
+
+
 def verify_presentation_mode(args, evidence):
     run_dir = evidence / "presentation-mode"
     config_dir = evidence / "presentation-config"
@@ -1390,6 +1422,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.smart_select_performance_only:
+        smart_select_evidence = verify_smart_select_performance(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"smart-select-performance": smart_select_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.scroll_only:
         scroll_evidence = verify_scroll_motion(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1729,6 +1768,7 @@ def main():
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--scroll-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--smart-select-performance-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--canvas-smoke-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pen-line-style-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
@@ -1826,6 +1866,8 @@ def main():
             command.append("--search-only")
         if args.scroll_only:
             command.append("--scroll-only")
+        if args.smart_select_performance_only:
+            command.append("--smart-select-performance-only")
         if args.canvas_smoke_only:
             command.append("--canvas-smoke-only")
         if args.pen_line_style_only:
