@@ -413,8 +413,10 @@ void Prototype::connectInput() {
                         self->applyCanvasScroll(dx, dy, true);
                     } else {
                         self->scrollGestureAllowsMomentum = true;
+                        const bool horizontalAllowed = self->state.hasHorizontalScrollRoom(
+                                gtk_widget_get_width(self->canvas));
                         const auto delta =
-                                self->scrollAxisLock.filter(dx, dy, self->state.pageLayout.columnCount() > 1);
+                                self->scrollAxisLock.filter(dx, dy, horizontalAllowed);
                         self->applyCanvasScroll(delta.x, delta.y, false);
                     }
                 }
@@ -426,7 +428,9 @@ void Prototype::connectInput() {
                          if (!self->scrollGestureAllowsMomentum || self->presentationMode || self->input.active()) {
                              return;
                          }
-                         const auto delta = self->scrollAxisLock.finish(self->state.pageLayout.columnCount() > 1);
+                         const bool horizontalAllowed = self->state.hasHorizontalScrollRoom(
+                                 gtk_widget_get_width(self->canvas));
+                         const auto delta = self->scrollAxisLock.finish(horizontalAllowed);
                          self->applyCanvasScroll(delta.x, delta.y, false);
                      }),
                      this);
@@ -774,7 +778,8 @@ void Prototype::startScrollMomentum(double velocityX, double velocityY) {
         return;
     }
 
-    const auto velocity = scrollAxisLock.filterVelocity(velocityX, velocityY, state.pageLayout.columnCount() > 1);
+    const bool horizontalAllowed = state.hasHorizontalScrollRoom(gtk_widget_get_width(canvas));
+    const auto velocity = scrollAxisLock.filterVelocity(velocityX, velocityY, horizontalAllowed);
     if (!scrollMomentum.start(velocity.x, velocity.y)) {
         return;
     }

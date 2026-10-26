@@ -1245,14 +1245,15 @@ void Prototype::verifySearchIntegration() {
 
 void Prototype::verifyScrollMotionIntegration() {
     require(canvas && scrollController, "Touchpad scroll verification needs the mapped GTK scroll controller");
-    std::vector<prototype::PageSize> pages(12, {600, 800});
+    const auto viewportWidth = gtk_widget_get_width(canvas);
+    const auto viewportHeight = gtk_widget_get_height(canvas);
+    require(viewportWidth > 0 && viewportHeight > 0, "Touchpad scroll verification canvas is not mapped");
+    const double pageWidth = std::max(600.0, viewportWidth + 300.0);
+    std::vector<prototype::PageSize> pages(12, {pageWidth, 800});
     pageCount = static_cast<int>(pages.size());
     state.setPages(std::move(pages));
     state.zoom = 1.0;
     state.selectActivePage(0);
-    const auto viewportWidth = gtk_widget_get_width(canvas);
-    const auto viewportHeight = gtk_widget_get_height(canvas);
-    require(viewportWidth > 0 && viewportHeight > 0, "Touchpad scroll verification canvas is not mapped");
     state.offsetX = (viewportWidth - state.layoutWidth() * state.zoom) / 2.0;
     state.offsetY = 0;
     state.constrainScrollOffsets(viewportWidth, viewportHeight);
@@ -1290,7 +1291,29 @@ void Prototype::verifyScrollMotionIntegration() {
             "GTK touchpad release velocity did not produce bounded vertical momentum");
     capture("scroll-momentum");
 
+    state.offsetX = 0;
+    state.constrainScrollOffsets(viewportWidth, viewportHeight);
+    require(state.hasHorizontalScrollRoom(viewportWidth),
+            "a wide single-column page should expose its horizontal scroll range");
+    emitScrollBegin();
+    emitScroll(10.0, 0.2);
+    emitScroll(10.0, 0.2);
+    emitScrollEnd();
+    require(state.offsetX < 0 && state.offsetX >= -4.0,
+            "intentional horizontal movement should stay low and remain inside the page bounds");
+    capture("scroll-horizontal-grid");
+
+    const double leftGridBound = viewportWidth - state.layoutWidth() * state.zoom;
+    state.offsetX = leftGridBound;
+    state.constrainScrollOffsets(viewportWidth, viewportHeight);
+    emitScrollBegin();
+    emitScroll(20.0, 0);
+    emitScrollEnd();
+    require(std::abs(state.offsetX - leftGridBound) < 1e-9,
+            "horizontal touchpad motion must stop at the page-grid edge");
+
     const auto bottomOffset = viewportHeight - state.layoutHeight() * state.zoom;
+    state.offsetX = startX;
     state.offsetY = bottomOffset;
     state.constrainScrollOffsets(viewportWidth, viewportHeight);
     update();
@@ -1307,7 +1330,7 @@ void Prototype::verifyScrollMotionIntegration() {
     require(!scrollMomentum.isActive() && std::abs(state.offsetY - clampedOffset) < 1e-9,
             "Touchpad momentum must stop at the page-grid boundary");
     capture("scroll-boundary");
-    std::cout << "PASS: GTK4 touchpad axis lock, page-grid bounds and momentum\n";
+    std::cout << "PASS: GTK4 touchpad axis intent, page-grid bounds and momentum\n";
 }
 
 void Prototype::verifySmartSelectPerformanceIntegration() {

@@ -919,6 +919,22 @@ static void constrainedScrollAndMomentum() {
     check(state.offsetX == 150 && state.offsetY == 100,
           "a page smaller than the viewport must stay centered instead of drifting away");
 
+    state.setPages({{600, 800}});
+    state.zoom = 1.0;
+    check(!state.hasHorizontalScrollRoom(900),
+          "a single-column page must not scroll horizontally when it fits inside the viewport");
+    state.setPages({{900, 600}});
+    check(state.pageLayout.columnCount() == 1 && state.hasHorizontalScrollRoom(800),
+          "a wide single-column page must permit horizontal scrolling within its bounds");
+    CanvasLayoutSettings gridLayout;
+    gridLayout.vertical = false;
+    gridLayout.columns = 2;
+    state.setPages({{600, 800}, {600, 800}});
+    state.setLayoutSettings(gridLayout);
+    check(state.pageLayout.columnCount() == 2 && state.hasHorizontalScrollRoom(1000) &&
+                  !state.hasHorizontalScrollRoom(1400),
+          "horizontal scrolling must follow the actual page-grid width, not only its column count");
+
     ScrollAxisLock axis;
     axis.begin();
     const auto verticalFirst = axis.filter(0.3, 1.5, true);
@@ -933,8 +949,15 @@ static void constrainedScrollAndMomentum() {
     const auto horizontalLock = axis.filter(5.0, 0.4, true);
     const auto horizontalVelocity = axis.filterVelocity(1.0, 0.8, true);
     check(axis.lockedAxis() == ScrollAxisLock::Axis::Horizontal && horizontalLock.x > 0 &&
-                  horizontalLock.y == 0 && std::abs(horizontalVelocity.x - 0.35) < 1e-9 && horizontalVelocity.y == 0,
-          "an intentional horizontal gesture may move through a multi-column grid at reduced speed");
+                  horizontalLock.y == 0 && horizontalLock.x < 2.0 &&
+                  std::abs(horizontalVelocity.x - 0.18) < 1e-9 && horizontalVelocity.y == 0,
+          "an intentional horizontal gesture may move through a scrollable grid at strongly reduced speed");
+
+    axis.begin();
+    axis.filter(1.6, 1.0, true);
+    const auto diagonalNoise = axis.filter(1.0, 1.0, true);
+    check(axis.lockedAxis() == ScrollAxisLock::Axis::Vertical && diagonalNoise.x == 0 && diagonalNoise.y == 2.0,
+          "near-diagonal touchpad drift must lock to vertical scrolling");
 
     axis.begin();
     const auto singleColumn = axis.filter(10.0, 2.0, false);
@@ -953,8 +976,16 @@ static void constrainedScrollAndMomentum() {
         momentum.advance(frame, step);
         totalDistance += step.y;
     }
-    check(!momentum.isActive() && totalDistance > 100 && totalDistance < 400,
-          "touchpad momentum should ease to a stop with bounded travel");
+    check(!momentum.isActive() && totalDistance > 150 && totalDistance < 250,
+          "touchpad momentum should ease to a stop with a shorter bounded coast");
+    check(momentum.start(10.0, 0.0), "high release velocity should start capped momentum");
+    totalDistance = 0;
+    for (long long frame = 2000000; momentum.isActive() && frame < 4000000; frame += 16000) {
+        momentum.advance(frame, step);
+        totalDistance += step.x;
+    }
+    check(!momentum.isActive() && totalDistance > 200 && totalDistance < 250,
+          "fast touchpad releases should be capped to a shorter horizontal coast");
     check(!momentum.start(std::numeric_limits<double>::quiet_NaN(), 1.0) && !momentum.isActive(),
           "non-finite device velocity must not start a momentum animation");
 }

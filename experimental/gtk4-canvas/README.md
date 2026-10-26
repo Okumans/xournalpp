@@ -533,9 +533,10 @@ scaling, Windows, and macOS remain unverified. Unsupported native objects are no
 selectable or editable, and selection coverage remains partial. Signal-handler
 emergency dump, full document undo, the complete Lua plugin API, remaining
 plugin-specific actions, most bundled plugin behaviors, and full toolbar
-configuration import remain migration work. The user reports that the current
-touchpad scrolling still moves too quickly and jumps unpredictably; reproduce
-and tune it later on the user's physical device. Its eraser edits session ink and supported native strokes
+configuration import remain migration work. Phase 118 tightens horizontal
+touchpad intent, uses the actual page-grid bounds, and shortens synthetic
+momentum travel. The user's report of fast, jumpy scrolling still needs
+verification and sensitivity tuning on their physical device. Its eraser edits session ink and supported native strokes
 on the active layer; it cannot erase flattened PDF content or unsupported native
 objects. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.
