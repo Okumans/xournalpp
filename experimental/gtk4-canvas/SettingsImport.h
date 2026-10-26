@@ -65,6 +65,8 @@ struct ImportedSettings {
     double edgePanMaxMultiplier = 5.0;
     std::string textFontName = "Sans";
     double textFontSize = 12;
+    int textAlignment = 0;
+    bool textJustify = false;
     std::array<double, 3> latexColor{0, 0, 0};
     std::filesystem::path latexTemplatePath;
 #ifdef __APPLE__
@@ -542,6 +544,18 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
                 out.latexColor = *color;
             }
         }
+    } else if (toolName == "text") {
+        if (name == "align") {
+            if (const auto alignment = parseAsciiInt(value); alignment && *alignment >= 0 && *alignment <= 2) {
+                out.textAlignment = static_cast<int>(*alignment);
+            }
+        } else if (name == "justify") {
+            if (value == "true" || value == "1") {
+                out.textJustify = true;
+            } else if (value == "false" || value == "0") {
+                out.textJustify = false;
+            }
+        }
     }
 }
 
@@ -779,6 +793,8 @@ inline void applyImportedSettingsToCanvas(CanvasState& state, const ImportedSett
     state.eraserWidth = settings.eraserWidth;
     state.textFontName = settings.textFontName;
     state.textFontSize = settings.textFontSize;
+    state.textAlignment = settings.textAlignment;
+    state.textJustify = settings.textJustify;
 }
 
 }  // namespace prototype

@@ -57,6 +57,8 @@ int main() {
     saved.scrollZoomStep = 0.035;
     saved.edgePanSpeed = 31;
     saved.edgePanMaxMultiplier = 3.5;
+    saved.textAlignment = 2;
+    saved.textJustify = true;
     saved.snapRotation = false;
     saved.snapRotationTolerance = 0.45;
     saved.snapGrid = false;
@@ -101,6 +103,7 @@ int main() {
                     near(loaded.cursorHighlightBorderWidth, 2.0) && near(loaded.pressureMultiplier, 1.75) &&
                     near(loaded.zoomStep, 0.22) && near(loaded.scrollZoomStep, 0.035) &&
                     near(loaded.edgePanSpeed, 31) && near(loaded.edgePanMaxMultiplier, 3.5) && !loaded.snapRotation &&
+                    loaded.textAlignment == saved.textAlignment && loaded.textJustify == saved.textJustify &&
                     near(loaded.snapRotationTolerance, 0.45) && !loaded.snapGrid && near(loaded.snapGridSize, 23.5) &&
                     near(loaded.snapGridTolerance, 0.35) && loaded.autosaveTimeoutMinutes == 11 &&
                     loaded.stylusButtonOne == prototype::ButtonToolAction::Eraser &&
