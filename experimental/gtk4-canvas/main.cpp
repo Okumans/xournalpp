@@ -1562,6 +1562,7 @@ private:
             return getPluginPageLabel(pageNumber, label, error);
         };
         host.getColorPalette = [this] { return getPluginColorPalette(); };
+        host.refreshPage = [this](std::string& error) { return refreshPluginPage(error); };
         host.getFont = [this] { return prototype::PluginFont{state.textFontName, state.textFontSize}; };
         host.setFont = [this](const prototype::PluginFont& font, std::string& error) {
             return setPluginFont(font, error);
@@ -2930,6 +2931,18 @@ private:
             palette.push_back({swatch.name, (red << 16) | (green << 8) | blue});
         }
         return palette;
+    }
+
+    bool refreshPluginPage(std::string& error) {
+        if (state.page < 0 || state.page >= state.pageCount()) {
+            error = "Called applib_refreshPage, but there is no current page.";
+            return false;
+        }
+        pageCache.clear();
+        layerPageCache.clear();
+        thumbnails.clear();
+        update();
+        return true;
     }
 
     bool setPluginFont(const prototype::PluginFont& font, std::string& error) {
@@ -4375,6 +4388,17 @@ private:
                 "app.getDisplayDpi did not return a bounded monitor DPI value or fallback");
         require(nativeSession && !nativeSession->pdfPageLabels.empty(),
                 "Plugin integration fixture has no PDF page labels");
+        const auto refreshPageRevision = state.revision();
+        const bool refreshPageCanUndo = state.canUndo();
+        const bool refreshPageCanRedo = state.canRedo();
+        ensurePageCache(state.page, gtk_widget_get_scale_factor(canvas));
+        require(!pageCache.empty(), "Plugin page-refresh verification could not build the current page cache");
+        std::string refreshPageError;
+        require(refreshPluginPage(refreshPageError) && pageCache.empty() && layerPageCache.empty() &&
+                        thumbnails.empty() && state.revision() == refreshPageRevision &&
+                        state.canUndo() == refreshPageCanUndo && state.canRedo() == refreshPageCanRedo,
+                refreshPageError.empty() ? "app.refreshPage did not invalidate page surfaces without changing history" :
+                                           refreshPageError.c_str());
         std::string firstPdfPageLabel;
         std::string pageLabelError;
         require(getPluginPageLabel(0, firstPdfPageLabel, pageLabelError) &&
