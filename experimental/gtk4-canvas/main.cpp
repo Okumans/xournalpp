@@ -15087,6 +15087,69 @@ private:
         require(state.ink.size() == expectedInkCount, "Shift stroke smoke operations did not undo cleanly");
     }
 
+    void smokeEraserShiftConstraints(size_t expectedInkCount) {
+        const auto drag = [this](double x, double y, double dx, double dy) {
+            const auto start = state.pageScreenPoint(0, x, y);
+            g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+            g_signal_emit_by_name(mouse, "drag-update", dx * state.zoom, dy * state.zoom);
+            g_signal_emit_by_name(mouse, "drag-end", dx * state.zoom, dy * state.zoom);
+        };
+
+        selectTool(Tool::Pen);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::Freehand));
+        drag(100, 500, 12, 0);
+        drag(260, 500, 12, 0);
+        require(state.ink.size() == expectedInkCount + 2,
+                "Eraser Shift smoke setup did not create its two target strokes");
+
+        selectTool(Tool::Eraser);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(eraserModeDropdown), 0u);
+        state.brush.width = 18;
+        gboolean handled = false;
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Shift_L, 0u, GdkModifierType(0), &handled);
+        drag(100, 500, 160, 40);
+        require(state.ink.size() == expectedInkCount,
+                "GTK Shift input did not constrain Standard Eraser samples along the saved axis");
+        waitForNextPaint();
+        capture("eraser-shift");
+
+        state.undo();
+        require(state.ink.size() == expectedInkCount + 2,
+                "One undo did not restore the complete axis-constrained Eraser drag");
+        state.redo();
+        require(state.ink.size() == expectedInkCount,
+                "Redo did not reapply the complete axis-constrained Eraser drag");
+
+        selectTool(Tool::Pen);
+        drag(350, 500, 12, 0);
+        require(state.ink.size() == expectedInkCount + 1, "Eraser Shift persistence target was not drawn");
+        selectTool(Tool::Eraser);
+        state.brush.width = 18;
+        const auto shiftedClick = state.pageScreenPoint(0, 350, 550);
+        g_signal_emit_by_name(mouse, "drag-begin", shiftedClick.x, shiftedClick.y);
+        g_signal_emit_by_name(mouse, "drag-end", 0.0, 0.0);
+        require(state.ink.size() == expectedInkCount,
+                "GTK Shift-click did not preserve the Eraser axis across gestures");
+
+        g_signal_emit_by_name(keys, "key-released", GDK_KEY_Shift_L, 0u, GdkModifierType(0));
+        selectTool(Tool::Pen);
+        drag(450, 620, 12, 0);
+        require(state.ink.size() == expectedInkCount + 1, "Eraser Shift release target was not drawn");
+        selectTool(Tool::Eraser);
+        state.brush.width = 18;
+        drag(430, 590, 20, 30);
+        require(state.ink.size() == expectedInkCount,
+                "Releasing Shift did not restore raw pointer movement for the GTK Eraser path");
+
+        for (int edit = 0; edit < 7; ++edit) {
+            state.undo();
+        }
+        selectTool(Tool::Pen);
+        update();
+        require(state.ink.size() == expectedInkCount, "Eraser Shift smoke edits did not undo cleanly");
+    }
+
     void smokeDrawingTools() {
         const auto before = state.ink.size();
         selectTool(Tool::Pen);
@@ -15099,6 +15162,7 @@ private:
         capture("drawing-controls");
         gtk_popover_popdown(GTK_POPOVER(palettePopover));
         smokeShiftStrokeConstraints(before);
+        smokeEraserShiftConstraints(before);
 
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
                                    static_cast<guint>(prototype::DrawingMode::Rectangle));
@@ -18165,6 +18229,9 @@ private:
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Z, 0u,
                                       GdkModifierType(GDK_CONTROL_MASK | GDK_SHIFT_MASK), &handled);
                 require(handled && state.ink.size() == 1, "Keyboard redo failed");
+                g_signal_emit_by_name(keys, "key-released", GDK_KEY_Shift_L, 0u,
+                                      GdkModifierType(GDK_CONTROL_MASK));
+                g_signal_emit_by_name(keys, "key-released", GDK_KEY_Control_L, 0u, GdkModifierType(0));
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[1]), true);
                 require(state.brush.tool == Tool::Highlighter && std::abs(state.brush.width - 8.50) < 1e-6 &&
                                 gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 2u,

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "BehaviorDefaults.h"
 #include "CanvasState.h"
@@ -52,6 +53,8 @@ public:
         }
         if (owner || state.current) return false;
         shiftClickConnection.reset();
+        activeEraserEndpoint.reset();
+        eraserPagesSeen.clear();
         pointerDragged = false;
         pressureMode = state.pressureSensitivity && validPressure(sample.pressure);
         lastPressure = pressureMode ? *sample.pressure : 1;
@@ -60,8 +63,17 @@ public:
             mode = Mode::Pan;
         } else if ((eraserEnd || state.brush.tool == Tool::Eraser) && state.eraserMode != EraserMode::Whiteout) {
             mode = Mode::Erase;
+            auto& constraint = shiftConstraints[hit->page];
+            const auto projected = constrainAtBegin(constraint, hit->local, shiftHeld);
+            const auto screen = state.pageScreenPoint(hit->page, projected.x, projected.y);
+            if (shiftHeld) {
+                shiftClickConnection = shiftClickTarget(constraint, hit->page, Tool::Eraser);
+            }
+            activeEraserEndpoint = EraserEndpoint{projected, hit->page, state.activeLayerId(hit->page),
+                                                   state.eraserMode, 0};
+            eraserPagesSeen.insert(hit->page);
             state.beginErase();
-            state.erase(sample.x, sample.y);
+            state.erase(screen.x, screen.y);
         } else if (isSelectionTool(state.brush.tool) && !eraserEnd) {
             mode = Mode::Select;
             if (!state.beginSelection(sample.x, sample.y, shiftHeld)) {
@@ -84,7 +96,7 @@ public:
                 drawingSample.x = screen.x;
                 drawingSample.y = screen.y;
                 if (shiftHeld) {
-                    connection = shiftClickTarget(constraint, hit->page);
+                    connection = shiftClickTarget(constraint, hit->page, shiftTool(state.brush.tool, eraserEnd));
                 }
             }
             if (!state.begin(device, drawingSample.x, drawingSample.y, pressure(sample.pressure), eraserEnd,
@@ -117,7 +129,25 @@ public:
                 state.offsetY += sample.y - lastY;
                 break;
             case Mode::Erase:
-                state.erase(sample.x, sample.y);
+                if (std::hypot(sample.x - startX, sample.y - startY) > 4.0) {
+                    pointerDragged = true;
+                }
+                {
+                    InputSample erasingSample = sample;
+                    if (const auto hit = state.hitPage(sample.x, sample.y)) {
+                        auto& constraint = shiftConstraints[hit->page];
+                        const auto projected = eraserPagesSeen.contains(hit->page)
+                                                       ? constrainDuringStroke(constraint, hit->local, shiftHeld)
+                                                       : constrainAtBegin(constraint, hit->local, shiftHeld);
+                        eraserPagesSeen.insert(hit->page);
+                        const auto screen = state.pageScreenPoint(hit->page, projected.x, projected.y);
+                        erasingSample.x = screen.x;
+                        erasingSample.y = screen.y;
+                        activeEraserEndpoint = EraserEndpoint{projected, hit->page,
+                                                              state.activeLayerId(hit->page), state.eraserMode, 0};
+                    }
+                    state.erase(erasingSample.x, erasingSample.y);
+                }
                 break;
             case Mode::Draw:
                 if (std::hypot(sample.x - startX, sample.y - startY) > 4.0) {
@@ -185,16 +215,27 @@ public:
             const auto oldInkCount = state.ink.size();
             state.finish(device, pressure(releasePressure));
             if (state.ink.size() > oldInkCount) {
-                rememberShiftEndpoint(state.ink.back());
+                if (state.ink.back().brush.tool == Tool::Eraser) {
+                    rememberEraserStrokeEndpoint(state.ink.back());
+                } else {
+                    rememberShiftEndpoint(state.ink.back());
+                }
             }
             stabilizer.reset();
             shiftClickConnection.reset();
+            activeEraserEndpoint.reset();
+            eraserPagesSeen.clear();
             pointerDragged = false;
         } else if (mode == Mode::Spline) {
             // Each press/drag sets a spline knot and its tangent. The spline
             // remains editable until it is closed, double-clicked, or escaped.
         } else if (mode == Mode::Erase) {
+            finishEraserShiftClick(releasePoint);
             state.finishErase();
+            rememberEraserGestureEndpoint();
+            shiftClickConnection.reset();
+            activeEraserEndpoint.reset();
+            eraserPagesSeen.clear();
         } else if (mode == Mode::Select) {
             state.finishSelection();
         } else if (mode == Mode::Laser) {
@@ -289,6 +330,8 @@ public:
             state.cancelLaser(*owner);
         }
         state.cancel(device);
+        activeEraserEndpoint.reset();
+        eraserPagesSeen.clear();
         if (mode == Mode::Spline) splineInProgress = false;
         stabilizer.reset();
         owner.reset();
@@ -340,6 +383,14 @@ private:
         std::uintptr_t strokeReference = 0;
     };
 
+    struct EraserEndpoint {
+        Point point;
+        int page = 0;
+        size_t layerId = 1;
+        EraserMode mode = EraserMode::Standard;
+        std::uintptr_t strokeReference = 0;
+    };
+
     struct StraightLineConstraint {
         enum class Axis { Undecided, Horizontal, Vertical };
 
@@ -348,6 +399,7 @@ private:
         Axis axis = Axis::Undecided;
         bool shiftActive = false;
         std::optional<ShiftEndpoint> endpoint;
+        std::optional<EraserEndpoint> eraserEndpoint;
     };
 
     struct ShiftClickConnection {
@@ -355,6 +407,8 @@ private:
         int page = 0;
         size_t layerId = 1;
         Tool tool = Tool::Pen;
+        EraserMode eraserMode = EraserMode::Standard;
+        bool erasePath = false;
     };
 
     static bool finitePosition(InputSample sample) { return std::isfinite(sample.x) && std::isfinite(sample.y); }
@@ -364,8 +418,16 @@ private:
     static bool isDrawingBrush(Tool tool) { return tool == Tool::Pen || tool == Tool::Highlighter; }
 
     bool supportsShiftLineConstraint(Tool tool, bool eraserEnd) const {
-        return !eraserEnd && isDrawingBrush(tool) &&
-               (state.drawingMode == DrawingMode::Freehand || state.drawingMode == DrawingMode::ShapeRecognizer);
+        const bool supportsFreehandConstraint = state.drawingMode == DrawingMode::Freehand ||
+                                                state.drawingMode == DrawingMode::ShapeRecognizer;
+        if (eraserEnd || tool == Tool::Eraser) {
+            return state.eraserMode == EraserMode::Whiteout && supportsFreehandConstraint;
+        }
+        return isDrawingBrush(tool) && supportsFreehandConstraint;
+    }
+
+    static Tool shiftTool(Tool tool, bool eraserEnd) {
+        return eraserEnd ? Tool::Eraser : tool;
     }
 
     static void resetShiftAxis(StraightLineConstraint& constraint) {
@@ -459,12 +521,40 @@ private:
         return projected;
     }
 
-    std::optional<ShiftClickConnection> shiftClickTarget(const StraightLineConstraint& constraint, int page) const {
-        if (!constraint.endpoint || !isDrawingBrush(state.brush.tool)) {
+    std::optional<ShiftClickConnection> shiftClickTarget(const StraightLineConstraint& constraint, int page,
+                                                         Tool tool) const {
+        if (tool == Tool::Eraser) {
+            if (!constraint.eraserEndpoint) {
+                return std::nullopt;
+            }
+            const auto& endpoint = *constraint.eraserEndpoint;
+            if (endpoint.page != page || endpoint.layerId != state.activeLayerId(page) ||
+                endpoint.mode != state.eraserMode) {
+                return std::nullopt;
+            }
+            if (endpoint.mode == EraserMode::Whiteout) {
+                if (endpoint.strokeReference == 0) {
+                    return std::nullopt;
+                }
+                const bool stillExists = std::any_of(state.ink.begin(), state.ink.end(), [&](const Ink& stroke) {
+                    return stroke.pluginReference == endpoint.strokeReference && stroke.page == endpoint.page &&
+                           stroke.layerId == endpoint.layerId && stroke.brush.tool == Tool::Eraser;
+                });
+                if (!stillExists) {
+                    return std::nullopt;
+                }
+            } else if (endpoint.strokeReference != 0) {
+                return std::nullopt;
+            }
+            return ShiftClickConnection{endpoint.point, endpoint.page, endpoint.layerId, Tool::Eraser,
+                                        endpoint.mode, endpoint.mode != EraserMode::Whiteout};
+        }
+
+        if (!constraint.endpoint || !isDrawingBrush(tool)) {
             return std::nullopt;
         }
         const auto& endpoint = *constraint.endpoint;
-        if (endpoint.page != page || endpoint.layerId != state.activeLayerId(page) || endpoint.tool != state.brush.tool ||
+        if (endpoint.page != page || endpoint.layerId != state.activeLayerId(page) || endpoint.tool != tool ||
             endpoint.strokeReference == 0) {
             return std::nullopt;
         }
@@ -482,7 +572,8 @@ private:
         if (!shiftClickConnection || !state.current || pointerDragged ||
             state.current->page != shiftClickConnection->page ||
             state.current->layerId != shiftClickConnection->layerId ||
-            state.current->brush.tool != shiftClickConnection->tool) {
+            state.current->brush.tool != shiftClickConnection->tool ||
+            (shiftClickConnection->tool == Tool::Eraser && state.eraserMode != shiftClickConnection->eraserMode)) {
             return;
         }
         const Point release = releasePoint.value_or(Point{lastX, lastY});
@@ -497,6 +588,41 @@ private:
         state.current->points = {shiftClickConnection->from, end};
     }
 
+    void finishEraserShiftClick(std::optional<Point> releasePoint) {
+        if (!shiftClickConnection || !shiftClickConnection->erasePath || pointerDragged ||
+            shiftClickConnection->tool != Tool::Eraser || state.eraserMode != shiftClickConnection->eraserMode) {
+            return;
+        }
+        const Point release = releasePoint.value_or(Point{lastX, lastY});
+        if (!finitePosition({release.x, release.y, std::nullopt}) ||
+            std::hypot(release.x - startX, release.y - startY) > 4.0) {
+            return;
+        }
+        const auto hit = state.hitPage(release.x, release.y);
+        if (!hit || hit->page != shiftClickConnection->page ||
+            state.activeLayerId(hit->page) != shiftClickConnection->layerId) {
+            return;
+        }
+
+        const Point end = hit->local;
+        const double distance = std::hypot(end.x - shiftClickConnection->from.x,
+                                           end.y - shiftClickConnection->from.y);
+        if (!std::isfinite(distance)) {
+            return;
+        }
+        const double maxSpacing = std::max(0.05, state.activeEraserWidth() * 0.5);
+        const size_t steps = std::max<size_t>(1, static_cast<size_t>(std::ceil(distance / maxSpacing)));
+        for (size_t step = 0; step <= steps; ++step) {
+            const double t = static_cast<double>(step) / static_cast<double>(steps);
+            const double x = shiftClickConnection->from.x + (end.x - shiftClickConnection->from.x) * t;
+            const double y = shiftClickConnection->from.y + (end.y - shiftClickConnection->from.y) * t;
+            const auto screen = state.pageScreenPoint(hit->page, x, y);
+            state.erase(screen.x, screen.y);
+        }
+        activeEraserEndpoint = EraserEndpoint{end, hit->page, shiftClickConnection->layerId,
+                                             shiftClickConnection->eraserMode, 0};
+    }
+
     void rememberShiftEndpoint(const Ink& stroke) {
         if (!isDrawingBrush(stroke.brush.tool) || stroke.points.empty() || stroke.pluginReference == 0) {
             return;
@@ -504,6 +630,24 @@ private:
         auto& constraint = shiftConstraints[stroke.page];
         constraint.endpoint = ShiftEndpoint{stroke.points.back(), stroke.page, stroke.layerId, stroke.brush.tool,
                                             stroke.pluginReference};
+    }
+
+    void rememberEraserStrokeEndpoint(const Ink& stroke) {
+        if (stroke.brush.tool != Tool::Eraser || stroke.points.empty() || stroke.pluginReference == 0 ||
+            state.eraserMode != EraserMode::Whiteout) {
+            return;
+        }
+        auto& constraint = shiftConstraints[stroke.page];
+        constraint.eraserEndpoint = EraserEndpoint{stroke.points.back(), stroke.page, stroke.layerId,
+                                                   EraserMode::Whiteout, stroke.pluginReference};
+    }
+
+    void rememberEraserGestureEndpoint() {
+        if (!activeEraserEndpoint || activeEraserEndpoint->mode == EraserMode::Whiteout) {
+            return;
+        }
+        auto& constraint = shiftConstraints[activeEraserEndpoint->page];
+        constraint.eraserEndpoint = *activeEraserEndpoint;
     }
 
     bool stabilizedMode() const {
@@ -542,6 +686,8 @@ private:
     std::uint64_t knownPageStructureGeneration = 0;
     std::unordered_map<int, StraightLineConstraint> shiftConstraints;
     std::optional<ShiftClickConnection> shiftClickConnection;
+    std::optional<EraserEndpoint> activeEraserEndpoint;
+    std::unordered_set<int> eraserPagesSeen;
     CanvasStabilizer stabilizer;
     Device splineSource = Device::Mouse;
 };

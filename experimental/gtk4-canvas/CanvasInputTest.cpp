@@ -85,6 +85,226 @@ static void eraserAndPan() {
     check(!input.active() && !input.spaceHeld && !state.current, "focus loss must release temporary input tools");
 }
 
+static void eraserShiftAxisConstraint() {
+    for (const auto mode: {EraserMode::Standard, EraserMode::DeleteStroke}) {
+        CanvasState state;
+        CanvasInput input(state);
+        const auto addStroke = [&](double x, double y) {
+            input.begin(Device::Mouse, {x - 8, y, std::nullopt});
+            input.motion(Device::Mouse, {x + 8, y, std::nullopt});
+            input.finish(Device::Mouse);
+        };
+        addStroke(100, 100);
+        addStroke(200, 100);
+        state.brush.tool = Tool::Eraser;
+        state.brush.width = 20;
+        state.eraserMode = mode;
+        input.setModifiers(true, false, false);
+
+        input.begin(Device::Mouse, {100, 100, std::nullopt});
+        input.motion(Device::Mouse, {200, 180, std::nullopt});
+        input.finish(Device::Mouse);
+        check(state.ink.empty(), "Shift must project Standard and Delete Stroke eraser samples onto the dominant axis");
+        state.undo();
+        check(state.ink.size() == 2,
+              "one undo must restore all strokes erased by one axis-constrained Eraser gesture");
+        state.redo();
+        check(state.ink.empty(), "redo must reapply an axis-constrained Eraser gesture");
+
+        addStroke(300, 100);
+        state.brush.tool = Tool::Eraser;
+        input.begin(Device::Mouse, {300, 150, std::nullopt});
+        input.finish(Device::Mouse);
+        check(state.ink.empty(), "the Eraser Shift axis must persist across gestures until Shift is released");
+
+        input.setModifiers(false, false, false);
+        state.brush.tool = Tool::Pen;
+        addStroke(400, 220);
+        state.brush.tool = Tool::Eraser;
+        input.begin(Device::Mouse, {390, 200, std::nullopt});
+        input.motion(Device::Mouse, {400, 220, std::nullopt});
+        input.finish(Device::Mouse);
+        check(state.ink.empty(), "releasing Shift must restore raw Eraser pointer movement");
+    }
+}
+
+static void eraserShiftClickContinuesErasePath() {
+    for (const auto mode: {EraserMode::Standard, EraserMode::DeleteStroke}) {
+        CanvasState state;
+        CanvasInput input(state);
+        input.begin(Device::Mouse, {142, 100, std::nullopt});
+        input.motion(Device::Mouse, {158, 100, std::nullopt});
+        input.finish(Device::Mouse);
+        state.brush.tool = Tool::Eraser;
+        state.brush.width = 2;
+        state.eraserMode = mode;
+
+        input.begin(Device::Mouse, {50, 100, std::nullopt});
+        input.finish(Device::Mouse);
+        input.setModifiers(true, false, false);
+        input.begin(Device::Mouse, {250, 100, std::nullopt});
+        input.finish(Device::Mouse, std::nullopt, Point{250, 100});
+        check(state.ink.empty(), "an Eraser Shift-click must erase a straight segment from the previous Eraser endpoint");
+        state.undo();
+        check(state.ink.size() == 1,
+              "a connected Eraser Shift-click must group its entire line erase into one undo action");
+    }
+}
+
+static void eraserShiftClickChecksLayerAndMode() {
+    const auto addTargetStroke = [](CanvasInput& input) {
+        input.begin(Device::Mouse, {142, 100, std::nullopt});
+        input.motion(Device::Mouse, {158, 100, std::nullopt});
+        input.finish(Device::Mouse);
+    };
+
+    CanvasState layerState;
+    CanvasInput layerInput(layerState);
+    layerState.brush.tool = Tool::Eraser;
+    layerState.brush.width = 2;
+    layerInput.begin(Device::Mouse, {50, 100, std::nullopt});
+    layerInput.finish(Device::Mouse);
+    check(layerState.addLayerAboveCurrent(), "the layer validity test must create a second layer");
+    check(layerState.selectLayer(0, 2), "the layer validity test must select the second layer");
+    layerState.brush.tool = Tool::Pen;
+    addTargetStroke(layerInput);
+    layerState.brush.tool = Tool::Eraser;
+    layerInput.setModifiers(true, false, false);
+    layerInput.begin(Device::Mouse, {250, 100, std::nullopt});
+    layerInput.finish(Device::Mouse, std::nullopt, Point{250, 100});
+    check(layerState.ink.size() == 1,
+          "an Eraser Shift-click on another layer must not continue from the previous layer endpoint");
+
+    CanvasState modeState;
+    CanvasInput modeInput(modeState);
+    modeState.brush.tool = Tool::Eraser;
+    modeState.brush.width = 2;
+    modeInput.begin(Device::Mouse, {50, 100, std::nullopt});
+    modeInput.finish(Device::Mouse);
+    modeState.eraserMode = EraserMode::DeleteStroke;
+    modeState.brush.tool = Tool::Pen;
+    addTargetStroke(modeInput);
+    modeState.brush.tool = Tool::Eraser;
+    modeInput.setModifiers(true, false, false);
+    modeInput.begin(Device::Mouse, {250, 100, std::nullopt});
+    modeInput.finish(Device::Mouse, std::nullopt, Point{250, 100});
+    check(modeState.ink.size() == 1,
+          "changing Eraser mode must invalidate the prior Shift-click endpoint");
+}
+
+static void eraserShiftClickChecksPageAndLiveWhiteoutStroke() {
+    CanvasState pageState;
+    pageState.setPages({{595, 842}, {595, 842}});
+    CanvasInput pageInput(pageState);
+    pageState.brush.tool = Tool::Eraser;
+    pageState.brush.width = 2;
+    const auto previousEndpoint = pageState.pageScreenPoint(0, 50, 100);
+    pageInput.begin(Device::Mouse, {previousEndpoint.x, previousEndpoint.y, std::nullopt});
+    pageInput.finish(Device::Mouse);
+
+    pageState.brush.tool = Tool::Pen;
+    const auto targetStart = pageState.pageScreenPoint(1, 142, 100);
+    const auto targetEnd = pageState.pageScreenPoint(1, 158, 100);
+    pageInput.begin(Device::Mouse, {targetStart.x, targetStart.y, std::nullopt});
+    pageInput.motion(Device::Mouse, {targetEnd.x, targetEnd.y, std::nullopt});
+    pageInput.finish(Device::Mouse);
+    pageState.brush.tool = Tool::Eraser;
+    pageInput.setModifiers(true, false, false);
+    const auto otherPageClick = pageState.pageScreenPoint(1, 250, 100);
+    pageInput.begin(Device::Mouse, {otherPageClick.x, otherPageClick.y, std::nullopt});
+    pageInput.finish(Device::Mouse, std::nullopt, otherPageClick);
+    check(pageState.ink.size() == 1 && pageState.ink.back().page == 1,
+          "an Eraser Shift-click on another page must not continue from the previous page endpoint");
+
+    CanvasState whiteoutState;
+    CanvasInput whiteoutInput(whiteoutState);
+    whiteoutState.brush.tool = Tool::Eraser;
+    whiteoutState.eraserMode = EraserMode::Whiteout;
+    whiteoutInput.begin(Device::Mouse, {20, 30, std::nullopt});
+    whiteoutInput.motion(Device::Mouse, {60, 30, std::nullopt});
+    whiteoutInput.finish(Device::Mouse);
+    whiteoutState.undo();
+    whiteoutInput.setModifiers(true, false, false);
+    whiteoutInput.begin(Device::Mouse, {100, 80, std::nullopt});
+    whiteoutInput.finish(Device::Mouse, std::nullopt, Point{101, 81});
+    check(whiteoutState.ink.size() == 1 && whiteoutState.ink.back().points.front().x == 100 &&
+                  whiteoutState.ink.back().points.front().y == 80,
+          "Whiteout Shift-click must not connect to an Eraser stroke removed by undo");
+}
+
+static void whiteoutEraserSupportsShiftConstraintsAndConnections() {
+    CanvasState state;
+    CanvasInput input(state);
+    state.brush.tool = Tool::Eraser;
+    state.eraserMode = EraserMode::Whiteout;
+    input.setModifiers(true, false, false);
+    input.begin(Device::Mouse, {80, 80, std::nullopt});
+    input.motion(Device::Mouse, {120, 84, std::nullopt});
+    input.finish(Device::Mouse);
+    check(state.ink.size() == 1 && state.ink.back().brush.tool == Tool::Eraser &&
+                  std::all_of(state.ink.back().points.begin(), state.ink.back().points.end(),
+                              [](const Point& point) { return point.y == 80; }),
+          "Whiteout Eraser strokes must use the Pen-style Shift axis projection");
+
+    input.begin(Device::Mouse, {160, 130, std::nullopt});
+    input.motion(Device::Mouse, {190, 160, std::nullopt});
+    input.finish(Device::Mouse);
+    check(std::all_of(state.ink.back().points.begin(), state.ink.back().points.end(),
+                      [](const Point& point) { return point.y == 80; }),
+          "Whiteout Eraser strokes must preserve the held Shift axis across gestures");
+
+    CanvasState connectionState;
+    CanvasInput connectionInput(connectionState);
+    connectionState.brush.tool = Tool::Eraser;
+    connectionState.eraserMode = EraserMode::Whiteout;
+    connectionInput.begin(Device::Mouse, {20, 30, std::nullopt});
+    connectionInput.motion(Device::Mouse, {60, 30, std::nullopt});
+    connectionInput.finish(Device::Mouse);
+    const Point endpoint = connectionState.ink.back().points.back();
+    connectionInput.setModifiers(true, false, false);
+    connectionInput.begin(Device::Mouse, {100, 80, std::nullopt});
+    connectionInput.finish(Device::Mouse, std::nullopt, Point{101, 81});
+    check(connectionState.ink.size() == 2 && connectionState.ink.back().points.size() == 2 &&
+                  connectionState.ink.back().points.front().x == endpoint.x &&
+                  connectionState.ink.back().points.front().y == endpoint.y &&
+                  connectionState.ink.back().points.back().x == 101 && connectionState.ink.back().points.back().y == 81,
+          "Whiteout Eraser Shift-click must connect from the previous live Eraser stroke endpoint");
+
+    CanvasState stylusState;
+    CanvasInput stylusInput(stylusState);
+    stylusState.eraserMode = EraserMode::Whiteout;
+    stylusInput.setModifiers(true, false, false);
+    stylusInput.begin(Device::Stylus, {80, 80, 0.4}, true);
+    stylusInput.motion(Device::Stylus, {120, 84, 0.7});
+    stylusInput.finish(Device::Stylus, 0.7);
+    check(stylusState.ink.size() == 1 &&
+                  std::all_of(stylusState.ink.back().points.begin(), stylusState.ink.back().points.end(),
+                              [](const Point& point) { return point.y == 80; }),
+          "the stylus eraser end must use the same Whiteout Shift constraint");
+}
+
+static void deleteStrokeStillHitsWhiteoutEndpoint() {
+    CanvasState state;
+    CanvasInput input(state);
+    state.fit(800, 1000);
+    state.brush.tool = Tool::Eraser;
+    state.eraserMode = EraserMode::Whiteout;
+    const auto start = state.pageScreenPoint(0, 100, 100);
+    const auto end = state.pageScreenPoint(0, 200, 200);
+    input.begin(Device::Mouse, {start.x, start.y, std::nullopt});
+    input.motion(Device::Mouse, {end.x, end.y, std::nullopt});
+    input.finish(Device::Mouse);
+    check(state.ink.size() == 1 && state.ink.front().pluginReference != 0,
+          "Whiteout Eraser strokes must retain a live endpoint identity");
+
+    state.eraserMode = EraserMode::DeleteStroke;
+    input.begin(Device::Mouse, {end.x, end.y, std::nullopt});
+    input.finish(Device::Mouse);
+    check(state.ink.empty(), "Delete Stroke must still hit an Eraser Whiteout endpoint");
+    state.undo();
+    check(state.ink.size() == 1, "Undo must restore the deleted Whiteout endpoint");
+}
+
 static void dedicatedHandPan() {
     CanvasState state;
     CanvasInput input(state);
@@ -395,6 +615,12 @@ int main() {
     try {
         pressureAndRelease();
         eraserAndPan();
+        eraserShiftAxisConstraint();
+        eraserShiftClickContinuesErasePath();
+        eraserShiftClickChecksLayerAndMode();
+        eraserShiftClickChecksPageAndLiveWhiteoutStroke();
+        whiteoutEraserSupportsShiftConstraintsAndConnections();
+        deleteStrokeStillHitsWhiteoutEndpoint();
         dedicatedHandPan();
         backlog();
         whiteoutAndPartialInput();

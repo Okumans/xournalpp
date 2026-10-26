@@ -2943,8 +2943,8 @@ public:
                 }
                 current->points.push_back(point);
             }
-            if ((current->brush.tool == Tool::Pen || current->brush.tool == Tool::Highlighter) &&
-                current->pluginReference == 0) {
+            if ((current->brush.tool == Tool::Pen || current->brush.tool == Tool::Highlighter ||
+                 current->brush.tool == Tool::Eraser) && current->pluginReference == 0) {
                 current->pluginReference = allocatePluginReference();
             }
             current->layerOrder = nextOriginOrder(current->page, current->originLayer);
