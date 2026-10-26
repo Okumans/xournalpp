@@ -117,8 +117,6 @@ These user-requested follow-ups remain:
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.
-- Fix the reported document-search highlight placement, which currently marks
-  the wrong location.
 - Investigate the reported mismatch between the PDF text-selection highlight
   and the blue selection frame.
 - Diagnose the intermittent page-raster worker failures reported as
