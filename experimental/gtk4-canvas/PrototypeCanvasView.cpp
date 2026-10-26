@@ -2,6 +2,13 @@
 
 namespace prototype::gtk4 {
 
+GtkWidget* Prototype::button(const char* icon, const char* tooltip, GCallback callback) {
+    auto* result = gtk_button_new_from_icon_name(icon);
+    gtk_widget_set_tooltip_text(result, tooltip);
+    g_signal_connect(result, "clicked", callback, this);
+    return result;
+}
+
 void Prototype::activate(GtkApplication* app) {
     AdwColorScheme colorScheme = ADW_COLOR_SCHEME_DEFAULT;
     if (options.explicitDark) {
@@ -677,7 +684,7 @@ void Prototype::activate(GtkApplication* app) {
     gtk_box_append(GTK_BOX(navigation), zoomLabel);
     gtk_box_append(GTK_BOX(toolbar), navigation);
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), toolbar);
-    searchBar = createSearchBar();
+    auto* searchBar = searchController.createWidget();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), searchBar);
     mainToolRailWidget = createMainToolRail();
     selectTool(importedConfig.settings.activeTool);

@@ -41,13 +41,13 @@
 #include "BehaviorDefaults.h"
 #include "CanvasImageActions.h"
 #include "CanvasInput.h"
-#include "CanvasSearch.h"
 #include "CanvasState.h"
 #include "ClipboardRenderer.h"
 #include "DocumentAutosave.h"
 #include "DocumentInk.h"
 #include "DocumentJob.h"
 #include "DocumentSession.h"
+#include "Gtk4SearchController.h"
 #include "ImageRenderer.h"
 #include "InkRasterCache.h"
 #include "InkRenderer.h"
@@ -141,14 +141,6 @@ struct SmartSelectPdfGesture {
     bool altPressed = false;
 };
 
-struct SearchMatch {
-    int page = 0;
-    double x0 = 0;
-    double y0 = 0;
-    double x1 = 0;
-    double y1 = 0;
-};
-
 enum class PdfTextAnnotation { Highlight, Underline, Strikethrough };
 
 struct PdfHighlightPreset {
@@ -170,7 +162,7 @@ inline prototype::PdfTextSelectionStyle pdfSelectionStyleForTool(Tool tool) {
                                              prototype::PdfTextSelectionStyle::Linear;
 }
 
-class Prototype {
+class Prototype: private SearchControllerHost {
 public:
     struct FloatingLayerMenuWidgets {
         GtkMenuButton* button = nullptr;
@@ -654,39 +646,39 @@ private:
 
     GtkWidget* button(const char* icon, const char* tooltip, GCallback callback);
 
-    GtkWidget* createSearchBar();
-
     void openSearchBar();
 
     void closeSearchBar();
 
-    void setSearchStatus(const std::string& text);
-
-    void appendPdfSearchMatches(int pageNumber, PopplerPage* page, const std::string& query,
-                                std::vector<SearchMatch>& matches);
-
-    void appendTextSearchMatches(const prototype::TextItem& item, const std::string& query,
-                                 std::vector<SearchMatch>& matches);
-
-    bool rebuildSearchMatches(std::string& error);
-
-    size_t searchMatchesOnPage(int page) const;
-
-    void updateSearchStatus();
-
-    void refreshSearchMatchesAndStatus();
-
     void searchTextChanged();
-
-    void ensureSearchMatchesFresh();
-
-    void searchMatchesFromEntry();
-
-    void scrollToSearchMatch(const SearchMatch& match);
 
     void searchNext();
 
     void searchPrevious();
+
+    void ensureSearchMatchesFresh();
+
+    bool canOpenSearchBar() const override;
+
+    int searchPageCount() const override;
+
+    prototype::CanvasState& searchCanvasState() override;
+
+    PopplerPage* pdfPageForSearch(int page) override;
+
+    PopplerPage* layerPdfPageForSearch(int page, size_t origin) override;
+
+    const void* searchDocumentIdentity() const override;
+
+    GtkWidget* searchCanvasWidget() const override;
+
+    void finishTextEditingForSearch() override;
+
+    void resetInputForSearch() override;
+
+    void focusSearchMatch(const SearchMatch& match) override;
+
+    void updateSearchCanvas() override;
 
     void syncSizeDropdown();
 
@@ -977,8 +969,6 @@ private:
 
     size_t totalCacheBytes() const;
 
-    void drawSearchMatches(cairo_t* cr, int page) const;
-
     void draw(cairo_t* cr, int width, int height);
 
     void capture(const std::string& name, GtkWidget* target = nullptr, bool captureTargetDirectly = false);
@@ -1133,9 +1123,6 @@ private:
     GtkWidget* heading = nullptr;
     GtkWidget* openButton = nullptr;
     GtkWidget* searchButton = nullptr;
-    GtkWidget* searchBar = nullptr;
-    GtkSearchEntry* searchEntry = nullptr;
-    GtkWidget* searchStatus = nullptr;
     GtkWidget* saveButton = nullptr;
     GtkWidget* saveAsButton = nullptr;
     GtkWidget* exportPdfButton = nullptr;
@@ -1159,6 +1146,7 @@ private:
     std::string smokeExternalVersion;
     CanvasState state;
     prototype::CanvasInput input{state};
+    Gtk4SearchController searchController;
     std::optional<size_t> selectedImageIndex;
     std::optional<ImageGesture> imageGesture;
     std::optional<Device> textSelectionOwner;
@@ -1169,13 +1157,6 @@ private:
     bool textDragHandled = false;
     std::optional<PdfTextSelectionState> pdfTextSelection;
     std::optional<double> pdfActionsObservedZoom;
-    std::vector<SearchMatch> searchMatches;
-    std::optional<size_t> activeSearchMatch;
-    std::string searchQuery;
-    int searchStartPage = 0;
-    size_t searchResultRevision = std::numeric_limits<size_t>::max();
-    int searchResultPageCount = -1;
-    const prototype::bridge::DocumentSession* searchResultNativeSession = nullptr;
     PopplerDocument* document = nullptr;
     PopplerDocument* pdfTextDocument = nullptr;
     std::string pdfTextDocumentPath;

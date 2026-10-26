@@ -158,28 +158,6 @@ bool Prototype::waitForCanvasRaster(int page, double scale, int timeoutMilliseco
 
 size_t Prototype::totalCacheBytes() const { return canvasRenderer.cacheBytes(); }
 
-void Prototype::drawSearchMatches(cairo_t* cr, int page) const {
-    for (size_t index = 0; index < searchMatches.size(); ++index) {
-        const auto& match = searchMatches[index];
-        if (match.page != page) {
-            continue;
-        }
-        const bool active = activeSearchMatch && *activeSearchMatch == index;
-        cairo_rectangle(cr, match.x0, match.y0, match.x1 - match.x0, match.y1 - match.y0);
-        if (active) {
-            cairo_set_source_rgba(cr, 1.0, 0.48, 0.12, 0.25);
-            cairo_fill_preserve(cr);
-            cairo_set_source_rgba(cr, 0.92, 0.28, 0.04, 0.95);
-        } else {
-            cairo_set_source_rgba(cr, 0.98, 0.78, 0.18, 0.22);
-            cairo_fill_preserve(cr);
-            cairo_set_source_rgba(cr, 0.84, 0.56, 0.02, 0.82);
-        }
-        cairo_set_line_width(cr, 1.0 / state.zoom);
-        cairo_stroke(cr);
-    }
-}
-
 void Prototype::draw(cairo_t* cr, int width, int height) {
     if (!fitted || (fitMode && (width != lastWidth || height != lastHeight)) ||
         (presentationMode && presentationFitPage != state.page)) {
@@ -462,7 +440,7 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
                 cairo_restore(cr);
             }
         }
-        drawSearchMatches(cr, i);
+        searchController.drawMatches(cr, i);
         cairo_restore(cr);
     }
     if (importedConfig.settings.highlightPosition && pointerPosition && pointerPosition->x >= 0 &&

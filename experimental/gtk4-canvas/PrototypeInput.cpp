@@ -416,8 +416,7 @@ void Prototype::connectInput() {
                 if (self->busy || self->choosingFile || self->messageDialog) {
                     return false;
                 }
-                if (key == GDK_KEY_Escape && self->searchBar &&
-                    gtk_search_bar_get_search_mode(GTK_SEARCH_BAR(self->searchBar))) {
+                if (key == GDK_KEY_Escape && self->searchController.isOpen()) {
                     self->closeSearchBar();
                     return true;
                 }

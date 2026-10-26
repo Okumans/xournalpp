@@ -4,6 +4,7 @@ namespace prototype::gtk4 {
 
 Prototype::Prototype(prototype::ApplicationOptions options):
         options(std::move(options)),
+        searchController(*this),
         thumbnailRenderer(this->options.rasterExecutable),
         canvasRenderer(this->options.rasterExecutable, 4, 1, 4) {
     preferencesConfigDir = !this->options.configDirectory.empty() ?

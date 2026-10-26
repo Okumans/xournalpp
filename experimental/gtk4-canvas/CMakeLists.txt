@@ -38,6 +38,7 @@ add_executable(
     PrototypeDocuments.cpp
     PrototypeFeatureVerification.cpp
     PrototypeFloatingToolbox.cpp
+    Gtk4SearchController.cpp
     PrototypeInput.cpp
     PrototypeLinks.cpp
     PrototypePdfTextSelection.cpp

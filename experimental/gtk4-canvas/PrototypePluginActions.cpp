@@ -621,7 +621,7 @@ bool Prototype::addTopLayerToEveryPageFromLayerActions(std::string& error) {
 
 bool Prototype::activatePluginAction(std::string_view action, std::string& error) {
     if (action == "search") {
-        if (!searchBar || busy || choosingFile || messageDialog || closed) {
+        if (!searchController.widget() || busy || choosingFile || messageDialog || closed) {
             error = "Search cannot open while the document is busy";
             return false;
         }

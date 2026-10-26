@@ -931,7 +931,8 @@ void Prototype::verifySidebarStartupIntegration() {
 }
 
 void Prototype::verifySearchIntegration() {
-    require(pageCount >= 2 && searchEntry && searchBar, "Search integration needs the two-page PDF and GTK search bar");
+    require(pageCount >= 2 && searchController.entry() && searchController.widget(),
+            "Search integration needs the two-page PDF and GTK search bar");
     const int originalPage = state.page;
     navigateToPage(0);
 
@@ -951,57 +952,60 @@ void Prototype::verifySearchIntegration() {
 
     require(pluginRuntime->invokeMenu("ToolShortcuts", 12),
             "ToolShortcuts Search did not open the GTK 4 document search bar");
-    require(gtk_search_bar_get_search_mode(GTK_SEARCH_BAR(searchBar)),
+    require(gtk_search_bar_get_search_mode(GTK_SEARCH_BAR(searchController.widget())),
             "ToolShortcuts Search left the GTK search bar closed");
     const auto mappedDeadline = g_get_monotonic_time() + 750000;
-    while ((!gtk_widget_get_mapped(searchBar) || gtk_widget_get_width(searchBar) <= 0 ||
-            gtk_widget_get_height(searchBar) <= 0) &&
+    while ((!gtk_widget_get_mapped(searchController.widget()) || gtk_widget_get_width(searchController.widget()) <= 0 ||
+            gtk_widget_get_height(searchController.widget()) <= 0) &&
            g_get_monotonic_time() < mappedDeadline) {
         g_main_context_iteration(nullptr, false);
         g_usleep(1000);
     }
-    require(gtk_widget_get_mapped(searchBar) && gtk_widget_get_width(searchBar) > 0 &&
-                    gtk_widget_get_height(searchBar) > 0,
+    require(gtk_widget_get_mapped(searchController.widget()) && gtk_widget_get_width(searchController.widget()) > 0 &&
+                    gtk_widget_get_height(searchController.widget()) > 0,
             "Document Search bar did not receive mapped space in the window");
 
-    gtk_editable_set_text(GTK_EDITABLE(searchEntry), "STRASSE");
+    gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), "STRASSE");
     searchTextChanged();
-    require(searchMatches.size() == 1 && searchMatches.front().page == 0 &&
-                    std::abs(searchMatches.front().x0 - sample.x) < 1.0,
+    require(searchController.matches().size() == 1 && searchController.matches().front().page == 0 &&
+                    std::abs(searchController.matches().front().x0 - sample.x) < 1.0,
             "Search did not case-fold editable rich text or map its UTF-8 match to canvas coordinates");
     searchNext();
-    require(activeSearchMatch == std::optional<size_t>{0} && state.page == 0,
+    require(searchController.activeMatch() == std::optional<size_t>{0} && state.page == 0,
             "Search Next did not select the native text match on the active page");
     const auto searchRevealDeadline = g_get_monotonic_time() + 350000;
     while (g_get_monotonic_time() < searchRevealDeadline) {
         g_main_context_iteration(nullptr, false);
         g_usleep(1000);
     }
-    require(gtk_widget_get_mapped(GTK_WIDGET(searchEntry)) && gtk_widget_get_height(GTK_WIDGET(searchEntry)) >= 24,
+    require(gtk_widget_get_mapped(GTK_WIDGET(searchController.entry())) &&
+                    gtk_widget_get_height(GTK_WIDGET(searchController.entry())) >= 24,
             "Document Search entry did not finish revealing in the GTK search bar");
     capture("search-native-text");
 
-    gtk_editable_set_text(GTK_EDITABLE(searchEntry), "xournal++");
+    gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), "xournal++");
     searchTextChanged();
-    require(!searchMatches.empty() &&
-                    std::any_of(searchMatches.begin(), searchMatches.end(),
+    require(!searchController.matches().empty() &&
+                    std::any_of(searchController.matches().begin(), searchController.matches().end(),
                                 [](const SearchMatch& match) { return match.page == 0 && match.x1 > match.x0; }),
             "Search did not find case-insensitive text in the original PDF background");
     searchNext();
-    require(activeSearchMatch && searchMatches[*activeSearchMatch].page == 0,
+    require(searchController.activeMatch() && searchController.matches()[*searchController.activeMatch()].page == 0,
             "Search Next did not navigate to a PDF text match");
 
-    gtk_editable_set_text(GTK_EDITABLE(searchEntry), "Page 2");
+    gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), "Page 2");
     searchTextChanged();
     searchNext();
-    require(activeSearchMatch && searchMatches[*activeSearchMatch].page == 1 && state.page == 1,
+    require(searchController.activeMatch() && searchController.matches()[*searchController.activeMatch()].page == 1 &&
+                    state.page == 1,
             "Search Next did not continue from the current page into a later PDF page");
     searchPrevious();
-    require(activeSearchMatch && searchMatches[*activeSearchMatch].page == 1,
+    require(searchController.activeMatch() && searchController.matches()[*searchController.activeMatch()].page == 1,
             "Search Previous did not wrap among document-wide results");
 
     closeSearchBar();
-    require(!gtk_search_bar_get_search_mode(GTK_SEARCH_BAR(searchBar)) && searchMatches.empty() && !activeSearchMatch,
+    require(!gtk_search_bar_get_search_mode(GTK_SEARCH_BAR(searchController.widget())) &&
+                    searchController.matches().empty() && !searchController.activeMatch(),
             "Closing search did not hide the bar and clear its result overlays");
     state.texts.pop_back();
     navigateToPage(originalPage);
