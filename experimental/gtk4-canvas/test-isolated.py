@@ -752,6 +752,43 @@ printf '%s\n' "$source" >> "$XOURNALPP_LATEX_EDITOR_MARKER"
     return report
 
 
+def verify_page_layout(args, evidence):
+    run_dir = evidence / "page-layout"
+    config_dir = evidence / "config"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    output = run(
+        [str(args.binary.resolve()), "--config-dir", str(config_dir), "--smoke-dir", str(run_dir),
+         "--verify-page-layout"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 page layout actions, Preferences, grid geometry, navigation and persistence"
+    if marker not in output:
+        raise RuntimeError("Page layout verification did not finish")
+
+    screenshots = [run_dir / "page-layout-grid.png", run_dir / "page-layout-preferences.png",
+                   run_dir / "page-layout-menu.png"]
+    for screenshot in screenshots:
+        if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+            raise RuntimeError(f"Missing page layout screenshot: {screenshot}")
+
+    preferences = config_dir / "gtk4-canvas.ini"
+    saved_preferences = preferences.read_text() if preferences.is_file() else ""
+    expected_layout = ("[Layout]", "columns=2", "fixed-rows=false", "vertical=true", "paired-pages=false",
+                       "paired-page-offset=1", "right-to-left=false", "bottom-to-top=false")
+    if not all(value in saved_preferences for value in expected_layout):
+        raise RuntimeError("Page Layout Preferences did not persist the edited GTK 4 layout settings")
+    report = {
+        "screenshots": [str(path) for path in screenshots],
+        "preferences": str(preferences),
+        "checks": ["row and column geometry", "paired page offset", "reading directions", "page hit testing",
+                   "Preferences controls", "menu action synchronization", "layout persistence"],
+        "rendering": "Private headless Wayland via Cage",
+    }
+    print("PASS: private GTK4 page layout menu, page grid, hit testing and preferences", flush=True)
+    return report
+
+
 def verify_text_clipboard(args, evidence):
     if not args.worker:
         raise RuntimeError("Text clipboard verification requires --worker")
@@ -1180,6 +1217,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.page_layout_only:
+        layout_evidence = verify_page_layout(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"page-layout": layout_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.latex_only:
         latex_evidence = verify_latex(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1481,6 +1525,7 @@ def main():
     parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--latex-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--clipboard-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--page-layout-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1571,6 +1616,8 @@ def main():
             command.append("--latex-only")
         if args.clipboard_only:
             command.append("--clipboard-only")
+        if args.page_layout_only:
+            command.append("--page-layout-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

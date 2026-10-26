@@ -73,6 +73,11 @@ target_compile_features(canvas-state-test PRIVATE cxx_std_20)
 target_compile_options(canvas-state-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME canvas-state COMMAND canvas-state-test)
 
+add_executable(canvas-page-layout-test CanvasPageLayoutTest.cpp)
+target_compile_features(canvas-page-layout-test PRIVATE cxx_std_20)
+target_compile_options(canvas-page-layout-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME canvas-page-layout COMMAND canvas-page-layout-test)
+
 add_executable(ink-renderer-test InkRendererTest.cpp)
 target_compile_features(ink-renderer-test PRIVATE cxx_std_20)
 target_compile_options(ink-renderer-test PRIVATE -Wall -Wextra -Wpedantic)

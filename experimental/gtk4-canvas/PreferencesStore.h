@@ -212,6 +212,20 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     preferences_detail::readInt(keyFile.get(), "Tool Fill", "highlighter-opacity", settings.highlighterFillOpacity,
                                 0, 255);
     detail(keyFile.get(), "General", "show-sidebar", settings.showSidebar);
+    int layoutColumns = static_cast<int>(settings.pageLayout.columns);
+    int layoutRows = static_cast<int>(settings.pageLayout.rows);
+    preferences_detail::readInt(keyFile.get(), "Layout", "columns", layoutColumns, 1, 4096);
+    preferences_detail::readInt(keyFile.get(), "Layout", "rows", layoutRows, 1, 4096);
+    settings.pageLayout.columns = static_cast<std::size_t>(layoutColumns);
+    settings.pageLayout.rows = static_cast<std::size_t>(layoutRows);
+    detail(keyFile.get(), "Layout", "fixed-rows", settings.pageLayout.fixedRows);
+    detail(keyFile.get(), "Layout", "paired-pages", settings.pageLayout.pairedPages);
+    preferences_detail::readInt(keyFile.get(), "Layout", "paired-page-offset", settings.pageLayout.pairedPageOffset,
+                                0, 100);
+    detail(keyFile.get(), "Layout", "vertical", settings.pageLayout.vertical);
+    detail(keyFile.get(), "Layout", "right-to-left", settings.pageLayout.rightToLeft);
+    detail(keyFile.get(), "Layout", "bottom-to-top", settings.pageLayout.bottomToTop);
+    detail(keyFile.get(), "Layout", "presentation-mode", settings.pageLayout.presentationMode);
     detail(keyFile.get(), "Input", "pressure-sensitivity", settings.pressureSensitivity);
     detail(keyFile.get(), "Pointer Highlight", "enabled", settings.highlightPosition);
     preferences_detail::readPackedColor(keyFile.get(), "fill-color", settings.cursorHighlightColor);
@@ -310,7 +324,9 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
         preferences_detail::pathToUtf8(settings.latexTemplatePath).size() > 4096 ||
         settings.latexGeneratorCommand.size() > 16384 || settings.latexSourceViewThemeId.size() > 128 ||
         settings.latexEditorFont.size() > 256 || settings.latexExternalEditorCommand.size() > 16384 ||
-        settings.latexTemporaryFileExtension.size() > 64) {
+        settings.latexTemporaryFileExtension.size() > 64 || settings.pageLayout.columns < 1 ||
+        settings.pageLayout.columns > 4096 || settings.pageLayout.rows < 1 || settings.pageLayout.rows > 4096 ||
+        settings.pageLayout.pairedPageOffset < 0 || settings.pageLayout.pairedPageOffset > 100) {
         errorMessage = "A GTK 4 preference is invalid or exceeds its size limit";
         return false;
     }
@@ -344,6 +360,15 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_integer(keyFile.get(), "Tool Fill", "highlighter-opacity", settings.highlighterFillOpacity);
     g_key_file_set_string(keyFile.get(), "Appearance", "theme", preferences_detail::themeName(settings.themeVariant));
     g_key_file_set_boolean(keyFile.get(), "General", "show-sidebar", settings.showSidebar);
+    g_key_file_set_integer(keyFile.get(), "Layout", "columns", static_cast<int>(settings.pageLayout.columns));
+    g_key_file_set_integer(keyFile.get(), "Layout", "rows", static_cast<int>(settings.pageLayout.rows));
+    g_key_file_set_boolean(keyFile.get(), "Layout", "fixed-rows", settings.pageLayout.fixedRows);
+    g_key_file_set_boolean(keyFile.get(), "Layout", "paired-pages", settings.pageLayout.pairedPages);
+    g_key_file_set_integer(keyFile.get(), "Layout", "paired-page-offset", settings.pageLayout.pairedPageOffset);
+    g_key_file_set_boolean(keyFile.get(), "Layout", "vertical", settings.pageLayout.vertical);
+    g_key_file_set_boolean(keyFile.get(), "Layout", "right-to-left", settings.pageLayout.rightToLeft);
+    g_key_file_set_boolean(keyFile.get(), "Layout", "bottom-to-top", settings.pageLayout.bottomToTop);
+    g_key_file_set_boolean(keyFile.get(), "Layout", "presentation-mode", settings.pageLayout.presentationMode);
     g_key_file_set_boolean(keyFile.get(), "Input", "pressure-sensitivity", settings.pressureSensitivity);
     g_key_file_set_boolean(keyFile.get(), "Pointer Highlight", "enabled", settings.highlightPosition);
     g_key_file_set_uint64(keyFile.get(), "Pointer Highlight", "fill-color", settings.cursorHighlightColor);
