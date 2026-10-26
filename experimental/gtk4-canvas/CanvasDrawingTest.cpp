@@ -93,6 +93,7 @@ static void inputAndStabilization() {
           "live Shift changes should constrain and commit one undoable rectangle");
     state.undo();
     check(state.ink.empty(), "geometric strokes should use normal canvas undo history");
+    input.setModifiers(false, false, false);
 
     state.drawingMode = DrawingMode::ShapeRecognizer;
     input.begin(Device::Mouse, {160, 100, std::nullopt});

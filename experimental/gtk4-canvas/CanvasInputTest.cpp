@@ -229,6 +229,168 @@ void importedPressureOverrides() {
           "Disabling pressureSensitivity must force constant-width stylus strokes");
 }
 
+static void shiftLineConstraintPersistsUntilRelease() {
+    CanvasState state;
+    CanvasInput input(state);
+    input.setModifiers(true, false, false);
+
+    input.begin(Device::Mouse, {100, 100, std::nullopt});
+    input.motion(Device::Mouse, {140, 104, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, Point{140, 104});
+    check(state.ink.size() == 1 && state.ink[0].points.back().y == 100,
+          "Shift movement must project onto the dominant horizontal axis");
+
+    input.begin(Device::Mouse, {160, 130, std::nullopt});
+    check(state.current && state.current->points.front().y == 100,
+          "the Shift axis must continue across released strokes while Shift remains held");
+    input.motion(Device::Mouse, {190, 150, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, Point{190, 150});
+    check(state.ink.size() == 2 && state.ink[1].points.back().y == 100,
+          "the held horizontal constraint must apply to the next stroke");
+
+    input.setModifiers(false, false, false);
+    input.begin(Device::Mouse, {200, 180, std::nullopt});
+    check(state.current && state.current->points.front().y == 180,
+          "releasing Shift must remove the saved axis before the next stroke");
+    input.motion(Device::Mouse, {220, 205, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, Point{220, 205});
+    check(state.ink.size() == 3 && state.ink[2].points.back().y == 205,
+          "drawing after Shift release must follow the raw pointer again");
+
+    input.begin(Device::Mouse, {250, 240, std::nullopt});
+    input.motion(Device::Mouse, {270, 240, std::nullopt});
+    input.setModifiers(true, false, false);
+    input.motion(Device::Mouse, {290, 260, std::nullopt});
+    check(state.current && state.current->points.back().y == 240,
+          "pressing Shift during a stroke must anchor to the last raw pointer position");
+    input.setModifiers(false, false, false);
+    input.motion(Device::Mouse, {300, 280, std::nullopt});
+    check(state.current && state.current->points.back().y == 280,
+          "releasing Shift during a stroke must immediately restore raw pointer movement");
+    input.finish(Device::Mouse);
+}
+
+static void shiftClickConnectsOnlyToCurrentEndpoint() {
+    CanvasState state;
+    CanvasInput input(state);
+    input.begin(Device::Mouse, {20, 30, std::nullopt});
+    input.motion(Device::Mouse, {60, 30, std::nullopt});
+    input.finish(Device::Mouse);
+    const Point endpoint = state.ink.back().points.back();
+
+    input.setModifiers(true, false, false);
+    input.begin(Device::Mouse, {100, 80, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, Point{101, 81});
+    check(state.ink.size() == 2 && state.ink.back().points.size() == 2 &&
+                  state.ink.back().points.front().x == endpoint.x && state.ink.back().points.front().y == endpoint.y &&
+                  state.ink.back().points.back().x == 101 && state.ink.back().points.back().y == 81,
+          "a same-page, same-layer Pen Shift-click must connect from the previous stroke endpoint");
+
+    input.begin(Device::Mouse, {120, 100, std::nullopt});
+    input.motion(Device::Mouse, {140, 100, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, Point{140, 100});
+    const Point draggedEndpoint = state.ink.back().points.back();
+    check(state.ink.size() == 3 && state.ink.back().points.front().x == 100 &&
+                  state.ink.back().points.front().y == 80,
+          "a Shift drag beyond the click threshold must remain an independent stroke");
+
+    state.brush.tool = Tool::Highlighter;
+    input.begin(Device::Mouse, {100, 120, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, Point{101, 121});
+    check(state.ink.size() == 4 && state.ink.back().brush.tool == Tool::Highlighter &&
+                  state.ink.back().points.front().x != draggedEndpoint.x,
+          "a Shift-click with a different drawing tool must start its own stroke");
+
+    CanvasState undoneState;
+    CanvasInput undoneInput(undoneState);
+    undoneInput.begin(Device::Mouse, {20, 30, std::nullopt});
+    undoneInput.motion(Device::Mouse, {60, 30, std::nullopt});
+    undoneInput.finish(Device::Mouse);
+    undoneState.undo();
+    undoneInput.setModifiers(true, false, false);
+    undoneInput.begin(Device::Mouse, {100, 80, std::nullopt});
+    undoneInput.finish(Device::Mouse, std::nullopt, Point{101, 81});
+    check(undoneState.ink.size() == 1 && undoneState.ink.back().points.front().x == 100,
+          "a Shift-click must not connect to an endpoint whose stroke was undone");
+}
+
+static void shiftClickRespectsPageAndLayer() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}});
+    CanvasInput input(state);
+    const auto firstStart = state.pageScreenPoint(0, 40, 40);
+    const auto firstEnd = state.pageScreenPoint(0, 100, 40);
+    input.begin(Device::Mouse, {firstStart.x, firstStart.y, std::nullopt});
+    input.motion(Device::Mouse, {firstEnd.x, firstEnd.y, std::nullopt});
+    input.finish(Device::Mouse);
+    input.setModifiers(true, false, false);
+
+    const auto otherPage = state.pageScreenPoint(1, 150, 70);
+    input.begin(Device::Mouse, {otherPage.x, otherPage.y, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, otherPage);
+    check(state.ink.size() == 2 && state.ink.back().page == 1 &&
+                  state.ink.back().points.front().x == 150 && state.ink.back().points.back().x == 150,
+          "a Shift-click on a different page must not connect to the prior page's stroke");
+
+    const auto pageOneStart = state.pageScreenPoint(0, 180, 120);
+    const auto pageOneRelease = state.pageScreenPoint(0, 181, 121);
+    state.selectLayer(0, 1);
+    input.begin(Device::Mouse, {pageOneStart.x, pageOneStart.y, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, pageOneRelease);
+    check(state.ink.size() == 3 && state.ink.back().points.front().x == 100 &&
+                  state.ink.back().points.back().x == 181,
+          "returning to a page must keep its own eligible Pen endpoint");
+
+    check(state.addLayerAboveCurrent(), "the test must create a second foreground layer");
+    const auto secondLayerStart = state.pageScreenPoint(0, 240, 160);
+    const auto secondLayerRelease = state.pageScreenPoint(0, 241, 161);
+    input.begin(Device::Mouse, {secondLayerStart.x, secondLayerStart.y, std::nullopt});
+    input.finish(Device::Mouse, std::nullopt, secondLayerRelease);
+    check(state.ink.size() == 4 && state.ink.back().layerId == 2 &&
+                  state.ink.back().points.size() == 2 && state.ink.back().points.front().x == 180 &&
+                  state.ink.back().points.back().x == 180,
+          "a Shift-click on a different layer must not connect to the prior layer's stroke");
+}
+
+static void shiftProjectionPrecedesStabilization() {
+    CanvasState state;
+    CanvasInput input(state);
+    StabilizerConfig config;
+    config.averaging = AveragingMethod::Arithmetic;
+    config.bufferSize = 4;
+    input.setStabilizerConfig(config);
+    input.setModifiers(true, false, false);
+    input.begin(Device::Mouse, {80, 80, std::nullopt});
+    input.motion(Device::Mouse, {110, 110, std::nullopt});
+    input.motion(Device::Mouse, {150, 95, std::nullopt});
+    check(state.current && std::all_of(state.current->points.begin(), state.current->points.end(),
+                                       [](const Point& point) { return point.y == 80; }),
+          "Shift projection must happen before the stabilizer so preview samples stay on the saved axis");
+    input.finish(Device::Mouse);
+    check(std::all_of(state.ink.back().points.begin(), state.ink.back().points.end(),
+                      [](const Point& point) { return point.y == 80; }),
+          "stabilized Shift strokes must remain on the saved axis after finalization");
+}
+
+static void pageInsertionDoesNotReuseAnotherPagesShiftAxis() {
+    CanvasState state;
+    state.setPages({{595, 842}, {595, 842}});
+    CanvasInput input(state);
+    input.setModifiers(true, false, false);
+    const auto first = state.pageScreenPoint(1, 100, 80);
+    const auto moved = state.pageScreenPoint(1, 130, 85);
+    input.begin(Device::Mouse, {first.x, first.y, std::nullopt});
+    input.motion(Device::Mouse, {moved.x, moved.y, std::nullopt});
+    input.finish(Device::Mouse);
+
+    state.insertPageAfter(0, {595, 842});
+    const auto insertedPage = state.pageScreenPoint(1, 90, 90);
+    input.begin(Device::Mouse, {insertedPage.x, insertedPage.y, std::nullopt});
+    check(state.current && state.current->points.front().x == 90 && state.current->points.front().y == 90,
+          "inserting a page must clear constraints keyed to the old page index");
+    input.finish(Device::Mouse);
+}
+
 int main() {
     try {
         pressureAndRelease();
@@ -238,8 +400,13 @@ int main() {
         whiteoutAndPartialInput();
         interPageGapPanAndCrossPageInput();
         importedPressureOverrides();
+        shiftLineConstraintPersistsUntilRelease();
+        shiftClickConnectsOnlyToCurrentEndpoint();
+        shiftClickRespectsPageAndLayer();
+        shiftProjectionPrecedesStabilization();
+        pageInsertionDoesNotReuseAnotherPagesShiftAxis();
         std::cout << "PASS: pressure/release, stylus eraser, grouped erase undo, temporary and dedicated hand pan, "
-                     "backlog flags/order\n";
+                     "backlog flags/order, Photoshop-style Shift stroke constraints\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

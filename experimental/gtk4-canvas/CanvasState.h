@@ -158,6 +158,7 @@ public:
     double pageHeight = 842;
     double pageGap = behavior::defaultPageGap;
     int page = 0;
+    std::uint64_t pageStructureGeneration = 0;
     std::vector<PageSize> pages;
     std::vector<PageLayers> pageLayers{PageLayers{}};
     Brush brush;
@@ -2225,6 +2226,7 @@ public:
         cancel();
         clearSelection();
         pages = std::move(nextPages);
+        ++pageStructureGeneration;
         if (pageLayers.size() > pages.size()) {
             pageLayers.resize(pages.size());
         }
@@ -2440,6 +2442,7 @@ public:
         cancel();
         clearLaserPointers();
         pages.insert(pages.begin() + insertedIndex, size);
+        ++pageStructureGeneration;
         pageLayers.insert(pageLayers.begin() + insertedIndex, PageLayers{});
         auto shiftStrokes = [&](std::vector<Ink>& strokes) {
             for (auto& stroke: strokes) {
@@ -2547,6 +2550,7 @@ public:
         clearLaserPointers();
         clearSelection();
         pages.erase(pages.begin() + removeIndex);
+        ++pageStructureGeneration;
         if (static_cast<size_t>(removeIndex) < pageLayers.size()) {
             pageLayers.erase(pageLayers.begin() + removeIndex);
         }
@@ -2893,6 +2897,10 @@ public:
                     current->points.front().pressure = std::max(point.pressure, *releasePressure);
                 }
                 current->points.push_back(point);
+            }
+            if ((current->brush.tool == Tool::Pen || current->brush.tool == Tool::Highlighter) &&
+                current->pluginReference == 0) {
+                current->pluginReference = allocatePluginReference();
             }
             current->layerOrder = nextOriginOrder(current->page, current->originLayer);
             Edit edit;

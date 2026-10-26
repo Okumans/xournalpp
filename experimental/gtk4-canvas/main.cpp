@@ -12146,7 +12146,7 @@ private:
             finishImageGesture();
             return;
         }
-        input.finish(device, releasePressure);
+        input.finish(device, releasePressure, releasePoint);
         if (!input.active()) {
             gtk_widget_set_cursor_from_name(canvas,
                                             input.spaceHeld || state.brush.tool == Tool::Hand ? "grab" : nullptr);
@@ -13416,6 +13416,49 @@ private:
         update();
     }
 
+    void smokeShiftStrokeConstraints(size_t expectedInkCount) {
+        selectTool(Tool::Pen);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
+                                   static_cast<guint>(prototype::DrawingMode::Freehand));
+        gboolean handled = false;
+        g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Shift_L, 0u, GdkModifierType(0), &handled);
+
+        const auto firstStart = state.pageScreenPoint(0, 120, 200);
+        g_signal_emit_by_name(mouse, "drag-begin", firstStart.x, firstStart.y);
+        g_signal_emit_by_name(mouse, "drag-update", 40.0 * state.zoom, -15.0 * state.zoom);
+        g_signal_emit_by_name(mouse, "drag-end", 40.0 * state.zoom, -15.0 * state.zoom);
+        require(state.ink.size() == expectedInkCount + 1 &&
+                        std::all_of(state.ink.back().points.begin(), state.ink.back().points.end(),
+                                    [](const prototype::Point& point) { return std::abs(point.y - 200) < 1e-6; }),
+                "GTK Shift input did not constrain freehand samples to the horizontal axis");
+
+        const auto secondStart = state.pageScreenPoint(0, 200, 300);
+        g_signal_emit_by_name(mouse, "drag-begin", secondStart.x, secondStart.y);
+        g_signal_emit_by_name(mouse, "drag-update", 40.0 * state.zoom, 20.0 * state.zoom);
+        g_signal_emit_by_name(mouse, "drag-end", 40.0 * state.zoom, 20.0 * state.zoom);
+        require(state.ink.size() == expectedInkCount + 2 &&
+                        std::all_of(state.ink.back().points.begin(), state.ink.back().points.end(),
+                                    [](const prototype::Point& point) { return std::abs(point.y - 200) < 1e-6; }),
+                "GTK Shift axis was not preserved across separate strokes");
+        const auto endpoint = state.ink.back().points.back();
+
+        const auto clickStart = state.pageScreenPoint(0, 260, 380);
+        g_signal_emit_by_name(mouse, "drag-begin", clickStart.x, clickStart.y);
+        g_signal_emit_by_name(mouse, "drag-end", 1.0, 1.0);
+        require(state.ink.size() == expectedInkCount + 3 && state.ink.back().points.size() == 2 &&
+                        state.ink.back().points.front().x == endpoint.x && state.ink.back().points.front().y == endpoint.y,
+                "GTK Shift-click did not connect from the preceding Pen endpoint");
+
+        g_signal_emit_by_name(keys, "key-released", GDK_KEY_Shift_L, 0u, GdkModifierType(0));
+        waitForNextPaint();
+        capture("shift-strokes");
+        state.undo();
+        state.undo();
+        state.undo();
+        update();
+        require(state.ink.size() == expectedInkCount, "Shift stroke smoke operations did not undo cleanly");
+    }
+
     void smokeDrawingTools() {
         const auto before = state.ink.size();
         selectTool(Tool::Pen);
@@ -13427,6 +13470,7 @@ private:
         require(gtk_widget_get_visible(palettePopover), "Drawing controls popover did not open");
         capture("drawing-controls");
         gtk_popover_popdown(GTK_POPOVER(palettePopover));
+        smokeShiftStrokeConstraints(before);
 
         gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
                                    static_cast<guint>(prototype::DrawingMode::Rectangle));
@@ -14667,7 +14711,8 @@ private:
                                             "PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO" &&
                                     std::string(gtk_editable_get_text(GTK_EDITABLE(
                                             control(PreferenceKey::FloatingToolboxRow2)))) ==
-                                            "ZOOM_SLIDER,DRAW_ELLIPSE",
+                                            "ZOOM_SLIDER,DRAW_ELLIPSE,FORMAT_ALIGN_LEFT,FORMAT_ALIGN_CENTER,"
+                                            "FORMAT_ALIGN_RIGHT,FORMAT_JUSTIFY",
                             "Preferences rows did not show the imported legacy floating toolbar layout");
                     require(adw_combo_row_get_selected(ADW_COMBO_ROW(control(PreferenceKey::StylusButtonOne))) ==
                                             static_cast<guint>(prototype::ButtonToolAction::Highlighter) &&
@@ -16154,6 +16199,12 @@ private:
                 }
                 gtk_widget_set_halign(contentView, GTK_ALIGN_CENTER);
                 gtk_widget_set_size_request(contentView, 520, -1);
+                auto* workspace = gtk_widget_get_parent(GTK_WIDGET(splitView));
+                auto* adaptive = workspace ? gtk_widget_get_parent(workspace) : nullptr;
+                if (adaptive) {
+                    gtk_widget_set_halign(adaptive, GTK_ALIGN_CENTER);
+                    gtk_widget_set_size_request(adaptive, 520, -1);
+                }
                 fitted = false;
                 update();
                 break;
