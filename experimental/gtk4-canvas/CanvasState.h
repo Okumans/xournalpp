@@ -2328,160 +2328,44 @@ public:
         return true;
     }
 
-    PageSize pageSize(int index) const {
-        if (pages.empty() || index < 0 || static_cast<size_t>(index) >= pages.size()) {
-            return {pageWidth, pageHeight};
-        }
-        return pages[static_cast<size_t>(index)];
-    }
+    PageSize pageSize(int index) const;
 
-    void selectActivePage(int target) {
-        if (!pages.empty()) {
-            page = std::clamp(target, 0, pageCount() - 1);
-            pageWidth = pages[static_cast<size_t>(page)].width;
-            pageHeight = pages[static_cast<size_t>(page)].height;
-        } else if (target >= 0) {
-            page = target;
-        }
-    }
+    void selectActivePage(int target);
 
-    void setPages(std::vector<PageSize> nextPages) {
-        cancel();
-        clearSelection();
-        pages = std::move(nextPages);
-        ++pageStructureGeneration;
-        if (pageLayers.size() > pages.size()) {
-            pageLayers.resize(pages.size());
-        }
-        while (pageLayers.size() < pages.size()) {
-            pageLayers.emplace_back();
-        }
-        if (!pages.empty()) {
-            selectActivePage(std::clamp(page, 0, pageCount() - 1));
-        }
-        rebuildPageLayout();
-    }
+    void setPages(std::vector<PageSize> nextPages);
 
-    void setLayoutSettings(const CanvasLayoutSettings& settings) {
-        layoutSettings = settings;
-        rebuildPageLayout();
-    }
+    void setLayoutSettings(const CanvasLayoutSettings& settings);
 
-    void rebuildPageLayout() {
-        pageLayout.configure(pages, layoutSettings, pageGap);
-    }
+    void rebuildPageLayout();
 
-    double layoutWidth() const {
-        if (pages.empty()) {
-            return pageWidth;
-        }
-        return pageLayout.layoutWidth();
-    }
+    double layoutWidth() const;
 
-    double layoutHeight() const {
-        if (pages.empty()) {
-            return pageHeight;
-        }
-        return pageLayout.layoutHeight();
-    }
+    double layoutHeight() const;
 
-    double pageLeft(int index) const {
-        if (pages.empty()) {
-            return 0.0;
-        }
-        return pageLayout.pageLeft(index, pages);
-    }
+    double pageLeft(int index) const;
 
-    double pageTop(int index) const {
-        return pageLayout.pageTop(index, pages);
-    }
+    double pageTop(int index) const;
 
     std::vector<int> visiblePageIndices(double viewportWidth, double viewportHeight, double marginX = 0,
-                                        double marginY = 0) const {
-        if (!std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 ||
-            viewportHeight <= 0 || !std::isfinite(marginX) || !std::isfinite(marginY) || marginX < 0 || marginY < 0 ||
-            !std::isfinite(zoom) || zoom <= 0 || !std::isfinite(offsetX) || !std::isfinite(offsetY)) {
-            return {};
-        }
-        const double left = (-marginX - offsetX) / zoom;
-        const double top = (-marginY - offsetY) / zoom;
-        const double right = (viewportWidth + marginX - offsetX) / zoom;
-        const double bottom = (viewportHeight + marginY - offsetY) / zoom;
-        if (pages.empty()) {
-            const auto size = pageSize(0);
-            if (left < size.width && right > 0 && top < size.height && bottom > 0) {
-                return {0};
-            }
-            return {};
-        }
-        return pageLayout.pagesIntersecting(left, top, right, bottom, pages);
-    }
+                                        double marginY = 0) const;
 
-    double activeEraserWidth() const { return brush.tool == Tool::Eraser ? brush.width : eraserWidth; }
+    double activeEraserWidth() const;
 
-    double steppedZoom(bool zoomIn, bool scroll) const {
-        return behavior::steppedZoom(zoom, zoomIn, scroll, zoomStep, scrollZoomStep);
-    }
+    double steppedZoom(bool zoomIn, bool scroll) const;
 
-    Point documentPoint(double x, double y, double pressure = 1) const {
-        return {(x - offsetX) / zoom, (y - offsetY) / zoom,
-                std::isfinite(pressure) ? std::max(minimumPressure, pressure) : 1.0};
-    }
+    Point documentPoint(double x, double y, double pressure = 1) const;
 
-    Point pageLocalPoint(int pageIndex, double x, double y, double pressure = 1) const {
-        const auto doc = documentPoint(x, y, pressure);
-        return {doc.x - pageLeft(pageIndex), doc.y - pageTop(pageIndex), doc.pressure};
-    }
+    Point pageLocalPoint(int pageIndex, double x, double y, double pressure = 1) const;
 
-    Point pageScreenPoint(int pageIndex, double localX, double localY, double pressure = 1) const {
-        return {offsetX + (pageLeft(pageIndex) + localX) * zoom, offsetY + (pageTop(pageIndex) + localY) * zoom,
-                pressure};
-    }
+    Point pageScreenPoint(int pageIndex, double localX, double localY, double pressure = 1) const;
 
-    bool contains(const Point& p) const {
-        return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= 0 && p.y >= 0 && p.x <= pageWidth &&
-               p.y <= pageHeight;
-    }
+    bool contains(const Point& p) const;
 
-    bool containsOnPage(int pageIndex, const Point& local) const {
-        const auto sz = pageSize(pageIndex);
-        return std::isfinite(local.x) && std::isfinite(local.y) && local.x >= 0 && local.y >= 0 &&
-               local.x <= sz.width && local.y <= sz.height;
-    }
+    bool containsOnPage(int pageIndex, const Point& local) const;
 
-    std::optional<PageHit> hitPage(double x, double y, double pressure = 1) const {
-        if (pages.empty()) {
-            const auto p = documentPoint(x, y, pressure);
-            if (contains(p)) {
-                return PageHit{page, p};
-            }
-            return std::nullopt;
-        }
-        const auto doc = documentPoint(x, y, pressure);
-        if (!std::isfinite(doc.x) || !std::isfinite(doc.y)) {
-            return std::nullopt;
-        }
-        const auto index = pageLayout.pageAt(doc.x, doc.y, pages);
-        if (!index) {
-            return std::nullopt;
-        }
-        return PageHit{*index, {doc.x - pageLeft(*index), doc.y - pageTop(*index), doc.pressure}};
-    }
+    std::optional<PageHit> hitPage(double x, double y, double pressure = 1) const;
 
-    std::optional<PageHit> hitSelectionHandle(double x, double y) const {
-        const auto bounds = selectionBox();
-        if (!bounds || bounds->page < 0 || bounds->page >= pageCount()) {
-            return std::nullopt;
-        }
-        const auto local = pageLocalPoint(bounds->page, x, y);
-        const double radius = 5 / std::max(0.1, zoom);
-        for (const auto& handle: selectionHandles()) {
-            if (std::hypot(handle.x - local.x, handle.y - local.y) <= radius) {
-                return PageHit{bounds->page, local};
-            }
-        }
-        return std::nullopt;
-    }
+    std::optional<PageHit> hitSelectionHandle(double x, double y) const;
 
     void fit(double width, double height) {
         cancel();
