@@ -662,6 +662,7 @@ public:
     }
 
     std::function<void(int)> backgroundChangedCallback;
+    std::function<void(const std::vector<std::string>&)> historyChangedCallback;
 
     bool setAllLayersVisible(int pageIndex, bool visible) {
         if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
@@ -2480,7 +2481,7 @@ public:
         }
     }
 
-    void insertPageAfter(int afterIndex, PageSize size) {
+    void insertPageAfter(int afterIndex, PageSize size, bool shiftHistory = true) {
         if (pages.empty()) {
             pages.push_back({pageWidth, pageHeight});
         }
@@ -2489,52 +2490,67 @@ public:
         }
         const int clamped = std::clamp(afterIndex, 0, pageCount() - 1);
         const int insertedIndex = clamped + 1;
-        cancel();
-        clearLaserPointers();
-        pages.insert(pages.begin() + insertedIndex, size);
-        ++pageStructureGeneration;
-        pageLayers.insert(pageLayers.begin() + insertedIndex, PageLayers{});
-        auto shiftStrokes = [&](std::vector<Ink>& strokes) {
-            for (auto& stroke: strokes) {
-                if (stroke.page >= insertedIndex) {
-                    ++stroke.page;
+        insertPageAt(insertedIndex, size, PageLayers{});
+        if (shiftHistory) {
+            for (auto& edit: undoStates) {
+                shiftEditPageIndices(edit, insertedIndex);
+            }
+            for (auto& edit: redoStates) {
+                shiftEditPageIndices(edit, insertedIndex);
+            }
+        }
+        selectActivePage(insertedIndex);
+    }
+
+    void recordPageInsertion(int pageIndex, int currentPageIndex = -1) {
+        if (pageIndex < 0 || pageIndex >= pageCount()) {
+            throw std::out_of_range("Inserted page is outside the document");
+        }
+        if (currentPageIndex < 0) {
+            currentPageIndex = pageIndex;
+        }
+        if (currentPageIndex < 0 || currentPageIndex >= pageCount()) {
+            throw std::out_of_range("Inserted page source is outside the document");
+        }
+        Edit edit;
+        edit.pageStructureChange = PageStructureChange{capturePage(currentPageIndex), true};
+        edit.pageStructureChange->page.pageIndex = pageIndex;
+        forEachPageObject(edit.pageStructureChange->page, [pageIndex](auto& object) { object.page = pageIndex; });
+        record(std::move(edit));
+    }
+
+    bool deletePageWithHistory(int removeIndex, std::string pageSnapshotPath) {
+        if (pageCount() <= 1 || removeIndex < 0 || removeIndex >= pageCount() || pageSnapshotPath.empty()) {
+            return false;
+        }
+        Edit edit;
+        auto snapshot = capturePage(removeIndex);
+        snapshot.sourceSnapshotPath = std::move(pageSnapshotPath);
+        edit.pageStructureChange = PageStructureChange{std::move(snapshot), false};
+        record(std::move(edit));
+        return deletePageAt(removeIndex, false);
+    }
+
+    bool nextUndoPageStructureChange(bool& pageExistsAfter, int& pageIndex, std::string& sourceSnapshotPath) const {
+        return readPageStructureChange(undoStates, pageExistsAfter, pageIndex, sourceSnapshotPath);
+    }
+
+    bool nextRedoPageStructureChange(bool& pageExistsAfter, int& pageIndex, std::string& sourceSnapshotPath) const {
+        return readPageStructureChange(redoStates, pageExistsAfter, pageIndex, sourceSnapshotPath);
+    }
+
+    std::vector<std::string> pageHistorySnapshotPaths() const {
+        std::vector<std::string> paths;
+        auto collect = [&paths](const std::vector<Edit>& edits) {
+            for (const auto& edit: edits) {
+                if (edit.pageStructureChange && !edit.pageStructureChange->page.sourceSnapshotPath.empty()) {
+                    paths.push_back(edit.pageStructureChange->page.sourceSnapshotPath);
                 }
             }
         };
-        shiftStrokes(ink);
-        shiftTexts(texts, insertedIndex);
-        shiftImages(images, insertedIndex);
-        for (auto& edit: undoStates) {
-            for (auto& change: edit.changes) {
-                shiftStrokes(change.before);
-                shiftStrokes(change.after);
-            }
-            for (auto& change: edit.textChanges) {
-                shiftTexts(change.before, insertedIndex);
-                shiftTexts(change.after, insertedIndex);
-            }
-            for (auto& change: edit.imageChanges) {
-                shiftImages(change.before, insertedIndex);
-                shiftImages(change.after, insertedIndex);
-            }
-            shiftLayerMutationPage(edit.layerMutation, insertedIndex);
-        }
-        for (auto& edit: redoStates) {
-            for (auto& change: edit.changes) {
-                shiftStrokes(change.before);
-                shiftStrokes(change.after);
-            }
-            for (auto& change: edit.textChanges) {
-                shiftTexts(change.before, insertedIndex);
-                shiftTexts(change.after, insertedIndex);
-            }
-            for (auto& change: edit.imageChanges) {
-                shiftImages(change.before, insertedIndex);
-                shiftImages(change.after, insertedIndex);
-            }
-            shiftLayerMutationPage(edit.layerMutation, insertedIndex);
-        }
-        selectActivePage(insertedIndex);
+        collect(undoStates);
+        collect(redoStates);
+        return paths;
     }
 
     bool replaceNextPageWithClone(int sourcePage, PageSize replacementSize) {
@@ -2592,7 +2608,7 @@ public:
         return true;
     }
 
-    bool deletePageAt(int removeIndex) {
+    bool deletePageAt(int removeIndex, bool clearHistory = true) {
         if (pageCount() <= 1 || removeIndex < 0 || removeIndex >= pageCount()) {
             return false;
         }
@@ -2622,9 +2638,12 @@ public:
                 --image.page;
             }
         }
-        undoStates.clear();
-        redoStates.clear();
-        ++nextRevision;
+        if (clearHistory) {
+            undoStates.clear();
+            redoStates.clear();
+            revisionBase = ++nextRevision;
+            notifyHistoryChanged();
+        }
         selectActivePage(std::min(removeIndex, pageCount() - 1));
         return true;
     }
@@ -3655,7 +3674,11 @@ public:
     void undo() {
         cancel();
         if (!undoStates.empty()) {
-            apply(undoStates.back(), false);
+            auto& edit = undoStates.back();
+            if (edit.pageStructureChange && edit.pageStructureChange->pageExistsAfter) {
+                refreshPageStructureSnapshot(*edit.pageStructureChange);
+            }
+            apply(edit, false);
             redoStates.push_back(std::move(undoStates.back()));
             undoStates.pop_back();
         }
@@ -3664,7 +3687,11 @@ public:
     void redo() {
         cancel();
         if (!redoStates.empty()) {
-            apply(redoStates.back(), true);
+            auto& edit = redoStates.back();
+            if (edit.pageStructureChange && !edit.pageStructureChange->pageExistsAfter) {
+                refreshPageStructureSnapshot(*edit.pageStructureChange);
+            }
+            apply(edit, true);
             undoStates.push_back(std::move(redoStates.back()));
             redoStates.pop_back();
         }
@@ -3817,6 +3844,21 @@ private:
         T value;
     };
 
+    struct PageSnapshot {
+        int pageIndex = 0;
+        PageSize size;
+        PageLayers layers;
+        std::vector<IndexedObject<Ink>> ink;
+        std::vector<IndexedObject<TextItem>> texts;
+        std::vector<IndexedObject<CanvasImage>> images;
+        std::string sourceSnapshotPath;
+    };
+
+    struct PageStructureChange {
+        PageSnapshot page;
+        bool pageExistsAfter = false;
+    };
+
     struct LayerMutation {
         int page = 0;
         PageLayers beforeLayers;
@@ -3843,6 +3885,7 @@ private:
         std::vector<ImageChange> imageChanges;
         std::optional<LayerMutation> layerMutation;
         std::optional<PageSizeChange> pageSizeChange;
+        std::optional<PageStructureChange> pageStructureChange;
         size_t revision = 0;
         std::optional<std::vector<size_t>> selectionBefore = std::nullopt;
         std::optional<std::vector<size_t>> selectionAfter = std::nullopt;
@@ -4016,6 +4059,138 @@ private:
         for (auto& indexed: mutation->afterImages) {
             ++indexed.value.page;
         }
+    }
+
+    static void shiftEditPageIndices(Edit& edit, int insertedIndex) {
+        auto shiftStroke = [insertedIndex](Ink& stroke) {
+            if (stroke.page >= insertedIndex) {
+                ++stroke.page;
+            }
+        };
+        auto shiftText = [insertedIndex](TextItem& text) {
+            if (text.page >= insertedIndex) {
+                ++text.page;
+            }
+        };
+        auto shiftImage = [insertedIndex](CanvasImage& image) {
+            if (image.page >= insertedIndex) {
+                ++image.page;
+            }
+        };
+        for (auto& change: edit.changes) {
+            std::for_each(change.before.begin(), change.before.end(), shiftStroke);
+            std::for_each(change.after.begin(), change.after.end(), shiftStroke);
+        }
+        for (auto& change: edit.textChanges) {
+            std::for_each(change.before.begin(), change.before.end(), shiftText);
+            std::for_each(change.after.begin(), change.after.end(), shiftText);
+        }
+        for (auto& change: edit.imageChanges) {
+            std::for_each(change.before.begin(), change.before.end(), shiftImage);
+            std::for_each(change.after.begin(), change.after.end(), shiftImage);
+        }
+        if (edit.pageSizeChange && edit.pageSizeChange->page >= insertedIndex) {
+            ++edit.pageSizeChange->page;
+        }
+        shiftLayerMutationPage(edit.layerMutation, insertedIndex);
+        if (edit.pageStructureChange) {
+            auto& snapshot = edit.pageStructureChange->page;
+            if (snapshot.pageIndex >= insertedIndex) {
+                ++snapshot.pageIndex;
+            }
+            for (auto& indexed: snapshot.ink) {
+                shiftStroke(indexed.value);
+            }
+            for (auto& indexed: snapshot.texts) {
+                shiftText(indexed.value);
+            }
+            for (auto& indexed: snapshot.images) {
+                shiftImage(indexed.value);
+            }
+        }
+    }
+
+    static void forEachPageObject(PageSnapshot& snapshot, const auto& callback) {
+        for (auto& indexed: snapshot.ink) {
+            callback(indexed.value);
+        }
+        for (auto& indexed: snapshot.texts) {
+            callback(indexed.value);
+        }
+        for (auto& indexed: snapshot.images) {
+            callback(indexed.value);
+        }
+    }
+
+    PageSnapshot capturePage(int pageIndex) const {
+        if (pageIndex < 0 || pageIndex >= pageCount() || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
+            throw std::out_of_range("Page snapshot is outside the document");
+        }
+        PageSnapshot snapshot;
+        snapshot.pageIndex = pageIndex;
+        snapshot.size = pages.at(static_cast<size_t>(pageIndex));
+        snapshot.layers = pageLayers.at(static_cast<size_t>(pageIndex));
+        for (size_t index = 0; index < ink.size(); ++index) {
+            if (ink[index].page == pageIndex) {
+                snapshot.ink.push_back({index, ink[index]});
+            }
+        }
+        for (size_t index = 0; index < texts.size(); ++index) {
+            if (texts[index].page == pageIndex) {
+                snapshot.texts.push_back({index, texts[index]});
+            }
+        }
+        for (size_t index = 0; index < images.size(); ++index) {
+            if (images[index].page == pageIndex) {
+                snapshot.images.push_back({index, images[index]});
+            }
+        }
+        return snapshot;
+    }
+
+    void refreshPageStructureSnapshot(PageStructureChange& change) const {
+        const auto sourceSnapshotPath = change.page.sourceSnapshotPath;
+        auto snapshot = capturePage(change.page.pageIndex);
+        snapshot.sourceSnapshotPath = sourceSnapshotPath;
+        change.page = std::move(snapshot);
+    }
+
+    static bool readPageStructureChange(const std::vector<Edit>& edits, bool& pageExistsAfter, int& pageIndex,
+                                        std::string& sourceSnapshotPath) {
+        if (edits.empty() || !edits.back().pageStructureChange) {
+            return false;
+        }
+        const auto& change = *edits.back().pageStructureChange;
+        pageExistsAfter = change.pageExistsAfter;
+        pageIndex = change.page.pageIndex;
+        sourceSnapshotPath = change.page.sourceSnapshotPath;
+        return true;
+    }
+
+    void insertPageAt(int pageIndex, PageSize size, const PageLayers& layers) {
+        pageIndex = std::clamp(pageIndex, 0, pageCount());
+        cancel();
+        clearLaserPointers();
+        pages.insert(pages.begin() + pageIndex, size);
+        ++pageStructureGeneration;
+        pageLayers.insert(pageLayers.begin() + pageIndex, layers);
+        for (auto& stroke: ink) {
+            if (stroke.page >= pageIndex) {
+                ++stroke.page;
+            }
+        }
+        shiftTexts(texts, pageIndex);
+        shiftImages(images, pageIndex);
+        selectActivePage(pageIndex);
+    }
+
+    void restorePageSnapshot(const PageSnapshot& snapshot) {
+        clearSelection();
+        insertPageAt(snapshot.pageIndex, snapshot.size, snapshot.layers);
+        restoreIndexedObjects(ink, snapshot.pageIndex, snapshot.ink);
+        restoreIndexedObjects(texts, snapshot.pageIndex, snapshot.texts);
+        restoreIndexedObjects(images, snapshot.pageIndex, snapshot.images);
+        selectActivePage(snapshot.pageIndex);
     }
 
     struct SelectionGesture {
@@ -4641,13 +4816,34 @@ private:
     }
 
     void record(Edit edit) {
+        const bool discardsPageSnapshot = std::any_of(redoStates.begin(), redoStates.end(), [](const Edit& entry) {
+            return entry.pageStructureChange && !entry.pageStructureChange->page.sourceSnapshotPath.empty();
+        });
         redoStates.clear();
         edit.revision = ++nextRevision;
         // Keep ink and text deltas, rather than a full document copy for each edit.
         undoStates.push_back(std::move(edit));
+        if (discardsPageSnapshot) {
+            notifyHistoryChanged();
+        }
+    }
+
+    void notifyHistoryChanged() const {
+        if (historyChangedCallback) {
+            historyChangedCallback(pageHistorySnapshotPaths());
+        }
     }
 
     void apply(const Edit& edit, bool forward) {
+        if (edit.pageStructureChange) {
+            const auto& change = *edit.pageStructureChange;
+            if (forward == change.pageExistsAfter) {
+                restorePageSnapshot(change.page);
+            } else {
+                static_cast<void>(deletePageAt(change.page.pageIndex, false));
+            }
+            return;
+        }
         std::optional<int> changedBackgroundPage;
         if (edit.pageSizeChange) {
             const auto& change = *edit.pageSizeChange;

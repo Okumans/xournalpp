@@ -36,6 +36,19 @@ def read_document_path(path):
     return value.decode("utf-8")
 
 
+def read_pdf_page_map(path):
+    lines = path.read_text().splitlines()
+    magic, count = lines[0].split()
+    assert magic == "XOURNALPP_GTK4_PDF_PAGES_V1" and len(lines) == int(count) + 1
+    return [int(value) for value in lines[1:]]
+
+
+def write_page_sizes(path, pages):
+    lines = [f"XOURNALPP_GTK4_PAGE_SIZES_V1 {len(pages)}"]
+    lines.extend(f"{page['width']} {page['height']}" for page in pages)
+    path.write_text("\n".join(lines) + "\n")
+
+
 def content(element):
     # Formatting whitespace between XML elements is not document content.
     return (element.tag, sorted(element.attrib.items()),
@@ -720,6 +733,39 @@ def main():
         labels_file = pdf_bg_open / "pdf-labels.dat"
         labels_header = labels_file.read_text().splitlines()[0].split()
         assert labels_header[0] == "XOURNALPP_GTK4_PDF_LABELS_V1" and int(labels_header[1]) >= 2
+        audio_folder = temporary / "layer-action-audio"
+        audio_cache = temporary / "layer-action-audio-cache"
+        audio_folder.mkdir()
+        audio_cache.mkdir()
+
+        # A deleted native page snapshot must restore its PDF background mapping and full native page data.
+        history_input_pages = json.loads(run("inspect", pdf_bg_open / "snapshot.xopp"))["pages"]
+        history_source_page = xml(pdf_bg_open / "snapshot.xopp").findall("page")[0]
+        history_sizes = temporary / "history-page-sizes.dat"
+        write_page_sizes(history_sizes, history_input_pages)
+        page_history = temporary / "page-history"
+        page_history.mkdir()
+        page_snapshot = page_history / "snapshot.xopp"
+        deleted_page = temporary / "page-history-deleted"
+        deleted_page.mkdir()
+        run("delete-page-history", pdf_bg_open / "snapshot.xopp", deleted_page / "snapshot.xopp",
+            deleted_page / "preview.pdf", "0", audio_folder, audio_cache, history_sizes, page_snapshot)
+        assert page_snapshot.is_file()
+        assert len(xml(page_snapshot).findall("page")) == 1
+        assert content(xml(page_snapshot).findall("page")[0]) == content(history_source_page)
+        assert read_pdf_page_map(deleted_page / "pdf-pages.dat") == [1]
+
+        restore_sizes = temporary / "history-page-restore-sizes.dat"
+        write_page_sizes(restore_sizes, history_input_pages[1:])
+        restored_page = temporary / "page-history-restored"
+        restored_page.mkdir()
+        run("restore-page", deleted_page / "snapshot.xopp", page_snapshot,
+            restored_page / "snapshot.xopp", restored_page / "preview.pdf", "0",
+            audio_folder, audio_cache, restore_sizes)
+        restored_pages = xml(restored_page / "snapshot.xopp").findall("page")
+        assert len(restored_pages) == 2
+        assert content(restored_pages[0]) == content(history_source_page)
+        assert read_pdf_page_map(restored_page / "pdf-pages.dat") == [0, 1]
 
         # LayerActions inspects the actual next-page PDF/background and annotation state,
         # then replaces an annotated target only after explicit confirmation.
@@ -749,10 +795,6 @@ def main():
         rejected_clone.mkdir()
         rejected_snapshot = rejected_clone / "snapshot.xopp"
         rejected_preview = rejected_clone / "preview.pdf"
-        audio_folder = temporary / "layer-action-audio"
-        audio_cache = temporary / "layer-action-audio-cache"
-        audio_folder.mkdir()
-        audio_cache.mkdir()
         clone_arguments = [annotated_args[0], rejected_snapshot, rejected_preview, "0", "1", "0",
                            *annotated_args[1:], audio_folder, audio_cache]
         run("layer-actions-clone-next", *clone_arguments, succeeds=False)
