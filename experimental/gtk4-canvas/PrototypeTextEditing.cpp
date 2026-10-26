@@ -177,10 +177,19 @@ void Prototype::selectTextWordAt(double x, double y) {
     if (!item) {
         return;
     }
+    const double determinant = item->xx * item->yy - item->xy * item->yx;
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1e-12) {
+        return;
+    }
     const auto origin = state.pageScreenPoint(item->page, item->x, item->y);
-    const auto left = std::max(0.0, std::floor(origin.x));
-    const auto top = std::max(0.0, std::floor(origin.y));
-    textEditor->selectWordAt(static_cast<int>(std::lround(x - left)), static_cast<int>(std::lround(y - top)));
+    const double dx = x - origin.x;
+    const double dy = y - origin.y;
+    const double localX = (item->yy * dx - item->xy * dy) / determinant;
+    const double localY = (-item->yx * dx + item->xx * dy) / determinant;
+    if (!std::isfinite(localX) || !std::isfinite(localY)) {
+        return;
+    }
+    textEditor->selectWordAt(static_cast<int>(std::lround(localX)), static_cast<int>(std::lround(localY)));
 }
 
 void Prototype::finishTextEditing() {
@@ -227,7 +236,8 @@ void Prototype::updateTextEditorPosition() {
     const double requestedWidth = contentWidth + 8.0;
     const int width = static_cast<int>(std::ceil(std::clamp(requestedWidth, 40.0, availableWidth)));
     const int height = static_cast<int>(std::ceil(std::max(24.0, naturalHeight * state.zoom + 6.0)));
-    textEditor->position(screen.x, screen.y, width, height);
+    textEditor->position(screen.x, screen.y, width, height, layoutItem.xx, layoutItem.yx, layoutItem.xy,
+                         layoutItem.yy);
 }
 
 void Prototype::applyTextFormat(prototype::TextEditorOverlay::Format format) {
