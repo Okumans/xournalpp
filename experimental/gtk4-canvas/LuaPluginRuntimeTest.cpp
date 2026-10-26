@@ -550,6 +550,36 @@ int main() {
                 "    tostring(app.getActionState('tool-color')))\n"
                 "end\n"
                 "function missing() app.getActionState('missing-action-state') end\n");
+    const auto toolInfoApiPlugin = root / "ToolInfoApiPlugin";
+    writePlugin(toolInfoApiPlugin,
+                "[about]\ndescription=Read tool information\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read tool info', callback='read'})\n"
+                "  app.registerUi({menu='Reject missing selection', callback='missingSelection'})\n"
+                "end\n"
+                "function read()\n"
+                "  local active = app.getToolInfo('active')\n"
+                "  local pen = app.getToolInfo('pen')\n"
+                "  local highlighter = app.getToolInfo('highlighter')\n"
+                "  local eraser = app.getToolInfo('eraser')\n"
+                "  local text = app.getToolInfo('text')\n"
+                "  local selection = app.getToolInfo('selection')\n"
+                "  assert(active.type == 'pen' and active.size.name == 'medium' and active.size.value == 1.41)\n"
+                "  assert(active.color == 0x123456 and active.drawingType == 'rectangle' and active.lineStyle == 'plain')\n"
+                "  assert(pen.size.name == 'fine' and pen.filled == false and pen.fillOpacity == 128)\n"
+                "  assert(highlighter.size.name == 'veryThick' and highlighter.color == 0xffff00)\n"
+                "  assert(eraser.type == 'whiteout' and eraser.size.name == 'thin' and eraser.size.value == 2.83)\n"
+                "  assert(text.font.name == 'Sans' and text.font.size == 12.5 and text.color == 0)\n"
+                "  assert(selection.rotation == 0.25 and selection.boundingBox.x == 10 and\n"
+                "    selection.boundingBox.y == 20 and selection.boundingBox.width == 30 and\n"
+                "    selection.boundingBox.height == 40)\n"
+                "  assert(selection.originalBounds.x == selection.snappedBounds.x)\n"
+                "  assert(next(app.getToolInfo('unknown')) == nil)\n"
+                "  app.changeActionState('tool-info-summary', active.type .. ':' .. pen.size.name .. ':' ..\n"
+                "    highlighter.size.name .. ':' .. eraser.type .. ':' .. text.font.name)\n"
+                "end\n"
+                "function missingSelection() app.getToolInfo('selection') end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -566,10 +596,10 @@ int main() {
                              pageLabelApiPlugin.string() + "," + colorPaletteApiPlugin.string() + "," +
                              currentLayerApiPlugin.string() + "," + scrollApiPlugin.string() + "," +
                              fontApiPlugin.string() + "," + refreshPageApiPlugin.string() + "," +
-                             actionStateApiPlugin.string(),
+                             actionStateApiPlugin.string() + "," + toolInfoApiPlugin.string(),
                      {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 27, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 28, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -620,6 +650,8 @@ int main() {
     std::string pageLabelResult;
     std::string paletteSummary;
     std::string actionStateSummary;
+    std::string toolInfoSummary;
+    bool pluginSelectionInfoAvailable = false;
     prototype::PluginFont currentPluginFont{systemFontFamilies.front(), 12.5};
     std::size_t fontChangeCount = 0;
     bool refreshPageAvailable = true;
@@ -670,12 +702,63 @@ int main() {
         }
         return true;
     };
+    host.getToolInfo = [&](std::string_view tool, prototype::PluginToolInfo& info, std::string& error) {
+        if (tool == "active") {
+            info.type = "pen";
+            info.sizeName = "medium";
+            info.sizeValue = 1.41;
+            info.color = 0x123456;
+            info.drawingType = "rectangle";
+            info.lineStyle = "plain";
+        } else if (tool == "pen") {
+            info.sizeName = "fine";
+            info.sizeValue = 0.85;
+            info.color = 0x123456;
+            info.drawingType = "rectangle";
+            info.lineStyle = "plain";
+            info.filled = false;
+            info.fillOpacity = 128;
+        } else if (tool == "highlighter") {
+            info.sizeName = "veryThick";
+            info.sizeValue = 30.0;
+            info.color = 0xffff00;
+            info.drawingType = "rectangle";
+            info.filled = false;
+            info.fillOpacity = 128;
+        } else if (tool == "eraser") {
+            info.eraserType = "whiteout";
+            info.sizeName = "thin";
+            info.sizeValue = 2.83;
+        } else if (tool == "text") {
+            info.fontName = "Sans";
+            info.fontSize = 12.5;
+            info.color = 0;
+        } else if (tool == "selection") {
+            if (!pluginSelectionInfoAvailable) {
+                error = "There is no selection!";
+                return false;
+            }
+            const prototype::PluginToolRectangle rectangle{10, 20, 30, 40};
+            info.boundingBox = rectangle;
+            info.originalBounds = rectangle;
+            info.snappedBounds = rectangle;
+            info.rotation = 0.25;
+        }
+        return true;
+    };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
         if (action == "action-state-summary") {
             if (!std::holds_alternative<std::string>(value)) {
                 return false;
             }
             actionStateSummary = std::get<std::string>(value);
+            return true;
+        }
+        if (action == "tool-info-summary") {
+            if (!std::holds_alternative<std::string>(value)) {
+                return false;
+            }
+            toolInfoSummary = std::get<std::string>(value);
             return true;
         }
         if (action == "palette-summary") {
@@ -1145,6 +1228,14 @@ int main() {
     require(!runtime.invokeMenu("ActionStateApiPlugin", 1) &&
                     runtime.findPlugin("ActionStateApiPlugin")->error.find("unavailable") != std::string::npos,
             "app.getActionState did not propagate an unavailable action error");
+    pluginSelectionInfoAvailable = true;
+    require(runtime.invokeMenu("ToolInfoApiPlugin", 0) &&
+                    toolInfoSummary == "pen:fine:veryThick:whiteout:Sans",
+            "app.getToolInfo did not return tool, size, color, drawing, eraser, and text settings");
+    pluginSelectionInfoAvailable = false;
+    require(!runtime.invokeMenu("ToolInfoApiPlugin", 1) &&
+                    runtime.findPlugin("ToolInfoApiPlugin")->error.find("There is no selection") != std::string::npos,
+            "app.getToolInfo did not propagate the missing-selection error");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1353,8 +1444,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 87 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 24,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 89 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 25,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

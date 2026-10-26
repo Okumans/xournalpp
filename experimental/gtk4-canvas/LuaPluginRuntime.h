@@ -183,11 +183,37 @@ struct PluginScrollPosition {
     double height = 0;
 };
 
+struct PluginToolRectangle {
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+};
+
+struct PluginToolInfo {
+    std::optional<std::string> type;
+    std::optional<std::string> sizeName;
+    std::optional<double> sizeValue;
+    std::optional<std::uint32_t> color;
+    std::optional<bool> filled;
+    std::optional<int> fillOpacity;
+    std::optional<std::string> drawingType;
+    std::optional<std::string> lineStyle;
+    std::optional<std::string> eraserType;
+    std::optional<std::string> fontName;
+    std::optional<double> fontSize;
+    std::optional<PluginToolRectangle> boundingBox;
+    std::optional<PluginToolRectangle> originalBounds;
+    std::optional<PluginToolRectangle> snappedBounds;
+    std::optional<double> rotation;
+};
+
 enum class PluginStrokeUndoPolicy { Grouped, Individual, None };
 
 struct PluginRuntimeHost {
     std::function<bool(const std::optional<std::string>&, std::uint32_t, bool, std::string&)> changeToolColor;
     std::function<bool(std::string_view, PluginActionValue&, std::string&)> getActionState;
+    std::function<bool(std::string_view, PluginToolInfo&, std::string&)> getToolInfo;
     std::function<bool(std::string_view, const PluginActionValue&, std::string&)> changeActionState;
     std::function<bool(std::string_view, std::string&)> activateAction;
     std::function<bool(std::string_view, std::string_view, std::string&)> changeCurrentPageBackground;
@@ -274,6 +300,7 @@ public:
     static int luaRegisterUi(lua_State* state);
     static int luaChangeToolColor(lua_State* state);
     static int luaGetActionState(lua_State* state);
+    static int luaGetToolInfo(lua_State* state);
     static int luaChangeActionState(lua_State* state);
     static int luaActivateAction(lua_State* state);
     static int luaChangeCurrentPageBackground(lua_State* state);
@@ -323,6 +350,7 @@ private:
     bool changeToolColor(const std::optional<std::string>& tool, std::uint32_t color, bool selection,
                          std::string& error);
     bool getActionState(std::string_view action, PluginActionValue& value, std::string& error) const;
+    bool getToolInfo(std::string_view tool, PluginToolInfo& info, std::string& error) const;
     bool changeActionState(std::string_view action, const PluginActionValue& value, std::string& error);
     bool activateAction(std::string_view action, std::string& error);
     bool changeCurrentPageBackground(std::string_view format, std::string_view config, std::string& error);
