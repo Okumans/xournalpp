@@ -70,6 +70,7 @@ void Prototype::replaceDocument(const std::shared_ptr<prototype::bridge::Documen
         cleanupActiveAutosave();
     }
     input.reset();
+    inkRasterCache.clear();
     imageGesture.reset();
     selectedImageIndex.reset();
     if (canvasPreloadSource) {

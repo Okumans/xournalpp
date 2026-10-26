@@ -203,7 +203,11 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
     if (visiblePages.empty()) {
         visiblePages.emplace(state.page, 0);
     }
-    prototype::setInkRasterVisiblePages(visiblePageIndices);
+    inkRasterCache.beginFrame(visiblePageIndices);
+    bool activeStrokeDrawn = false;
+    if (!state.current) {
+        inkRasterCache.clearActive();
+    }
     const auto retainedPages = [this, width, height](double margin) {
         std::map<int, double> pages;
         for (const int page: state.visiblePageIndices(width, height, width * margin, height * margin)) {
@@ -390,7 +394,7 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
                             }
 
                             const double rasterScale = zoomPreview ? deviceScale : state.zoom * deviceScale;
-                            if (prototype::drawCachedInkRun(cr, strokeRun, rasterScale)) {
+                            if (inkRasterCache.drawCommitted(cr, strokeRun, rasterScale)) {
                                 itemIndex = runEnd;
                                 continue;
                             }
@@ -406,7 +410,19 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
                 }
                 if (state.current && state.current->page == i && state.current->layerId == layerId &&
                     state.current->originLayer == origin) {
-                    prototype::drawInk(cr, *state.current);
+                    activeStrokeDrawn = true;
+                    const double visibleX0 = std::max(0.0, -sx0 / state.zoom);
+                    const double visibleY0 = std::max(0.0, -sy0 / state.zoom);
+                    const double visibleX1 = std::min(sz.width, (width - sx0) / state.zoom);
+                    const double visibleY1 = std::min(sz.height, (height - sy0) / state.zoom);
+                    const bool appendOnly = state.current->brush.tool == Tool::Eraser ||
+                                            state.drawingMode == prototype::DrawingMode::Freehand ||
+                                            state.drawingMode == prototype::DrawingMode::ShapeRecognizer;
+                    const double rasterScale = zoomPreview ? deviceScale : state.zoom * deviceScale;
+                    if (!inkRasterCache.drawActive(cr, *state.current, rasterScale, visibleX0, visibleY0, visibleX1,
+                                                   visibleY1, appendOnly)) {
+                        prototype::drawInk(cr, *state.current);
+                    }
                 }
             }
         }
@@ -443,6 +459,10 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
         searchController.drawMatches(cr, i);
         cairo_restore(cr);
     }
+    if (!activeStrokeDrawn) {
+        inkRasterCache.clearActive();
+    }
+    inkRasterCache.endFrame();
     if (importedConfig.settings.highlightPosition && pointerPosition && pointerPosition->x >= 0 &&
         pointerPosition->y >= 0 && pointerPosition->x < width && pointerPosition->y < height) {
         const auto fill = unpackArgbColor(importedConfig.settings.cursorHighlightColor);
