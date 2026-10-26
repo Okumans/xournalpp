@@ -68,6 +68,17 @@ int main() {
                                                                prototype::PdfTextSelectionStyle::Rectangle);
         require(cairo_region_num_rectangles(preview.get()) > 0, "Rectangular drag preview is empty");
 
+        const PopplerRectangle fractionalArea{30.1, 35.2, 10.25, 20.75};
+        const auto fractionalPreview = prototype::pdfTextSelectionPreview(
+                page, fractionalArea, prototype::PdfTextSelectionStyle::Rectangle);
+        cairo_rectangle_int_t previewBounds{};
+        cairo_region_get_extents(fractionalPreview.get(), &previewBounds);
+        const auto frameBounds = prototype::pdf_text_selection_detail::cairoRect(fractionalArea);
+        require(frameBounds.x == 10 && frameBounds.y == 20 && frameBounds.width == 21 && frameBounds.height == 16 &&
+                        previewBounds.x == frameBounds.x && previewBounds.y == frameBounds.y &&
+                        previewBounds.width == frameBounds.width && previewBounds.height == frameBounds.height,
+                "Rectangular PDF selection frame does not match the outward-rounded preview region");
+
         PopplerRectangle wordBounds{firstGlyph.x1 - 1, firstGlyph.y1 - 1, firstGlyph.x2 + 1, firstGlyph.y2 + 1};
         auto word = prototype::selectPdfText(page, wordBounds, prototype::PdfTextSelectionStyle::Word);
         require(!word.text.empty() && !word.textRects.empty() && cairo_region_num_rectangles(word.region.get()) > 0,

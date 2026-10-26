@@ -498,10 +498,10 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
                 cairo_fill(cr);
                 if (pdfTextSelection->dragging && pdfTextSelection->tool == Tool::SelectPdfTextRect) {
                     const auto& bounds = pdfTextSelection->bounds;
+                    const auto frame = prototype::pdf_text_selection_detail::cairoRect(bounds);
                     cairo_set_source_rgba(cr, 0.16, 0.39, 0.68, 0.95);
                     cairo_set_line_width(cr, 1.0 / state.zoom);
-                    cairo_rectangle(cr, std::min(bounds.x1, bounds.x2), std::min(bounds.y1, bounds.y2),
-                                    std::abs(bounds.x2 - bounds.x1), std::abs(bounds.y2 - bounds.y1));
+                    cairo_rectangle(cr, frame.x, frame.y, frame.width, frame.height);
                     cairo_stroke(cr);
                 }
                 cairo_restore(cr);

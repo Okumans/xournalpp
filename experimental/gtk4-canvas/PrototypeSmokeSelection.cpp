@@ -871,6 +871,34 @@ gboolean Prototype::smokePdfTextToolbar() {
                             !gtk_popover_get_autohide(pdfActionsPopover),
                     "PDF text selection did not show its persistent action toolbar");
             capture("pdf-text-toolbar-placement");
+
+            const auto& selectedRect = pdfTextSelection->textRects.front();
+            const double left = std::min(selectedRect.x1, selectedRect.x2);
+            const double top = std::min(selectedRect.y1, selectedRect.y2);
+            const double right = std::max(selectedRect.x1, selectedRect.x2);
+            const double bottom = std::max(selectedRect.y1, selectedRect.y2);
+            const auto start = state.pageScreenPoint(pdfTextSelection->page, left - 4.25, top - 4.25);
+            const auto end = state.pageScreenPoint(pdfTextSelection->page, right + 4.25, bottom + 4.25);
+            activateSelection(Tool::SelectPdfTextRect);
+            hidePdfActionsPreservingSelection();
+            g_signal_emit_by_name(mouse, "drag-begin", start.x, start.y);
+            g_signal_emit_by_name(mouse, "drag-update", end.x - start.x, end.y - start.y);
+            require(pdfTextSelection && pdfTextSelection->dragging &&
+                            state.brush.tool == Tool::SelectPdfTextRect &&
+                            pdfTextSelection->tool == Tool::SelectPdfTextRect &&
+                            pdfTextSelection->style == prototype::PdfTextSelectionStyle::Rectangle &&
+                            pdfTextSelection->region,
+                    "Rectangular PDF selection did not expose its active preview region");
+            cairo_rectangle_int_t previewBounds{};
+            cairo_region_get_extents(pdfTextSelection->region.get(), &previewBounds);
+            const auto frameBounds = prototype::pdf_text_selection_detail::cairoRect(pdfTextSelection->bounds);
+            require(previewBounds.x == frameBounds.x && previewBounds.y == frameBounds.y &&
+                            previewBounds.width == frameBounds.width && previewBounds.height == frameBounds.height,
+                    "Rectangular PDF selection frame diverged from its shaded preview");
+            capture("pdf-text-rectangle-preview");
+            g_signal_emit_by_name(mouse, "drag-end", end.x - start.x, end.y - start.y);
+            require(pdfTextSelection && pdfTextSelection->finalized && !pdfTextSelection->text.empty(),
+                    "Rectangular PDF selection preview did not finalize selectable text");
             break;
         }
         case 1: {

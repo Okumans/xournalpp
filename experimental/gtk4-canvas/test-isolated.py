@@ -1299,7 +1299,7 @@ def verify_pdf_text_toolbar(args, evidence):
         raise RuntimeError("GTK PDF text toolbar verification did not finish")
 
     screenshots = [output / f"{name}.png" for name in
-                   ("pdf-text-toolbar-placement", "pdf-text-toolbar-reopened")]
+                   ("pdf-text-toolbar-placement", "pdf-text-rectangle-preview", "pdf-text-toolbar-reopened")]
     for screenshot in screenshots:
         if not screenshot.is_file() or screenshot.stat().st_size < 1000:
             raise RuntimeError(f"Missing PDF text toolbar screenshot: {screenshot}")
