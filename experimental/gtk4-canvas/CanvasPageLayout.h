@@ -177,6 +177,52 @@ public:
         return page;
     }
 
+    template <typename PageSizes>
+    std::vector<int> pagesIntersecting(double left, double top, double right, double bottom,
+                                       const PageSizes& pageSizes) const {
+        std::vector<int> result;
+        if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right) || !std::isfinite(bottom) ||
+            right <= left || bottom <= top || pageSizes.size() != positions.size() || columns == 0 || rows == 0) {
+            return result;
+        }
+
+        const auto firstIntersectingCell = [](double start, const std::vector<double>& starts,
+                                              const std::vector<double>& extents) {
+            std::size_t low = 0;
+            std::size_t high = starts.size();
+            while (low < high) {
+                const std::size_t middle = low + (high - low) / 2;
+                if (starts[middle] + extents[middle] <= start) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            return low;
+        };
+
+        const std::size_t firstColumn = firstIntersectingCell(left, columnStarts, columnWidths);
+        const std::size_t firstRow = firstIntersectingCell(top, rowStarts, rowHeights);
+        for (std::size_t row = firstRow; row < rows && rowStarts[row] < bottom; ++row) {
+            for (std::size_t column = firstColumn;
+                 column < columns && columnStarts[column] < right; ++column) {
+                const int page = pageByCell[row * columns + column];
+                if (page < 0 || static_cast<std::size_t>(page) >= pageSizes.size()) {
+                    continue;
+                }
+                const double pageX = pageLeft(page, pageSizes);
+                const double pageY = pageTop(page, pageSizes);
+                const auto& size = pageSizes[static_cast<std::size_t>(page)];
+                if (pageX + size.width <= left || pageY + size.height <= top || pageX >= right ||
+                    pageY >= bottom) {
+                    continue;
+                }
+                result.push_back(page);
+            }
+        }
+        return result;
+    }
+
 private:
     static std::size_t saturatedAdd(std::size_t left, std::size_t right) {
         const auto maximum = static_cast<std::size_t>(-1);
