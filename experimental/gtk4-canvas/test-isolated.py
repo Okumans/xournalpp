@@ -1606,7 +1606,7 @@ def inside(args):
         screenshots = ("initial", "ink", "tools", "shift-strokes", "eraser-shift", "eraser-split", "eraser-whiteout", "zoom", "drawing-controls",
                        "shape-tools", "shape-recognized", "spline-tools", "narrow", "sidebar")
         if args.worker:
-            screenshots += ("text-editor", "text-editor-caret", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
+            screenshots += ("text-editor", "text-editor-initial", "text-editor-caret", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",

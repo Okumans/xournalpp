@@ -41,17 +41,20 @@ void Prototype::capture(const std::string& name, GtkWidget* target, bool capture
     // fresh canvas snapshot so smoke captures include the state being tested.
     const bool overlayDialogVisible =
             messageDialog || (preferencesDialog && gtk_widget_get_visible(GTK_WIDGET(preferencesDialog)));
-    if (!target && canvas && !overlayDialogVisible) {
+    if (!target && canvasOverlay && !overlayDialogVisible) {
         graphene_rect_t canvasBounds;
-        if (gtk_widget_compute_bounds(canvas, window, &canvasBounds)) {
-            auto* canvasPaintable = gtk_widget_paintable_new(canvas);
+        if (gtk_widget_compute_bounds(canvasOverlay, window, &canvasBounds)) {
+            // Refresh the complete canvas stack. Snapshotting only the drawing
+            // area here paints over GtkOverlay children such as the inline
+            // text editor, hiding the very UI the smoke is meant to capture.
+            auto* canvasOverlayPaintable = gtk_widget_paintable_new(canvasOverlay);
             const graphene_point_t offset{canvasBounds.origin.x, canvasBounds.origin.y};
             gtk_snapshot_save(snapshot);
             gtk_snapshot_translate(snapshot, &offset);
-            gdk_paintable_snapshot(GDK_PAINTABLE(canvasPaintable), GDK_SNAPSHOT(snapshot), gtk_widget_get_width(canvas),
-                                   gtk_widget_get_height(canvas));
+            gdk_paintable_snapshot(GDK_PAINTABLE(canvasOverlayPaintable), GDK_SNAPSHOT(snapshot),
+                                   gtk_widget_get_width(canvasOverlay), gtk_widget_get_height(canvasOverlay));
             gtk_snapshot_restore(snapshot);
-            g_object_unref(canvasPaintable);
+            g_object_unref(canvasOverlayPaintable);
         }
     }
     // Wayland GtkPopover renders into a child popup surface; composite it when open.
@@ -508,8 +511,15 @@ gboolean Prototype::smoke() {
                 gdouble activeCursorAspectRatio = 0;
                 g_object_get(textSettings, "gtk-cursor-aspect-ratio", &activeCursorAspectRatio, nullptr);
                 require(smokeTextEditorInitialWidth >= 40 && smokeTextEditorInitialWidth <= 64 &&
-                                initialEditorHeight >= 24 && activeCursorAspectRatio >= 0.3,
+                                initialEditorHeight >= 24 && activeCursorAspectRatio >= 0.5,
                         "A new text editor did not start compact with a visible caret");
+                waitForNextWindowFrame();
+                const int allocatedEditorWidth = gtk_widget_get_width(textEditor->widget());
+                capture("text-editor-initial");
+                if (allocatedEditorWidth < 32 || allocatedEditorWidth > 64) {
+                    throw std::runtime_error("A new text editor allocated " + std::to_string(allocatedEditorWidth) +
+                                             " px instead of its compact initial width");
+                }
                 auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
                 gtk_text_buffer_set_text(buffer, "GTK rich π", -1);
                 int liveEditorWidth = 0;
@@ -556,7 +566,7 @@ gboolean Prototype::smoke() {
             g_object_get(gtk_widget_get_settings(textEditor->widget()), "gtk-cursor-aspect-ratio",
                          &activeCursorAspectRatio, nullptr);
             require(requestedWidth == expectedWidth && requestedHeight == expectedHeight &&
-                            requestedWidth > smokeTextEditorInitialWidth && activeCursorAspectRatio >= 0.3,
+                            requestedWidth > smokeTextEditorInitialWidth && activeCursorAspectRatio >= 0.5,
                     "Inline text editor geometry or active caret sizing does not match the live Pango layout");
             capture("text-editor");
             auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
@@ -564,7 +574,12 @@ gboolean Prototype::smoke() {
             gtk_text_buffer_get_end_iter(buffer, &caret);
             gtk_text_buffer_place_cursor(buffer, &caret);
             gtk_widget_grab_focus(textEditor->widget());
+            auto* cursorSettings = gtk_widget_get_settings(textEditor->widget());
+            gboolean cursorBlinkBeforeCapture = true;
+            g_object_get(cursorSettings, "gtk-cursor-blink", &cursorBlinkBeforeCapture, nullptr);
+            g_object_set(cursorSettings, "gtk-cursor-blink", FALSE, nullptr);
             capture("text-editor-caret", textEditor->widget(), true);
+            g_object_set(cursorSettings, "gtk-cursor-blink", cursorBlinkBeforeCapture, nullptr);
             const auto newTextIndex = state.texts.size();
             finishTextEditing();
             gdouble restoredCursorAspectRatio = 0;

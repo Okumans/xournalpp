@@ -651,7 +651,7 @@ private:
     std::function<void()> layoutChangedCallback;
     GtkSettings* cursorSettings = nullptr;
     std::optional<double> cursorAspectRatioBeforeEdit;
-    static constexpr double editingCursorAspectRatio = 0.3;
+    static constexpr double editingCursorAspectRatio = 0.5;
     int positionedLeft = -1;
     int positionedTop = -1;
     int positionedWidth = -1;
