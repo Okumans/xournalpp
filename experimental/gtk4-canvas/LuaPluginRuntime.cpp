@@ -439,6 +439,7 @@ int luaOpenApp(lua_State* state) {
     static const luaL_Reg functions[] = {
             {"registerUi", LuaPluginRuntime::luaRegisterUi},
             {"changeToolColor", LuaPluginRuntime::luaChangeToolColor},
+            {"getActionState", LuaPluginRuntime::luaGetActionState},
             {"changeActionState", LuaPluginRuntime::luaChangeActionState},
             {"activateAction", LuaPluginRuntime::luaActivateAction},
             {"changeCurrentPageBackground", LuaPluginRuntime::luaChangeCurrentPageBackground},
@@ -972,6 +973,14 @@ bool LuaPluginRuntime::changeToolColor(const std::optional<std::string>& tool, s
     return host.changeToolColor(tool, color, selection, error);
 }
 
+bool LuaPluginRuntime::getActionState(std::string_view action, PluginActionValue& value, std::string& error) const {
+    if (!host.getActionState) {
+        error = "Action state queries are unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.getActionState(action, value, error);
+}
+
 bool LuaPluginRuntime::changeActionState(std::string_view action, const PluginActionValue& value, std::string& error) {
     if (!host.changeActionState) {
         error = "Action state changes are unavailable in this GTK 4 host";
@@ -1485,6 +1494,33 @@ int LuaPluginRuntime::luaChangeToolColor(lua_State* state) {
         return lua_error(state);
     }
     return 0;
+}
+
+int LuaPluginRuntime::luaGetActionState(lua_State* state) {
+    const char* action = luaL_checkstring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    PluginActionValue value;
+    std::string error;
+    if (!plugin->runtime->getActionState(action, value, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Reading action state failed" : error.c_str());
+    }
+
+    if (std::holds_alternative<std::monostate>(value)) {
+        lua_pushnil(state);
+    } else if (const auto* boolean = std::get_if<bool>(&value)) {
+        lua_pushboolean(state, *boolean);
+    } else if (const auto* integer = std::get_if<std::int64_t>(&value)) {
+        lua_pushinteger(state, static_cast<lua_Integer>(*integer));
+    } else if (const auto* number = std::get_if<double>(&value)) {
+        lua_pushnumber(state, *number);
+    } else if (const auto* text = std::get_if<std::string>(&value)) {
+        lua_pushlstring(state, text->data(), text->size());
+    }
+    return 1;
 }
 
 int LuaPluginRuntime::luaChangeActionState(lua_State* state) {

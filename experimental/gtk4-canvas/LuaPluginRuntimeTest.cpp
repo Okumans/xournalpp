@@ -518,6 +518,26 @@ int main() {
                 "end\n"
                 "function refresh() assert(app.refreshPage() == nil) end\n"
                 "function missingPage() app.refreshPage() end\n");
+    const auto actionStateApiPlugin = root / "ActionStateApiPlugin";
+    writePlugin(actionStateApiPlugin,
+                "[about]\ndescription=Read supported action state\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Read action states', callback='read'})\n"
+                "  app.registerUi({menu='Reject unavailable action state', callback='missing'})\n"
+                "end\n"
+                "function read()\n"
+                "  assert(app.getActionState('select-tool') == app.C.Tool_pen)\n"
+                "  assert(app.getActionState('zoom') == 1.25)\n"
+                "  assert(app.getActionState('grid-snapping') == true)\n"
+                "  assert(app.getActionState('position-highlighting') == false)\n"
+                "  assert(app.getActionState('tool-color') == 0xff123456)\n"
+                "  app.changeActionState('action-state-summary',\n"
+                "    tostring(app.getActionState('select-tool')) .. ':' ..\n"
+                "    tostring(app.getActionState('zoom')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-color')))\n"
+                "end\n"
+                "function missing() app.getActionState('missing-action-state') end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -533,10 +553,11 @@ int main() {
                              folderApiPlugin.string() + "," + currentPageApiPlugin.string() + "," +
                              pageLabelApiPlugin.string() + "," + colorPaletteApiPlugin.string() + "," +
                              currentLayerApiPlugin.string() + "," + scrollApiPlugin.string() + "," +
-                             fontApiPlugin.string() + "," + refreshPageApiPlugin.string(),
+                             fontApiPlugin.string() + "," + refreshPageApiPlugin.string() + "," +
+                             actionStateApiPlugin.string(),
                      {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 26, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 27, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -586,6 +607,7 @@ int main() {
     std::string pluginFolderPaths;
     std::string pageLabelResult;
     std::string paletteSummary;
+    std::string actionStateSummary;
     prototype::PluginFont currentPluginFont{systemFontFamilies.front(), 12.5};
     std::size_t fontChangeCount = 0;
     bool refreshPageAvailable = true;
@@ -607,7 +629,31 @@ int main() {
         changedSelection = selection;
         return true;
     };
+    host.getActionState = [](std::string_view action, prototype::PluginActionValue& value, std::string& error) {
+        if (action == "select-tool") {
+            value = std::int64_t{1};
+        } else if (action == "zoom") {
+            value = 1.25;
+        } else if (action == "grid-snapping") {
+            value = true;
+        } else if (action == "position-highlighting") {
+            value = false;
+        } else if (action == "tool-color") {
+            value = std::int64_t{0xff123456U};
+        } else {
+            error = "Action state is unavailable in this GTK 4 host: " + std::string(action);
+            return false;
+        }
+        return true;
+    };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
+        if (action == "action-state-summary") {
+            if (!std::holds_alternative<std::string>(value)) {
+                return false;
+            }
+            actionStateSummary = std::get<std::string>(value);
+            return true;
+        }
         if (action == "palette-summary") {
             if (!std::holds_alternative<std::string>(value)) {
                 return false;
@@ -1069,6 +1115,11 @@ int main() {
                             "Called applib_refreshPage, but there is no current page.") != std::string::npos,
             "app.refreshPage did not propagate the missing-page error");
     refreshPageAvailable = true;
+    require(runtime.invokeMenu("ActionStateApiPlugin", 0) && actionStateSummary == "1:1.25:4279383126",
+            "app.getActionState did not preserve boolean, integer, and numeric action-state values");
+    require(!runtime.invokeMenu("ActionStateApiPlugin", 1) &&
+                    runtime.findPlugin("ActionStateApiPlugin")->error.find("unavailable") != std::string::npos,
+            "app.getActionState did not propagate an unavailable action error");
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1277,8 +1328,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 85 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 23,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 87 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 24,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);
