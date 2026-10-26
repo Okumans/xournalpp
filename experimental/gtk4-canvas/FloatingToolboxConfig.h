@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <filesystem>
@@ -43,6 +44,32 @@ inline std::optional<std::string> normalizeToken(std::string_view raw) {
     auto tokenView = trimAscii(raw);
     if (tokenView.empty() || tokenView.size() > maxFloatingToolboxTokenBytes) {
         return std::nullopt;
+    }
+
+    constexpr std::string_view pluginPrefix = "Plugin::";
+    if (tokenView.size() > pluginPrefix.size()) {
+        bool isPluginToken = true;
+        for (std::size_t index = 0; index < pluginPrefix.size(); ++index) {
+            const auto actual = static_cast<unsigned char>(tokenView[index]);
+            const auto expected = static_cast<unsigned char>(pluginPrefix[index]);
+            if (static_cast<unsigned char>(std::tolower(actual)) !=
+                static_cast<unsigned char>(std::tolower(expected))) {
+                isPluginToken = false;
+                break;
+            }
+        }
+        if (isPluginToken) {
+            const auto id = tokenView.substr(pluginPrefix.size());
+            if (id.size() + pluginPrefix.size() > maxFloatingToolboxTokenBytes ||
+                std::any_of(id.begin(), id.end(), [](unsigned char character) {
+                    return !((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                             (character >= '0' && character <= '9') || character == '_' || character == '-' ||
+                             character == '.');
+                })) {
+                return std::nullopt;
+            }
+            return std::string(pluginPrefix) + std::string(id);
+        }
     }
 
     std::string token;

@@ -110,6 +110,15 @@ int main() {
                 "function showDialog() app.openDialog('Choose one', {'First', 'Second'}, 'dialogResult') end\n"
                 "function showErrorDialog() app.openDialog('Problem', {'OK'}, '', true) end\n"
                 "function dialogResult(result) app.changeActionState('test-mode', result) end\n");
+    const auto toolbarPlugin = root / "PrivateToolbar";
+    writePlugin(toolbarPlugin,
+                "[about]\ndescription=Private plugin toolbar action\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({callback='invokeToolbar', toolbarId='MixedCase_Action-1', "
+                "iconName='document-open'})\n"
+                "end\n"
+                "function invokeToolbar() app.changeActionState('test-mode', 41) end\n");
     const auto backgroundPlugin = root / "BackgroundPlugin";
     writePlugin(backgroundPlugin,
                 "[about]\ndescription=Page background action\n[default]\nenabled=true\n"
@@ -613,7 +622,7 @@ int main() {
                              backgroundNameApiPlugin.string(),
                      {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 29, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 30, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -1046,6 +1055,16 @@ int main() {
     const auto loadedDialogPlugin = runtime.findPlugin("DialogPlugin");
     require(loadedDialogPlugin && loadedDialogPlugin->loaded && loadedDialogPlugin->menuItems == 2,
             "Plugin using app.openDialog did not load and register its menu callback");
+    const auto loadedToolbarPlugin = runtime.findPlugin("PrivateToolbar");
+    require(loadedToolbarPlugin && loadedToolbarPlugin->loaded && loadedToolbarPlugin->menuItems == 0 &&
+                    loadedToolbarPlugin->toolbarItems == 1,
+            "Plugin toolbar-only registration did not load without creating an empty menu group");
+    const auto toolbarItem = runtime.findToolbarItem("Plugin::MixedCase_Action-1");
+    require(toolbarItem && toolbarItem->id == "Plugin::MixedCase_Action-1" &&
+                    toolbarItem->pluginName == "PrivateToolbar" && toolbarItem->iconName == "document-open",
+            "Plugin toolbar item lookup did not preserve its full ID, owner, or icon");
+    require(runtime.invokeToolbarItem("PLUGIN::MixedCase_Action-1") && changedMode == 41,
+            "Plugin toolbar item did not invoke its Lua callback");
     const auto loadedStrokeApiPlugin = runtime.findPlugin("StrokeApiPlugin");
     require(loadedStrokeApiPlugin && loadedStrokeApiPlugin->loaded && loadedStrokeApiPlugin->menuItems == 2,
             "Plugin using app.getStrokes did not load and register its menu callbacks");

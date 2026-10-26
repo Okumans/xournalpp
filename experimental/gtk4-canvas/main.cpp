@@ -4398,7 +4398,8 @@ private:
         for (std::size_t index = 0; index < rowKeys.size(); ++index) {
             const auto value = prototype::serializeFloatingToolboxRow(
                     importedConfig.settings.floatingToolboxRows[index]);
-            preferenceTextEntry(toolboxGroup, rowTitles[index], "Comma-separated toolbar actions", value,
+            preferenceTextEntry(toolboxGroup, rowTitles[index],
+                                "Comma-separated actions; use Plugin::ID for a registered Lua button", value,
                                 rowKeys[index]);
         }
         auto* applyRow = ADW_ACTION_ROW(adw_action_row_new());
@@ -5459,6 +5460,22 @@ private:
         const auto quickScreenshotPlugin = pluginRuntime->findPlugin("QuickScreenshot");
         require(quickScreenshotPlugin && quickScreenshotPlugin->loaded && quickScreenshotPlugin->menuItems == 1,
                 "Enabled bundled QuickScreenshot plugin did not register its capture action");
+        if (const auto toolbarItem = pluginRuntime->findToolbarItem("Plugin::GTK4_TEST_ACTION")) {
+            require(toolbarItem->pluginName == "PrivateToolbar" && toolbarItem->iconName == "document-open",
+                    "Plugin toolbar metadata did not preserve its ID, plugin, and icon");
+            auto* button = findWidgetByData(floatingToolboxRowsContainer, "gtk4-plugin-toolbar-id",
+                                            toolbarItem->id.c_str());
+            require(button, "Configured plugin toolbar action did not render a button");
+            require(gtk_widget_is_sensitive(button), "Configured plugin toolbar action button is disabled");
+            const bool previousGridSnapping = state.snapGridEnabled;
+            g_signal_emit_by_name(button, "clicked");
+            require(state.snapGridEnabled != previousGridSnapping,
+                    "Rendered plugin toolbar button did not dispatch its Lua callback");
+            g_signal_emit_by_name(button, "clicked");
+            require(state.snapGridEnabled == previousGridSnapping,
+                    "Plugin toolbar callback did not restore the previous grid-snapping state");
+            std::cout << "PASS: GTK4 plugin toolbar action registration, rendering, and callback\n";
+        }
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
@@ -8059,6 +8076,47 @@ private:
                                      gtk_widget_get_height(self->canvas) / 2.0);
                       }));
             g_object_set_data(G_OBJECT(gtk_widget_get_last_child(row)), "zoom-in", GINT_TO_POINTER(zoomIn));
+        } else if (token.starts_with("Plugin::")) {
+            const auto item = pluginRuntime ? pluginRuntime->findToolbarItem(token) : std::nullopt;
+            const auto fallbackLabel = token.substr(std::string_view("Plugin::").size());
+            if (!item) {
+                auto* unavailable = gtk_button_new_with_label(fallbackLabel.c_str());
+                gtk_widget_add_css_class(unavailable, "flat");
+                gtk_widget_set_sensitive(unavailable, false);
+                gtk_widget_set_tooltip_text(unavailable, "Enable the plugin that provides this toolbar action");
+                gtk_box_append(GTK_BOX(row), unavailable);
+                return;
+            }
+
+            const std::string label = item->description.empty() ? fallbackLabel : item->description;
+            const std::string tooltip = item->description.empty() ? item->id : item->description;
+            auto* action = gtk_button_new();
+            gtk_widget_add_css_class(action, "flat");
+            gtk_widget_set_tooltip_text(action, tooltip.c_str());
+            gtk_accessible_update_property(GTK_ACCESSIBLE(action), GTK_ACCESSIBLE_PROPERTY_LABEL, label.c_str(), -1);
+            auto* display = gdk_display_get_default();
+            auto* iconTheme = display ? gtk_icon_theme_get_for_display(display) : nullptr;
+            if (!item->iconName.empty() && iconTheme &&
+                gtk_icon_theme_has_icon(iconTheme, item->iconName.c_str())) {
+                gtk_button_set_child(GTK_BUTTON(action), gtk_image_new_from_icon_name(item->iconName.c_str()));
+            } else {
+                gtk_button_set_label(GTK_BUTTON(action), label.c_str());
+            }
+            g_object_set_data_full(G_OBJECT(action), "gtk4-plugin-toolbar-id", g_strdup(item->id.c_str()), g_free);
+            using PluginToolbarActionContext = std::pair<Prototype*, std::string>;
+            auto* context = new PluginToolbarActionContext(this, item->id);
+            g_signal_connect_data(
+                    action, "clicked",
+                    G_CALLBACK(+[](GtkButton*, gpointer data) {
+                        const auto* context = static_cast<PluginToolbarActionContext*>(data);
+                        if (context->first->pluginRuntime) {
+                            context->first->pluginRuntime->invokeToolbarItem(context->second);
+                        }
+                    }),
+                    context,
+                    +[](gpointer data, GClosure*) { delete static_cast<PluginToolbarActionContext*>(data); },
+                    GConnectFlags(0));
+            gtk_box_append(GTK_BOX(row), action);
         } else if (token == "SEPARATOR") {
             gtk_box_append(GTK_BOX(row), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
         } else {
@@ -15987,6 +16045,22 @@ private:
         }
         for (auto* child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
             if (auto* found = responseButton(child, label)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    static GtkWidget* findWidgetByData(GtkWidget* widget, const char* key, const char* value) {
+        if (!widget) {
+            return nullptr;
+        }
+        const auto* stored = static_cast<const char*>(g_object_get_data(G_OBJECT(widget), key));
+        if (stored && g_strcmp0(stored, value) == 0) {
+            return widget;
+        }
+        for (auto* child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+            if (auto* found = findWidgetByData(child, key, value)) {
                 return found;
             }
         }

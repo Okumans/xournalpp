@@ -275,6 +275,13 @@ struct PluginSummary {
     std::size_t toolbarItems = 0;
 };
 
+struct PluginToolbarItem {
+    std::string id;
+    std::string pluginName;
+    std::string description;
+    std::string iconName;
+};
+
 class LuaPluginRuntime final {
 public:
     LuaPluginRuntime();
@@ -289,6 +296,8 @@ public:
 
     std::vector<PluginSummary> plugins() const;
     std::optional<PluginSummary> findPlugin(std::string_view name) const;
+    std::optional<PluginToolbarItem> findToolbarItem(std::string_view id) const;
+    bool invokeToolbarItem(std::string_view id);
     void resetPendingStates();
     void setPendingEnabled(std::string_view name, bool enabled);
     std::pair<std::string, std::string> pendingPluginPaths() const;

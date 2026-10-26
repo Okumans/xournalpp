@@ -31,6 +31,20 @@ constexpr std::string_view pluginRegistryKey = "Gtk4Canvas_Plugin";
 constexpr std::int64_t noPluginMode = std::numeric_limits<std::int64_t>::max();
 constexpr std::size_t maxManifestBytes = 64 * 1024;
 
+std::string_view toolbarIdWithoutPluginPrefix(std::string_view id) {
+    constexpr std::string_view prefix = "plugin::";
+    if (id.size() < prefix.size()) {
+        return id;
+    }
+    for (std::size_t index = 0; index < prefix.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(id[index])) != prefix[index]) {
+            return id;
+        }
+    }
+    id.remove_prefix(prefix.size());
+    return id;
+}
+
 struct KeyFileDeleter {
     void operator()(GKeyFile* keyFile) const {
         if (keyFile) {
@@ -707,6 +721,40 @@ std::optional<PluginSummary> LuaPluginRuntime::findPlugin(std::string_view name)
                                                    [](const MenuEntry& menu) { return !menu.label.empty(); })),
             static_cast<std::size_t>(std::count_if(entry.menuEntries.begin(), entry.menuEntries.end(),
                                                    [](const MenuEntry& menu) { return !menu.toolbarId.empty(); }))};
+}
+
+std::optional<PluginToolbarItem> LuaPluginRuntime::findToolbarItem(std::string_view id) const {
+    constexpr std::string_view prefix = "Plugin::";
+    id = toolbarIdWithoutPluginPrefix(id);
+
+    for (const auto& plugin: entries) {
+        if (!plugin->loaded) {
+            continue;
+        }
+        for (const auto& menu: plugin->menuEntries) {
+            if (menu.toolbarId == id && !menu.toolbarId.empty()) {
+                return PluginToolbarItem{std::string(prefix) + menu.toolbarId, plugin->name, menu.label,
+                                         menu.iconName};
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+bool LuaPluginRuntime::invokeToolbarItem(std::string_view id) {
+    id = toolbarIdWithoutPluginPrefix(id);
+
+    for (auto& plugin: entries) {
+        if (!plugin->loaded) {
+            continue;
+        }
+        for (auto& menu: plugin->menuEntries) {
+            if (menu.toolbarId == id && !menu.toolbarId.empty()) {
+                return call(*plugin, menu.callback, menu.mode);
+            }
+        }
+    }
+    return false;
 }
 
 void LuaPluginRuntime::resetPendingStates() {
