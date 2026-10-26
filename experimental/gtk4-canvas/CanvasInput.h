@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <unordered_map>
 
 #include "BehaviorDefaults.h"
 #include "CanvasState.h"
@@ -29,6 +30,9 @@ public:
     bool splineInProgress = false;
 
     void setModifiers(bool shift, bool control, bool alt) {
+        if (!shift) {
+            resetShiftAxes();
+        }
         shiftHeld = shift;
         controlHeld = control;
         altHeld = alt;
@@ -41,14 +45,18 @@ public:
         if (!finitePosition(sample) || state.pinching) {
             return false;
         }
+        synchronizePageStructure();
         if (state.drawingMode == DrawingMode::Spline && !eraserEnd && state.brush.tool != Tool::Eraser &&
             state.brush.tool != Tool::Hand && !spaceHeld) {
             return splinePress(device, sample);
         }
         if (owner || state.current) return false;
+        shiftClickConnection.reset();
+        pointerDragged = false;
         pressureMode = state.pressureSensitivity && validPressure(sample.pressure);
         lastPressure = pressureMode ? *sample.pressure : 1;
-        if (spaceHeld || state.brush.tool == Tool::Hand || !state.hitPage(sample.x, sample.y)) {
+        const auto hit = state.hitPage(sample.x, sample.y);
+        if (spaceHeld || state.brush.tool == Tool::Hand || !hit) {
             mode = Mode::Pan;
         } else if ((eraserEnd || state.brush.tool == Tool::Eraser) && state.eraserMode != EraserMode::Whiteout) {
             mode = Mode::Erase;
@@ -66,19 +74,36 @@ public:
             }
         } else {
             mode = Mode::Draw;
-            if (!state.begin(device, sample.x, sample.y, pressure(sample.pressure), eraserEnd,
+            InputSample drawingSample = sample;
+            std::optional<ShiftClickConnection> connection;
+            if (supportsShiftLineConstraint(state.brush.tool, eraserEnd)) {
+                auto& constraint = shiftConstraints[hit->page];
+                const auto raw = hit->local;
+                const auto projected = constrainAtBegin(constraint, raw, shiftHeld);
+                const auto screen = state.pageScreenPoint(hit->page, projected.x, projected.y);
+                drawingSample.x = screen.x;
+                drawingSample.y = screen.y;
+                if (shiftHeld) {
+                    connection = shiftClickTarget(constraint, hit->page);
+                }
+            }
+            if (!state.begin(device, drawingSample.x, drawingSample.y, pressure(sample.pressure), eraserEnd,
                              shiftHeld, controlHeld, altHeld)) {
                 return false;
             }
+            shiftClickConnection = connection;
             state.current->pressureSensitive = pressureMode && state.current->brush.tool == Tool::Pen;
             if (stabilizedMode()) {
                 stabilizer = CanvasStabilizer(stabilizerConfig);
-                stabilizer.begin({sample.x, sample.y, pressure(sample.pressure), timestamp(sample.timeMs)});
+                stabilizer.begin({drawingSample.x, drawingSample.y, pressure(sample.pressure),
+                                  timestamp(sample.timeMs)});
             }
         }
         owner = device;
         lastX = sample.x;
         lastY = sample.y;
+        startX = sample.x;
+        startY = sample.y;
         return true;
     }
 
@@ -95,14 +120,31 @@ public:
                 state.erase(sample.x, sample.y);
                 break;
             case Mode::Draw:
-                if (stabilizedMode()) {
-                    const auto filtered = stabilizer.process({sample.x, sample.y, pressure(sample.pressure),
-                                                               timestamp(sample.timeMs)});
-                    state.append(device, filtered.x, filtered.y, filtered.pressure,
-                                 shiftHeld, controlHeld, altHeld);
-                } else {
-                    state.append(device, sample.x, sample.y, pressure(sample.pressure),
-                                 shiftHeld, controlHeld, altHeld);
+                if (std::hypot(sample.x - startX, sample.y - startY) > 4.0) {
+                    pointerDragged = true;
+                }
+                {
+                    InputSample drawingSample = sample;
+                    if (state.current && supportsShiftLineConstraint(state.current->brush.tool, false)) {
+                        const int page = state.current->page;
+                        auto& constraint = shiftConstraints[page];
+                        const auto raw = state.pageLocalPoint(page, sample.x, sample.y,
+                                                              pressure(sample.pressure));
+                        const auto projected = constrainDuringStroke(constraint, raw, shiftHeld);
+                        const auto screen = state.pageScreenPoint(page, projected.x, projected.y);
+                        drawingSample.x = screen.x;
+                        drawingSample.y = screen.y;
+                    }
+                    if (stabilizedMode()) {
+                        const auto filtered = stabilizer.process({drawingSample.x, drawingSample.y,
+                                                                  pressure(sample.pressure),
+                                                                  timestamp(sample.timeMs)});
+                        state.append(device, filtered.x, filtered.y, filtered.pressure,
+                                     shiftHeld, controlHeld, altHeld);
+                    } else {
+                        state.append(device, drawingSample.x, drawingSample.y, pressure(sample.pressure),
+                                     shiftHeld, controlHeld, altHeld);
+                    }
                 }
                 break;
             case Mode::Select:
@@ -119,7 +161,8 @@ public:
         lastY = sample.y;
     }
 
-    void finish(Device device, std::optional<double> releasePressure = std::nullopt) {
+    void finish(Device device, std::optional<double> releasePressure = std::nullopt,
+                std::optional<Point> releasePoint = std::nullopt) {
         if (!owner || *owner != device) {
             return;
         }
@@ -138,8 +181,15 @@ public:
                             (state.current->points[count - 2].pressure + state.current->points[count - 3].pressure) / 2;
                 }
             }
+            finishShiftClick(releasePoint, releasePressure);
+            const auto oldInkCount = state.ink.size();
             state.finish(device, pressure(releasePressure));
+            if (state.ink.size() > oldInkCount) {
+                rememberShiftEndpoint(state.ink.back());
+            }
             stabilizer.reset();
+            shiftClickConnection.reset();
+            pointerDragged = false;
         } else if (mode == Mode::Spline) {
             // Each press/drag sets a spline knot and its tangent. The spline
             // remains editable until it is closed, double-clicked, or escaped.
@@ -214,6 +264,8 @@ public:
         if (owner && *owner != device) {
             return;
         }
+        shiftClickConnection.reset();
+        pointerDragged = false;
         if (owner && mode == Mode::Spline) {
             state.cancel();
             splineInProgress = false;
@@ -256,6 +308,8 @@ public:
         cancel();
         spaceHeld = false;
         shiftHeld = false;
+        shiftConstraints.clear();
+        shiftClickConnection.reset();
         state.resetInput();
         controlHeld = false;
         altHeld = false;
@@ -278,11 +332,179 @@ public:
 private:
     enum class Mode { Draw, Erase, Pan, Select, Spline, Laser };
 
+    struct ShiftEndpoint {
+        Point point;
+        int page = 0;
+        size_t layerId = 1;
+        Tool tool = Tool::Pen;
+        std::uintptr_t strokeReference = 0;
+    };
+
+    struct StraightLineConstraint {
+        enum class Axis { Undecided, Horizontal, Vertical };
+
+        Point lastPointerPosition;
+        Point anchor;
+        Axis axis = Axis::Undecided;
+        bool shiftActive = false;
+        std::optional<ShiftEndpoint> endpoint;
+    };
+
+    struct ShiftClickConnection {
+        Point from;
+        int page = 0;
+        size_t layerId = 1;
+        Tool tool = Tool::Pen;
+    };
+
     static bool finitePosition(InputSample sample) { return std::isfinite(sample.x) && std::isfinite(sample.y); }
 
     static bool validPressure(std::optional<double> value) { return value && std::isfinite(*value) && *value >= 0; }
 
     static bool isDrawingBrush(Tool tool) { return tool == Tool::Pen || tool == Tool::Highlighter; }
+
+    bool supportsShiftLineConstraint(Tool tool, bool eraserEnd) const {
+        return !eraserEnd && isDrawingBrush(tool) &&
+               (state.drawingMode == DrawingMode::Freehand || state.drawingMode == DrawingMode::ShapeRecognizer);
+    }
+
+    static void resetShiftAxis(StraightLineConstraint& constraint) {
+        constraint.axis = StraightLineConstraint::Axis::Undecided;
+        constraint.shiftActive = false;
+    }
+
+    void resetShiftAxes() {
+        for (auto& [page, constraint]: shiftConstraints) {
+            (void)page;
+            resetShiftAxis(constraint);
+        }
+    }
+
+    void synchronizePageStructure() {
+        if (knownPageStructureGeneration == state.pageStructureGeneration) {
+            return;
+        }
+        shiftConstraints.clear();
+        shiftClickConnection.reset();
+        knownPageStructureGeneration = state.pageStructureGeneration;
+    }
+
+    static Point projectOnShiftAxis(StraightLineConstraint& constraint, Point raw) {
+        const double deltaX = raw.x - constraint.anchor.x;
+        const double deltaY = raw.y - constraint.anchor.y;
+        if (constraint.axis == StraightLineConstraint::Axis::Undecided && (deltaX != 0 || deltaY != 0)) {
+            constraint.axis = std::abs(deltaX) >= std::abs(deltaY) ? StraightLineConstraint::Axis::Horizontal :
+                                                                     StraightLineConstraint::Axis::Vertical;
+        }
+        switch (constraint.axis) {
+            case StraightLineConstraint::Axis::Horizontal:
+                raw.y = constraint.anchor.y;
+                break;
+            case StraightLineConstraint::Axis::Vertical:
+                raw.x = constraint.anchor.x;
+                break;
+            case StraightLineConstraint::Axis::Undecided:
+                raw.x = constraint.anchor.x;
+                raw.y = constraint.anchor.y;
+                break;
+        }
+        return raw;
+    }
+
+    static Point projectOnSavedAxis(const StraightLineConstraint& constraint, Point raw) {
+        switch (constraint.axis) {
+            case StraightLineConstraint::Axis::Horizontal:
+                raw.y = constraint.anchor.y;
+                break;
+            case StraightLineConstraint::Axis::Vertical:
+                raw.x = constraint.anchor.x;
+                break;
+            case StraightLineConstraint::Axis::Undecided:
+                raw.x = constraint.anchor.x;
+                raw.y = constraint.anchor.y;
+                break;
+        }
+        return raw;
+    }
+
+    static Point constrainAtBegin(StraightLineConstraint& constraint, Point raw, bool shift) {
+        if (!shift) {
+            resetShiftAxis(constraint);
+            constraint.lastPointerPosition = raw;
+            return raw;
+        }
+        if (!constraint.shiftActive) {
+            constraint.anchor = raw;
+            constraint.axis = StraightLineConstraint::Axis::Undecided;
+            constraint.shiftActive = true;
+        }
+        auto projected = projectOnSavedAxis(constraint, raw);
+        constraint.lastPointerPosition = raw;
+        return projected;
+    }
+
+    static Point constrainDuringStroke(StraightLineConstraint& constraint, Point raw, bool shift) {
+        if (!shift) {
+            resetShiftAxis(constraint);
+            constraint.lastPointerPosition = raw;
+            return raw;
+        }
+        if (!constraint.shiftActive) {
+            constraint.anchor = constraint.lastPointerPosition;
+            constraint.axis = StraightLineConstraint::Axis::Undecided;
+            constraint.shiftActive = true;
+        }
+        auto projected = projectOnShiftAxis(constraint, raw);
+        constraint.lastPointerPosition = raw;
+        return projected;
+    }
+
+    std::optional<ShiftClickConnection> shiftClickTarget(const StraightLineConstraint& constraint, int page) const {
+        if (!constraint.endpoint || !isDrawingBrush(state.brush.tool)) {
+            return std::nullopt;
+        }
+        const auto& endpoint = *constraint.endpoint;
+        if (endpoint.page != page || endpoint.layerId != state.activeLayerId(page) || endpoint.tool != state.brush.tool ||
+            endpoint.strokeReference == 0) {
+            return std::nullopt;
+        }
+        const bool stillExists = std::any_of(state.ink.begin(), state.ink.end(), [&](const Ink& stroke) {
+            return stroke.pluginReference == endpoint.strokeReference && stroke.page == endpoint.page &&
+                   stroke.layerId == endpoint.layerId && stroke.brush.tool == endpoint.tool;
+        });
+        if (!stillExists) {
+            return std::nullopt;
+        }
+        return ShiftClickConnection{endpoint.point, endpoint.page, endpoint.layerId, endpoint.tool};
+    }
+
+    void finishShiftClick(std::optional<Point> releasePoint, std::optional<double> releasePressure) {
+        if (!shiftClickConnection || !state.current || pointerDragged ||
+            state.current->page != shiftClickConnection->page ||
+            state.current->layerId != shiftClickConnection->layerId ||
+            state.current->brush.tool != shiftClickConnection->tool) {
+            return;
+        }
+        const Point release = releasePoint.value_or(Point{lastX, lastY});
+        if (std::hypot(release.x - startX, release.y - startY) > 4.0) {
+            return;
+        }
+        const double endPressure = pressure(releasePressure);
+        const auto end = state.pageLocalPoint(shiftClickConnection->page, release.x, release.y, endPressure);
+        if (!std::isfinite(end.x) || !std::isfinite(end.y)) {
+            return;
+        }
+        state.current->points = {shiftClickConnection->from, end};
+    }
+
+    void rememberShiftEndpoint(const Ink& stroke) {
+        if (!isDrawingBrush(stroke.brush.tool) || stroke.points.empty() || stroke.pluginReference == 0) {
+            return;
+        }
+        auto& constraint = shiftConstraints[stroke.page];
+        constraint.endpoint = ShiftEndpoint{stroke.points.back(), stroke.page, stroke.layerId, stroke.brush.tool,
+                                            stroke.pluginReference};
+    }
 
     bool stabilizedMode() const {
         return mode == Mode::Draw && state.current && state.current->brush.tool != Tool::Eraser &&
@@ -314,6 +536,12 @@ private:
     double lastPressure = 1;
     double lastX = 0;
     double lastY = 0;
+    double startX = 0;
+    double startY = 0;
+    bool pointerDragged = false;
+    std::uint64_t knownPageStructureGeneration = 0;
+    std::unordered_map<int, StraightLineConstraint> shiftConstraints;
+    std::optional<ShiftClickConnection> shiftClickConnection;
     CanvasStabilizer stabilizer;
     Device splineSource = Device::Mouse;
 };

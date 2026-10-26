@@ -41,9 +41,9 @@ registration in `ToolHandler::initTools`.
 
 | Master tool | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
-| `pen` | Partial | Match the full renderer: caps, fills, dashes, blend modes, and all native stroke styles. Physical tablet behavior is not verified. |
+| `pen` | Partial | Photoshop-style Shift constraints lock freehand and shape-recognizer strokes to the dominant horizontal or vertical axis, retain the axis across successive strokes until Shift release, and project samples before stabilization. Shift-click can connect from the previous Pen or Highlighter endpoint when that stroke remains on the same page, layer, and tool. Match the full renderer's caps, fills, dashes, blend modes, and native stroke styles; physical tablet behavior is not verified. |
 | `eraser` | Partial | Standard split, whiteout, and delete-stroke modes work; reproduce all production hit geometry and renderer interactions. |
-| `highlighter` | Partial | Core opacity and native serialization work; reproduce production stroke geometry and blend behavior. |
+| `highlighter` | Partial | Core opacity and native serialization work; shares the Pen Shift constraint and endpoint connection behavior. Reproduce production stroke geometry and blend behavior. |
 | `text` | Partial | Rich editing, toolbar font/size/style/color controls, direct Text-tool drag-to-move and handle transforms, rectangle/lasso selection, cross-page transfer, and native text/link clipboard copy/cut/paste/duplicate work. Formatting runs and link URLs survive; mixed stroke/text/image selections preserve stacking order through native, PNG, SVG, and plain-text clipboard targets. Transform-following editor placement, IME, and accessibility remain. |
 | `image` | Partial | Insert, move, resize, rotate, delete, native save/reopen, PDF export, and editable native clipboard copy/cut/paste work. Raster, LaTeX, and mixed-object groups preserve native image data and relative transforms; PNG and SVG carry the rendered selection. Unsupported native object editing remains. |
 | `selectRect` | Partial | Selects editable strokes, text, and images on the active visible foreground layer; unsupported native objects are not included. |

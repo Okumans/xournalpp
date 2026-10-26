@@ -20,6 +20,7 @@ the current upstream audit target is `b2ef6316989d379cfcb6e1048363a0b6c2befa6b`.
 | Pressure default & config | `Settings::loadDefault` + `Settings.cpp`: `pressureSensitivity` (and legacy `presureSensitivity`), `minimumPressure` (`>= 0.01`, default `0.05`), `pressureMultiplier` (`1.0`), guessing off | Matched in the normalized input adapter; imported from `settings.xml` and editable in Preferences |
 | Missing pressure | `PenInputHandler::filterPressure` retains the last device pressure | Matched, with invalid-axis and missing-axis tests |
 | Pen release | `StrokeHandler::onButtonReleaseEvent` finalizes existing samples | Release-only hover coordinates are ignored; an enabled stabilizer may spline-finalize from its last delivered event |
+| Photoshop-style Shift line constraint | `StrokeHandler` plus `PageView`'s page-owned `StraightLineConstraintState` | Freehand and shape-recognizer samples project onto the dominant horizontal or vertical axis before stabilization. The axis persists across released strokes until Shift is released. Shift-click creates a separate connecting stroke from the previous Pen or Highlighter endpoint only when that endpoint still exists on the same page, active layer, and tool. Escape clears the saved endpoint. Synthetic input tests cover axis choice, cross-stroke continuity, key release during and between strokes, endpoint validity, and stabilization order. |
 | Small-motion filtering | `InputHandler::PIXEL_MOTION_THRESHOLD` is 0.3 page points; initial dot may thicken | Matched for this part of the pipeline |
 | Geometric drawing tools | `BaseShapeHandler`, `LineHandler`, `RectangleHandler`, `EllipseHandler`, `ArrowHandler`, `CoordinateSystemHandler` | Line, rectangle, ellipse, arrow, double-arrow, and coordinate-axis paths preview during drag and commit through shared stroke undo. Shift snaps lines to 45° or locks square/circle proportions; Control/Alt center supported shapes. |
 | Shape recognizer | `ShapeRecognizer` + `CircleRecognizer`; minimum size defaults to 40 pt | Read-only `strokeRecognizerMinSize` import; recognizes near-straight lines, circles/ellipses, closed triangles, and four-corner rectangles. It uses a compact geometric fit, not the full segment-inertia recognizer. |
@@ -80,9 +81,9 @@ for session edits and transfers them to the real native model when saving.
 ## Known differences that block application replacement
 
 - Shift line/aspect constraints and the main stabilizer families are migrated,
-  but draw-direction modifier inversion, drawing and selection-resize grid snapping, Shift-click stroke
-  connection, the original inertia/cusp edge cases, and device-specific button
-  mappings (`buttonConfig`, `deviceClasses`) still differ or remain absent.
+  but draw-direction modifier inversion, drawing and selection-resize grid snapping,
+  the original inertia/cusp edge cases, and device-specific button mappings
+  (`buttonConfig`, `deviceClasses`) still differ or remain absent.
 - Shape recognition is a geometric subset: it does not port the original
   segment queue/inertia model, all recognition scores, or snap-to-grid result
   placement. Geometric tools output stroke paths rather than native rectangle,
