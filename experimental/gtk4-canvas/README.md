@@ -52,10 +52,12 @@ The Plugins menu discovers bundled plugins plus folders supplied through
 `--plugin-dir` and the configuration directory. The plugin manager displays each
 manifest and persists enable/disable choices in `gtk4-canvas.ini`; changes take
 effect after restarting the prototype. Lua menu callbacks and canvas shortcuts
-work for the supported API subset. ColorCycle runs with its full color list and
-selection recoloring, Example can open an asynchronous dialog and receive the
-selected button response, and ToolShortcuts can select common tools including
-Smart Select. HighlightPosition toggles a translucent pointer halo with Alt+X;
+work for the supported API subset. Registered `Plugin::ID` toolbar actions can
+be placed in the customizable floating-toolbox rows and invoke their Lua
+callbacks. ColorCycle runs with its full color list and selection recoloring,
+Example can open an asynchronous dialog and receive the selected button
+response, and ToolShortcuts can select common tools including Smart Select.
+HighlightPosition toggles a translucent pointer halo with Alt+X;
 its appearance and enabled state are editable in Preferences and persist across
 launches. ToggleGrid changes the active page between plain and graph paper while
 updating grid snapping. SpaceForNotes supports both PDF-gap and force modes and
@@ -64,7 +66,7 @@ are not undoable yet. Page background changes use the native document worker,
 persist in the `.xopp` save path, and participate in undo/redo. BeamerPresentation
 steps through repeated-label PDF animations, moves between slides at label
 boundaries, and removes animation pages through the native document worker. The
-most of the master Lua API, plugin toolbar actions, Search, and bundled plugin
+Most of the master Lua API, plugin placeholders, Search, and bundled plugin
 behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 

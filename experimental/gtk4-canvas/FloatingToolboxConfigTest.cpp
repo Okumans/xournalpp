@@ -28,14 +28,19 @@ int main() {
                                                                 "DRAW_ARROW"}),
             "GTK 4 defaults do not match the four master floating-toolbar rows");
 
-    const auto parsed = prototype::parseFloatingToolboxRow(" pen, HIGHLIGHTER, COLOR(10), custom_action ");
-    require(parsed && *parsed == std::vector<std::string>({"PEN", "HIGHLIGHTER", "COLOR(10)", "CUSTOM_ACTION"}),
+    const auto parsed = prototype::parseFloatingToolboxRow(
+            " pen, HIGHLIGHTER, COLOR(10), custom_action, plugin::MixedCase_Action-1 ");
+    require(parsed && *parsed == std::vector<std::string>({"PEN", "HIGHLIGHTER", "COLOR(10)", "CUSTOM_ACTION",
+                                                           "Plugin::MixedCase_Action-1"}),
             "Toolbar row parsing did not trim and normalize item names");
-    require(prototype::serializeFloatingToolboxRow(*parsed) == "PEN,HIGHLIGHTER,COLOR(10),CUSTOM_ACTION",
+    require(prototype::serializeFloatingToolboxRow(*parsed) ==
+                    "PEN,HIGHLIGHTER,COLOR(10),CUSTOM_ACTION,Plugin::MixedCase_Action-1",
             "Toolbar row serialization was not stable");
     require(!prototype::parseFloatingToolboxRow("PEN,,ERASER") &&
                     !prototype::parseFloatingToolboxRow("PEN,COLOR(foo)") &&
-                    !prototype::parseFloatingToolboxRow("PEN,TOOL NAME"),
+                    !prototype::parseFloatingToolboxRow("PEN,TOOL NAME") &&
+                    !prototype::parseFloatingToolboxRow("Plugin::") &&
+                    !prototype::parseFloatingToolboxRow("Plugin::bad/id"),
             "Malformed toolbar items were accepted");
 
     const auto directory = std::filesystem::temp_directory_path() /
@@ -48,14 +53,15 @@ int main() {
         out << "[Floating Toolbox (experimental)]\n"
                "toolbarFloat1=PEN, SMART_SELECT,UNDO\n"
                "toolbarFloat2=\n"
-               "toolbarFloat4=COLOR(3),DRAW_ARROW\n";
+               "toolbarFloat4=COLOR(3),DRAW_ARROW,Plugin::MixedCase_Action-1\n";
     }
     auto imported = prototype::importFloatingToolboxConfig(directory);
     require(imported.found && imported.warning.empty() &&
                     imported.rows[0] == std::vector<std::string>({"PEN", "SMART_SELECT", "UNDO"}) &&
                     imported.rows[1].empty() &&
                     imported.rows[2] == defaultRows[2] &&
-                    imported.rows[3] == std::vector<std::string>({"COLOR(3)", "DRAW_ARROW"}),
+                    imported.rows[3] == std::vector<std::string>({"COLOR(3)", "DRAW_ARROW",
+                                                                  "Plugin::MixedCase_Action-1"}),
             "Legacy toolbar.ini rows did not import independently with defaults for absent rows");
     const auto importedSettings = prototype::importSettingsFromConfigDir(directory);
     require(importedSettings.settings.floatingToolboxRows == imported.rows,

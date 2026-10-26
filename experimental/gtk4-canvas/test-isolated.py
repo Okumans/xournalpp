@@ -380,6 +380,24 @@ def verify_plugins(args, evidence):
     config.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
     plugin_root = Path(__file__).resolve().parents[2] / "plugins"
+    private_toolbar_root = directory / "private-plugins"
+    private_toolbar = private_toolbar_root / "PrivateToolbar"
+    private_toolbar.mkdir(parents=True, exist_ok=True)
+    (private_toolbar / "plugin.ini").write_text(
+        "[about]\ndescription=Private custom toolbar action\n"
+        "[default]\nenabled=false\n[plugin]\nmainfile=main.lua\n",
+        encoding="utf-8",
+    )
+    (private_toolbar / "main.lua").write_text(
+        "function initUi()\n"
+        "  app.registerUi({callback='toggleGridSnapping', toolbarId='GTK4_TEST_ACTION', "
+        "iconName='document-open'})\n"
+        "end\n"
+        "function toggleGridSnapping()\n"
+        "  app.changeActionState('grid-snapping', not app.getActionState('grid-snapping'))\n"
+        "end\n",
+        encoding="utf-8",
+    )
     color_cycle = plugin_root / "ColorCycle"
     example = plugin_root / "Example"
     tool_shortcuts = plugin_root / "ToolShortcuts"
@@ -436,15 +454,24 @@ def verify_plugins(args, evidence):
         raise RuntimeError(f"Missing GTK 4 canvas image-action test binary: {image_actions_test}")
     image_actions_result = run([str(image_actions_test)], env=dict(os.environ, G_DEBUG="fatal-criticals"))
     image_actions_available = "PASS: GTK4 canvas image actions (libvips)" in image_actions_result
+    enabled_plugins = (color_cycle, example, tool_shortcuts, toggle_grid, highlight_position, space_for_notes,
+                       image_actions, fit_to_content, export_plugin, quick_screenshot, private_toolbar)
+    plugin_config = (
+        "[Plugins]\n"
+        f"enabled={','.join(str(plugin.resolve()) for plugin in enabled_plugins)}\n"
+        "disabled=\n"
+        "[Floating Toolbox]\n"
+        "row-1=Plugin::GTK4_TEST_ACTION\n"
+    )
     (config / "gtk4-canvas.ini").write_text(
-        f"[Plugins]\nenabled={color_cycle.resolve()},{example.resolve()},{tool_shortcuts.resolve()},{toggle_grid.resolve()},{highlight_position.resolve()},{space_for_notes.resolve()},{image_actions.resolve()},{fit_to_content.resolve()},{export_plugin.resolve()},{quick_screenshot.resolve()}\ndisabled=\n",
-        encoding="utf-8")
+        plugin_config, encoding="utf-8")
     if not args.worker:
         raise RuntimeError("Bundled plugin integration checks require --worker")
     result = run(
         [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
          "--worker", str(args.worker.resolve()), "--pdf",
-         str(Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"), "--verify-plugins"],
+         str(Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"), "--plugin-dir",
+         str(private_toolbar_root), "--verify-plugins"],
         env=dict(os.environ, G_DEBUG="fatal-criticals",
                  PATH=str(fake_bin) + os.pathsep + os.environ.get("PATH", "")),
     )
@@ -456,6 +483,8 @@ def verify_plugins(args, evidence):
     )
     if expected not in result:
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
+    if "PASS: GTK4 plugin toolbar action registration, rendering, and callback" not in result:
+        raise RuntimeError("GTK 4 private plugin toolbar action did not render or invoke")
     screenshots = ["plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps",
                    "fit-to-content-page", "quick-screenshot.png"]
     if image_actions_available:
@@ -471,6 +500,8 @@ def verify_plugins(args, evidence):
         plugin_path = (plugin_root / plugin).resolve()
         if str(plugin_path) not in saved_settings:
             raise RuntimeError(f"Plugin manager did not persist the enabled {plugin} path")
+    if str(private_toolbar.resolve()) not in saved_settings:
+        raise RuntimeError("Plugin manager did not preserve the enabled private toolbar plugin")
     if str(example.resolve()) in saved_settings:
         raise RuntimeError("Plugin manager did not persist the disabled default Example plugin state")
     if "[Pointer Highlight]" not in saved_settings or "enabled=false" not in saved_settings:
