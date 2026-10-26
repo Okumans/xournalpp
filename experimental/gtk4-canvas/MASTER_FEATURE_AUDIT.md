@@ -60,10 +60,19 @@ Phase 103 corrects native text interaction: Smart Select single-click selects
 objects and double-click edits text; the Text tool double-click selects the
 clicked word. Entering text editing from Smart Select preserves the current
 canvas zoom, and text/image selections draw their shared resize and rotation
-handles.
+handles. Phase 107 groups adjacent committed Pen/whiteout and Highlighter
+strokes into bounded shared rasters; appended strokes extend the raster, while
+the active stroke and transformed selections remain live vector content.
 
 These user-requested follow-ups remain:
 
+- Replace the optional separate GTK 3 document-worker process with an
+  in-process GTK 4 document backend for native `.xopp` loading/saving and
+  PDF-backed editable documents, reusing the existing `.xopp` format and
+  separating its reusable model/serialization code from GTK 3-only symbols.
+  The current `--pdf` preview path has no native document session, so editing
+  tools such as Text are disabled unless a worker is supplied. This is an
+  architecture milestone, not a user-facing workflow requirement.
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
   input is active, then refreshes at the settled zoom. Phase 102 adds three
@@ -97,15 +106,24 @@ These user-requested follow-ups remain:
   editable-stroke redraw cost if it misses a frame budget. Selection motion now
   skips full sidebar/search refreshes and keeps overview full-detail priority on
   the active page until release; a standalone debug Cairo run over 5,000
-  128-point strokes still measured about 421 ms for one full editable-ink draw.
-  Pen/highlighter motion avoids requeueing sidebar thumbnails for every sample,
-  but editable content is still redrawn on the canvas; immutable page snapshots
-  for editable content remain needed to remove this cost.
+  128-point strokes measured about 421 ms for one full editable-ink draw.
+  Phase 107 combines adjacent committed Pen/whiteout and Highlighter strokes
+  into one cached draw-order run and appends new strokes to that raster without
+  rescanning the earlier stroke geometry. This targets the user's report that
+  highlighter drawing becomes unusable after about 40 strokes; that case has
+  not yet been measured against the new cache. The 421 ms measurement has not
+  been repeated; editable-page snapshots and user-document frame-time
+  measurements remain outstanding.
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.
 - Fix the reported document-search highlight placement, which currently marks
   the wrong location.
+- Investigate the reported mismatch between the PDF text-selection highlight
+  and the blue selection frame.
+- Diagnose the intermittent page-raster worker failures reported as
+  `Cannot write page raster background`; the worker currently reports a generic
+  write error, so the underlying Cairo or filesystem cause is not yet confirmed.
 - Before release, verify that cursor shapes track the active tool and action,
   including selection, resize/rotate, pan, text editing, and erasing.
 

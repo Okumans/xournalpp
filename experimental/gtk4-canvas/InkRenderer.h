@@ -14,7 +14,7 @@ namespace prototype {
 void drawCanvasImage(cairo_t* cr, const CanvasImage& image);
 void drawText(cairo_t* cr, const TextItem& item);
 
-inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}) {
+inline void drawInkSource(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}) {
     if (ink.points.empty()) {
         return;
     }
@@ -22,10 +22,6 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
     const bool highlight = ink.brush.tool == Tool::Highlighter ||
                            ink.brush.tool == Tool::LaserPointerHighlighter;
     const bool whiteout = ink.brush.tool == Tool::Eraser;
-    if (highlight) {
-        // Composite a stroke once so overlapping segments have uniform opacity.
-        cairo_push_group(cr);
-    }
     const auto& color = whiteout ? behavior::whiteoutColor : ink.brush.color;
     cairo_set_source_rgb(cr, color[0], color[1], color[2]);
     const auto capStyle = ink.capStyle == 1 ? CAIRO_LINE_CAP_BUTT :
@@ -88,6 +84,21 @@ inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matri
             cairo_fill(cr);
         }
     }
+    cairo_restore(cr);
+}
+
+inline void drawInk(cairo_t* cr, const Ink& ink, const SelectionTransform& matrix = {}) {
+    if (ink.points.empty()) {
+        return;
+    }
+    const bool highlight = ink.brush.tool == Tool::Highlighter ||
+                           ink.brush.tool == Tool::LaserPointerHighlighter;
+    cairo_save(cr);
+    if (highlight) {
+        // Composite each highlight once so overlapping segments keep uniform opacity.
+        cairo_push_group(cr);
+    }
+    drawInkSource(cr, ink, matrix);
     if (highlight) {
         cairo_pop_group_to_source(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_MULTIPLY);
