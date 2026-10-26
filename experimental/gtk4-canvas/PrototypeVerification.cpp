@@ -1,6 +1,52 @@
+#include <algorithm>
+#include <memory>
+
 #include "Prototype.h"
 
 namespace prototype::gtk4 {
+
+namespace {
+
+class SearchEventLoopHeartbeat {
+public:
+    explicit SearchEventLoopHeartbeat(Gtk4SearchController& searchController):
+            searchController(searchController), lastTick(g_get_monotonic_time()) {
+        source = g_timeout_add_full(G_PRIORITY_DEFAULT, 16, &SearchEventLoopHeartbeat::tick, this, nullptr);
+    }
+
+    ~SearchEventLoopHeartbeat() { stop(); }
+
+    void stop() {
+        if (source) {
+            g_source_remove(source);
+            source = 0;
+        }
+    }
+
+    gint64 maximumGapMicroseconds = 0;
+    size_t ticks = 0;
+    int pagesScannedAtMaximumGap = 0;
+
+private:
+    static gboolean tick(gpointer data) {
+        auto* self = static_cast<SearchEventLoopHeartbeat*>(data);
+        const auto now = g_get_monotonic_time();
+        const gint64 gap = now - self->lastTick;
+        if (gap > self->maximumGapMicroseconds) {
+            self->maximumGapMicroseconds = gap;
+            self->pagesScannedAtMaximumGap = self->searchController.pagesScanned();
+        }
+        self->lastTick = now;
+        ++self->ticks;
+        return G_SOURCE_CONTINUE;
+    }
+
+    Gtk4SearchController& searchController;
+    gint64 lastTick = 0;
+    guint source = 0;
+};
+
+}  // namespace
 
 void Prototype::captureTopLevel(const std::string& name, GtkWidget* topLevel) {
     const auto deadline = g_get_monotonic_time() + 750000;
@@ -955,18 +1001,69 @@ void Prototype::verifySearchOverlayGeometry() {
             "PDF Search geometry entry did not map in the window");
 
     gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), query.c_str());
+    std::unique_ptr<SearchEventLoopHeartbeat> heartbeat;
+    if (options.verifySearchScanAll) {
+        heartbeat = std::make_unique<SearchEventLoopHeartbeat>(searchController);
+    }
+    auto searchStarted = g_get_monotonic_time();
     searchNext();
-    const auto resultDeadline = g_get_monotonic_time() + 8000000;
     const auto activeMatchOnPage = [this, pageNumber] {
         const auto& active = searchController.activeMatch();
         return active && *active < searchController.matches().size() &&
                searchController.matches()[*active].page == pageNumber;
     };
-    while (!activeMatchOnPage() && g_get_monotonic_time() < resultDeadline) {
-        g_main_context_iteration(nullptr, false);
-        g_usleep(1000);
+    const auto waitForFirstMatch = [&] {
+        const auto resultDeadline = g_get_monotonic_time() + 8000000;
+        while (!activeMatchOnPage() && g_get_monotonic_time() < resultDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(activeMatchOnPage(), "PDF Search did not find a match on the requested page");
+    };
+    waitForFirstMatch();
+    auto firstMatchMilliseconds = (g_get_monotonic_time() - searchStarted) / 1000.0;
+    if (options.verifySearchScanAll) {
+        gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), (query + " cancellation-probe").c_str());
+        const auto cancelDeadline = g_get_monotonic_time() + 500000;
+        while ((searchController.isSearching() || !searchController.matches().empty()) &&
+               g_get_monotonic_time() < cancelDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(!searchController.isSearching() && searchController.matches().empty() &&
+                        !searchController.activeMatch(),
+                "Editing the Search query did not cancel the worker and clear stale matches");
+
+        gtk_editable_set_text(GTK_EDITABLE(searchController.entry()), query.c_str());
+        const auto querySettleDeadline = g_get_monotonic_time() + 220000;
+        while (g_get_monotonic_time() < querySettleDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        searchStarted = g_get_monotonic_time();
+        searchNext();
+        waitForFirstMatch();
+        firstMatchMilliseconds = (g_get_monotonic_time() - searchStarted) / 1000.0;
+
+        const auto scanDeadline = g_get_monotonic_time() + 60000000;
+        while (searchController.isSearching() && g_get_monotonic_time() < scanDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        heartbeat->stop();
+        require(!searchController.isSearching(), "Long-document Search did not finish its page-by-page scan");
+        require(searchController.pagesScanned() == pageCount,
+                "Long-document Search stopped before scanning every page");
+        require(heartbeat->ticks > 0, "Long-document Search prevented the GTK event-loop heartbeat from running");
+        require(heartbeat->maximumGapMicroseconds < 50000,
+                "Long-document Search blocked the GTK event loop for at least 50 ms");
+        std::cout << "SEARCH RESPONSIVENESS: pages=" << searchController.pagesScanned()
+                  << " heartbeat_ticks=" << heartbeat->ticks
+                  << " max_ui_gap_ms=" << static_cast<double>(heartbeat->maximumGapMicroseconds) / 1000.0
+                  << " max_gap_after_scanned_pages=" << heartbeat->pagesScannedAtMaximumGap
+                  << " first_match_ms=" << firstMatchMilliseconds
+                  << " total_scan_ms=" << static_cast<double>(g_get_monotonic_time() - searchStarted) / 1000.0 << '\n';
     }
-    require(activeMatchOnPage(), "PDF Search did not find a match on the requested page");
 
     auto* pdfPage = pdfPageForSearch(pageNumber);
     require(pdfPage != nullptr, "PDF Search geometry verification could not access the source page");

@@ -82,7 +82,7 @@ PDF. The touchpad still needs verification on the user's physical device.
 Continue in this order:
 
 1. Finish the other deferred user reports below, including ink frame-time on
-   the user's PDF, long-document Search responsiveness, raster-worker failures,
+   the user's PDF, raster-worker failures,
    Smart Select drag performance, cursor feedback, and remaining Eraser parity.
    Search highlight geometry has now been visually checked against the user's
    PDF in private Cage; keep the audit updated as each remaining issue is
@@ -100,13 +100,19 @@ Continue in this order:
 
 Document search must remain Enter-driven: typing edits the query and clears
 stale results, while Enter or an explicit next/previous action starts a
-page-at-a-time idle scan. Phase 109 implements this. A focused private Cage
-check now accepts a real PDF, query, and zero-based page, waits for a valid
-full-detail background raster, verifies the result rectangles against
-Poppler, and captures the visible overlay. On the user's 775-page PDF, searching
-for `computer` on page 12 found eight matches; the captured boxes align with the
-chapter heading and body text. This verifies geometry on that document, while
-long-document search latency remains a separate follow-up.
+page-at-a-time scan. Phase 109 implements the interaction. Phase 116 moves PDF
+text lookup to a dedicated worker that owns its Poppler documents, publishes
+bounded page batches, and lets GTK add editable-text matches and update the
+overlay on the main thread. Replacing or closing a query cancels the active
+generation, and a native document session remains alive until its queued PDF
+paths are no longer in use. The focused private Cage check accepts a real PDF,
+query, and zero-based page, waits for a valid full-detail background raster,
+verifies the result rectangles against Poppler, and captures the visible
+overlay. On the user's 775-page PDF, searching for `computer` on page 12 found
+eight matches aligned with the chapter heading and body text. A full scan of
+all 775 pages delivered its first result in about 20 ms, completed in 7.6 seconds,
+and kept the GTK heartbeat gap below 24 ms. Long-document Search responsiveness
+is now covered by that private check; physical-device input remains unverified.
 
 These user-requested follow-ups remain:
 

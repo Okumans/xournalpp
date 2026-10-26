@@ -60,6 +60,8 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
             options.verifyPlugins = true;
         } else if (argument == "--verify-search") {
             options.verifySearch = true;
+        } else if (argument == "--verify-search-scan-all") {
+            options.verifySearchScanAll = true;
         } else if (argument == "--verify-search-query" && i + 1 < argc) {
             options.verifySearchQuery = argv[++i];
         } else if (argument == "--verify-search-page" && i + 1 < argc) {
@@ -110,7 +112,7 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
             throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                      "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                      "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search "
-                                     "[--verify-search-query TEXT --verify-search-page PAGE]] "
+                                     "[--verify-search-query TEXT --verify-search-page PAGE --verify-search-scan-all]] "
                                      "[--verify-scroll-motion] "
                                      "[--verify-smart-select-performance] "
                                      "[--verify-sidebar-performance] [--verify-sidebar-startup] "
@@ -136,6 +138,9 @@ ApplicationOptions parseApplicationOptions(int argc, char** argv) {
     }
     if (!options.verifySearchQuery.empty() && !options.verifySearch) {
         throw std::runtime_error("Search verification query requires --verify-search");
+    }
+    if (options.verifySearchScanAll && (options.verifySearchQuery.empty() || !options.verifySearch)) {
+        throw std::runtime_error("Full Search scan verification requires --verify-search and a query");
     }
     if (options.verifyScrollMotion && (options.smokeDirectory.empty() || !options.pdf.empty() ||
                                        !options.nativeDocument.empty() || !options.worker.empty())) {

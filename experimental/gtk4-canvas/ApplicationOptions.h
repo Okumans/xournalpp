@@ -22,6 +22,7 @@ struct ApplicationOptions {
     bool disableAudio = false;
     bool verifyPlugins = false;
     bool verifySearch = false;
+    bool verifySearchScanAll = false;
     std::string verifySearchQuery;
     int verifySearchPage = 0;
     bool verifyScrollMotion = false;

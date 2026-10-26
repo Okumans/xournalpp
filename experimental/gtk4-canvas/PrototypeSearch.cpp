@@ -17,6 +17,39 @@ PopplerPage* Prototype::layerPdfPageForSearch(int page, size_t origin) {
     return poppler_document_get_page(layerDocuments[origin], page);
 }
 
+std::optional<SearchPdfSource> Prototype::searchBackgroundPdfSource(int page) const {
+    if (page < 0) {
+        return std::nullopt;
+    }
+    if (!nativeSession) {
+        if (!document || sourcePath.empty()) {
+            return std::nullopt;
+        }
+        return SearchPdfSource{sourcePath, page};
+    }
+    if (static_cast<size_t>(page) >= nativeSession->pdfPageMap.size()) {
+        return std::nullopt;
+    }
+
+    const int sourcePage = nativeSession->pdfPageMap[static_cast<size_t>(page)];
+    const auto path = nativeSession->backgroundPdfPath();
+    std::error_code error;
+    if (sourcePage < 0 || !std::filesystem::is_regular_file(path, error) || error) {
+        return std::nullopt;
+    }
+    return SearchPdfSource{path.string(), sourcePage};
+}
+
+std::optional<SearchPdfSource> Prototype::searchLayerPdfSource(int page, size_t origin) const {
+    if (!nativeSession || page < 0 || origin >= layerDocuments.size() || !layerDocuments[origin] ||
+        origin >= nativeSession->layerPreviewPaths.size()) {
+        return std::nullopt;
+    }
+    return SearchPdfSource{nativeSession->layerPreviewPaths[origin].string(), page};
+}
+
+std::shared_ptr<const void> Prototype::searchDocumentLifetime() const { return nativeSession; }
+
 const void* Prototype::searchDocumentIdentity() const { return nativeSession.get(); }
 
 GtkWidget* Prototype::searchCanvasWidget() const { return canvas; }
