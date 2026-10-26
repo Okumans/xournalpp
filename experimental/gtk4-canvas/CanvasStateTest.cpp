@@ -95,6 +95,19 @@ static void fillStrokesAndSelection() {
     state.finish(Device::Mouse);
     check(state.ink.size() == 2 && state.ink[1].fill == 72,
           "A filled Highlighter stroke did not retain its configured opacity");
+
+    state.selected = {0, 1};
+    check(state.setSelectedInkLineStyle({6, 3, 0.5, 3}) &&
+                  state.ink[0].brush.lineDashes == LineDashPattern{6, 3, 0.5, 3} &&
+                  state.ink[1].brush.lineDashes.empty(),
+          "Changing the selected Pen line style should leave selected Highlighter strokes unchanged");
+    state.undo();
+    check(state.ink[0].brush.lineDashes.empty() && state.ink[1].brush.lineDashes.empty(),
+          "Undo should restore the selected Pen line style");
+    state.redo();
+    check(state.ink[0].brush.lineDashes == LineDashPattern{6, 3, 0.5, 3} &&
+                  state.ink[1].brush.lineDashes.empty(),
+          "Redo should reapply the selected Pen line style without changing Highlighter strokes");
 }
 
 static void savedHistory() {

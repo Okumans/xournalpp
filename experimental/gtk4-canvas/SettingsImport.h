@@ -45,6 +45,7 @@ struct ImportedSettings {
     Tool activeTool = Tool::Pen;
     std::array<double, 3> penColor = behavior::defaultPenColor;
     double penWidth = behavior::penWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    std::string penLineStyle = "plain";
     bool penFillEnabled = false;
     int penFillOpacity = 128;
     std::array<double, 3> highlighterColor = behavior::defaultHighlighterColor;
@@ -504,6 +505,10 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
         } else if (name == "fillAlpha" && type == "int") {
             if (const auto opacity = parseAsciiInt(value); opacity && *opacity >= 0 && *opacity <= 255) {
                 out.penFillOpacity = static_cast<int>(*opacity);
+            }
+        } else if (name == "style" && type == "string") {
+            if (const auto lineDashes = parseLineStyle(value)) {
+                out.penLineStyle = formatLineStyle(*lineDashes);
             }
         }
     } else if (toolName == "highlighter") {

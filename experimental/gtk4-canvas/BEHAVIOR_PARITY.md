@@ -23,6 +23,7 @@ Deferred user-requested follow-ups are tracked in the
 | Missing pressure | `PenInputHandler::filterPressure` retains the last device pressure | Matched, with invalid-axis and missing-axis tests |
 | Pen release | `StrokeHandler::onButtonReleaseEvent` finalizes existing samples | Release-only hover coordinates are ignored; an enabled stabilizer may spline-finalize from its last delivered event |
 | Photoshop-style Shift line constraint | `StrokeHandler` plus `PageView`'s page-owned `StraightLineConstraintState`; Eraser support is the requested GTK 4 extension | Pen and Highlighter freehand/shape-recognizer samples project onto the dominant horizontal or vertical axis before stabilization. Eraser uses the same page-owned axis state: Standard/Delete Stroke pointer samples are constrained, and Whiteout samples are constrained before append. The axis persists across released gestures until Shift is released. Pen/Highlighter and Whiteout Shift-clicks connect from a live same-page/layer/tool endpoint. Standard/Delete Stroke Shift-clicks erase a straight sampled segment from the previous same-page/layer/mode Eraser endpoint, grouped as one undo action. Synthetic tests cover axis continuity and release, page/layer/mode validity, Whiteout endpoint existence, stylus eraser-end routing, and grouped undo. Physical input remains unverified. |
+| Pen line styles | `StrokeStyle`, `StrokeViewHelper`, `StrokeContourDashes`, `TOOL_PEN_LINE_STYLE` | Solid, dash, dash-dot, dot, and `cust:` patterns render for constant-width and pressure strokes. The compact toolbar selector and plugin action update the active Pen style or selected Pen strokes; `getActionState` and `getToolInfo` report it. Legacy Pen style imports and GTK 4 preference persistence work. Native worker V5 transfers and the bounded internal clipboard preserve dash arrays; worker save/reopen retains them. Exact production cap geometry, blend modes, and all stroke-rendering details remain incomplete. |
 | Small-motion filtering | `InputHandler::PIXEL_MOTION_THRESHOLD` is 0.3 page points; initial dot may thicken | Matched for this part of the pipeline |
 | Geometric drawing tools | `BaseShapeHandler`, `LineHandler`, `RectangleHandler`, `EllipseHandler`, `ArrowHandler`, `CoordinateSystemHandler` | Line, rectangle, ellipse, arrow, double-arrow, and coordinate-axis paths preview during drag and commit through shared stroke undo. Shift snaps lines to 45° or locks square/circle proportions; Control/Alt center supported shapes. |
 | Shape recognizer | `ShapeRecognizer` + `CircleRecognizer`; minimum size defaults to 40 pt | Read-only `strokeRecognizerMinSize` import; recognizes near-straight lines, circles/ellipses, closed triangles, and four-corner rectangles. It uses a compact geometric fit, not the full segment-inertia recognizer. |
@@ -62,7 +63,7 @@ Deferred user-requested follow-ups are tracked in the
 | Palette import (`.gpl`) | `Palette` (`ColorPalette.cpp`, `NamedColor.cpp`) + `palettes/xournal.gpl` | Read-only `.gpl` import (`Name:`, `Columns:`, `R G B Name`) with 11-color `Palette::default_palette()` default/fallback; eliminates legacy `parseCommentLine` `line.front()` UB on blank lines and refuses symlinks |
 | Editable object selection | `Selector.cpp`, `LassoSelector.cpp`, `SmartSelect.cpp`, `SelectObject`, `Stroke::distanceTo`, `RectangularElement::distanceTo`, `Stroke::isInSelection`, `RectangularElement::isInSelection` | The main left rail button selects Smart Select directly. Rectangle (`Ctrl+Shift+R`), lasso (`Ctrl+Shift+G`), click-based Select Object, visible-layer rectangle/lasso, PDF-text modes, Shift-add rectangle/object, active-page `Ctrl+A`, Delete, and Escape remain available. Smart Select and Select Object pick the nearest editable object on the active visible layer within 0.5 document points, including native stroke caps/joins and transformed text/image edges; exact overlapping hits choose the frontmost object. Smart Select opens native text on click, moves editable objects, delegates a drag from PDF text to linear PDF selection after the native 10 px threshold, lets Alt force PDF selection, and reserves Shift-drag for rectangle selection. Move and resize snapping follow the imported page-grid offsets, tolerance, and Alt override. Moving a selection beyond the visible canvas triggers edge-pan using the imported speed and maximum multiplier; both values can be changed in Preferences. Stroke and rectangular-object area selection use full-containment geometry. Visible-layer selection searches top to bottom and selects all matching editable strokes, text, and images from the first layer with matches. Unsupported native object selection remains. |
 | Selection transforms | `EditSelection.cpp` affine transform, eight resize handles and rotation anchor; `Stroke::scale` applies geometric-mean width scaling | Strokes, text, and images share move, axis-side resize, aspect-preserving corner resize, mirror, rotate and cross-page transfer. Moving snaps the nearest selection corner; resizing snaps the moving axis edges and preserves corner aspect ratio. Edge-pan follows selection moves outside the viewport and stops at layout boundaries. Mixed stroke/text/image transforms and deletion are atomic undo steps. Image rotation uses the legacy angle snap preference and Alt override. Previews leave committed autosave geometry unchanged. |
-| Selection clipboard | `ClipboardHandler.cpp`: native `application/xournal` object stream, plus text/SVG/PNG targets | Bounded strict decoder and native encoder support editable pen, highlighter, whiteout strokes, rich text, links, raster images, and LaTeX images. Mixed selections preserve cross-type stacking order; cut, duplicate, paste, and undo group all supported object types. Copy offers native data, rendered PNG/SVG, and plain text when text is selected. Text styles, transforms, link URLs, image bytes, and LaTeX source survive native paste; external plain text pastes as editable text. Unsupported native types, audio attachments, nonempty stroke dash styles, and cross-process clipboard exchange remain unverified. |
+| Selection clipboard | `ClipboardHandler.cpp`: native `application/xournal` object stream, plus text/SVG/PNG targets | Bounded strict decoder and native encoder support editable pen, highlighter, whiteout strokes, rich text, links, raster images, and LaTeX images. Mixed selections preserve cross-type stacking order; cut, duplicate, paste, and undo group all supported object types. Copy offers native data, rendered PNG/SVG, and plain text when text is selected. Text styles, transforms, link URLs, image bytes, and LaTeX source survive native paste; external plain text pastes as editable text. Unsupported native types, audio attachments, and cross-process clipboard exchange remain unverified. |
 | Undo retention | `UndoRedoHandler::addUndoAction` does not impose an edit-count cap | Removed the experiment's arbitrary 128-step cap |
 
 GTK 3 disables motion-event compression for its custom widget. The GTK 4 adapter
@@ -92,16 +93,16 @@ for session edits and transfers them to the real native model when saving.
   placement. Geometric tools output stroke paths rather than native rectangle,
   ellipse, or arrow model objects.
 - The original uses its document, selection, layer, undo, and rich-text models.
-  When opening a `.xopp` via the worker, supported round-cap,
-  unfilled, undashed, non-audio `pen`, `highlighter`, and `#ffffffff` `eraser`
-  strokes plus valid non-empty native text are extracted from the contiguous
+  When opening a `.xopp` via the worker, supported non-audio `pen`,
+  non-pressure `highlighter`, and opaque whiteout `eraser` strokes, including
+  valid fill and dash arrays, plus valid non-empty native text are extracted from the contiguous
   editable suffix of every foreground layer, including hidden layers. Stroke
   pressure sentinels are normalized into positive
   per-point multipliers. Text retains UTF-8 content, supported style runs, and
   its transform. Both are removed from the native snapshot and written back in
   their original layer groups and order, avoiding duplicate objects. Objects
-  preceding a non-editable suffix element, unsupported stroke types, audio-linked
-  text, and images outside the supported suffix remain visible in per-layer
+  preceding a non-editable suffix element, unsupported stroke/tool combinations,
+  audio-linked strokes or text, and images outside the supported suffix remain visible in per-layer
   previews but cannot yet be edited. Native LaTeX objects in the supported suffix
   retain their editable source and vector PDF, and can be inserted or edited with
   the GTK4 LaTeX tool. Formula replacement and native text-to-formula conversion
@@ -130,8 +131,10 @@ for session edits and transfers them to the real native model when saving.
   not yet port audio recording, device selection, gain/sample-rate settings, or
   prove that an audio recording remains portable after reopening a saved
   document in a later session.
-- The original stroke renderer handles pressure geometry, caps, line styles,
-  fill, and blend modes beyond the experiment's simple Cairo segments.
+- Dash patterns use the production pressure-contour helper and Cairo dash
+  support, and survive native worker and internal clipboard transfers. Exact
+  production cap geometry, blend modes, and other stroke-rendering edge cases
+  still differ from the original renderer.
 - Remaining work includes other clipboard formats and native object types, IME, plugins, accessibility, platform behavior, and release packaging.
 - The input adapter preserves core sequence behavior but uses a compact cubic
   spline path and a single mouse/stylus owner category. It does not yet reuse

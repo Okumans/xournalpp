@@ -22,6 +22,7 @@ inline std::vector<StrokePacket> transferInk(const std::vector<Ink>& ink) {
         packet.layerOrder = stroke.layerOrder;
         packet.fill = stroke.fill;
         packet.capStyle = stroke.capStyle;
+        packet.lineDashes = stroke.brush.lineDashes;
         packet.points.reserve(stroke.points.size());
         for (const auto& point: stroke.points) {
             packet.points.push_back({point.x, point.y, point.pressure});
@@ -46,6 +47,7 @@ inline std::vector<Ink> sessionInk(const std::vector<StrokePacket>& packets) {
         stroke.originLayer = packet.originLayer;
         stroke.fill = packet.fill;
         stroke.capStyle = packet.capStyle;
+        stroke.brush.lineDashes = packet.lineDashes;
         stroke.points.reserve(packet.points.size());
         for (const auto& point: packet.points) {
             stroke.points.push_back({point.x, point.y, point.pressure});

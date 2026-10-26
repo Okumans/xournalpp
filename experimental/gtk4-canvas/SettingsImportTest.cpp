@@ -83,6 +83,7 @@ int main() {
       <attribute name="size" type="string" value="BIG"/>
       <attribute name="fill" type="int" value="1"/>
       <attribute name="fillAlpha" type="int" value="192"/>
+      <attribute name="style" type="string" value="dashdot"/>
     </data>
     <data name="highlighter">
       <attribute name="color" type="int" value="16753152"/>
@@ -116,6 +117,7 @@ int main() {
             "Alpha-prefixed hex pen color mismatch");
     require(near(s.penWidth, 2.26), "BIG pen preset should map to 2.26pt");
     require(s.penFillEnabled && s.penFillOpacity == 192 && !s.highlighterFillEnabled &&
+                    s.penLineStyle == "dashdot" &&
                     s.highlighterFillOpacity == 64,
             "Per-tool fill enablement and opacity settings were not imported");
     // 16753152 == 0xFFA200

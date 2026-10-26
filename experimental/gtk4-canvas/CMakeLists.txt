@@ -6,6 +6,7 @@ find_package(PkgConfig REQUIRED)
 option(GTK4_CANVAS_ENABLE_VIPS "Enable ImageActions operations when libvips is available" ON)
 pkg_check_modules(UI REQUIRED IMPORTED_TARGET gtk4>=4.10 libadwaita-1>=1.5 poppler-glib)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
+pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0)
 pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua5.4)
 pkg_check_modules(GTK_SOURCEVIEW QUIET IMPORTED_TARGET gtksourceview-5>=5.0)
@@ -19,13 +20,23 @@ endif()
 
 get_filename_component(XOURNALPP_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
+add_library(gtk4-stroke-contour STATIC ../../src/core/model/MathVect.cpp ../../src/core/model/Point.cpp
+            ../../src/core/model/StrokeContour.cpp ../../src/util/Assert.cpp)
+target_compile_features(gtk4-stroke-contour PUBLIC cxx_std_20)
+target_include_directories(gtk4-stroke-contour PUBLIC
+                           "${XOURNALPP_REPO_ROOT}/src/core" "${XOURNALPP_REPO_ROOT}/src/util/include")
+target_link_libraries(gtk4-stroke-contour PUBLIC PkgConfig::CAIRO PkgConfig::GLIB)
+
 add_executable(xournalpp-gtk4-canvas main.cpp LuaPluginRuntime.cpp CanvasImageActions.cpp LatexEditor.cpp)
+target_include_directories(xournalpp-gtk4-canvas PRIVATE
+                           "${XOURNALPP_REPO_ROOT}/src/core" "${XOURNALPP_REPO_ROOT}/src/util/include")
 target_compile_features(xournalpp-gtk4-canvas PRIVATE cxx_std_20)
 target_compile_options(xournalpp-gtk4-canvas PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(xournalpp-gtk4-canvas PRIVATE
                            GTK4_CANVAS_BUNDLED_PLUGIN_DIR="${XOURNALPP_REPO_ROOT}/plugins"
                            GTK4_CANVAS_RESOURCE_DIR="${XOURNALPP_REPO_ROOT}/resources")
-target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::UI PkgConfig::GSTREAMER PkgConfig::LUA)
+target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::UI PkgConfig::GSTREAMER PkgConfig::LUA
+                      gtk4-stroke-contour)
 if(GTK_SOURCEVIEW_FOUND)
     target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::GTK_SOURCEVIEW)
     target_compile_definitions(xournalpp-gtk4-canvas PRIVATE GTK4_CANVAS_HAVE_SOURCEVIEW=1)
@@ -65,8 +76,13 @@ add_test(NAME canvas-state COMMAND canvas-state-test)
 add_executable(ink-renderer-test InkRendererTest.cpp)
 target_compile_features(ink-renderer-test PRIVATE cxx_std_20)
 target_compile_options(ink-renderer-test PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(ink-renderer-test PRIVATE PkgConfig::CAIRO)
+target_link_libraries(ink-renderer-test PRIVATE PkgConfig::CAIRO gtk4-stroke-contour)
 add_test(NAME ink-renderer COMMAND ink-renderer-test)
+
+add_executable(canvas-line-style-test CanvasLineStyleTest.cpp)
+target_compile_features(canvas-line-style-test PRIVATE cxx_std_20)
+target_compile_options(canvas-line-style-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME canvas-line-style COMMAND canvas-line-style-test)
 
 add_executable(canvas-input-test CanvasInputTest.cpp)
 target_compile_features(canvas-input-test PRIVATE cxx_std_20)

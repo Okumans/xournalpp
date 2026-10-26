@@ -11,6 +11,7 @@ int main() {
                       ("gtk4-ink-transfer-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
         prototype::Ink mouse{1, {{1, 2, 1}, {3, 4, 1}}, {prototype::Tool::Pen, {1, 0, 0}, 3}};
+        mouse.brush.lineDashes = {6, 3, 0.5, 3};
         mouse.layerOrder = 11;
         mouse.layerId = 2;
         mouse.originLayer = 7;
@@ -31,10 +32,12 @@ int main() {
             packets[3].color != prototype::behavior::whiteoutColor ||
             packets[1].points[1].x != 3 || packets[0].page != 1 || packets[0].layerOrder != 11 ||
             packets[0].layerId != 2 || packets[0].originLayer != 7 || packets[4].fill != 60 ||
-            packets[4].capStyle != 1 || packets[5].fill != 128) {
+            packets[4].capStyle != 1 || packets[5].fill != 128 ||
+            packets[0].lineDashes != prototype::LineDashPattern{6, 3, 0.5, 3}) {
             throw std::runtime_error("Session ink transfer changed tool, pressure mode or page coordinates");
         }
         StrokePacket original{2, false, true, 4.25, {0.1, 0.2, 0.9}, {{12.34, 56.78, 0.25}, {80, 90, 0.8}}};
+        original.lineDashes = {0.5, 3};
         original.layerOrder = 19;
         original.layerId = 3;
         original.originLayer = 12;
@@ -53,6 +56,7 @@ int main() {
             decoded[0].layerOrder != original.layerOrder || decoded[0].layerId != original.layerId ||
             decoded[0].originLayer != original.originLayer ||
             decoded[0].points[0].x != original.points[0].x || decoded[0].points[1].pressure != 0.8 ||
+            decoded[0].lineDashes != original.lineDashes ||
             !decoded[1].whiteout || decoded[1].highlighter || decoded[1].width != 8.5 ||
             !decoded[2].highlighter || decoded[2].pressureSensitive || decoded[2].fill != 230 ||
             decoded[3].highlighter || !decoded[3].pressureSensitive || decoded[3].fill != 128 ||
@@ -64,6 +68,7 @@ int main() {
             !hydrated[0].pressureSensitive || hydrated[0].brush.width != 4.25 ||
             hydrated[0].layerOrder != 19 || hydrated[0].layerId != 3 || hydrated[0].originLayer != 12 ||
             hydrated[0].points[0].pressure != 0.25 || hydrated[0].points[1].pressure != 0.8 ||
+            hydrated[0].brush.lineDashes != original.lineDashes ||
             hydrated[1].brush.tool != prototype::Tool::Eraser || hydrated[1].pressureSensitive ||
             hydrated[1].brush.color != prototype::behavior::whiteoutColor ||
             hydrated[2].brush.tool != prototype::Tool::Highlighter || hydrated[2].fill != 230 ||
@@ -93,7 +98,25 @@ int main() {
         if (preloaded.ink.size() != 2 || preloaded.revision() != 0) {
             throw std::runtime_error("Undoing an edit to preloaded native ink did not restore revision 0");
         }
-        for (int invalid = 0; invalid < 5; ++invalid) {
+        prototype::CanvasState styledSelection;
+        styledSelection.setPages({{595, 842}});
+        auto selectedStyleStroke = mouse;
+        selectedStyleStroke.page = 0;
+        selectedStyleStroke.layerId = styledSelection.activeLayerId(0);
+        selectedStyleStroke.originLayer = styledSelection.activeLayerOrigin(0);
+        styledSelection.ink = {selectedStyleStroke};
+        styledSelection.selectAllOnPage();
+        if (!styledSelection.setSelectedInkLineStyle({6, 3}) ||
+            styledSelection.ink[0].brush.lineDashes != prototype::LineDashPattern{6, 3} ||
+            !styledSelection.canUndo()) {
+            throw std::runtime_error("Changing a selected Pen line style did not create an editable change");
+        }
+        styledSelection.undo();
+        if (styledSelection.ink[0].brush.lineDashes != selectedStyleStroke.brush.lineDashes ||
+            styledSelection.canUndo()) {
+            throw std::runtime_error("Undo did not restore the selected Pen line style");
+        }
+        for (int invalid = 0; invalid < 6; ++invalid) {
             auto stroke = original;
             switch (invalid) {
                 case 0:
@@ -111,6 +134,9 @@ int main() {
                 case 4:
                     stroke.highlighter = true;
                     stroke.whiteout = true;
+                    break;
+                case 5:
+                    stroke.lineDashes = {0, 0};
                     break;
             }
             bool rejected = false;

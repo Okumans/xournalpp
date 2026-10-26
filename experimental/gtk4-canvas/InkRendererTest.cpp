@@ -41,6 +41,19 @@ int main() {
     prototype::drawInk(cr, {0, {{20, 120}, {200, 120}}, {prototype::Tool::Pen, {0, 0, 1}, 12}});
     pass &= pixel(surface, 80, 90) == 0xff0000 && pixel(surface, 80, 120) == 0x0000ff;
     pass &= pixel(surface, 80, 94) == 0xffffff && pixel(surface, 80, 124) == 0x0000ff;
+    prototype::Ink dashedPen{0, {{20, 140}, {100, 140}}, {prototype::Tool::Pen, {1, 0, 0}, 4}};
+    dashedPen.brush.lineDashes = {6, 3};
+    dashedPen.brush.width = 2;
+    prototype::drawInk(cr, dashedPen);
+    pass &= pixel(surface, 22, 140) == 0xff0000 && pixel(surface, 27, 140) == 0xffffff &&
+            pixel(surface, 31, 140) == 0xff0000;
+    prototype::Ink dashedPressurePen{
+            0, {{20, 150, 0.5}, {100, 150, 0.5}}, {prototype::Tool::Pen, {0, 0, 1}, 4}};
+    dashedPressurePen.pressureSensitive = true;
+    dashedPressurePen.brush.lineDashes = {6, 3};
+    prototype::drawInk(cr, dashedPressurePen);
+    pass &= pixel(surface, 22, 150) == 0x0000ff && pixel(surface, 27, 150) == 0xffffff &&
+            pixel(surface, 31, 150) == 0x0000ff;
     // Whiteout (Tool::Eraser) paints opaque white at constant width over underlying ink/text,
     // while later pen strokes draw cleanly on top of whiteout.
     prototype::drawInk(cr, {0, {{60, 120, 0.1}, {120, 120, 0.2}}, {prototype::Tool::Eraser, {0, 0, 0}, 16}});
