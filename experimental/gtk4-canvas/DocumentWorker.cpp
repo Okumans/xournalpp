@@ -1395,6 +1395,9 @@ int main(int argc, char** argv) {
                     "insert-page INPUT SNAPSHOT PDF AFTER_PAGE [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "insert-pages INPUT SNAPSHOT PDF INSERTION_LIST [AUDIO_FOLDER AUDIO_CACHE] | "
                     "delete-page INPUT SNAPSHOT PDF PAGE_INDEX [AUDIO_FOLDER [AUDIO_CACHE]] | "
+                    "delete-page-history INPUT SNAPSHOT PDF PAGE_INDEX AUDIO_FOLDER AUDIO_CACHE PAGE_SIZES "
+                    "PAGE_SNAPSHOT | restore-page INPUT PAGE_SNAPSHOT SNAPSHOT PDF PAGE_INDEX AUDIO_FOLDER "
+                    "AUDIO_CACHE PAGE_SIZES | "
                     "delete-pages INPUT SNAPSHOT PDF DELETION_LIST [AUDIO_FOLDER AUDIO_CACHE] | "
                     "set-pdf-page-background INPUT SNAPSHOT PDF DOCUMENT_PAGE PDF_PAGE INK TEXT LAYERS IMAGES "
                     "[AUDIO_FOLDER AUDIO_CACHE] | "
@@ -1407,7 +1410,7 @@ int main(int argc, char** argv) {
                     "autosave INPUT AUTOSAVE_XOPP INK [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | version PATH");
         }
         const std::string command = argv[1];
-        LoadContext originalContext, snapshotContext;
+        LoadContext originalContext, snapshotContext, pageHistoryContext;
         const auto input = std::string(argv[2]).empty() ? fs::path{} : fs::absolute(argv[2]);
         if (command == "version" && argc == 3) {
             std::cout << prototype::bridge::documentVersion(input).token << '\n';
@@ -1568,6 +1571,57 @@ int main(int argc, char** argv) {
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 hasAudioPaths ? fs::path(argv[6]) : fs::path{},
                                 hasAudioPaths ? fs::path(argv[7]) : fs::path{});
+        } else if (command == "delete-page-history" && argc == 10) {
+            if (document->getPageCount() <= 1) {
+                throw std::runtime_error("Cannot delete the only remaining page");
+            }
+            const auto pageIndex = parsePageIndex(argv[5], document->getPageCount(), "delete-page index");
+            const auto snapshot = fs::absolute(argv[3]);
+            const auto pdf = fs::absolute(argv[4]);
+            const auto pageSnapshot = fs::absolute(argv[9]);
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            requireNewTarget(pageSnapshot);
+            applyPageSizes(*document, fs::absolute(argv[8]));
+
+            Document pageHistory(&pageHistoryContext.handler);
+            pageHistory.lock();
+            pageHistory = *document;
+            pageHistory.unlock();
+            for (size_t index = pageHistory.getPageCount(); index-- > 0;) {
+                if (index != pageIndex) {
+                    pageHistory.deletePage(index);
+                }
+            }
+            if (pageHistory.getPageCount() != 1) {
+                throw std::runtime_error("Cannot capture the page for undo");
+            }
+            saveCopy(pageHistory, pageSnapshot);
+
+            document->deletePage(pageIndex);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat", fs::path(argv[6]), fs::path(argv[7]));
+        } else if (command == "restore-page" && argc == 10) {
+            const auto pageSnapshot = fs::absolute(argv[3]);
+            const auto snapshot = fs::absolute(argv[4]);
+            const auto pdf = fs::absolute(argv[5]);
+            const auto pageIndex = parsePageIndex(argv[6], document->getPageCount() + 1, "restore-page index");
+            requireNewTarget(snapshot);
+            requireNewTarget(pdf);
+            applyPageSizes(*document, fs::absolute(argv[9]));
+            auto pageHistory = load(pageSnapshot, pageHistoryContext);
+            if (pageHistory->getPageCount() != 1) {
+                throw std::runtime_error("The page history snapshot must contain one page");
+            }
+            const auto sourcePage = pageHistory->getPage(0);
+            if (!sourcePage) {
+                throw std::runtime_error("The deleted page snapshot is unavailable");
+            }
+            document->insertPage(std::make_shared<XojPage>(*sourcePage), pageIndex);
+            saveCopy(*document, snapshot);
+            document = load(snapshot, snapshotContext);
+            renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat", fs::path(argv[7]), fs::path(argv[8]));
         } else if (command == "delete-pages" && (argc == 6 || argc == 7 || argc == 8 || argc == 9)) {
             const auto pageIndices = readPageDeletionIndices(fs::absolute(argv[5]), document->getPageCount());
             const auto snapshot = fs::absolute(argv[3]);

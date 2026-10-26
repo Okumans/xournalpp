@@ -506,6 +506,11 @@ public:
         }
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
+        state.historyChangedCallback = [this](const std::vector<std::string>& snapshots) {
+            if (nativeSession) {
+                nativeSession->prunePageHistorySnapshots(snapshots);
+            }
+        };
         input.setStabilizerConfig(importedConfig.settings.stabilizer);
         penBrush = {Tool::Pen, importedConfig.settings.penColor, importedConfig.settings.penWidth,
                     importedConfig.settings.penFillEnabled, importedConfig.settings.penFillOpacity};
@@ -4620,15 +4625,9 @@ private:
         } else if (action == "goto-page") {
             openGotoPageDialog();
         } else if (action == "undo") {
-            selectedImageIndex.reset();
-            input.cancel();
-            state.undo();
-            update();
+            performHistoryStep(false);
         } else if (action == "redo") {
-            selectedImageIndex.reset();
-            input.cancel();
-            state.redo();
-            update();
+            performHistoryStep(true);
         } else if (action == "select-default-tool") {
             selectTool(Tool::Pen);
         } else if (action == "beamer-next") {
@@ -6393,6 +6392,41 @@ private:
         require(state.layersForPage(1).backgroundFormat == "lined" &&
                         state.layersForPage(3).backgroundFormat == "lined",
                 "SpaceForNotes normal mode did not preserve inserted page background metadata");
+        performHistoryStep(false);
+        waitForPluginDocumentJob();
+        require(pageCount == 3 && nativeSession->pdfPageMap == std::vector<int>({0, 1, -1}),
+                "Undo did not remove the latest SpaceForNotes page insertion");
+        performHistoryStep(false);
+        waitForPluginDocumentJob();
+        require(pageCount == 2 && nativeSession->pdfPageMap == std::vector<int>({0, 1}),
+                "Undo did not remove the earlier SpaceForNotes page insertion");
+        performHistoryStep(true);
+        waitForPluginDocumentJob();
+        require(pageCount == 3 && nativeSession->pdfPageMap == std::vector<int>({0, 1, -1}),
+                "Redo did not restore the first SpaceForNotes page insertion");
+        performHistoryStep(true);
+        waitForPluginDocumentJob();
+        require(pageCount == 4 && nativeSession->pdfPageMap == std::vector<int>({0, -1, 1, -1}),
+                "Redo did not restore the second SpaceForNotes page insertion");
+
+        navigateToPage(1);
+        deleteCurrentPage();
+        waitForPluginDocumentJob();
+        require(pageCount == 3 && nativeSession->pdfPageMap == std::vector<int>({0, 1, -1}),
+                "Deleting an inserted page did not update the native PDF page map");
+        performHistoryStep(false);
+        waitForPluginDocumentJob();
+        require(pageCount == 4 && nativeSession->pdfPageMap == std::vector<int>({0, -1, 1, -1}) &&
+                        state.layersForPage(1).backgroundFormat == "lined",
+                "Undo did not restore the deleted note page and its background");
+        performHistoryStep(true);
+        waitForPluginDocumentJob();
+        require(pageCount == 3 && nativeSession->pdfPageMap == std::vector<int>({0, 1, -1}),
+                "Redo did not remove the restored note page");
+        performHistoryStep(false);
+        waitForPluginDocumentJob();
+        require(pageCount == 4 && nativeSession->pdfPageMap == std::vector<int>({0, -1, 1, -1}),
+                "A deleted page snapshot did not remain available for a second undo");
         capture("space-for-notes-pdf-gaps");
         require(pluginRuntime->invokeMenu("SpaceForNotes", 1),
                 "SpaceForNotes force mode did not start from its plugin menu");
@@ -7090,7 +7124,7 @@ private:
             g_main_context_iteration(nullptr, false);
             g_usleep(1000);
         }
-        require(!busy, "ToggleGrid native page-background revision did not finish within 20 seconds");
+        require(!busy, "The native document operation did not finish within 20 seconds");
         waitForNextWindowFrame();
     }
 
@@ -7182,6 +7216,11 @@ private:
         state = CanvasState{};
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
+        state.historyChangedCallback = [this](const std::vector<std::string>& snapshots) {
+            if (nativeSession) {
+                nativeSession->prunePageHistorySnapshots(snapshots);
+            }
+        };
         state.setPages(std::move(pageSizes));
         state.selectActivePage(0);
         state.setLayerDocument(session->initialLayers);
@@ -7884,6 +7923,102 @@ private:
         g_object_unref(dialog);
     }
 
+    void performHistoryStep(bool redo) {
+        if (busy || choosingFile || messageDialog || closed) {
+            return;
+        }
+
+        bool pageExistsAfter = false;
+        int pageIndex = -1;
+        std::string pageSnapshotPath;
+        const bool hasPageStructureChange =
+                redo ? state.nextRedoPageStructureChange(pageExistsAfter, pageIndex, pageSnapshotPath) :
+                       state.nextUndoPageStructureChange(pageExistsAfter, pageIndex, pageSnapshotPath);
+        if (!hasPageStructureChange) {
+            selectedImageIndex.reset();
+            input.cancel();
+            if (redo) {
+                state.redo();
+            } else {
+                state.undo();
+            }
+            update();
+            return;
+        }
+        if (!nativeSession || options.worker.empty()) {
+            showError("Page history requires the native document worker");
+            return;
+        }
+        if (autosaving) {
+            waitForAutosave([this, redo] { performHistoryStep(redo); });
+            return;
+        }
+
+        selectedImageIndex.reset();
+        input.cancel();
+        resetInput(true);
+        const auto session = nativeSession;
+        const auto worker = options.worker;
+        const auto pageSizes = currentPageSizes(state);
+        auto staged = std::make_shared<prototype::bridge::DocumentSession::StagedRevision>();
+        const bool shouldExistAfter = redo ? pageExistsAfter : !pageExistsAfter;
+        runDocumentJob(redo ? "Redoing page change…" : "Undoing page change…",
+                       [session, worker, pageSizes, staged, pageIndex, shouldExistAfter, pageExistsAfter,
+                        pageSnapshotPath] {
+                           if (!shouldExistAfter) {
+                               *staged = session->stageDeletePageAt(worker, pageIndex, pageSizes, false);
+                           } else if (!pageExistsAfter) {
+                               *staged = session->stageRestorePageAt(worker, pageIndex, pageSnapshotPath, pageSizes);
+                           } else {
+                               *staged = session->stageInsertPageAfter(worker, pageIndex - 1, pageSizes);
+                           }
+                       },
+                       [this, session, staged, redo] {
+                           PopplerDocument* candidate = nullptr;
+                           std::vector<PopplerDocument*> candidateLayers;
+                           std::vector<PopplerDocument*> candidateAudioLayers;
+                           std::vector<prototype::PageSize> sizes;
+                           try {
+                               std::tie(candidate, sizes) = openPreviewPdf(staged->previewPath().string());
+                               candidateLayers = openLayerPreviewPdfs(staged->layerPreviewPaths(),
+                                                                      static_cast<int>(sizes.size()));
+                               candidateAudioLayers = openAudioLayerPreviewPdfs(staged->audioLayerPreviewPaths(),
+                                                                                 static_cast<int>(sizes.size()));
+                           } catch (...) {
+                               if (candidate) {
+                                   g_object_unref(candidate);
+                               }
+                               releaseLayerPreviewPdfs(candidateLayers);
+                               releaseLayerPreviewPdfs(candidateAudioLayers);
+                               prototype::bridge::DocumentSession::discardRevision(*staged);
+                               throw;
+                           }
+                           session->commitRevision(*staged);
+                           g_clear_object(&document);
+                           document = candidate;
+                           releaseLayerPreviewPdfs(layerDocuments);
+                           layerDocuments = std::move(candidateLayers);
+                           releaseLayerPreviewPdfs(audioLayerDocuments);
+                           audioLayerDocuments = std::move(candidateAudioLayers);
+                           audioTargets = session->audioTargets;
+                           pageCount = static_cast<int>(sizes.size());
+                           if (redo) {
+                               state.redo();
+                           } else {
+                               state.undo();
+                           }
+                           state.setPages(std::move(sizes));
+                           session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
+                           pageCache.clear();
+                           layerPageCache.clear();
+                           thumbnails.clear();
+                           thumbnailWidgets.clear();
+                           pageList = nullptr;
+                           adw_overlay_split_view_set_sidebar(splitView, createSidebar());
+                           navigateToPage(state.page);
+                       });
+    }
+
     void insertPageAfterCurrent() {
         if (!nativeSession || busy || choosingFile || messageDialog) {
             return;
@@ -7937,14 +8072,13 @@ private:
                     audioLayerDocuments = std::move(candidateAudioLayers);
                     audioTargets = session->audioTargets;
                     pageCount = static_cast<int>(sizes.size());
-                    state.insertPageAfter(afterPage, sizes.at(static_cast<size_t>(afterPage + 1)));
+                    state.insertPageAfter(afterPage, sizes.at(static_cast<size_t>(afterPage + 1)), false);
                     state.setPages(std::move(sizes));
                     state.pageLayers.at(static_cast<size_t>(afterPage + 1)) =
                             layerState.at(static_cast<size_t>(afterPage + 1));
+                    state.recordPageInsertion(afterPage + 1);
+                    session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                     state.selectActivePage(afterPage + 1);
-                    savedRevision.reset();
-                    savedNormally = false;
-                    savedCopyPath.clear();
                     pageCache.clear();
                     layerPageCache.clear();
                     thumbnails.clear();
@@ -8043,7 +8177,7 @@ private:
                     audioTargets = session->audioTargets;
                     pageCount = static_cast<int>(sizes.size());
                     for (const int afterPage: afterPages) {
-                        state.insertPageAfter(afterPage, sourcePageSizes.at(static_cast<size_t>(afterPage)));
+                        state.insertPageAfter(afterPage, sourcePageSizes.at(static_cast<size_t>(afterPage)), false);
                     }
                     state.setPages(std::move(sizes));
                     for (const int afterPage: afterPages) {
@@ -8053,9 +8187,14 @@ private:
                                               [afterPage](int pageBefore) { return pageBefore < afterPage; }));
                         state.pageLayers.at(insertedPage) = layerState.at(insertedPage);
                     }
-                    savedRevision.reset();
-                    savedNormally = false;
-                    savedCopyPath.clear();
+                    for (const int afterPage: afterPages) {
+                        const auto historyPage = afterPage + 1;
+                        const auto finalPage = afterPage + 1 + static_cast<int>(
+                                std::count_if(afterPages.begin(), afterPages.end(),
+                                              [afterPage](int pageBefore) { return pageBefore < afterPage; }));
+                        state.recordPageInsertion(historyPage, finalPage);
+                    }
+                    session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                     pageCache.clear();
                     layerPageCache.clear();
                     thumbnails.clear();
@@ -8077,6 +8216,7 @@ private:
             return;
         }
         resetInput(true);
+        selectedImageIndex.reset();
         const int removeIndex = state.page;
         const auto session = nativeSession;
         const auto worker = options.worker;
@@ -8115,13 +8255,13 @@ private:
                     audioLayerDocuments = std::move(candidateAudioLayers);
                     audioTargets = session->audioTargets;
                     pageCount = static_cast<int>(sizes.size());
-                    state.deletePageAt(removeIndex);
+                    if (!state.deletePageWithHistory(removeIndex, staged->pageHistorySnapshotPath.string())) {
+                        throw std::runtime_error("The deleted page could not be added to undo history");
+                    }
                     state.setPages(std::move(sizes));
                     const int nextActive = std::min(removeIndex, pageCount - 1);
                     state.selectActivePage(nextActive);
-                    savedRevision.reset();
-                    savedNormally = false;
-                    savedCopyPath.clear();
+                    session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                     pageCache.clear();
                     layerPageCache.clear();
                     thumbnails.clear();
@@ -12121,20 +12261,14 @@ private:
                                      static_cast<Prototype*>(data)->chooseExportPdf();
                                  }));
         adw_header_bar_pack_end(ADW_HEADER_BAR(header), exportPdfButton);
-        undoButton = button("edit-undo-symbolic", "Undo ink (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
+        undoButton = button("edit-undo-symbolic", "Undo (Ctrl+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
-                                self->selectedImageIndex.reset();
-                                self->input.cancel();
-                                self->state.undo();
-                                self->update();
+                                self->performHistoryStep(false);
                             }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), undoButton);
-        redoButton = button("edit-redo-symbolic", "Redo ink (Ctrl+Shift+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
+        redoButton = button("edit-redo-symbolic", "Redo (Ctrl+Shift+Z)", G_CALLBACK(+[](GtkButton*, gpointer data) {
                                 auto* self = static_cast<Prototype*>(data);
-                                self->selectedImageIndex.reset();
-                                self->input.cancel();
-                                self->state.redo();
-                                self->update();
+                                self->performHistoryStep(true);
                             }));
         adw_header_bar_pack_start(ADW_HEADER_BAR(header), redoButton);
         adw_header_bar_pack_end(ADW_HEADER_BAR(header), button("zoom-fit-best-symbolic", "Fit page (Ctrl+0)",
@@ -13041,8 +13175,8 @@ private:
         const auto label = std::to_string(state.page + 1) + " / " + std::to_string(pageCount);
         gtk_label_set_text(GTK_LABEL(pageLabel), label.c_str());
         gtk_label_set_text(GTK_LABEL(zoomLabel), (std::to_string(static_cast<int>(state.zoom * 100)) + "%").c_str());
-        gtk_widget_set_sensitive(undoButton, state.canUndo());
-        gtk_widget_set_sensitive(redoButton, state.canRedo());
+        gtk_widget_set_sensitive(undoButton, !busy && state.canUndo());
+        gtk_widget_set_sensitive(redoButton, !busy && state.canRedo());
         const bool wasSyncingBrush = syncingBrush;
         syncingBrush = true;
         if (drawingModeDropdown &&
@@ -14574,18 +14708,9 @@ private:
                         self->input.spaceHeld = true;
                         gtk_widget_set_cursor_from_name(self->canvas, "grab");
                     } else if ((modifiers & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_Z)) {
-                        self->selectedImageIndex.reset();
-                        if (modifiers & GDK_SHIFT_MASK) {
-                            self->input.cancel();
-                            self->state.redo();
-                        } else {
-                            self->input.cancel();
-                            self->state.undo();
-                        }
+                        self->performHistoryStep((modifiers & GDK_SHIFT_MASK) != 0);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_y) {
-                        self->selectedImageIndex.reset();
-                        self->input.cancel();
-                        self->state.redo();
+                        self->performHistoryStep(true);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_0) {
                         self->fitted = false;
                     } else if ((modifiers & GDK_CONTROL_MASK) &&

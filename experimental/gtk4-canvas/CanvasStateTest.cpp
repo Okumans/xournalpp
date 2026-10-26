@@ -730,6 +730,76 @@ static void continuousMultiPageLayout() {
           "deletePageAt must refuse deleting the last remaining page");
 }
 
+static void pageStructureHistory() {
+    CanvasState state;
+    state.setPages({{595, 842}, {612, 792}, {500, 700}});
+    PageLayers deletedPageLayers;
+    deletedPageLayers.backgroundFormat = "graph";
+    deletedPageLayers.backgroundColor = 0x123456;
+    deletedPageLayers.backgroundName = "History page";
+    state.pageLayers[1] = deletedPageLayers;
+
+    TextItem deletedText;
+    deletedText.page = 1;
+    deletedText.text = "restored with page";
+    state.texts.push_back(deletedText);
+
+    state.page = 2;
+    state.brush = {Tool::Pen, {0, 0, 0}, 2};
+    const auto strokeStart = state.pageScreenPoint(2, 30, 40);
+    const auto strokeEnd = state.pageScreenPoint(2, 80, 90);
+    check(state.begin(Device::Mouse, strokeStart.x, strokeStart.y),
+          "page-history stroke should begin on the final page");
+    state.append(Device::Mouse, strokeEnd.x, strokeEnd.y);
+    state.finish(Device::Mouse);
+    check(state.ink.size() == 1 && state.ink[0].page == 2,
+          "page-history fixture should record an earlier edit on the final page");
+
+    state.insertPageAfter(0, {400, 600}, false);
+    state.pageLayers[1].backgroundFormat = "lined";
+    state.recordPageInsertion(1);
+    state.pageLayers[1].backgroundName = "inserted page rename";
+    check(state.pageCount() == 4 && state.ink[0].page == 3,
+          "history-tracked insertion should shift current objects without rewriting earlier edits");
+
+    state.undo();
+    check(state.pageCount() == 3 && state.ink[0].page == 2 && state.pages[1].width == 612,
+          "undo should remove the inserted page and restore the prior page indices");
+    state.undo();
+    check(state.ink.empty(), "an edit recorded before page insertion should still undo on its original page");
+    state.redo();
+    check(state.ink.size() == 1 && state.ink[0].page == 2,
+          "an edit recorded before page insertion should still redo on its original page");
+    state.redo();
+    check(state.pageCount() == 4 && state.ink[0].page == 3 && state.pages[1].width == 400 &&
+                  state.pageLayers[1].backgroundName == "inserted page rename",
+          "redo should restore the inserted page, including no-history metadata changes");
+
+    check(state.deletePageWithHistory(2, "/tmp/page-history-source.xopp"),
+          "page deletion should create a history action when its source snapshot is available");
+    check(state.pageCount() == 3 && state.texts.empty() && state.ink[0].page == 2,
+          "page deletion should remove its objects and shift later page objects");
+    bool pageExistsAfter = true;
+    int pageIndex = -1;
+    std::string sourceSnapshotPath;
+    check(state.nextUndoPageStructureChange(pageExistsAfter, pageIndex, sourceSnapshotPath) && !pageExistsAfter &&
+                  pageIndex == 2 && sourceSnapshotPath == "/tmp/page-history-source.xopp",
+          "the undo coordinator should be able to identify a pending page deletion and its source snapshot");
+    state.undo();
+    check(state.pageCount() == 4 && state.texts.size() == 1 && state.texts[0].page == 2 &&
+                  state.texts[0].text == "restored with page" && state.pageLayers[2] == deletedPageLayers &&
+                  state.ink[0].page == 3,
+          "undo should restore the deleted page metadata and objects while shifting following pages back");
+    state.pageLayers[2].backgroundName = "renamed after restoring deletion";
+    state.redo();
+    check(state.pageCount() == 3 && state.texts.empty() && state.ink[0].page == 2,
+          "redo should delete the restored page and retain later page edits");
+    state.undo();
+    check(state.pageLayers[2].backgroundName == "renamed after restoring deletion",
+          "redo should refresh the page snapshot so a later undo keeps no-history metadata changes");
+    state.redo();
+}
+
 static void pluginBackgroundNameSetter() {
     CanvasState state;
     state.setPages({{595, 842}});
@@ -1410,6 +1480,7 @@ int main() {
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
+        pageStructureHistory();
         scrollDeltaUnits();
         pluginBackgroundNameSetter();
         layerManagement();

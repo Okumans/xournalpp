@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <gio/gio.h>
@@ -38,7 +39,11 @@ struct LayerActionTargetInfo {
 class DocumentSession {
 public:
     struct StagedRevision {
+        StagedRevision() = default;
+        explicit StagedRevision(std::filesystem::path directory): directory(std::move(directory)) {}
+
         std::filesystem::path directory;
+        std::filesystem::path pageHistorySnapshotPath;
         std::filesystem::path snapshotPath() const { return directory / "snapshot.xopp"; }
         std::filesystem::path previewPath() const { return directory / "preview.pdf"; }
         std::filesystem::path backgroundPdfPath() const { return directory / "background.pdf"; }
@@ -308,8 +313,77 @@ public:
     }
 
     StagedRevision stageDeletePageAt(const std::string& worker, int pageIndex,
-                                     const std::vector<PageSizePacket>& pageSizes) {
-        return stagePageMutation(worker, "delete-page", pageIndex, pageSizes);
+                                     const std::vector<PageSizePacket>& pageSizes, bool preserveForUndo = true) {
+        if (!preserveForUndo) {
+            return stagePageMutation(worker, "delete-page", pageIndex, pageSizes);
+        }
+
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        const auto historyDirectory = path / "page-history" / ("page-" + std::to_string(nextPageHistoryId++));
+        staged.pageHistorySnapshotPath = historyDirectory / "snapshot.xopp";
+        std::filesystem::create_directories(staged.directory);
+        std::filesystem::create_directories(historyDirectory);
+        try {
+            const auto pageSizeTransfer = staged.directory / "page-mutation.page-sizes";
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
+            runWorker(worker, {"delete-page-history", snapshotPath().string(), staged.snapshotPath().string(),
+                               staged.previewPath().string(), std::to_string(pageIndex), audioFolder.string(),
+                               audioDirectory.string(), pageSizeTransfer.string(),
+                               staged.pageHistorySnapshotPath.string()});
+        } catch (...) {
+            std::error_code ignored;
+            std::filesystem::remove_all(historyDirectory, ignored);
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
+
+    StagedRevision stageRestorePageAt(const std::string& worker, int pageIndex,
+                                      const std::filesystem::path& pageSnapshot,
+                                      const std::vector<PageSizePacket>& pageSizes) {
+        if (pageSnapshot.empty() || !std::filesystem::is_regular_file(pageSnapshot) || pageIndex < 0 ||
+            static_cast<size_t>(pageIndex) > pdfPageMap.size()) {
+            throw std::runtime_error("The deleted page snapshot is unavailable");
+        }
+        StagedRevision staged{path / ("rev-" + std::to_string(nextRevisionId++))};
+        std::filesystem::create_directories(staged.directory);
+        try {
+            const auto pageSizeTransfer = staged.directory / "page-mutation.page-sizes";
+            writePageSizeTransfer(pageSizeTransfer, pageSizes);
+            runWorker(worker, {"restore-page", snapshotPath().string(), pageSnapshot.string(),
+                               staged.snapshotPath().string(), staged.previewPath().string(),
+                               std::to_string(pageIndex), audioFolder.string(), audioDirectory.string(),
+                               pageSizeTransfer.string()});
+        } catch (...) {
+            discardRevision(staged);
+            throw;
+        }
+        return staged;
+    }
+
+    void prunePageHistorySnapshots(const std::vector<std::string>& retainedPaths) const {
+        const auto historyRoot = path / "page-history";
+        std::error_code error;
+        if (!std::filesystem::is_directory(historyRoot, error) || error) {
+            return;
+        }
+        std::unordered_set<std::string> retained;
+        retained.reserve(retainedPaths.size());
+        for (const auto& item: retainedPaths) {
+            retained.insert(std::filesystem::path(item).lexically_normal().string());
+        }
+        for (std::filesystem::directory_iterator it(historyRoot, error), end; !error && it != end; it.increment(error)) {
+            if (!it->is_directory(error) || error) {
+                error.clear();
+                continue;
+            }
+            const auto snapshot = (it->path() / "snapshot.xopp").lexically_normal().string();
+            if (!retained.contains(snapshot)) {
+                std::filesystem::remove_all(it->path(), error);
+                error.clear();
+            }
+        }
     }
 
     StagedRevision stageDeletePagesAt(const std::string& worker, const std::vector<int>& pageIndices,
@@ -598,6 +672,7 @@ private:
     std::filesystem::path audioDirectory;
     std::filesystem::path activeDir;
     size_t nextRevisionId = 1;
+    size_t nextPageHistoryId = 1;
 };
 
 }  // namespace prototype::bridge
