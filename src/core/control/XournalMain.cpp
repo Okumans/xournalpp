@@ -22,7 +22,7 @@
 #include <libintl.h>      // for bindtextdomain, textdomain
 
 #include "control/RecentManager.h"           // for RecentManager
-#include "control/jobs/BaseExportJob.h"      // for ExportBackgroundType
+#include "control/jobs/ExportTypes.h"         // for ExportBackgroundType
 #include "control/jobs/XournalScheduler.h"   // for XournalScheduler
 #include "control/settings/LatexSettings.h"  // for LatexSettings
 #include "control/settings/Settings.h"       // for Settings
@@ -386,6 +386,8 @@ void initResourcePath(GladeSearchpath* gladePath, const gchar* relativePathAndFi
 
 void on_activate(GApplication*, XMPtr) {}
 
+void showUtilityError(const std::string& message) { XojMsgBox::showErrorToUser(nullptr, message); }
+
 gint on_command_line(GApplication*, GApplicationCommandLine*, XMPtr) {
     g_message("XournalMain::on_command_line: This should never happen, please file a bugreport with a detailed "
               "description how to reproduce this message");
@@ -425,6 +427,7 @@ void on_open_files(GApplication* application, gpointer f, gint numFiles, gchar* 
 
 void on_startup(GApplication* application, XMPtr app_data) {
     XournalMain::initLocalisation();
+    Util::setErrorReporter(showUtilityError);
     ensure_input_model_compatibility();
     const MigrateResult migrateResult = migrateSettings();
 

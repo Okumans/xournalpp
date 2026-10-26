@@ -544,7 +544,7 @@ gboolean Prototype::smoke() {
                 update();
             } else {
                 require(!gtk_widget_get_sensitive(textButton),
-                        "Text tool should be unavailable without a document worker");
+                        "Text tool should be unavailable without an editable document session");
                 finishSmoke = true;
             }
             break;
@@ -749,7 +749,7 @@ gboolean Prototype::smoke() {
                   << "\nframes=" << frames << " rasterizations=" << canvasRenderer.completedRequests()
                   << " device_scale=" << gtk_widget_get_scale_factor(canvas)
                   << " viewport_width=" << gtk_widget_get_width(canvas) << " cache_bytes=" << smokeCacheBytes << '\n';
-        if (options.worker.empty()) {
+        if (!nativeSession) {
             g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
             return G_SOURCE_REMOVE;
         }

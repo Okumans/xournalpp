@@ -12,12 +12,16 @@
 #pragma once
 
 #include <string>  // for string
+#include <string_view>
 
 
 enum class PageTypeFormat { Plain, Ruled, Lined, Staves, Graph, Dotted, IsoDotted, IsoGraph, Pdf, Image };
 
 class PageType {
 public:
+    static PageTypeFormat formatFromString(std::string_view format);
+    static std::string formatToString(PageTypeFormat format);
+
     PageType();
     explicit PageType(PageTypeFormat format);
     PageType(const PageType& other);

@@ -57,7 +57,7 @@ Prototype::Prototype(prototype::ApplicationOptions options):
             this->options.autosaveSecondsOverride.value_or(importedConfig.settings.effectiveAutosaveSeconds());
 
     sourcePath = this->options.nativeDocument.empty() ? this->options.pdf : this->options.nativeDocument;
-    if (!this->options.pdf.empty() && this->options.worker.empty()) {
+    if (!this->options.pdf.empty()) {
         auto [loadedDoc, sizes] = openPreviewPdf(this->options.pdf);
         document = loadedDoc;
         pageCount = static_cast<int>(sizes.size());
@@ -256,7 +256,7 @@ void Prototype::scheduleAutosave(guint seconds) {
         g_source_remove(autosaveSource);
         autosaveSource = 0;
     }
-    if (!options.worker.empty() && seconds > 0) {
+    if (seconds > 0) {
         autosaveSource = g_timeout_add_seconds(
                 seconds,
                 +[](gpointer data) -> gboolean {
@@ -275,7 +275,7 @@ void Prototype::waitForAutosave(std::function<void()> action) {
 }
 
 void Prototype::startAutosave() {
-    if (!nativeSession || options.worker.empty() || closed || busy || autosaving || choosingFile || messageDialog) {
+    if (!nativeSession || closed || busy || autosaving || choosingFile || messageDialog) {
         return;
     }
     finishTextEditing();

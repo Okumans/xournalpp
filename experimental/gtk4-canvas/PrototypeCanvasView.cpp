@@ -804,7 +804,8 @@ void Prototype::activate(GtkApplication* app) {
     g_signal_connect(paintClock, "after-paint",
                      G_CALLBACK(+[](GdkFrameClock*, gpointer data) { ++static_cast<Prototype*>(data)->paints; }), this);
     gtk_widget_grab_focus(canvas);
-    if (!options.worker.empty()) {
+    if (!sourcePath.empty() || (options.nativeDocument.empty() && options.smokeDirectory.empty()) ||
+        !options.worker.empty()) {
         scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
         requestOpenDocument(sourcePath, true);
     }
@@ -1060,7 +1061,7 @@ void Prototype::update() {
         gtk_widget_get_visible(GTK_WIDGET(pdfActionsPopover))) {
         updatePdfActionsPosition(false);
     }
-    gtk_widget_set_sensitive(openButton, !options.worker.empty());
+    gtk_widget_set_sensitive(openButton, true);
     gtk_widget_set_sensitive(saveButton, bool(nativeSession));
     gtk_widget_set_sensitive(saveAsButton, bool(nativeSession));
     gtk_widget_set_sensitive(exportPdfButton, bool(nativeSession));

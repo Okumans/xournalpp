@@ -9,7 +9,10 @@ pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0)
 pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua5.4)
+pkg_check_modules(DOCUMENT_BACKEND REQUIRED IMPORTED_TARGET libzip librsvg-2.0 libxml-2.0)
+pkg_check_modules(QPDF QUIET IMPORTED_TARGET libqpdf)
 pkg_check_modules(GTK_SOURCEVIEW QUIET IMPORTED_TARGET gtksourceview-5>=5.0)
+find_package(ZLIB REQUIRED)
 set(GTK4_CANVAS_HAVE_VIPS FALSE)
 if(GTK4_CANVAS_ENABLE_VIPS)
     pkg_check_modules(VIPS QUIET IMPORTED_TARGET vips)
@@ -19,6 +22,90 @@ if(GTK4_CANVAS_ENABLE_VIPS)
 endif()
 
 get_filename_component(XOURNALPP_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(GTK4_CANVAS_CORE_BUILD_DIR "${XOURNALPP_REPO_ROOT}/build" CACHE PATH
+    "Existing Xournal++ build used for generated headers by the in-process GTK 4 document backend")
+if(NOT EXISTS "${GTK4_CANVAS_CORE_BUILD_DIR}/src/config.h")
+    message(FATAL_ERROR
+        "The in-process document backend needs generated Xournal++ headers. Configure a normal build first, or set "
+        "GTK4_CANVAS_CORE_BUILD_DIR.")
+endif()
+
+# Reuse the upstream document model, parser, serializer, and Cairo view code while
+# keeping the legacy GTK 3 controller and window sources out of the GTK 4 process.
+file(GLOB_RECURSE GTK4_DOCUMENT_CORE_SOURCES CONFIGURE_DEPENDS
+     "${XOURNALPP_REPO_ROOT}/src/core/model/*.cpp"
+     "${XOURNALPP_REPO_ROOT}/src/core/control/xojfile/*.cpp"
+     "${XOURNALPP_REPO_ROOT}/src/core/control/xml/*.cpp"
+     "${XOURNALPP_REPO_ROOT}/src/core/pdf/base/*.cpp"
+     "${XOURNALPP_REPO_ROOT}/src/core/pdf/popplerapi/*.cpp"
+     "${XOURNALPP_REPO_ROOT}/src/core/view/background/*.cpp")
+file(GLOB GTK4_DOCUMENT_VIEW_SOURCES CONFIGURE_DEPENDS "${XOURNALPP_REPO_ROOT}/src/core/view/*.cpp")
+list(FILTER GTK4_DOCUMENT_VIEW_SOURCES EXCLUDE REGEX "/(CompassView|GeometryToolView|SetsquareView)\\.cpp$")
+list(FILTER GTK4_DOCUMENT_CORE_SOURCES EXCLUDE REGEX "/(PageTypeHandler|PaperSize|PdfCacheSettings)\\.cpp$")
+list(APPEND GTK4_DOCUMENT_CORE_SOURCES ${GTK4_DOCUMENT_VIEW_SOURCES}
+     "${XOURNALPP_REPO_ROOT}/src/core/control/PdfCache.cpp"
+     "${XOURNALPP_REPO_ROOT}/src/core/control/jobs/ImageExport.cpp")
+
+file(GLOB_RECURSE GTK4_DOCUMENT_UTIL_SOURCES CONFIGURE_DEPENDS "${XOURNALPP_REPO_ROOT}/src/util/*.cpp")
+list(FILTER GTK4_DOCUMENT_UTIL_SOURCES EXCLUDE REGEX
+     "/(GtkUtil|PathUtil|Util|VersionInfo|XojMsgBox|gdk4_helper|gtk4_helper)\\.cpp$")
+
+add_library(gtk4-document-util STATIC ${GTK4_DOCUMENT_UTIL_SOURCES})
+target_include_directories(gtk4-document-util SYSTEM PRIVATE ${UI_INCLUDE_DIRS} ${CAIRO_INCLUDE_DIRS}
+                           ${GLIB_INCLUDE_DIRS} ${DOCUMENT_BACKEND_INCLUDE_DIRS})
+target_include_directories(gtk4-document-util PUBLIC "${XOURNALPP_REPO_ROOT}/src/util/include"
+                            "${GTK4_CANVAS_CORE_BUILD_DIR}/src")
+target_compile_features(gtk4-document-util PUBLIC cxx_std_20)
+target_compile_options(gtk4-document-util PRIVATE -Wall -Wextra -Wpedantic ${UI_CFLAGS_OTHER} ${CAIRO_CFLAGS_OTHER}
+                       ${GLIB_CFLAGS_OTHER})
+target_compile_definitions(gtk4-document-util PRIVATE G_LOG_DOMAIN="xopp" _USE_MATH_DEFINES)
+target_link_libraries(gtk4-document-util PUBLIC PkgConfig::UI PkgConfig::GLIB ZLIB::ZLIB)
+
+add_library(gtk4-document-core STATIC ${GTK4_DOCUMENT_CORE_SOURCES})
+target_include_directories(gtk4-document-core SYSTEM PRIVATE ${UI_INCLUDE_DIRS} ${CAIRO_INCLUDE_DIRS}
+                           ${GLIB_INCLUDE_DIRS} ${DOCUMENT_BACKEND_INCLUDE_DIRS})
+target_include_directories(gtk4-document-core PUBLIC "${XOURNALPP_REPO_ROOT}/src/core"
+                            "${XOURNALPP_REPO_ROOT}/src/util/include" "${GTK4_CANVAS_CORE_BUILD_DIR}/src")
+target_compile_features(gtk4-document-core PUBLIC cxx_std_20)
+target_compile_options(gtk4-document-core PRIVATE -Wall -Wextra -Wpedantic ${UI_CFLAGS_OTHER} ${CAIRO_CFLAGS_OTHER}
+                       ${GLIB_CFLAGS_OTHER})
+target_compile_definitions(gtk4-document-core PRIVATE G_LOG_DOMAIN="xopp" _USE_MATH_DEFINES)
+target_link_libraries(gtk4-document-core PUBLIC gtk4-document-util PkgConfig::UI PkgConfig::CAIRO
+                      PkgConfig::DOCUMENT_BACKEND ZLIB::ZLIB z)
+if(TARGET PkgConfig::QPDF)
+    target_compile_definitions(gtk4-document-core PRIVATE ENABLE_QPDF)
+    target_link_libraries(gtk4-document-core PUBLIC PkgConfig::QPDF)
+endif()
+
+add_library(gtk4-document-util-compat OBJECT ../../src/util/Util.cpp ../../src/util/PathUtil.cpp)
+target_include_directories(gtk4-document-util-compat SYSTEM PRIVATE ${UI_INCLUDE_DIRS} ${CAIRO_INCLUDE_DIRS}
+                           ${GLIB_INCLUDE_DIRS} ${DOCUMENT_BACKEND_INCLUDE_DIRS})
+target_include_directories(gtk4-document-util-compat PRIVATE
+                           "${XOURNALPP_REPO_ROOT}/src/core"
+                           "${XOURNALPP_REPO_ROOT}/src/util/include"
+                           "${GTK4_CANVAS_CORE_BUILD_DIR}/src")
+target_compile_features(gtk4-document-util-compat PRIVATE cxx_std_20)
+target_compile_options(gtk4-document-util-compat PRIVATE -Wall -Wextra -Wpedantic
+                       ${UI_CFLAGS_OTHER} ${CAIRO_CFLAGS_OTHER} ${GLIB_CFLAGS_OTHER})
+target_compile_definitions(gtk4-document-util-compat PRIVATE PROJECT_NAME="xournalpp" G_LOG_DOMAIN="xopp"
+                           _USE_MATH_DEFINES)
+
+add_library(gtk4-document-backend STATIC DocumentWorker.cpp)
+target_include_directories(gtk4-document-backend SYSTEM PRIVATE ${UI_INCLUDE_DIRS} ${CAIRO_INCLUDE_DIRS}
+                           ${GLIB_INCLUDE_DIRS} ${DOCUMENT_BACKEND_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS})
+target_include_directories(gtk4-document-backend PRIVATE
+                           "${XOURNALPP_REPO_ROOT}/src/core"
+                           "${XOURNALPP_REPO_ROOT}/src/util/include"
+                           "${GTK4_CANVAS_CORE_BUILD_DIR}/src")
+target_compile_features(gtk4-document-backend PRIVATE cxx_std_20)
+target_compile_options(gtk4-document-backend PRIVATE -Wall -Wextra -Wpedantic
+                       ${UI_CFLAGS_OTHER} ${CAIRO_CFLAGS_OTHER} ${GLIB_CFLAGS_OTHER})
+target_compile_definitions(gtk4-document-backend PRIVATE G_LOG_DOMAIN="xopp" _USE_MATH_DEFINES)
+target_link_libraries(gtk4-document-backend PUBLIC gtk4-document-core PkgConfig::UI PkgConfig::DOCUMENT_BACKEND
+                      PkgConfig::LUA)
+if(TARGET PkgConfig::QPDF)
+    target_link_libraries(gtk4-document-backend PUBLIC PkgConfig::QPDF)
+endif()
 
 add_library(gtk4-stroke-contour STATIC ../../src/core/model/MathVect.cpp ../../src/core/model/Point.cpp
             ../../src/core/model/StrokeContour.cpp ../../src/util/Assert.cpp)
@@ -78,7 +165,7 @@ target_compile_definitions(xournalpp-gtk4-canvas PRIVATE
                            GTK4_CANVAS_BUNDLED_PLUGIN_DIR="${XOURNALPP_REPO_ROOT}/plugins"
                            GTK4_CANVAS_RESOURCE_DIR="${XOURNALPP_REPO_ROOT}/resources")
 target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::UI PkgConfig::GSTREAMER PkgConfig::LUA
-                      gtk4-stroke-contour)
+                      gtk4-stroke-contour gtk4-document-backend $<TARGET_OBJECTS:gtk4-document-util-compat>)
 if(GTK_SOURCEVIEW_FOUND)
     target_link_libraries(xournalpp-gtk4-canvas PRIVATE PkgConfig::GTK_SOURCEVIEW)
     target_compile_definitions(xournalpp-gtk4-canvas PRIVATE GTK4_CANVAS_HAVE_SOURCEVIEW=1)
@@ -282,7 +369,6 @@ add_test(NAME reject-plugin-verify-without-smoke COMMAND xournalpp-gtk4-canvas -
 set_tests_properties(reject-unknown-option reject-invalid-autosave-interval reject-invalid-config-dir reject-missing-pdf
                      reject-invalid-plugin-dir reject-plugin-verify-without-smoke PROPERTIES WILL_FAIL TRUE)
 add_test(NAME reject-nonexecutable-worker COMMAND xournalpp-gtk4-canvas --worker missing-worker)
-add_test(NAME reject-document-without-worker COMMAND xournalpp-gtk4-canvas --document missing.xopp)
 add_test(NAME reject-missing-worker COMMAND xournalpp-gtk4-canvas --document missing.xopp --worker missing-worker)
-set_tests_properties(reject-nonexecutable-worker reject-document-without-worker reject-missing-worker
+set_tests_properties(reject-nonexecutable-worker reject-missing-worker
                      PROPERTIES WILL_FAIL TRUE)

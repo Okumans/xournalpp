@@ -293,8 +293,8 @@ bool Prototype::stepBeamerPresentation(int delta, std::string& error) {
 }
 
 bool Prototype::cleanBeamerAnimations(std::string& error) {
-    if (!nativeSession || options.worker.empty()) {
-        error = "Cleaning Beamer animation pages requires a native document and document worker";
+    if (!nativeSession) {
+        error = "Cleaning Beamer animation pages requires an open native document";
         return false;
     }
     if (busy || choosingFile || messageDialog || closed) {
@@ -479,8 +479,8 @@ void Prototype::startLayerActionsClone(int currentPage, int pdfPage, bool allowA
 }
 
 bool Prototype::cloneNextPageFromLayerActions(std::string& error) {
-    if (!nativeSession || options.worker.empty()) {
-        error = "Cloning layers requires an open document and document worker";
+    if (!nativeSession) {
+        error = "Cloning layers requires an open native document";
         return false;
     }
     if (busy || choosingFile || messageDialog || closed) {

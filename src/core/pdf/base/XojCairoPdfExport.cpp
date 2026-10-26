@@ -4,17 +4,13 @@
 #include <map>        // for map
 #include <memory>     // for __shared_ptr_access
 #include <sstream>    // for ostringstream, operator<<
-#include <stack>      // for stack
-#include <utility>    // for pair, make_pair
 #include <vector>     // for vector
 
 #include <cairo-pdf.h>    // for cairo_pdf_surface_set_met...
-#include <glib-object.h>  // for g_object_unref
-
 #include "control/jobs/ProgressListener.h"  // for ProgressListener
 #include "model/Document.h"                 // for Document
 #include "model/Layer.h"                    // for Layer
-#include "model/LinkDestination.h"          // for LinkDestination, XojLinkDest
+#include "model/LinkDestination.h"          // for LinkDestination
 #include "model/PageRef.h"                  // for PageRef
 #include "model/PageType.h"                 // for PageType
 #include "model/XojPage.h"                  // for XojPage
@@ -72,52 +68,29 @@ void XojCairoPdfExport::configureCairoFontOptions() {
 
 #if CAIRO_VERSION >= CAIRO_VERSION_ENCODE(1, 16, 0)
 void XojCairoPdfExport::populatePdfOutline() {
-    auto tocModel = doc->getContentsModel();
-    if (tocModel == nullptr)
-        return;
-
-    int idCounter = CAIRO_PDF_OUTLINE_ROOT;
-    std::stack<std::pair<GtkTreeIter, int>> nodeStack;
-
-    GtkTreeIter firstIter = {0};
-    if (!gtk_tree_model_get_iter_first(tocModel, &firstIter)) {
-        // Outline is empty, so do nothing.
-        return;
-    }
-
-    nodeStack.push(std::make_pair(firstIter, idCounter));
-    while (!nodeStack.empty()) {
-        auto [iter, parentId] = nodeStack.top();
-        nodeStack.pop();
-        const int currentId = ++idCounter;
-        XojLinkDest* link = nullptr;
-
-        gtk_tree_model_get(tocModel, &iter, DOCUMENT_LINKS_COLUMN_LINK, &link, -1);
-        auto dest = link->dest;
-        auto pdfBgPage = dest->getPdfPage();  // Link destination in original background PDF
-        auto pageDest = pdfBgPage == npos ? npos : doc->findPdfPage(pdfBgPage);  // Destination in document
-        if (pageDest != npos) {
-            auto linkAttrBuf = serdes_stream<std::ostringstream>();
-            linkAttrBuf << "page=" << pageDest + 1;
-            if (dest->shouldChangeLeft() && dest->shouldChangeTop()) {
-                linkAttrBuf << " pos=[" << dest->getLeft() << " " << dest->getTop() << "]";
+    const auto append = [this](auto&& self, const std::vector<DocumentOutlineNode>& nodes, int parentId) -> void {
+        for (const auto& node: nodes) {
+            const auto& dest = node.destination;
+            const auto pdfBgPage = dest.getPdfPage();  // Link destination in original background PDF
+            const auto pageDest = pdfBgPage == npos ? npos : doc->findPdfPage(pdfBgPage);  // Document destination
+            auto childParentId = parentId;
+            if (pageDest != npos) {
+                auto linkAttrBuf = serdes_stream<std::ostringstream>();
+                linkAttrBuf << "page=" << pageDest + 1;
+                if (dest.shouldChangeLeft() && dest.shouldChangeTop()) {
+                    linkAttrBuf << " pos=[" << dest.getLeft() << " " << dest.getTop() << "]";
+                }
+                const auto linkAttr = linkAttrBuf.str();
+                const auto outlineFlags = dest.getExpand() ? CAIRO_PDF_OUTLINE_FLAG_OPEN : 0;
+                childParentId = cairo_pdf_surface_add_outline(
+                        this->surface, parentId, dest.getName().data(), linkAttr.data(),
+                        static_cast<cairo_pdf_outline_flags_t>(outlineFlags));
             }
-            const auto linkAttr = linkAttrBuf.str();
-            auto outlineFlags = dest->getExpand() ? CAIRO_PDF_OUTLINE_FLAG_OPEN : 0;
-            cairo_pdf_surface_add_outline(this->surface, parentId, link->dest->getName().data(), linkAttr.data(),
-                                          static_cast<cairo_pdf_outline_flags_t>(outlineFlags));
+            self(self, node.children, childParentId);
         }
-        g_object_unref(link);
+    };
 
-        GtkTreeIter childIter;
-        if (gtk_tree_model_iter_children(tocModel, &childIter, &iter)) {
-            nodeStack.push(std::make_pair(childIter, currentId));
-        }
-
-        if (gtk_tree_model_iter_next(tocModel, &iter)) {
-            nodeStack.push(std::make_pair(iter, parentId));
-        }
-    }
+    append(append, doc->getContents(), CAIRO_PDF_OUTLINE_ROOT);
 }
 #endif
 

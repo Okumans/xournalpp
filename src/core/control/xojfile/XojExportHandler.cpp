@@ -3,7 +3,6 @@
 #include <memory>  // for unique_ptr, __shared_p...
 #include <string>  // for string, allocator, ope...
 
-#include "control/pagetype/PageTypeHandler.h"  // for PageTypeHandler
 #include "control/xml/XmlNode.h"               // for XmlNode
 #include "control/xml/XmlTextNode.h"           // for XmlTextNode
 #include "control/xojfile/XmlAttrs.h"          // for xml_attrs
@@ -47,7 +46,7 @@ void XojExportHandler::writeSolidBackground(XmlNode* background, ConstPageRef p)
     PageTypeFormat bgFormat = p->getBackgroundType().format;
     std::string format;
 
-    format = PageTypeHandler::getStringForPageTypeFormat(bgFormat);
+    format = PageType::formatToString(bgFormat);
     if (bgFormat != PageTypeFormat::Plain && bgFormat != PageTypeFormat::Ruled && bgFormat != PageTypeFormat::Lined &&
         bgFormat != PageTypeFormat::Graph) {
         format = "plain";

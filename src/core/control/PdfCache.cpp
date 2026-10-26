@@ -9,12 +9,10 @@
 
 #include <glib.h>  // for g_warning
 
-#include "control/settings/Settings.h"  // for Settings
 #include "pdf/base/XojPdfDocument.h"    // for XojPdfDocument
 #include "util/Assert.h"                // for xoj_assert
 #include "util/Range.h"                 // for Range
 #include "util/i18n.h"                  // for _
-#include "util/safe_casts.h"            // for as_unsigned
 #include "view/Mask.h"                  // for Mask
 
 class PdfCacheEntry {
@@ -43,7 +41,8 @@ static double getPercentZoomChange(double oldZoom, double newZoom) {
     return std::abs(oldZoom - newZoom) * 100.0 / averagedZoom;
 }
 
-PdfCache::PdfCache(const XojPdfDocument& doc, Settings* settings): pdfDocument(doc) { updateSettings(settings); }
+PdfCache::PdfCache(const XojPdfDocument& doc, size_t maxSize, double refreshThreshold):
+        pdfDocument(doc), maxSize(maxSize), zoomRefreshThreshold(refreshThreshold) {}
 
 PdfCache::~PdfCache() = default;
 
@@ -66,13 +65,6 @@ void PdfCache::setMaxBytes(size_t newMaxBytes) {
 }
 
 void PdfCache::setMinimumRenderZoom(double minimumZoom) { this->minimumRenderZoom = minimumZoom; }
-
-void PdfCache::updateSettings(Settings* settings) {
-    if (settings) {
-        setMaxSize(as_unsigned(settings->getPdfPageCacheSize()));
-        setRefreshThreshold(settings->getPDFPageRerenderThreshold());
-    }
-}
 
 void PdfCache::evictAllExcept(const std::unordered_set<size_t>& retainedPdfPages) {
     std::unique_lock<std::mutex> lock(this->renderMutex, std::try_to_lock);

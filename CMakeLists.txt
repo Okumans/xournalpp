@@ -362,7 +362,9 @@ add_subdirectory(src)
 
 option(ENABLE_GTK4_DOCUMENT_WORKER "Build the experimental GTK 3 document bridge for the GTK 4 frontend" OFF)
 if (ENABLE_GTK4_DOCUMENT_WORKER)
-    add_executable(xournalpp-document-worker EXCLUDE_FROM_ALL experimental/gtk4-canvas/DocumentWorker.cpp)
+    add_executable(xournalpp-document-worker EXCLUDE_FROM_ALL
+                   experimental/gtk4-canvas/DocumentWorker.cpp
+                   experimental/gtk4-canvas/DocumentWorkerMain.cpp)
     target_compile_features(xournalpp-document-worker PRIVATE cxx_std_20)
     target_link_libraries(xournalpp-document-worker PRIVATE xoj::core xoj::util)
 endif ()

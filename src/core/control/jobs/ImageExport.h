@@ -18,8 +18,8 @@
 
 #include "util/ElementRange.h"  // for PageRangeVector, LayerRangeVector
 
-#include "BaseExportJob.h"  // for ExportBackgroundType, EXPORT_BACKGROUND_ALL
-#include "filesystem.h"     // for path
+#include "ExportTypes.h"  // for ExportBackgroundType, EXPORT_BACKGROUND_ALL
+#include "filesystem.h"   // for path
 
 class Document;
 class ProgressListener;

@@ -22,7 +22,9 @@
 #include <glib.h>     // for G_PRIORITY_DEFAULT_IDLE, gboolean, gchar, gint
 #include <gtk/gtk.h>  // for GtkWidget
 
+#if __has_include("config-features.h")
 #include "config-features.h"
+#endif
 #ifdef ENABLE_CPPTRACE
 #include <cpptrace/cpptrace.hpp>
 #endif
@@ -48,6 +50,10 @@ auto getPid() -> PID;
  */
 void systemWithMessage(const char* command);
 
+using ErrorReporter = void (*)(const std::string& message);
+void setErrorReporter(ErrorReporter reporter);
+void reportErrorToUser(const std::string& message);
+
 /**
  * Check if currently running in a Flatpak sandbox
  */
@@ -60,6 +66,18 @@ bool isFlatpakInstallation();
  */
 template <typename Fun>
 void execInUiThread(Fun&& callback, gint priority = G_PRIORITY_DEFAULT_IDLE) {
+#if GTK_CHECK_VERSION(4, 0, 0)
+    if constexpr (std::is_function_v<Fun>) {
+        g_idle_add_full(priority, std::forward<Fun>(callback), nullptr, nullptr);
+    } else {
+        constexpr auto fn = +[](gpointer functor) -> int {
+            auto fun = static_cast<Fun*>(functor);
+            (*fun)();
+            return G_SOURCE_REMOVE;
+        };
+        g_idle_add_full(priority, fn, new auto(std::forward<Fun>(callback)), &xoj::util::destroy_cb<Fun>);
+    }
+#else
     if constexpr (std::is_function_v<Fun>) {
         gdk_threads_add_idle_full(priority, std::forward<Fun>(callback), nullptr, nullptr);
     } else {
@@ -70,6 +88,7 @@ void execInUiThread(Fun&& callback, gint priority = G_PRIORITY_DEFAULT_IDLE) {
         };
         gdk_threads_add_idle_full(priority, fn, new auto(std::forward<Fun>(callback)), &xoj::util::destroy_cb<Fun>);
     }
+#endif
 }
 
 gboolean paintBackgroundWhite(GtkWidget* widget, cairo_t* cr, void* unused);

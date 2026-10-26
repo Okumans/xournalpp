@@ -8,7 +8,6 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>  // for gdk_pixbuf_save
 #include <glib.h>                   // for g_free, g_strdup_printf
 
-#include "control/pagetype/PageTypeHandler.h"  // for PageTypeHandler
 #include "control/xml/XmlImageNode.h"          // for XmlImageNode
 #include "control/xml/XmlNode.h"               // for XmlNode
 #include "control/xml/XmlPointNode.h"          // for XmlPointNode
@@ -387,7 +386,7 @@ void SaveHandler::writeSolidBackground(XmlNode* background, ConstPageRef p) {
     background->setAttrib(xoj::xml_attrs::TYPE_STR, BackgroundType::NAMES[BackgroundType::SOLID]);
     background->setAttrib(xoj::xml_attrs::COLOR_STR, getColorStr(p->getBackgroundColor()));
     background->setAttrib(xoj::xml_attrs::STYLE_STR,
-                          PageTypeHandler::getStringForPageTypeFormat(p->getBackgroundType().format));
+                          PageType::formatToString(p->getBackgroundType().format));
 
     // Not compatible with Xournal, so the background needs
     // to be changed to a basic one!

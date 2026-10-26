@@ -13,16 +13,17 @@ custom widths, three eraser modes (`Standard` partial `PaddedBox` splitting, `Wh
 and `Delete Stroke`), undo/redo, and zoom/pan with cancellation. A thumbnail sidebar navigates pages without resetting zoom and becomes an overlay in
 narrower windows. Its per-page Layers panel selects, shows/hides, adds, deletes,
 duplicates, renames, reorders, and merges foreground layers, and can show or hide
-them all at once. These layer changes use undo/redo. With a document worker, Open, Save, Save As, Export as PDF,
+them all at once. These layer changes use undo/redo. With a document open, Open, Save, Save As, Export as PDF,
 Insert Page After, and Delete Current Page run in the
 background. New ink, text, and image edits are saved as native objects in their active
 foreground layers alongside the original content. Open and Close protect
 unsaved changes with Save, Discard and Cancel. Save updates the associated
 `.xopp` file; Save As changes its filename after a successful save; Export as PDF
 writes a flattened PDF including live session ink, text, and images without clearing
-`.xopp` dirty state. Imported PDFs,
-legacy files requiring conversion, symlink inputs and blank notebooks use Save As
-for their first save. Without a worker, ink remains temporary.
+`.xopp` dirty state. These operations use the in-process GTK 4 document backend
+and keep document work off the GTK main loop. Imported PDFs, legacy files
+requiring conversion, symlink inputs and blank notebooks use Save As for their
+first save.
 
 The fresh desktop layout follows the reference workspace: a dark Adwaita window,
 the page sidebar closed, one tool-and-page control strip, and a narrow left rail
@@ -64,18 +65,18 @@ HighlightPosition toggles a translucent pointer halo with Alt+X;
 its appearance and enabled state are editable in Preferences and persist across
 launches. ToggleGrid changes the active page between plain and graph paper while
 updating grid snapping. SpaceForNotes supports both PDF-gap and force modes and
-persists the inserted pages through the native document worker; page insertions
-are not undoable yet. Page background changes use the native document worker,
+persists the inserted pages through the in-process native backend; page insertions
+are not undoable yet. Page background changes use the in-process native backend,
 persist in the `.xopp` save path, and participate in undo/redo. BeamerPresentation
 steps through repeated-label PDF animations, moves between slides at label
-boundaries, and removes animation pages through the native document worker. The
+boundaries, and removes animation pages through the in-process native backend. The
 Most of the master Lua API, Search, and bundled plugin
 behaviors remain unported; see
 [`MASTER_FEATURE_AUDIT.md`](MASTER_FEATURE_AUDIT.md).
 
 The bundled Export plugin registers PDF, SVG, and PNG actions with their master
-accelerators. It exports the current unsaved canvas state through the document
-worker and supports page/layer ranges, background selection, progressive PDF
+accelerators. It exports the current unsaved canvas state through the in-process
+document backend and supports page/layer ranges, background selection, progressive PDF
 layers, PDF backend selection, and PNG DPI/width/height. The GTK 4 host exposes
 the master `app.getDocumentStructure()` page dimensions, annotation state,
 paper format/configuration/color, PDF page mapping, current layer and visibility,
@@ -125,7 +126,7 @@ builds and the plugin reports the missing dependency when an action is invoked.
 The plugin keeps its original Lua implementation as a fallback for the GTK 3
 host.
 
-With a document worker, the header's Insert Image action opens a local image
+With a document open, the header's Insert Image action opens a local image
 chooser. The image is placed at the center of the active page, scaled to fit
 within 60% of the page, and selected in Smart Select. Drag the image to move it,
 drag a corner handle to resize it proportionally, or drag the top rotation handle
@@ -206,13 +207,12 @@ renderer. Audio recording controls and device preferences are not ported yet;
 reopening saved audio after its temporary media file expires also needs a
 separate check.
 
-Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text (when a document worker
-is enabled), `Ctrl+Z` undo, `Ctrl+Shift+Z` or
+Shortcuts: `P` pen, `H` highlight, `E` eraser, `T` text, `Ctrl+Z` undo, `Ctrl+Shift+Z` or
 `Ctrl+Y` redo, `Page Up`/`Page Down` or `Shift+K`/`Shift+J` previous/next page,
 `Ctrl+Home`/`Ctrl+End` first/last page, `Ctrl+G` or `:` (or clicking `1 / N`) Go
 to Page, and `Ctrl+0` fit. Tool and navigation shortcuts
 leave editable controls alone. Use the header's Pages button to show/hide the
-sidebar. Selection modes use `Ctrl+Shift+R` (rectangle), `Ctrl+Shift+G` (lasso), or `S` (Smart Select); choose Object from the selection-mode menu for click-based picking, and hold Shift to add an object. Drag handles to resize/rotate and use `Ctrl+C`/`Ctrl+X`/`Ctrl+V` to copy, cut, or paste supported native strokes or image groups. The selection toolbar also has duplicate. With a worker, `Ctrl+O` opens a document, `Ctrl+S` saves,
+sidebar. Selection modes use `Ctrl+Shift+R` (rectangle), `Ctrl+Shift+G` (lasso), or `S` (Smart Select); choose Object from the selection-mode menu for click-based picking, and hold Shift to add an object. Drag handles to resize/rotate and use `Ctrl+C`/`Ctrl+X`/`Ctrl+V` to copy, cut, or paste supported native strokes or image groups. The selection toolbar also has duplicate. `Ctrl+O` opens a document, `Ctrl+S` saves,
 `Ctrl+Shift+S` opens Save As, `Ctrl+E` exports a PDF, `Ctrl+D` inserts a page
 after the active page, and `Ctrl+Shift+Delete` deletes the current page when at
 least two pages exist.
@@ -223,7 +223,7 @@ text editing.
 The modified flag follows edit identities through undo/redo, including edits made
 after undo. Saving preserves editable session ink and its undo history.
 Widths are measured in document points; they remain consistent at
-different zoom levels. For native documents, the worker extracts supported ink,
+different zoom levels. For native documents, the in-process backend extracts supported ink,
 text, and images from the editable suffix of every foreground layer, including hidden
 layers. Drawing, erasing, and stroke selection target the active visible layer;
 background and other layers are not affected. The Layers sidebar selects layers,
@@ -235,7 +235,7 @@ visibility, and native object order. The clipboard reader limits input to 64 MiB
 and one million samples, validates the entire supported selection before
 inserting it, and leaves ink unchanged on malformed input.
 
-With the worker, eligible native text in a foreground layer's editable suffix
+With a native document open, eligible native text in a foreground layer's editable suffix
 opens in the canvas and stays in native z-order with strokes. Select the Text
 tool and click to create text; Smart Select click edits an existing text item.
 The Text tool can drag an existing item to move it and drag its selection handles
@@ -283,12 +283,12 @@ process, then displayed in a GTK 4 Cairo drawing area through Poppler.
 
 This is **not a port of the complete application or its custom `GtkXournal`
 widget**. The session ink, text, and image models are experimental and independent of the
-existing document models. A separate document worker reuses the existing native
-loader, saver, and renderer without linking GTK 3 into the GTK 4 process. The
-worker extracts supported stroke, text, and image suffixes from every foreground layer
-for interactive editing; other original objects remain in their native snapshot
-and render in per-layer previews. The current
-PDF rasterization runs synchronously on the prototype's UI thread.
+existing document models. The GTK 4 process reuses the native loader, saver,
+model, PDF export, and renderer through curated backend targets that avoid
+linking the monolithic GTK 3 core. It extracts supported stroke, text, and image
+suffixes from every foreground layer for interactive editing; other original
+objects remain in their native snapshot and render in per-layer previews. The
+current PDF rasterization runs synchronously on the prototype's UI thread.
 
 ## Build
 
@@ -305,7 +305,10 @@ cmake --build build-gtk4-canvas -j2
 ctest --test-dir build-gtk4-canvas --output-on-failure
 ```
 
-The prototype accepts `--pdf FILE`, `--document FILE --worker WORKER`,
+The prototype accepts `--pdf FILE` and `--document FILE` without starting an
+external document process. Both paths create editable sessions using the
+in-process GTK 4 backend. `--worker WORKER` remains an optional compatibility
+override. It also accepts
 `--config-dir DIRECTORY`, `--autosave-seconds SECONDS`, `--dark`, and
 `--smoke-dir DIRECTORY`. It imports active tool, per-tool colors/sizes, eraser
 mode, pressure sensitivity/minimum/multiplier, keyboard/wheel zoom steps,
@@ -314,19 +317,19 @@ mode, pressure sensitivity/minimum/multiplier, keyboard/wheel zoom steps,
 from `settings.xml` without rewriting that file or mutating process environment
 variables. Preferences edits are stored in `gtk4-canvas.ini` only after a value
 changes. Explicit `--dark` and `--autosave-seconds` CLI flags override imported
-values. A worker can also accompany `--pdf`, or be used alone to
-create a blank A4 notebook. Without an input it displays a blank page.
+values. Without an input it displays a blank page.
 The `--disable-audio` option disables playback for the current run.
 
-To open native documents, build the optional worker using the normal application's
-GTK 3 dependencies. It has no installation target and is disabled by default:
+The GTK 4 executable reuses the upstream loader and saver through its curated
+document targets. Native `.xopp`, `.xoj`, and PDF files can be opened and edited
+directly; no external GTK 3 worker is required. The old standalone worker target
+is kept as an optional compatibility and protocol-test utility:
 
 ```sh
 cmake -S . -B build-document-worker -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DENABLE_CPPTRACE=OFF -DENABLE_GTK4_DOCUMENT_WORKER=ON -DENABLE_GTEST=ON
 cmake --build build-document-worker --target xournalpp-document-worker -j2
-build-gtk4-canvas/xournalpp-gtk4-canvas --document notebook.xopp \
-  --worker build-document-worker/xournalpp-document-worker
+build-gtk4-canvas/xournalpp-gtk4-canvas --document notebook.xopp
 ```
 
 Native loading, snapshot creation, rendering and save jobs run on a
@@ -337,7 +340,7 @@ state and does not continue a pending Open or Close. Cancelling a file chooser
 also preserves the current document.
 
 Each loaded document has a private native snapshot and rendered previews, removed
-when the session ends. When opening a native `.xopp`, the worker extracts the
+when the session ends. When opening a native `.xopp`, the in-process backend extracts the
 contiguous suffix of lossless `pen`, `highlighter`, and `#ffffffff` `eraser`
 strokes, eligible non-audio native text, and bounded native images from every
 foreground layer, regardless of visibility. It writes strokes, text, images,
@@ -345,14 +348,15 @@ and layer metadata to bounded
 transfer files before creating the native snapshot and per-layer previews.
 Editable Pen, non-pressure Highlighter, and opaque whiteout Eraser strokes
 preserve their native line-style arrays, pressure/fill metadata, layer, and
-z-order through the worker. Audio-linked strokes, unsupported stroke/tool
+z-order through the backend. Audio-linked strokes, unsupported stroke/tool
 combinations, unsupported objects, and text or images outside the editable
 suffix stay in their original layer and z-order as visible non-editable
 content. Save, autosave, and export reconstruct the layer groups and reinsert
 editable ink, text, and images in order, preserving visibility and avoiding
 duplication.
 
-The worker exposes `inspect INPUT`, `render INPUT NEW.pdf`,
+The backend command interface, also exposed by the optional worker executable,
+supports `inspect INPUT`, `render INPUT NEW.pdf`,
 `export-pdf INPUT OUT.pdf INK_TRANSFER [TEXT_TRANSFER [LAYERS [IMAGES]]]`,
 `open INPUT SNAPSHOT.xopp NEW.pdf [EXTRACTED_INK [EXTRACTED_TEXT [LAYERS [EXTRACTED_IMAGES]]]]`,
 `insert-page INPUT SNAPSHOT.xopp NEW.pdf AFTER_PAGE`,
@@ -386,7 +390,7 @@ replacement via rename. The multi-file document/attachment publication is not a
 single filesystem transaction. Power-loss durability and Windows/macOS behavior
 have not been validated.
 
-With a worker, periodic background autosave runs every 180 seconds by default
+Periodic background autosave runs every 180 seconds by default
 (`--autosave-seconds` overrides the interval for deterministic tests) without
 disabling the canvas or interrupting in-progress strokes. Associated native
 documents autosave to `.name.autosave.xopp` via `.swap` replacement without
@@ -421,17 +425,16 @@ binary for CLI export; the test does not build, install, or replace that binary.
 python experimental/gtk4-canvas/test-isolated.py \
   --binary build-gtk4-canvas/xournalpp-gtk4-canvas \
   --renderer /home/okumnas/Tmp/xournalpp/build/xournalpp \
-  --worker build-document-worker/xournalpp-document-worker \
   --evidence build-gtk4-canvas/evidence
 ```
 
-Use `--plugins-only` with `--worker` for the focused GUI check. It enables
+Use `--plugins-only` for the focused GUI check. It enables
 ColorCycle, Example, ToolShortcuts, and ToggleGrid in a temporary config and
 checks their menu actions, Smart Select shortcut, selection recoloring/undo,
 plain/graph paper changes, background undo/redo and save/reopen, manager, and
 saved plugin settings.
 
-Use `--beamer-only` with `--worker` for the Beamer check. It creates a private
+Use `--beamer-only` for the Beamer check. It creates a private
 two-page PDF with repeated page labels, then verifies animation advance,
 reverse, cleanup, native save/reopen, and screenshots inside the Cage renderer.
 
@@ -624,7 +627,7 @@ select text; double-click selects a word and triple-click selects a line. The
 selection action popover can copy the selected text, apply highlight, underline,
 or strikethrough, and change annotation/text colors. Highlight color presets and
 marker opacity follow the GTK 3 defaults, including 60% marker opacity. Text
-extraction uses the original PDF page mapped by the document worker, rather than
+extraction uses the original PDF page mapped by the in-process document backend, rather than
 the flattened page preview. Native save keeps the PDF background and the new
 annotation strokes.
 
