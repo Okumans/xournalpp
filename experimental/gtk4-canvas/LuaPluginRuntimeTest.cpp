@@ -531,10 +531,20 @@ int main() {
                 "  assert(app.getActionState('zoom') == 1.25)\n"
                 "  assert(app.getActionState('grid-snapping') == true)\n"
                 "  assert(app.getActionState('position-highlighting') == false)\n"
+                "  assert(app.getActionState('tool-size') == app.C.ToolSize_medium)\n"
+                "  assert(app.getActionState('tool-pen-size') == app.C.ToolSize_medium)\n"
+                "  assert(app.getActionState('tool-eraser-size') == app.C.ToolSize_thin)\n"
+                "  assert(app.getActionState('tool-highlighter-size') == app.C.ToolSize_veryThick)\n"
+                "  assert(app.getActionState('tool-eraser-type') == app.C.EraserType_whiteout)\n"
                 "  assert(app.getActionState('tool-color') == 0xff123456)\n"
                 "  app.changeActionState('action-state-summary',\n"
                 "    tostring(app.getActionState('select-tool')) .. ':' ..\n"
                 "    tostring(app.getActionState('zoom')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-size')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-pen-size')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-eraser-size')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-highlighter-size')) .. ':' ..\n"
+                "    tostring(app.getActionState('tool-eraser-type')) .. ':' ..\n"
                 "    tostring(app.getActionState('tool-color')))\n"
                 "end\n"
                 "function missing() app.getActionState('missing-action-state') end\n");
@@ -638,6 +648,16 @@ int main() {
             value = true;
         } else if (action == "position-highlighting") {
             value = false;
+        } else if (action == "tool-size") {
+            value = std::int64_t{2};
+        } else if (action == "tool-pen-size") {
+            value = std::int64_t{2};
+        } else if (action == "tool-eraser-size") {
+            value = std::int64_t{1};
+        } else if (action == "tool-highlighter-size") {
+            value = std::int64_t{4};
+        } else if (action == "tool-eraser-type") {
+            value = std::int64_t{2};
         } else if (action == "tool-color") {
             value = std::int64_t{0xff123456U};
         } else {
@@ -1115,7 +1135,8 @@ int main() {
                             "Called applib_refreshPage, but there is no current page.") != std::string::npos,
             "app.refreshPage did not propagate the missing-page error");
     refreshPageAvailable = true;
-    require(runtime.invokeMenu("ActionStateApiPlugin", 0) && actionStateSummary == "1:1.25:4279383126",
+    require(runtime.invokeMenu("ActionStateApiPlugin", 0) &&
+                    actionStateSummary == "1:1.25:2:2:1:4:2:4279383126",
             "app.getActionState did not preserve boolean, integer, and numeric action-state values");
     require(!runtime.invokeMenu("ActionStateApiPlugin", 1) &&
                     runtime.findPlugin("ActionStateApiPlugin")->error.find("unavailable") != std::string::npos,
