@@ -475,6 +475,7 @@ int luaOpenApp(lua_State* state) {
             {"setCurrentLayer", LuaPluginRuntime::luaSetCurrentLayer},
             {"setLayerVisibility", LuaPluginRuntime::luaSetLayerVisibility},
             {"setCurrentLayerName", LuaPluginRuntime::luaSetCurrentLayerName},
+            {"setBackgroundName", LuaPluginRuntime::luaSetBackgroundName},
             {"export", LuaPluginRuntime::luaExport},
             {"quickScreenshot", LuaPluginRuntime::luaQuickScreenshot},
             {"getDocumentStructure", LuaPluginRuntime::luaGetDocumentStructure},
@@ -1310,6 +1311,14 @@ bool LuaPluginRuntime::setCurrentLayerName(std::string_view name, std::string& e
         return false;
     }
     return host.setCurrentLayerName(name, error);
+}
+
+bool LuaPluginRuntime::setBackgroundName(std::string_view name, std::string& error) {
+    if (!host.setBackgroundName) {
+        error = "Background naming is unavailable in this GTK 4 host";
+        return false;
+    }
+    return host.setBackgroundName(name, error);
 }
 
 bool LuaPluginRuntime::exportDocument(const DocumentExportOptions& options, std::string& error) {
@@ -3305,6 +3314,23 @@ int LuaPluginRuntime::luaSetCurrentLayerName(lua_State* state) {
     if (error[0] != '\0') {
         lua_pushstring(state, error);
         return lua_error(state);
+    }
+    return 0;
+}
+
+int LuaPluginRuntime::luaSetBackgroundName(lua_State* state) {
+    if (!lua_isstring(state, 1)) {
+        return 0;
+    }
+    const char* name = lua_tostring(state, 1);
+    auto* plugin = pluginForState(state);
+    if (!plugin) {
+        return luaL_error(state, "No owning plugin state");
+    }
+
+    std::string error;
+    if (!plugin->runtime->setBackgroundName(name, error)) {
+        return luaL_error(state, "%s", error.empty() ? "Changing background name failed" : error.c_str());
     }
     return 0;
 }

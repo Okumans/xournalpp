@@ -249,6 +249,7 @@ struct PluginRuntimeHost {
     std::function<bool(std::size_t, bool, std::string&)> setCurrentLayer;
     std::function<bool(bool, std::string&)> setLayerVisibility;
     std::function<bool(std::string_view, std::string&)> setCurrentLayerName;
+    std::function<bool(std::string_view, std::string&)> setBackgroundName;
     std::function<bool(const DocumentExportOptions&, std::string&)> exportDocument;
     std::function<bool(std::string_view, std::string&)> quickScreenshot;
     std::function<std::string()> documentFilename;
@@ -335,6 +336,7 @@ public:
     static int luaSetCurrentLayer(lua_State* state);
     static int luaSetLayerVisibility(lua_State* state);
     static int luaSetCurrentLayerName(lua_State* state);
+    static int luaSetBackgroundName(lua_State* state);
     static int luaExport(lua_State* state);
     static int luaQuickScreenshot(lua_State* state);
     static int luaGetDocumentStructure(lua_State* state);
@@ -387,6 +389,7 @@ private:
     bool setCurrentLayer(std::size_t layerNumber, bool updateVisibility, std::string& error);
     bool setLayerVisibility(bool visible, std::string& error);
     bool setCurrentLayerName(std::string_view name, std::string& error);
+    bool setBackgroundName(std::string_view name, std::string& error);
     bool exportDocument(const DocumentExportOptions& options, std::string& error);
     bool quickScreenshot(std::string_view plugin, std::string& error);
     std::string documentFilename() const;

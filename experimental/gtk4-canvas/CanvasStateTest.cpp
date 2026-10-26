@@ -686,6 +686,32 @@ static void continuousMultiPageLayout() {
           "deletePageAt must refuse deleting the last remaining page");
 }
 
+static void pluginBackgroundNameSetter() {
+    CanvasState state;
+    state.setPages({{595, 842}});
+    PageLayers pageLayers;
+    pageLayers.backgroundName = "Paper";
+    state.setLayerDocument({pageLayers});
+    state.brush = {Tool::Pen, {0, 0, 0}, 2};
+    check(state.begin(Device::Mouse, 20, 20), "background-name test stroke should begin");
+    state.append(Device::Mouse, 40, 40);
+    state.finish(Device::Mouse);
+    state.selectAllOnPage();
+
+    const auto revision = state.revision();
+    const auto selection = state.selected;
+    check(state.canUndo() && state.setBackgroundName(0, "Custom paper") &&
+                  state.layersForPage(0).backgroundName == "Custom paper" && state.revision() == revision &&
+                  state.canUndo() && state.selected == selection,
+          "the plugin background-name setter should update the page without undoing, dirtying, or clearing selection");
+    state.undo();
+    check(state.layersForPage(0).backgroundName == "Custom paper",
+          "undoing an older edit should not roll back a direct plugin background-name change");
+    check(!state.setBackgroundName(-1, "Invalid") && !state.setBackgroundName(1, "Invalid") &&
+                  state.layersForPage(0).backgroundName == "Custom paper",
+          "the plugin background-name setter should reject page indices outside the document");
+}
+
 static void layerManagement() {
     CanvasState state;
     state.setPages({{595, 842}, {595, 842}});
@@ -1316,6 +1342,7 @@ int main() {
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
+        pluginBackgroundNameSetter();
         layerManagement();
         replaceNextPageWithClone();
         layerRenameDuplicateReorderAndVisibility();

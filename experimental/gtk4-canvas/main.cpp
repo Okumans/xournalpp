@@ -1631,6 +1631,9 @@ private:
         host.setCurrentLayerName = [this](std::string_view name, std::string& error) {
             return setPluginCurrentLayerName(name, error);
         };
+        host.setBackgroundName = [this](std::string_view name, std::string& error) {
+            return setPluginBackgroundName(name, error);
+        };
         host.exportDocument = [this](const prototype::DocumentExportOptions& exportOptions, std::string& error) {
             return exportDocumentFromPlugin(exportOptions, error);
         };
@@ -3273,6 +3276,20 @@ private:
         return true;
     }
 
+    bool setPluginBackgroundName(std::string_view name, std::string& error) {
+        if (busy || choosingFile || messageDialog || closed || autosaving) {
+            error = "Wait for the current document operation to finish before renaming the background";
+            return false;
+        }
+        if (!state.setBackgroundName(state.page, std::string(name))) {
+            error = "No page!";
+            return false;
+        }
+        rebuildLayerStack();
+        update();
+        return true;
+    }
+
     std::int64_t pluginSelectedToolState() const {
         switch (state.brush.tool) {
             case Tool::Pen:
@@ -4766,6 +4783,23 @@ private:
                         std::abs(*toolInfo.fontSize - state.textFontSize) < 1e-9 && toolInfo.color &&
                         *toolInfo.color == pluginRgbColor(state.textColor),
                 toolInfoError.empty() ? "app.getToolInfo did not report Text settings" : toolInfoError.c_str());
+        const auto backgroundPage = static_cast<std::size_t>(state.page);
+        const auto originalBackgroundName = state.pageLayers.at(backgroundPage).backgroundName;
+        const auto backgroundNameRevision = state.revision();
+        const auto backgroundNameSelection = state.selected;
+        const auto backgroundNameTextSelection = state.selectedTexts;
+        const auto backgroundNameImageSelection = state.selectedImages;
+        std::string backgroundNameError;
+        require(setPluginBackgroundName("Plugin API test", backgroundNameError) &&
+                        state.layersForPage(state.page).backgroundName == "Plugin API test" &&
+                        state.revision() == backgroundNameRevision && state.selected == backgroundNameSelection &&
+                        state.selectedTexts == backgroundNameTextSelection &&
+                        state.selectedImages == backgroundNameImageSelection,
+                backgroundNameError.empty() ? "app.setBackgroundName changed undo or selection state" :
+                                              backgroundNameError.c_str());
+        state.pageLayers.at(backgroundPage).backgroundName = originalBackgroundName;
+        rebuildLayerStack();
+        update();
         require(nativeSession && !nativeSession->pdfPageLabels.empty(),
                 "Plugin integration fixture has no PDF page labels");
         const auto refreshPageRevision = state.revision();
