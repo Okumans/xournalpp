@@ -3318,6 +3318,17 @@ private:
             value = static_cast<std::int64_t>(state.eraserMode) + 1;
             return true;
         }
+        if (action == "tool-pen-line-style") {
+            bool selectedPenStroke = false;
+            for (const auto index: state.selected) {
+                if (index < state.ink.size() && state.ink[index].brush.tool == Tool::Pen) {
+                    selectedPenStroke = true;
+                    break;
+                }
+            }
+            value = state.brush.tool == Tool::Pen || selectedPenStroke ? std::string{"plain"} : std::string{"none"};
+            return true;
+        }
         if (action == "tool-color") {
             std::array<double, 3> color = state.brush.color;
             if (state.brush.tool == Tool::Text) {
@@ -4563,6 +4574,13 @@ private:
         require(pluginToolSizeState(prototype::behavior::penWidths, 1.41) == 2 &&
                         pluginToolSizeState(prototype::behavior::penWidths, 1.42) == 5,
                 "app.getActionState did not distinguish preset sizes from custom widths");
+        const auto activeToolForLineStyle = state.brush.tool;
+        state.brush.tool = Tool::Pen;
+        const bool reportsPlainPenLineStyle =
+                getPluginActionState("tool-pen-line-style", actionState, actionStateError) &&
+                std::holds_alternative<std::string>(actionState) && std::get<std::string>(actionState) == "plain";
+        state.brush.tool = activeToolForLineStyle;
+        require(reportsPlainPenLineStyle, "app.getActionState did not report the supported Pen line style");
         require(getPluginActionState("grid-snapping", actionState, actionStateError) &&
                         std::holds_alternative<bool>(actionState) &&
                         std::get<bool>(actionState) == state.snapGridEnabled,
