@@ -1647,15 +1647,35 @@ def inside(args):
     for dark in (False, True):
         name = 'dark' if dark else 'light'
         output = evidence / name
-        screenshots = ("initial", "ink", "tools", "shift-strokes", "eraser-shift", "eraser-split", "eraser-whiteout", "zoom", "drawing-controls",
-                       "shape-tools", "shape-recognized", "spline-tools", "narrow", "sidebar")
+        screenshots = (
+            "initial",
+            "ink",
+            "tools",
+            "shift-strokes",
+            "eraser-shift",
+            "eraser-split",
+            "eraser-whiteout",
+            "zoom",
+            "drawing-controls",
+            "shape-tools",
+            "shape-recognized",
+            "spline-tools",
+            "narrow",
+            "sidebar",
+            "text-editor",
+            "text-editor-initial",
+            "text-editor-caret",
+            "text-edited",
+            "smart-text-selected",
+            "smart-text-editor-transformed",
+        )
         if args.worker:
-            screenshots += ("text-editor", "text-editor-initial", "text-editor-caret", "text-edited", "document-dirty", "document-saved", "unsaved", "open-error", "reopened",
+            screenshots += ("document-dirty", "document-saved", "unsaved", "open-error", "reopened",
                             "save-prompt", "saved-again", "discard-prompt", "normal-saved", "save-conflict",
                             "conflict-resolved", "autosaved", "autosave-prompt", "autosave-recovered",
                             "autosave-saved", "native-loaded", "native-erased", "native-saved",
                             "continuous-pages", "goto-page-dialog", "page-inserted", "selection",
-                            "smart-text-selected", "selection-moved", "selection-deleted", "lasso-selection",
+                            "selection-moved", "selection-deleted", "lasso-selection",
                             "selection-resized",
                             "selection-rotated", "selection-pasted", "selection-transferred", "smart-selection")
             for filename in ("saved-copy.xopp", "saved-again.xopp", "normal-save.xopp",
