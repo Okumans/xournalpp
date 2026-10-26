@@ -828,6 +828,74 @@ def verify_presentation_mode(args, evidence):
     return report
 
 
+def write_page_stress_pdf(path, page_count):
+    objects = [None] * (4 + page_count * 2)
+    objects[1] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    page_ids = [4 + 2 * index for index in range(page_count)]
+    objects[2] = (b"<< /Type /Pages /Kids [" + b" ".join(
+        f"{page_id} 0 R".encode() for page_id in page_ids
+    ) + f"] /Count {page_count} >>".encode())
+    objects[3] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    for index, page_id in enumerate(page_ids):
+        content_id = page_id + 1
+        text = f"BT /F1 14 Tf 72 700 Td (Stress page {index + 1}) Tj ET".encode()
+        objects[page_id] = (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 3 0 R >> >> /Contents "
+            + f"{content_id} 0 R >>".encode()
+        )
+        objects[content_id] = f"<< /Length {len(text)} >>\nstream\n".encode() + text + b"\nendstream"
+
+    pdf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for object_id in range(1, len(objects)):
+        offsets.append(len(pdf))
+        pdf.extend(f"{object_id} 0 obj\n".encode())
+        pdf.extend(objects[object_id])
+        pdf.extend(b"\nendobj\n")
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects)}\n".encode())
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode())
+    pdf.extend(
+        f"trailer\n<< /Size {len(objects)} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode()
+    )
+    path.write_bytes(pdf)
+
+
+def verify_sidebar_performance(args, evidence):
+    run_dir = evidence / "sidebar-performance"
+    config_dir = evidence / "sidebar-performance-config"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    page_count = 10000
+    pdf = run_dir / f"{page_count}-pages.pdf"
+    write_page_stress_pdf(pdf, page_count)
+    output = run(
+        [str(args.binary.resolve()), "--config-dir", str(config_dir), "--pdf", str(pdf),
+         "--smoke-dir", str(run_dir), "--verify-sidebar-performance"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    marker = "PASS: GTK4 pages sidebar realizes a bounded number of thumbnails for 10000 PDF pages"
+    if marker not in output:
+        raise RuntimeError("Large-PDF sidebar verification did not finish")
+
+    screenshot = run_dir / "large-pdf-sidebar.png"
+    if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+        raise RuntimeError(f"Missing large-PDF sidebar screenshot: {screenshot}")
+    report = {
+        "page_count": page_count,
+        "screenshot": str(screenshot),
+        "checks": ["virtualized page rows", "bounded mapped thumbnails", "scroll to last page",
+                   "selection navigates from last row", "smooth zoom reuses and refreshes raster",
+                   "sidebar open screenshot"],
+        "rendering": "Private headless Wayland via Cage",
+    }
+    print("PASS: private GTK4 large-PDF sidebar virtualization", flush=True)
+    return report
+
+
 def verify_text_clipboard(args, evidence):
     if not args.worker:
         raise RuntimeError("Text clipboard verification requires --worker")
@@ -1256,6 +1324,13 @@ def verify_play_object(args, evidence):
 
 def inside(args):
     evidence = args.evidence.resolve()
+    if args.sidebar_performance_only:
+        sidebar_evidence = verify_sidebar_performance(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"sidebar-performance": sidebar_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.presentation_only:
         presentation_evidence = verify_presentation_mode(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1573,6 +1648,7 @@ def main():
     parser.add_argument("--clipboard-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--page-layout-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--presentation-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--sidebar-performance-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -1667,6 +1743,8 @@ def main():
             command.append("--page-layout-only")
         if args.presentation_only:
             command.append("--presentation-only")
+        if args.sidebar_performance_only:
+            command.append("--sidebar-performance-only")
         output = run(command, env=env, private_group=True)
         (args.evidence / "headless.log").write_text(output)
 

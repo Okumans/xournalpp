@@ -80,6 +80,7 @@ struct Options {
     bool disableAudio = false;
     bool verifyPlugins = false;
     bool verifySearch = false;
+    bool verifySidebarPerformance = false;
     bool verifyPageLayout = false;
     bool verifyPresentationMode = false;
     bool verifyPenLineStyle = false;
@@ -569,7 +570,7 @@ public:
         }
         quickScreenshotOperations.clear();
         for (guint* source: {&heartbeatSource, &autosaveSource, &crashHelperSource, &recoveryVerifySource,
-                            &selectionEdgePanSource}) {
+                            &selectionEdgePanSource, &zoomPreviewSource}) {
             if (*source) {
                 g_source_remove(*source);
                 *source = 0;
@@ -6182,6 +6183,73 @@ private:
         std::cout << "PASS: GTK4 Presentation Mode per-page fit, navigation, zoom lock, fullscreen and view Preferences\n";
     }
 
+    void verifySidebarPerformanceIntegration() {
+        require(pageCount == 10000 && document && splitView && pageList,
+                "Sidebar performance check did not load its 10000-page PDF");
+        const auto pageRange = [this] {
+            int first = pageCount;
+            int last = -1;
+            for (auto* thumbnail: thumbnailWidgets) {
+                const auto page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(thumbnail), "page"));
+                first = std::min(first, page);
+                last = std::max(last, page);
+            }
+            return std::pair{first, last};
+        };
+        const auto mappedRows = [this] {
+            return static_cast<size_t>(std::count_if(thumbnailWidgets.begin(), thumbnailWidgets.end(),
+                                                     [](GtkWidget* widget) { return gtk_widget_get_mapped(widget); }));
+        };
+        const auto started = g_get_monotonic_time();
+        adw_overlay_split_view_set_show_sidebar(splitView, true);
+        waitForNextWindowFrame();
+        const auto openMilliseconds = (g_get_monotonic_time() - started) / 1000;
+        const auto maxMappedRows = static_cast<size_t>(gtk_widget_get_height(GTK_WIDGET(pageList)) / 180 + 3);
+        const auto [firstPage, lastPage] = pageRange();
+        std::cout << "SIDEBAR OPEN: pages=" << pageCount << " realized=" << thumbnailWidgets.size()
+                  << " mapped=" << mappedRows() << " rows=" << firstPage << ".." << lastPage
+                  << " elapsed_ms=" << openMilliseconds << '\n';
+        require(thumbnailWidgets.size() <= 256 && mappedRows() <= maxMappedRows,
+                "Pages sidebar created or mapped too many thumbnail widgets");
+        for (int frame = 0; frame < 18; ++frame) {
+            waitForNextWindowFrame();
+        }
+        capture("large-pdf-sidebar");
+
+        auto* pageScroll = GTK_SCROLLED_WINDOW(gtk_widget_get_parent(GTK_WIDGET(pageList)));
+        auto* adjustment = gtk_scrolled_window_get_vadjustment(pageScroll);
+        gtk_adjustment_set_value(adjustment,
+                                 gtk_adjustment_get_upper(adjustment) - gtk_adjustment_get_page_size(adjustment));
+        waitForNextWindowFrame();
+        const auto [lastFirst, lastLast] = pageRange();
+        std::cout << "SIDEBAR BOTTOM: realized=" << thumbnailWidgets.size() << " mapped=" << mappedRows()
+                  << " rows=" << lastFirst << ".." << lastLast << '\n';
+        require(lastLast >= pageCount - 10 && thumbnailWidgets.size() <= 256 && mappedRows() <= maxMappedRows,
+                "Pages sidebar did not virtualize rows when scrolling to the last page");
+        gtk_single_selection_set_selected(GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList)), pageCount - 1);
+        waitForNextWindowFrame();
+        require(state.page == pageCount - 1, "Selecting the last virtualized sidebar page did not navigate");
+        const double anchorX = gtk_widget_get_width(canvas) / 2.0;
+        const double anchorY = gtk_widget_get_height(canvas) / 2.0;
+        const auto documentAnchor = state.documentPoint(anchorX, anchorY);
+        const double zoomBefore = state.zoom;
+        const double zoomTarget = prototype::behavior::zoomFromScrollDelta(zoomBefore, -8, false,
+                                                                           state.scrollZoomStep);
+        const int cachedRasters = rasterizations;
+        zoom(zoomTarget, anchorX, anchorY, true);
+        waitForNextWindowFrame();
+        const auto movedAnchor = state.documentPoint(anchorX, anchorY);
+        require(rasterizations == cachedRasters && std::abs(state.zoom - zoomTarget) < 1e-9 && state.zoom > zoomBefore &&
+                        std::abs(movedAnchor.x - documentAnchor.x) < 1e-9 &&
+                        std::abs(movedAnchor.y - documentAnchor.y) < 1e-9,
+                "Smooth zoom did not reuse the current raster or preserve the pointer anchor");
+        finishZoomPreview();
+        update();
+        waitForNextWindowFrame();
+        require(rasterizations > cachedRasters, "Settled smooth zoom did not refresh the page raster");
+        std::cout << "PASS: GTK4 pages sidebar realizes a bounded number of thumbnails for 10000 PDF pages\n";
+    }
+
     void verifySearchIntegration() {
         require(pageCount >= 2 && searchEntry && searchBar,
                 "Search integration needs the two-page PDF and GTK search bar");
@@ -10691,7 +10759,7 @@ private:
                                  auto* self = static_cast<Prototype*>(data);
                                  const double x = gtk_widget_get_width(self->canvas) / 2.0;
                                  const double y = gtk_widget_get_height(self->canvas) / 2.0;
-                                 self->zoom(gtk_range_get_value(range) / 100.0, x, y);
+                                 self->zoom(gtk_range_get_value(range) / 100.0, x, y, true);
                              }),
                              this);
             gtk_box_append(GTK_BOX(row), scale);
@@ -10937,7 +11005,7 @@ private:
                           auto* self = static_cast<Prototype*>(data);
                           const bool zoomIn = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "zoom-in")) != 0;
                           self->zoom(self->state.steppedZoom(zoomIn, false), gtk_widget_get_width(self->canvas) / 2.0,
-                                     gtk_widget_get_height(self->canvas) / 2.0);
+                                     gtk_widget_get_height(self->canvas) / 2.0, true);
                       }));
             auto* zoomButton = gtk_widget_get_last_child(row);
             g_object_set_data(G_OBJECT(zoomButton), "zoom-in", GINT_TO_POINTER(zoomIn));
@@ -12584,34 +12652,19 @@ private:
         auto* scroll = gtk_scrolled_window_new();
         gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
         gtk_widget_set_vexpand(scroll, true);
-        pageList = GTK_LIST_BOX(gtk_list_box_new());
-        gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
+        auto* pages = gtk_string_list_new(nullptr);
         for (int i = 0; i < pageCount; ++i) {
-            auto* row = gtk_list_box_row_new();
-            auto* contents = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-            auto* preview = gtk_drawing_area_new();
-            gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(preview), 112);
-            gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(preview), 150);
-            g_object_set_data(G_OBJECT(preview), "page", GINT_TO_POINTER(i));
-            gtk_drawing_area_set_draw_func(
-                    GTK_DRAWING_AREA(preview),
-                    +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer data) {
-                        static_cast<Prototype*>(data)->drawThumbnail(
-                                cr, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(area), "page")), width, height);
-                    },
-                    this, nullptr);
-            thumbnailWidgets.push_back(preview);
-            gtk_box_append(GTK_BOX(contents), preview);
-            gtk_box_append(GTK_BOX(contents), gtk_label_new(("Page " + std::to_string(i + 1)).c_str()));
-            gtk_widget_set_margin_top(contents, 8);
-            gtk_widget_set_margin_bottom(contents, 8);
-            gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), contents);
-            gtk_list_box_append(pageList, row);
+            const auto label = "Page " + std::to_string(i + 1);
+            gtk_string_list_append(pages, label.c_str());
         }
-        g_signal_connect(pageList, "row-selected", G_CALLBACK(+[](GtkListBox*, GtkListBoxRow* row, gpointer data) {
+        auto* selection = gtk_single_selection_new(G_LIST_MODEL(pages));
+        g_signal_connect(selection, "notify::selected",
+                         G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
-                             if (!self->syncingPage && row && gtk_list_box_row_get_index(row) != self->state.page) {
-                                 self->navigateToPage(gtk_list_box_row_get_index(row));
+                             const auto page = gtk_single_selection_get_selected(GTK_SINGLE_SELECTION(object));
+                             if (!self->syncingPage && page != GTK_INVALID_LIST_POSITION &&
+                                 static_cast<int>(page) != self->state.page) {
+                                 self->navigateToPage(static_cast<int>(page));
                                  if (adw_overlay_split_view_get_collapsed(self->splitView)) {
                                      adw_overlay_split_view_set_show_sidebar(self->splitView, false);
                                  }
@@ -12619,6 +12672,60 @@ private:
                              }
                          }),
                          this);
+        auto* factory = gtk_signal_list_item_factory_new();
+        g_signal_connect(factory, "setup", G_CALLBACK(+[](GtkSignalListItemFactory*, GtkListItem* item,
+                                                           gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             auto* contents = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+                             auto* preview = gtk_drawing_area_new();
+                             gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(preview), 112);
+                             gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(preview), 150);
+                             gtk_drawing_area_set_draw_func(
+                                     GTK_DRAWING_AREA(preview),
+                                     +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer owner) {
+                                         static_cast<Prototype*>(owner)->drawThumbnail(
+                                                 cr, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(area), "page")), width,
+                                                 height);
+                                     },
+                                     self, nullptr);
+                             auto* label = gtk_label_new("");
+                             gtk_box_append(GTK_BOX(contents), preview);
+                             gtk_box_append(GTK_BOX(contents), label);
+                             gtk_widget_set_margin_top(contents, 8);
+                             gtk_widget_set_margin_bottom(contents, 8);
+                             g_object_set_data(G_OBJECT(item), "thumbnail", preview);
+                             g_object_set_data(G_OBJECT(item), "page-label", label);
+                             gtk_list_item_set_child(item, contents);
+                         }),
+                         this);
+        g_signal_connect(factory, "bind", G_CALLBACK(+[](GtkSignalListItemFactory*, GtkListItem* item,
+                                                          gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             auto* preview = GTK_WIDGET(g_object_get_data(G_OBJECT(item), "thumbnail"));
+                             auto* label = GTK_LABEL(g_object_get_data(G_OBJECT(item), "page-label"));
+                             const auto page = gtk_list_item_get_position(item);
+                             g_object_set_data(G_OBJECT(preview), "page", GUINT_TO_POINTER(page));
+                             gtk_label_set_text(label, gtk_string_object_get_string(
+                                                              GTK_STRING_OBJECT(gtk_list_item_get_item(item))));
+                             self->thumbnailWidgets.push_back(preview);
+                             gtk_widget_queue_draw(preview);
+                         }),
+                         this);
+        g_signal_connect(factory, "unbind", G_CALLBACK(+[](GtkSignalListItemFactory*, GtkListItem* item,
+                                                            gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             auto* preview = GTK_WIDGET(g_object_get_data(G_OBJECT(item), "thumbnail"));
+                             const auto found = std::find(self->thumbnailWidgets.begin(), self->thumbnailWidgets.end(),
+                                                          preview);
+                             if (found != self->thumbnailWidgets.end()) {
+                                 self->thumbnailWidgets.erase(found);
+                             }
+                             g_object_set_data(G_OBJECT(preview), "page", GINT_TO_POINTER(-1));
+                         }),
+                         this);
+        pageList = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(selection), factory));
+        gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
+        gtk_list_view_set_show_separators(pageList, false);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
         gtk_box_append(GTK_BOX(box), scroll);
         auto* layerPanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -12947,6 +13054,9 @@ private:
     }
 
     void drawThumbnail(cairo_t* cr, int number, int width, int height) {
+        if (number < 0 || number >= pageCount) {
+            return;
+        }
         if (!thumbnails.contains(number)) {
             if (thumbnails.size() == 16) {
                 thumbnails.erase(thumbnails.begin());
@@ -13845,7 +13955,7 @@ private:
             scheduleAutosave(static_cast<guint>(std::max(0, effectiveAutosaveSeconds)));
             requestOpenDocument(sourcePath, true);
         }
-        if (options.verifyPlugins || options.verifySearch || options.verifyPageLayout ||
+        if (options.verifyPlugins || options.verifySearch || options.verifySidebarPerformance || options.verifyPageLayout ||
             options.verifyPresentationMode || options.verifyPenLineStyle || options.verifyBeamer ||
             options.verifyLayerActions || options.verifyLatex) {
             g_timeout_add(
@@ -13858,6 +13968,8 @@ private:
                         try {
                             if (self->options.verifySearch) {
                                 self->verifySearchIntegration();
+                            } else if (self->options.verifySidebarPerformance) {
+                                self->verifySidebarPerformanceIntegration();
                             } else if (self->options.verifyPageLayout) {
                                 self->verifyPageLayoutIntegration();
                             } else if (self->options.verifyPresentationMode) {
@@ -13876,6 +13988,7 @@ private:
                         } catch (const std::exception& error) {
                             const char* verification = self->options.verifyLatex ? "LATEX" :
                                                        self->options.verifySearch ? "SEARCH" :
+                                                       self->options.verifySidebarPerformance ? "SIDEBAR PERFORMANCE" :
                                                        self->options.verifyPresentationMode ? "PRESENTATION MODE" :
                                                        self->options.verifyPageLayout ? "PAGE LAYOUT" :
                                                        self->options.verifyPenLineStyle ? "PEN LINE STYLE" :
@@ -13926,6 +14039,7 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
+            !options.verifySidebarPerformance &&
             !options.verifyPageLayout && !options.verifyPresentationMode && !options.verifyPenLineStyle &&
             !options.verifyBeamer && !options.verifyLayerActions && !options.verifyLatex) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
@@ -14112,7 +14226,8 @@ private:
         updateFloatingLayerMenus();
         if (pageList) {
             syncingPage = true;
-            gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, state.page));
+            gtk_single_selection_set_selected(
+                    GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList)), static_cast<guint>(state.page));
             syncingPage = false;
         }
         for (auto* thumbnail: thumbnailWidgets) {
@@ -14176,14 +14291,39 @@ private:
                 this);
     }
 
-    void zoom(double value, double x, double y) {
+    void zoom(double value, double x, double y, bool previewRaster = false) {
         if (presentationMode || input.active()) {
             return;
         }
+        if (zoomPreviewSource) {
+            g_source_remove(zoomPreviewSource);
+            zoomPreviewSource = 0;
+        }
+        zoomPreview = previewRaster;
         state.zoomAt(value, x, y);
         fitMode = false;
         fitted = true;
         update();
+        if (previewRaster) {
+            zoomPreviewSource = g_timeout_add(
+                    120,
+                    +[](gpointer data) -> gboolean {
+                        auto* self = static_cast<Prototype*>(data);
+                        self->zoomPreviewSource = 0;
+                        self->zoomPreview = false;
+                        self->update();
+                        return G_SOURCE_REMOVE;
+                    },
+                    this);
+        }
+    }
+
+    void finishZoomPreview() {
+        if (zoomPreviewSource) {
+            g_source_remove(zoomPreviewSource);
+            zoomPreviewSource = 0;
+        }
+        zoomPreview = false;
     }
 
     static bool mouseEvent(GtkEventController* controller) {
@@ -15358,11 +15498,14 @@ private:
                          this);
         g_signal_connect(pinch, "scale-changed", G_CALLBACK(+[](GtkGestureZoom*, double scale, gpointer data) {
                              auto* self = static_cast<Prototype*>(data);
-                             self->zoom(self->pinchZoom * scale, self->pinchX, self->pinchY);
+                             self->zoom(self->pinchZoom * scale, self->pinchX, self->pinchY, true);
                          }),
                          this);
         g_signal_connect(pinch, "end", G_CALLBACK(+[](GtkGesture*, GdkEventSequence*, gpointer data) {
-                             static_cast<Prototype*>(data)->state.endPinch(g_get_monotonic_time());
+                             auto* self = static_cast<Prototype*>(data);
+                             self->state.endPinch(g_get_monotonic_time());
+                             self->finishZoomPreview();
+                             self->update();
                          }),
                          this);
         addGesture(pinch);
@@ -15387,7 +15530,9 @@ private:
                         GDK_CONTROL_MASK) {
                         if (dy != 0) {
                             const auto anchor = self->scrollAnchor(GTK_EVENT_CONTROLLER(controller));
-                            self->zoom(self->state.steppedZoom(dy < 0, true), anchor.x, anchor.y);
+                            const auto zoom = prototype::behavior::zoomFromScrollDelta(
+                                    self->state.zoom, dy, discrete, self->state.scrollZoomStep);
+                            self->zoom(zoom, anchor.x, anchor.y, true);
                         }
                     } else {
                         if (self->presentationMode) {
@@ -15623,7 +15768,8 @@ private:
                     } else if ((modifiers & GDK_CONTROL_MASK) &&
                                (key == GDK_KEY_plus || key == GDK_KEY_equal || key == GDK_KEY_minus)) {
                         self->zoom(self->state.steppedZoom(key != GDK_KEY_minus, false),
-                                   gtk_widget_get_width(self->canvas) / 2.0, gtk_widget_get_height(self->canvas) / 2.0);
+                                   gtk_widget_get_width(self->canvas) / 2.0, gtk_widget_get_height(self->canvas) / 2.0,
+                                   true);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_Home) {
                         self->navigateToPage(0);
                     } else if ((modifiers & GDK_CONTROL_MASK) && key == GDK_KEY_End) {
@@ -15721,6 +15867,7 @@ private:
                              }
                              if (gesture == self->pinch && self->state.pinching) {
                                  self->state.endPinch(g_get_monotonic_time());
+                                 self->finishZoomPreview();
                              }
                              self->update();
                          }),
@@ -15734,9 +15881,10 @@ private:
         const auto sz = state.pageSize(pageIndex);
         // Bound both dimensions and memory per page, even when zoomed into a huge PDF page.
         const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
+        // Reuse current rasters during continuous zoom; rerender once input settles.
         for (auto& entry: pageCache) {
             if (entry.pageIndex == pageIndex && entry.originLayer == prototype::newLayerOrigin &&
-                std::abs(entry.scale - scale) < 0.0001) {
+                (zoomPreview || std::abs(entry.scale - scale) < 0.0001)) {
                 entry.stamp = ++cacheClock;
                 return entry;
             }
@@ -15792,7 +15940,7 @@ private:
         const bool audioMode = state.brush.tool == Tool::PlayObject;
         for (auto& entry: layerPageCache) {
             if (entry.pageIndex == pageIndex && entry.originLayer == originLayer &&
-                entry.audioMode == audioMode && std::abs(entry.scale - scale) < 0.0001) {
+                entry.audioMode == audioMode && (zoomPreview || std::abs(entry.scale - scale) < 0.0001)) {
                 entry.stamp = ++cacheClock;
                 return entry;
             }
@@ -19593,7 +19741,8 @@ private:
                 smokeDrawingTools();
                 if (pageCount > 1) {
                     const double zoomBeforeNav = state.zoom;
-                    gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, 1));
+                    gtk_single_selection_set_selected(
+                            GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList)), 1);
                     require(state.page == 1 && std::abs(state.zoom - zoomBeforeNav) < 1e-9 && state.ink.size() == 2,
                             "Sidebar navigation lost session ink or reset zoom");
                 }
@@ -19622,7 +19771,8 @@ private:
                 smokeCacheBytes = totalCacheBytes();
                 capture("sidebar", contentView);
                 if (pageCount > 1) {
-                    gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, 0));
+                    gtk_single_selection_set_selected(
+                            GTK_SINGLE_SELECTION(gtk_list_view_get_model(pageList)), 0);
                     const auto centerPage = state.hitPage(gtk_widget_get_width(canvas) / 2.0,
                                                            gtk_widget_get_height(canvas) / 2.0);
                     require(state.page == 0 && centerPage && centerPage->page == 0 &&
@@ -20769,6 +20919,8 @@ private:
     guint autosaveSource = 0;
     guint laserFadeSource = 0;
     guint selectionEdgePanSource = 0;
+    guint zoomPreviewSource = 0;
+    bool zoomPreview = false;
     int autosaveHeartbeats = 0;
     int autosaveWaits = 0;
     std::string smokeAutosaveBaseVersion;
@@ -20990,7 +21142,7 @@ private:
     GtkWidget* pluginManagerApplyButton = nullptr;
     std::map<std::string, GtkWidget*> pluginManagerSwitches;
     std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> preferenceControls{};
-    GtkListBox* pageList = nullptr;
+    GtkListView* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     std::map<int, std::pair<std::unique_ptr<cairo_surface_t, SurfaceDeleter>, double>> thumbnails;
     GtkWidget* layerRows = nullptr;
@@ -21101,6 +21253,8 @@ int main(int argc, char** argv) {
                 options.verifyPlugins = true;
             } else if (argument == "--verify-search") {
                 options.verifySearch = true;
+            } else if (argument == "--verify-sidebar-performance") {
+                options.verifySidebarPerformance = true;
             } else if (argument == "--verify-page-layout") {
                 options.verifyPageLayout = true;
             } else if (argument == "--verify-presentation-mode") {
@@ -21133,6 +21287,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Usage: xournalpp-gtk4-canvas [--pdf FILE | --document FILE --worker WORKER] "
                                          "[--config-dir DIRECTORY] [--autosave-seconds SECONDS] [--dark] "
                                          "[--plugin-dir DIRECTORY] [--verify-plugins] [--verify-search] "
+                                         "[--verify-sidebar-performance] "
                                          "[--verify-page-layout] [--verify-presentation-mode] "
                                          "[--verify-pen-line-style] [--verify-beamer] "
                                          "[--verify-layer-actions] [--verify-latex] [--verify-text-clipboard] "
@@ -21152,6 +21307,12 @@ int main(int argc, char** argv) {
         if (options.verifySearch && (options.smokeDirectory.empty() || options.pdf.empty() ||
                                      !options.nativeDocument.empty() || !options.worker.empty())) {
             throw std::runtime_error("Search verification requires --smoke-dir and --pdf without --worker");
+        }
+        if (options.verifySidebarPerformance &&
+            (options.smokeDirectory.empty() || options.pdf.empty() || !options.nativeDocument.empty() ||
+             !options.worker.empty())) {
+            throw std::runtime_error(
+                    "Sidebar performance verification requires --smoke-dir and --pdf without --worker");
         }
         if (options.verifyPageLayout && (options.smokeDirectory.empty() || !options.pdf.empty() ||
                                          !options.nativeDocument.empty() || !options.worker.empty())) {

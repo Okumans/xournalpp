@@ -63,4 +63,9 @@ inline double scrollDeltaToPixels(double delta, bool discrete) {
     return discrete ? delta * discreteScrollStepPixels : delta;
 }
 
+inline double zoomFromScrollDelta(double zoom, double delta, bool discrete, double scrollStep = scrollZoomStep) {
+    const auto units = discrete ? delta : delta / discreteScrollStepPixels;
+    return zoom * std::pow(1.0 + scrollStep, -units);
+}
+
 }  // namespace prototype::behavior
