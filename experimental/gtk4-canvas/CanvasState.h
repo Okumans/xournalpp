@@ -124,6 +124,7 @@ struct Ink {
     int fill = -1;
     int capStyle = 0;
     std::uintptr_t pluginReference = 0;
+    mutable std::uint64_t rasterCacheKey = 0;
 };
 
 struct LaserTrail {
@@ -469,6 +470,7 @@ public:
 
         if (undoPolicy == 2) {
             for (auto& stroke: additions) {
+                stroke.rasterCacheKey = 0;
                 ink.push_back(std::move(stroke));
             }
             // These strokes are intentionally irreversible. Drop older history
@@ -5007,13 +5009,21 @@ private:
             if (forward) {
                 const auto pos = ink.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex);
                 ink.erase(pos, pos + static_cast<std::ptrdiff_t>(it->before.size()));
-                ink.insert(ink.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex), it->after.begin(),
-                           it->after.end());
+                auto inserted = it->after;
+                for (auto& stroke: inserted) {
+                    stroke.rasterCacheKey = 0;
+                }
+                ink.insert(ink.begin() + static_cast<std::ptrdiff_t>(it->beforeIndex),
+                           std::make_move_iterator(inserted.begin()), std::make_move_iterator(inserted.end()));
             } else {
                 const auto pos = ink.begin() + static_cast<std::ptrdiff_t>(it->afterIndex);
                 ink.erase(pos, pos + static_cast<std::ptrdiff_t>(it->after.size()));
-                ink.insert(ink.begin() + static_cast<std::ptrdiff_t>(it->afterIndex), it->before.begin(),
-                           it->before.end());
+                auto inserted = it->before;
+                for (auto& stroke: inserted) {
+                    stroke.rasterCacheKey = 0;
+                }
+                ink.insert(ink.begin() + static_cast<std::ptrdiff_t>(it->afterIndex),
+                           std::make_move_iterator(inserted.begin()), std::make_move_iterator(inserted.end()));
             }
         }
         const auto oldSelection = selected;

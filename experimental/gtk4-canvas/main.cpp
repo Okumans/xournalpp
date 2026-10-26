@@ -48,6 +48,7 @@
 #include "DocumentSession.h"
 #include "ImageRenderer.h"
 #include "InkRenderer.h"
+#include "InkRasterCache.h"
 #include "LatexEditor.h"
 #include "LuaPluginRuntime.h"
 #include "PageRasterRenderer.h"
@@ -13491,7 +13492,7 @@ private:
                     } else if (item.kind == EditableKind::Image) {
                         prototype::drawCanvasImage(cr, displayedImage(item.index));
                     } else {
-                        prototype::drawInkPreview(cr, state, item.index);
+                            prototype::drawInk(cr, state.ink[item.index], state.selectionMatrix(item.index));
                     }
                 }
                 if (state.current && state.current->page == number && state.current->layerId == layerId &&
@@ -16531,6 +16532,7 @@ private:
         if (visiblePages.empty()) {
             visiblePages.emplace(state.page, 0);
         }
+        prototype::setInkRasterVisiblePages(visiblePageIndices);
         const auto retainedPages = [this, width, height](double margin) {
             std::map<int, double> pages;
             for (const int page: state.visiblePageIndices(width, height, width * margin, height * margin)) {
@@ -16682,15 +16684,58 @@ private:
                     }
                     std::stable_sort(layerItems.begin(), layerItems.end(),
                                      [](const LayerItem& a, const LayerItem& b) { return a.order < b.order; });
-                    for (const auto& item: layerItems) {
+                    for (size_t itemIndex = 0; itemIndex < layerItems.size();) {
+                        const auto& item = layerItems[itemIndex];
                         if (item.kind == EditableKind::Text) {
                             const auto text = state.displayText(item.index);
                             drawEditableObject([&] { prototype::drawText(cr, text); });
                         } else if (item.kind == EditableKind::Image) {
                             drawEditableObject([&] { prototype::drawCanvasImage(cr, displayedImage(item.index)); });
                         } else {
-                            drawEditableObject([&] { prototype::drawInkPreview(cr, state, item.index); });
+                            const auto& first = state.ink[item.index];
+                            const bool cacheableTool = first.brush.tool == Tool::Pen ||
+                                                       first.brush.tool == Tool::Highlighter ||
+                                                       first.brush.tool == Tool::Eraser;
+                            const auto hasIdentityTransform = [this](size_t index) {
+                                const auto transform = state.selectionMatrix(index);
+                                return transform.identity() && std::abs(transform.widthScale - 1.0) < 1e-12;
+                            };
+                            const bool canCacheRun = !fadeEditableObjects && cacheableTool &&
+                                                     hasIdentityTransform(item.index);
+                            if (canCacheRun) {
+                                const bool highlighter = first.brush.tool == Tool::Highlighter;
+                                std::vector<const Ink*> strokeRun;
+                                size_t runEnd = itemIndex;
+                                while (runEnd < layerItems.size() && layerItems[runEnd].kind == EditableKind::Ink) {
+                                    const auto& candidate = state.ink[layerItems[runEnd].index];
+                                    const bool candidateCacheable = candidate.brush.tool == Tool::Pen ||
+                                                                    candidate.brush.tool == Tool::Highlighter ||
+                                                                    candidate.brush.tool == Tool::Eraser;
+                                    if (!candidateCacheable ||
+                                        (candidate.brush.tool == Tool::Highlighter) != highlighter ||
+                                        !hasIdentityTransform(layerItems[runEnd].index)) {
+                                        break;
+                                    }
+                                    strokeRun.push_back(&candidate);
+                                    ++runEnd;
+                                }
+
+                                const double rasterScale = zoomPreview ? deviceScale : state.zoom * deviceScale;
+                                if (prototype::drawCachedInkRun(cr, strokeRun, rasterScale)) {
+                                    itemIndex = runEnd;
+                                    continue;
+                                }
+                                for (const auto* stroke: strokeRun) {
+                                    prototype::drawInk(cr, *stroke);
+                                }
+                                itemIndex = runEnd;
+                                continue;
+                            }
+                            drawEditableObject([&] {
+                                prototype::drawInk(cr, first, state.selectionMatrix(item.index));
+                            });
                         }
+                        ++itemIndex;
                     }
                     if (state.current && state.current->page == i && state.current->layerId == layerId &&
                         state.current->originLayer == origin) {
