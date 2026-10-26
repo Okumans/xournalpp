@@ -782,8 +782,17 @@ void finishPdfPage(cairo_t* cr, cairo_surface_t* surface) {
     cairo_show_page(cr);
 }
 
-void createBackgroundPreview(Document& document, const fs::path& output) {
+void createBackgroundPreview(Document& document, const fs::path& output, bool reuseSourcePdf) {
     requireNewTarget(output);
+    if (reuseSourcePdf) {
+        const auto& source = document.getPdfFilepath();
+        if (source.empty() || !fs::is_regular_file(source)) {
+            throw std::runtime_error("Cannot reuse the source PDF for its background preview");
+        }
+        fs::copy_file(source, output);
+        return;
+    }
+
     auto* surface = cairo_pdf_surface_create(output.c_str(), 1, 1);
     auto* cr = cairo_create(surface);
     try {
@@ -949,8 +958,9 @@ std::vector<prototype::bridge::PageSizePacket> readDocumentPageSizes(const Docum
 
 void renderPreviewBundle(Document& document, const fs::path& preview, const fs::path& layerState,
                          const fs::path& audioFolder = {}, const fs::path& audioDirectory = {},
-                         const prototype::bridge::LayerDocument* layerMetadata = nullptr) {
-    createBackgroundPreview(document, preview);
+                         const prototype::bridge::LayerDocument* layerMetadata = nullptr,
+                         bool reuseSourcePdf = false) {
+    createBackgroundPreview(document, preview, reuseSourcePdf);
     auto pdfBackgroundFilename = document.getPdfFilepath().string();
     const auto sourceMetadata = document.getFilepath().parent_path() / "pdf-background-path.dat";
     std::error_code metadataError;
@@ -1853,9 +1863,11 @@ auto prototype::bridge::runDocumentCommand(const std::vector<std::string>& argum
                                                           pdfBackgroundFilename);
             document = load(snapshot, snapshotContext);
             if (argc >= 8) {
+                const bool reuseSourcePdf =
+                        g_ascii_strcasecmp(input.extension().string().c_str(), ".pdf") == 0;
                 renderPreviewBundle(*document, pdf, fs::absolute(argv[7]),
                                     argc >= 10 ? fs::path(argv[9]) : fs::path{},
-                                    argc >= 11 ? fs::path(argv[10]) : fs::path{});
+                                    argc >= 11 ? fs::path(argv[10]) : fs::path{}, nullptr, reuseSourcePdf);
             } else {
                 render(*document, pdf);
             }

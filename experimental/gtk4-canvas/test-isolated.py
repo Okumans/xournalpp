@@ -20,18 +20,24 @@ import xml.etree.ElementTree as ET
 import zlib
 
 
-def run(command, *, env=None, private_group=False):
+def run(command, *, env=None, private_group=False, timeout_seconds=90):
     process = subprocess.Popen(command, env=env, text=True, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, start_new_session=private_group)
     try:
-        output, _ = process.communicate(timeout=90)
-    except subprocess.TimeoutExpired:
+        output, _ = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as error:
         if private_group:
             os.killpg(process.pid, signal.SIGKILL)
         else:
             process.kill()
-        process.communicate()
-        raise
+        output, _ = process.communicate()
+        partial_output = output or error.stdout or ""
+        if isinstance(partial_output, bytes):
+            partial_output = partial_output.decode(errors="replace")
+        raise RuntimeError(
+            f"Command timed out after {timeout_seconds} seconds: {command[0]}\n"
+            f"Captured output before timeout:\n{partial_output[-8000:]}"
+        ) from error
     print(output, end="", flush=True)
     if process.returncode:
         raise RuntimeError(f"Command exited {process.returncode}: {command[0]}")
@@ -1993,7 +1999,9 @@ def main():
         if args.sidebar_startup_only:
             command.extend(["--sidebar-startup-only", "--sidebar-startup-pdf",
                             str(args.sidebar_startup_pdf.resolve())])
-        output = run(command, env=env, private_group=True)
+        # Give the inner test process enough time to report its own timeout and
+        # captured app output before the outer Cage deadline kills the session.
+        output = run(command, env=env, private_group=True, timeout_seconds=105)
         (args.evidence / "headless.log").write_text(output)
 
 

@@ -189,6 +189,19 @@ sizing, and transformed editor coordinates; all passed. This validates the
 bundled typed-text fixture, while the user's separate PDF and physical text
 input remain unverified.
 
+Phase 129 avoids regenerating a second PDF page by page when opening a source
+PDF: the private background-preview bundle now reuses that PDF directly. The
+fast path is limited to initial `.pdf` open; layer previews and other document
+operations retain their existing rendering path. A private Cage run opened the
+user's 775-page PDF without a worker, drained visible sidebar thumbnails, and
+completed 40 Pen, 40 Highlighter, and Smart Select drag interactions. Software
+renderer p95 frame times were 16.69 ms for Pen, 18.29 ms for Highlighter, and
+17.48 ms for Smart Select movement; maximum ink frames were 23.48 ms. Input is
+synthetic, so this does not establish physical-device or hardware-renderer
+performance. The full CTest suite passed 40/40. The private harness now gives
+the app's 90-second timeout a 15-second outer Cage margin and includes captured
+subprocess output in timeout errors.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
@@ -248,7 +261,10 @@ These user-requested follow-ups remain:
   remain synthetic and do not cover a physical pen or longer real-world
   sessions. Phase 126 repeated the run against the same PDF: Pen p95 was
   16.78 ms (24.95 ms max), Highlighter p95 was 17.79 ms (22.74 ms max), and
-  Smart Select drag p95 was 16.35 ms. The 421 ms standalone debug measurement
+  Smart Select drag p95 was 16.35 ms. Phase 129 repeated the real-PDF run after
+  removing the redundant per-page preview conversion: Pen p95 was 16.69 ms
+  (20.12 ms max), Highlighter p95 was 18.29 ms (23.48 ms max), and Smart Select
+  drag p95 was 17.48 ms (19.40 ms max). The 421 ms standalone debug measurement
   has not been repeated; editable-page snapshots and hardware-renderer
   measurements remain outstanding.
 - A page-raster task previously failed as a whole if writing one of its optional
