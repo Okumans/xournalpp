@@ -329,6 +329,37 @@ private:
         Count,
     };
 
+    struct PreferencesUiState {
+        AdwPreferencesDialog* dialog = nullptr;
+        GtkWidget* latexTemplatePathEntry = nullptr;
+        GtkWidget* latexSetupTestButton = nullptr;
+        GtkWidget* latexSetupTestStatus = nullptr;
+        GtkWidget* latexSettingsApplyButton = nullptr;
+        GtkWidget* latexSettingsApplyStatus = nullptr;
+        std::vector<std::string> latexSourceViewThemeIds;
+        std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> controls{};
+        std::vector<prototype::MainToolAction> pendingMainToolRail;
+        bool syncingControls = false;
+
+        PreferencesUiState() = default;
+        PreferencesUiState(const PreferencesUiState&) = delete;
+        PreferencesUiState& operator=(const PreferencesUiState&) = delete;
+        ~PreferencesUiState() { clear(); }
+
+        void clear() {
+            g_clear_object(&dialog);
+            latexTemplatePathEntry = nullptr;
+            latexSetupTestButton = nullptr;
+            latexSetupTestStatus = nullptr;
+            latexSettingsApplyButton = nullptr;
+            latexSettingsApplyStatus = nullptr;
+            latexSourceViewThemeIds.clear();
+            controls.fill(nullptr);
+            pendingMainToolRail.clear();
+            syncingControls = false;
+        }
+    };
+
     GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
                                const char* const* options, guint selected, PreferenceKey key);
 
@@ -1226,7 +1257,6 @@ private:
     GtkWidget* mainToolRailApplyButton = nullptr;
     GtkWidget* mainToolRailVisibleList = nullptr;
     GtkWidget* mainToolRailAvailableList = nullptr;
-    std::vector<prototype::MainToolAction> pendingMainToolRail;
     size_t floatingToolboxStaticToolButtonCount = 0;
     std::vector<std::pair<Tool, GtkWidget*>> floatingToolboxToolButtons;
     std::vector<GtkWidget*> floatingZoomButtons;
@@ -1334,18 +1364,11 @@ private:
     GCancellable* clipboardCancellation = nullptr;
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
-    AdwPreferencesDialog* preferencesDialog = nullptr;
-    GtkWidget* latexTemplatePathEntry = nullptr;
-    GtkWidget* latexSetupTestButton = nullptr;
-    GtkWidget* latexSetupTestStatus = nullptr;
-    GtkWidget* latexSettingsApplyButton = nullptr;
-    GtkWidget* latexSettingsApplyStatus = nullptr;
-    std::vector<std::string> latexSourceViewThemeIds;
+    PreferencesUiState preferencesUi;
     GtkWindow* pluginManagerWindow = nullptr;
     GtkWidget* pluginManagerList = nullptr;
     GtkWidget* pluginManagerApplyButton = nullptr;
     std::map<std::string, GtkWidget*> pluginManagerSwitches;
-    std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> preferenceControls{};
     GtkListView* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
     PageRasterRenderer thumbnailRenderer;
@@ -1384,7 +1407,6 @@ private:
             prototype::behavior::laserHighlighterWidths[static_cast<size_t>(prototype::behavior::ToolSize::Medium)]};
     bool syncingBrush = false;
     bool syncingTools = false;
-    bool syncingPreferenceControls = false;
     GtkGesture* mouse = nullptr;
     GtkGesture* stylus = nullptr;
     GtkEventController* pointerMotion = nullptr;

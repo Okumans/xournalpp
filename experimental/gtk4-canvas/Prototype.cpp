@@ -120,7 +120,7 @@ Prototype::~Prototype() {
         gtk_window_destroy(pluginManagerWindow);
         g_clear_object(&pluginManagerWindow);
     }
-    g_clear_object(&preferencesDialog);
+    preferencesUi.clear();
     if (latexEditor) {
         auto editor = std::move(latexEditor);
         editor->cancel();

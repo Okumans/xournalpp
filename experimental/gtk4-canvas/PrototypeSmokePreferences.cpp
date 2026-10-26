@@ -3,7 +3,7 @@
 namespace prototype::gtk4 {
 
 gboolean Prototype::smokePreferencesVerify() {
-    const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
+    const auto control = [&](PreferenceKey key) { return preferencesUi.controls[static_cast<size_t>(key)]; };
     const prototype::FloatingToolboxRows floatingModeTestRows = {{
             {"SMART_SELECT", "PEN", "DRAW", "PAGE_SPIN", "LAYER"},
             {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER", "RULER"},
@@ -60,8 +60,8 @@ gboolean Prototype::smokePreferencesVerify() {
                                 control(PreferenceKey::LatexUseExternalEditor) &&
                                 control(PreferenceKey::LatexExternalEditorAutoConfirm) &&
                                 control(PreferenceKey::LatexExternalEditorCommand) &&
-                                control(PreferenceKey::LatexTemporaryFileExtension) && latexSettingsApplyButton &&
-                                latexSetupTestButton,
+                                control(PreferenceKey::LatexTemporaryFileExtension) && preferencesUi.latexSettingsApplyButton &&
+                                preferencesUi.latexSetupTestButton,
                         "LaTeX Preferences page is missing an imported setting or editor control");
                 require(control(PreferenceKey::MainToolRail) && mainToolRailApplyButton && mainToolRailVisibleList &&
                                 mainToolRailAvailableList &&
@@ -92,13 +92,13 @@ gboolean Prototype::smokePreferencesVerify() {
                         "Preferences rows did not show imported stylus mappings");
                 require(adw_switch_row_get_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
                         "Rotation snapping should be enabled by default in Preferences");
-                capture("preferences-dialog", GTK_WIDGET(preferencesDialog), true);
-                adw_preferences_dialog_set_visible_page_name(preferencesDialog, "latex");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "latex",
+                capture("preferences-dialog", GTK_WIDGET(preferencesUi.dialog), true);
+                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "latex");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "latex",
                         "Preferences dialog did not open the LaTeX page");
-                capture("preferences-latex", GTK_WIDGET(preferencesDialog), true);
-                adw_preferences_dialog_set_visible_page_name(preferencesDialog, "toolbar");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "toolbar",
+                capture("preferences-latex", GTK_WIDGET(preferencesUi.dialog), true);
+                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "toolbar");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "toolbar",
                         "Preferences dialog did not switch to the Toolbar page");
                 break;
             }
@@ -117,10 +117,10 @@ gboolean Prototype::smokePreferencesVerify() {
                     auto* adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(pageScroll));
                     gtk_adjustment_set_value(adjustment, gtk_adjustment_get_upper(adjustment) -
                                                                  gtk_adjustment_get_page_size(adjustment));
-                    capture("preferences-main-tool-rail", GTK_WIDGET(preferencesDialog), true);
+                    capture("preferences-main-tool-rail", GTK_WIDGET(preferencesUi.dialog), true);
                 }
-                adw_preferences_dialog_set_visible_page_name(preferencesDialog, "input");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "input",
+                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "input");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "input",
                         "Preferences dialog did not switch to the Input page");
                 break;
             case 3: {
@@ -134,8 +134,8 @@ gboolean Prototype::smokePreferencesVerify() {
                 gtk_color_dialog_button_set_rgba(
                         GTK_COLOR_DIALOG_BUTTON(control(PreferenceKey::CursorHighlightBorderColor)), &border);
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::CursorHighlightBorderWidth)), 2.0);
-                adw_preferences_dialog_set_visible_page_name(preferencesDialog, "behavior");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "behavior",
+                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "behavior");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "behavior",
                         "Preferences dialog did not switch to the Behavior page");
                 capture("preferences-behavior");
                 adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
@@ -175,7 +175,7 @@ gboolean Prototype::smokePreferencesVerify() {
                                 gtk_widget_get_sensitive(control(PreferenceKey::LatexExternalEditorCommand)) &&
                                 gtk_widget_get_sensitive(control(PreferenceKey::LatexExternalEditorAutoConfirm)),
                         "LaTeX preference sensitivity did not follow custom font and external-editor settings");
-                g_signal_emit_by_name(latexSettingsApplyButton, "clicked");
+                g_signal_emit_by_name(preferencesUi.latexSettingsApplyButton, "clicked");
                 require(importedConfig.settings.latexDefaultText == "\\frac{\\alpha}{2}" &&
                                 prototype::preferences_detail::pathToUtf8(importedConfig.settings.latexTemplatePath) ==
                                         "/tmp/template with spaces.tex" &&
@@ -192,7 +192,7 @@ gboolean Prototype::smokePreferencesVerify() {
                                 importedConfig.settings.latexUseExternalEditor &&
                                 importedConfig.settings.latexExternalEditorAutoConfirm &&
                                 importedConfig.settings.latexTemporaryFileExtension == "tex" &&
-                                std::string(gtk_label_get_text(GTK_LABEL(latexSettingsApplyStatus))) == "Saved",
+                                std::string(gtk_label_get_text(GTK_LABEL(preferencesUi.latexSettingsApplyStatus))) == "Saved",
                         "Applying LaTeX preferences did not persist the text fields and editor options");
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanSpeed)), 31.0);
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier)), 3.5);
@@ -513,7 +513,7 @@ gboolean Prototype::smokePreferencesVerify() {
                                     state.brush.tool == Tool::Pen,
                             "The stylus Hand mapping did not pan without changing the toolbar tool");
                 }
-                adw_dialog_close(ADW_DIALOG(preferencesDialog));
+                adw_dialog_close(ADW_DIALOG(preferencesUi.dialog));
                 {
                     const auto anchor =
                             prototype::Point{gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
@@ -796,7 +796,7 @@ gboolean Prototype::smokePreferencesVerify() {
                         "Preferences dialog did not restore LaTeX settings and editor options");
                 capture("preferences-reloaded");
                 std::cout << "PASS: GTK 4 preferences survive application restart\n";
-                adw_dialog_close(ADW_DIALOG(preferencesDialog));
+                adw_dialog_close(ADW_DIALOG(preferencesUi.dialog));
                 gtk_window_close(GTK_WINDOW(window));
                 return G_SOURCE_REMOVE;
         }

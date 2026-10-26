@@ -40,7 +40,7 @@ void Prototype::capture(const std::string& name, GtkWidget* target, bool capture
     // A window paintable may lag a just-queued drawing-area frame. Overlay a
     // fresh canvas snapshot so smoke captures include the state being tested.
     const bool overlayDialogVisible =
-            messageDialog || (preferencesDialog && gtk_widget_get_visible(GTK_WIDGET(preferencesDialog)));
+            messageDialog || (preferencesUi.dialog && gtk_widget_get_visible(GTK_WIDGET(preferencesUi.dialog)));
     if (!target && canvasOverlay && !overlayDialogVisible) {
         graphene_rect_t canvasBounds;
         if (gtk_widget_compute_bounds(canvasOverlay, window, &canvasBounds)) {

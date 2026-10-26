@@ -303,29 +303,29 @@ void Prototype::verifyPageLayoutIntegration() {
     capture("page-layout-grid");
 
     openPreferences();
-    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "page-layout");
+    adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "page-layout");
     const auto preferencesSettleAt = g_get_monotonic_time() + 250000;
     const auto preferencesReadyDeadline = preferencesSettleAt + 500000;
-    while ((!gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) ||
-            gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) <= 0 ||
-            gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) <= 0 ||
+    while ((!gtk_widget_get_mapped(GTK_WIDGET(preferencesUi.dialog)) ||
+            gtk_widget_get_width(GTK_WIDGET(preferencesUi.dialog)) <= 0 ||
+            gtk_widget_get_height(GTK_WIDGET(preferencesUi.dialog)) <= 0 ||
             g_get_monotonic_time() < preferencesSettleAt) &&
            g_get_monotonic_time() < preferencesReadyDeadline) {
         g_main_context_iteration(nullptr, false);
         g_usleep(1000);
     }
-    require(gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) &&
-                    gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) > 0 &&
-                    gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) > 0,
+    require(gtk_widget_get_mapped(GTK_WIDGET(preferencesUi.dialog)) &&
+                    gtk_widget_get_width(GTK_WIDGET(preferencesUi.dialog)) > 0 &&
+                    gtk_widget_get_height(GTK_WIDGET(preferencesUi.dialog)) > 0,
             "Page Layout Preferences did not map for the private GUI check");
-    auto* flowControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutFlow)];
-    auto* dimensionControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutGridDimension)];
-    auto* countControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutGridCount)];
-    auto* pairedControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutPairedPages)];
-    auto* offsetControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutPairedPageOffset)];
+    auto* flowControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutFlow)];
+    auto* dimensionControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutGridDimension)];
+    auto* countControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutGridCount)];
+    auto* pairedControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutPairedPages)];
+    auto* offsetControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutPairedPageOffset)];
     auto* horizontalDirectionControl =
-            preferenceControls[static_cast<size_t>(PreferenceKey::LayoutHorizontalDirection)];
-    auto* verticalDirectionControl = preferenceControls[static_cast<size_t>(PreferenceKey::LayoutVerticalDirection)];
+            preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutHorizontalDirection)];
+    auto* verticalDirectionControl = preferencesUi.controls[static_cast<size_t>(PreferenceKey::LayoutVerticalDirection)];
     require(flowControl && dimensionControl && countControl && pairedControl && offsetControl &&
                     horizontalDirectionControl && verticalDirectionControl,
             "Page Layout Preferences is missing a layout, grid, offset, or reading-direction control");
@@ -366,7 +366,7 @@ void Prototype::verifyPageLayoutIntegration() {
                     preferenceRoundTrip.pageLayout.pairedPageOffset == 37 &&
                     preferenceRoundTrip.pageLayout.rightToLeft && preferenceRoundTrip.pageLayout.bottomToTop,
             "Page Layout Preferences did not persist all configured layout values");
-    capture("page-layout-preferences", GTK_WIDGET(preferencesDialog), true);
+    capture("page-layout-preferences", GTK_WIDGET(preferencesUi.dialog), true);
 
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(offsetControl), 1);
     adw_combo_row_set_selected(ADW_COMBO_ROW(horizontalDirectionControl), 0);
@@ -375,7 +375,7 @@ void Prototype::verifyPageLayoutIntegration() {
     adw_combo_row_set_selected(ADW_COMBO_ROW(flowControl), 0);
     adw_combo_row_set_selected(ADW_COMBO_ROW(dimensionControl), 0);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(countControl), 2);
-    adw_dialog_close(ADW_DIALOG(preferencesDialog));
+    adw_dialog_close(ADW_DIALOG(preferencesUi.dialog));
 
     gtk_menu_button_popup(GTK_MENU_BUTTON(pageLayoutMenuButton));
     auto* popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(pageLayoutMenuButton));
@@ -471,36 +471,36 @@ void Prototype::verifyPresentationModeIntegration() {
     requireCurrentPageFit();
 
     openPreferences();
-    adw_preferences_dialog_set_visible_page_name(preferencesDialog, "appearance");
+    adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "appearance");
     const auto preferencesSettleAt = g_get_monotonic_time() + 250000;
     const auto preferencesReadyDeadline = preferencesSettleAt + 500000;
-    while ((!gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) ||
-            gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) <= 0 ||
-            gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) <= 0 ||
+    while ((!gtk_widget_get_mapped(GTK_WIDGET(preferencesUi.dialog)) ||
+            gtk_widget_get_width(GTK_WIDGET(preferencesUi.dialog)) <= 0 ||
+            gtk_widget_get_height(GTK_WIDGET(preferencesUi.dialog)) <= 0 ||
             g_get_monotonic_time() < preferencesSettleAt) &&
            g_get_monotonic_time() < preferencesReadyDeadline) {
         g_main_context_iteration(nullptr, false);
         g_usleep(1000);
     }
-    require(gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)) &&
-                    gtk_widget_get_width(GTK_WIDGET(preferencesDialog)) > 0 &&
-                    gtk_widget_get_height(GTK_WIDGET(preferencesDialog)) > 0,
+    require(gtk_widget_get_mapped(GTK_WIDGET(preferencesUi.dialog)) &&
+                    gtk_widget_get_width(GTK_WIDGET(preferencesUi.dialog)) > 0 &&
+                    gtk_widget_get_height(GTK_WIDGET(preferencesUi.dialog)) > 0,
             "Appearance Preferences did not map for the private GUI check");
     for (const auto key:
          {PreferenceKey::PresentationGoFullscreen, PreferenceKey::PresentationMenubar,
           PreferenceKey::PresentationToolbar, PreferenceKey::PresentationSidebar, PreferenceKey::FullscreenMenubar,
           PreferenceKey::FullscreenToolbar, PreferenceKey::FullscreenSidebar}) {
-        require(preferenceControls[static_cast<std::size_t>(key)] != nullptr,
+        require(preferencesUi.controls[static_cast<std::size_t>(key)] != nullptr,
                 "Appearance Preferences is missing a fullscreen or Presentation Mode visibility control");
     }
-    capture("presentation-preferences", GTK_WIDGET(preferencesDialog), true);
+    capture("presentation-preferences", GTK_WIDGET(preferencesUi.dialog), true);
     auto* goFullscreen =
-            ADW_SWITCH_ROW(preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationGoFullscreen)]);
-    auto* showHeader = ADW_SWITCH_ROW(preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationMenubar)]);
+            ADW_SWITCH_ROW(preferencesUi.controls[static_cast<std::size_t>(PreferenceKey::PresentationGoFullscreen)]);
+    auto* showHeader = ADW_SWITCH_ROW(preferencesUi.controls[static_cast<std::size_t>(PreferenceKey::PresentationMenubar)]);
     auto* showToolbar =
-            ADW_SWITCH_ROW(preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationToolbar)]);
+            ADW_SWITCH_ROW(preferencesUi.controls[static_cast<std::size_t>(PreferenceKey::PresentationToolbar)]);
     auto* showSidebar =
-            ADW_SWITCH_ROW(preferenceControls[static_cast<std::size_t>(PreferenceKey::PresentationSidebar)]);
+            ADW_SWITCH_ROW(preferencesUi.controls[static_cast<std::size_t>(PreferenceKey::PresentationSidebar)]);
     adw_switch_row_set_active(goFullscreen, false);
     adw_switch_row_set_active(showHeader, true);
     adw_switch_row_set_active(showToolbar, false);
@@ -519,8 +519,8 @@ void Prototype::verifyPresentationModeIntegration() {
     require(windowFullscreen && !gtk_widget_get_visible(headerBarWidget) && gtk_widget_get_visible(toolbarWidget) &&
                     !adw_overlay_split_view_get_show_sidebar(splitView),
             "Restoring Presentation Mode view settings did not update the active window");
-    adw_dialog_close(ADW_DIALOG(preferencesDialog));
-    waitForUiState([this] { return !gtk_widget_get_mapped(GTK_WIDGET(preferencesDialog)); },
+    adw_dialog_close(ADW_DIALOG(preferencesUi.dialog));
+    waitForUiState([this] { return !gtk_widget_get_mapped(GTK_WIDGET(preferencesUi.dialog)); },
                    "Appearance Preferences did not close before the mode-exit screenshot");
 
     prototype::ImportedSettings persisted;

@@ -106,6 +106,13 @@ Shift-click continuation is limited to Pen/Highlighter; extending it to Eraser
 modes is the requested GTK4 behavior. This closes the deferred Eraser gesture
 item; production Eraser hit geometry and renderer details remain Partial.
 
+Phase 125 is a maintenance-only ownership refactor. `PreferencesUiState` now
+groups the Preferences dialog's owned root reference, child-widget references,
+LaTeX theme IDs, tool-rail draft, and control-sync guard. Teardown still clears
+the dialog at the same point in `Prototype` destruction, and private Cage
+Preferences/LaTeX checks plus the full 41-test CTest suite pass. No behavior
+parity status or ledger count changed.
+
 ## User-directed completion order
 
 Phases 111–114 addressed text-box presentation/caret, synthetic touchpad axis

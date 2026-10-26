@@ -145,11 +145,11 @@ bool Prototype::changePluginActionState(std::string_view action, const prototype
             error = saveError;
             return false;
         }
-        auto* control = preferenceControls[static_cast<size_t>(PreferenceKey::PositionHighlight)];
+        auto* control = preferencesUi.controls[static_cast<size_t>(PreferenceKey::PositionHighlight)];
         if (control) {
-            syncingPreferenceControls = true;
+            preferencesUi.syncingControls = true;
             adw_switch_row_set_active(ADW_SWITCH_ROW(control), importedConfig.settings.highlightPosition);
-            syncingPreferenceControls = false;
+            preferencesUi.syncingControls = false;
         }
         update();
         return true;
