@@ -180,6 +180,8 @@ public:
     unsigned int laserFadeOutTimeMs = behavior::laserPointerFadeOutTimeMs;
     std::string textFontName = "Sans";
     double textFontSize = 12;
+    int textAlignment = 0;
+    bool textJustify = false;
     std::array<double, 3> textColor{0, 0, 0};
     std::vector<Ink> ink;
     std::vector<TextItem> texts;

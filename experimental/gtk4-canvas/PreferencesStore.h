@@ -230,6 +230,8 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
                                    1000.0);
     preferences_detail::readDouble(keyFile.get(), "Selection", "snap-grid-tolerance", settings.snapGridTolerance,
                                    0.0, 1.0);
+    preferences_detail::readInt(keyFile.get(), "Text", "alignment", settings.textAlignment, 0, 2);
+    detail(keyFile.get(), "Text", "justify", settings.textJustify);
     if (g_key_file_has_key(keyFile.get(), "Appearance", "theme", nullptr)) {
         gchar* value = g_key_file_get_string(keyFile.get(), "Appearance", "theme", nullptr);
         settings.themeVariant = preferences_detail::parseTheme(value, settings.themeVariant);
@@ -341,6 +343,8 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     g_key_file_set_boolean(keyFile.get(), "Selection", "snap-grid", settings.snapGrid);
     g_key_file_set_double(keyFile.get(), "Selection", "snap-grid-size", settings.snapGridSize);
     g_key_file_set_double(keyFile.get(), "Selection", "snap-grid-tolerance", settings.snapGridTolerance);
+    g_key_file_set_integer(keyFile.get(), "Text", "alignment", settings.textAlignment);
+    g_key_file_set_boolean(keyFile.get(), "Text", "justify", settings.textJustify);
     g_key_file_set_boolean(keyFile.get(), "Editing", "autosave-enabled", settings.autosaveEnabled);
     g_key_file_set_integer(keyFile.get(), "Editing", "autosave-timeout-minutes", settings.autosaveTimeoutMinutes);
     g_key_file_set_integer(keyFile.get(), "Stylus", "button-one", static_cast<int>(settings.stylusButtonOne));

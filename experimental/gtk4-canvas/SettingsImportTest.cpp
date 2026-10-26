@@ -90,6 +90,10 @@ int main() {
       <attribute name="size" type="string" value="THIN"/>
       <attribute name="type" type="string" value="deleteStroke"/>
     </data>
+    <data name="text">
+      <attribute name="align" type="int" value="2"/>
+      <attribute name="justify" type="bool" value="true"/>
+    </data>
     <data name="laserPointerPen">
       <attribute name="color" type="hex" value="ffff7f00"/>
       <attribute name="size" type="string" value="VERY_FINE"/>
@@ -168,6 +172,9 @@ int main() {
             "autosaveTimeout minutes-to-seconds conversion mismatch");
     require(s.colorPalettePath == std::filesystem::path("palettes/xournalpp.gpl"), "colorPalettePath mismatch");
     require(s.textFontName == "Sans" && near(s.textFontSize, 12), "Text font import mismatch");
+    require(s.textAlignment == 2 && s.textJustify, "Text alignment and justification import mismatch");
+    require(importedState.textAlignment == 2 && importedState.textJustify,
+            "Text alignment and justification were not applied to canvas state");
 
     // 2. Legacy bugs fixed:
     //    - presureSensitivity typo honored; minimumPressure < 0.01 clamped to 0.01;

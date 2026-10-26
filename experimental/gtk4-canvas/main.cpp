@@ -4744,6 +4744,57 @@ private:
         std::cout << "PASS: GTK4 floating toolbox rich-text formatting actions\n";
     }
 
+    void verifyFloatingToolboxTextAlignment() {
+        const std::pair<const char*, int> alignments[] = {
+                {"FORMAT_ALIGN_LEFT", 0},
+                {"FORMAT_ALIGN_CENTER", 1},
+                {"FORMAT_ALIGN_RIGHT", 2},
+        };
+
+        for (const auto& [token, alignment]: alignments) {
+            auto* button = findWidgetByData(floatingToolboxRowsContainer,
+                                            "gtk4-floating-text-layout", token);
+            require(button && GTK_IS_BUTTON(button), "Configured floating text-alignment action did not render");
+
+            prototype::TextItem draft;
+            draft.text = "Floating toolbar alignment";
+            draft.alignment = state.textAlignment;
+            draft.justify = state.textJustify;
+            textEditor->begin(std::move(draft), std::nullopt, state.zoom);
+            g_signal_emit_by_name(button, "clicked");
+            require(textEditor->item() && textEditor->item()->alignment == alignment,
+                    "Floating text-alignment action did not update the active draft");
+            const auto completion = textEditor->finish();
+            updateTextToolbarVisibility();
+            require(completion && completion->item.alignment == alignment,
+                    "Floating text-alignment action was not retained in the text item");
+        }
+
+        auto* justifyButton = findWidgetByData(floatingToolboxRowsContainer,
+                                               "gtk4-floating-text-layout", "FORMAT_JUSTIFY");
+        require(justifyButton && GTK_IS_BUTTON(justifyButton),
+                "Configured floating text-justify action did not render");
+        prototype::TextItem draft;
+        draft.text = "Floating toolbar justification";
+        draft.alignment = state.textAlignment;
+        draft.justify = state.textJustify;
+        textEditor->begin(std::move(draft), std::nullopt, state.zoom);
+        const bool expectedJustify = !state.textJustify;
+        g_signal_emit_by_name(justifyButton, "clicked");
+        const auto expectedLayout = expectedJustify ? GTK_JUSTIFY_FILL :
+                state.textAlignment == 1 ? GTK_JUSTIFY_CENTER :
+                state.textAlignment == 2 ? GTK_JUSTIFY_RIGHT : GTK_JUSTIFY_LEFT;
+        require(textEditor->item() && textEditor->item()->justify == expectedJustify &&
+                        gtk_text_view_get_justification(GTK_TEXT_VIEW(textEditor->widget())) == expectedLayout,
+                "Floating text-justify action did not update the active draft and editor layout");
+        const auto completion = textEditor->finish();
+        updateTextToolbarVisibility();
+        require(completion && completion->item.justify == expectedJustify,
+                "Floating text-justify action was not retained in the text item");
+
+        std::cout << "PASS: GTK4 floating toolbox text alignment and justification actions\n";
+    }
+
     void verifyPluginIntegration() {
         require(pluginRuntime != nullptr, "Lua plugin runtime was not created");
         const int displayDpi = pluginDisplayDpi();
@@ -5560,6 +5611,7 @@ private:
             std::cout << "PASS: GTK4 plugin toolbar action and placeholder registration, rendering, and updates\n";
         }
         verifyFloatingToolboxTextFormats();
+        verifyFloatingToolboxTextAlignment();
         auto* menuModel = gtk_menu_button_get_menu_model(GTK_MENU_BUTTON(pluginsMenuButton));
         require(menuModel && g_menu_model_get_n_items(menuModel) == 2,
                 "Plugins menu is missing the enabled plugin group or manager action");
@@ -8078,6 +8130,29 @@ private:
             gtk_widget_set_sensitive(unsupported, false);
             gtk_widget_set_tooltip_text(unsupported, "Filled native drawing shapes are not ported yet");
             gtk_box_append(GTK_BOX(row), unsupported);
+        } else if (token == "FORMAT_ALIGN_LEFT" || token == "FORMAT_ALIGN_CENTER" ||
+                   token == "FORMAT_ALIGN_RIGHT") {
+            const int alignment = token == "FORMAT_ALIGN_CENTER" ? 1 : token == "FORMAT_ALIGN_RIGHT" ? 2 : 0;
+            const char* label = alignment == 1 ? "Align center" : alignment == 2 ? "Align right" : "Align left";
+            addButton(label, G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          self->applyTextAlignment(GPOINTER_TO_INT(
+                                  g_object_get_data(G_OBJECT(button), "floating-text-alignment")));
+                      }));
+            auto* alignButton = gtk_widget_get_last_child(row);
+            gtk_widget_set_tooltip_text(alignButton, label);
+            g_object_set_data(G_OBJECT(alignButton), "floating-text-alignment", GINT_TO_POINTER(alignment));
+            g_object_set_data_full(G_OBJECT(alignButton), "gtk4-floating-text-layout",
+                                   g_strdup(token.c_str()), g_free);
+        } else if (token == "FORMAT_JUSTIFY") {
+            addButton("Justify", G_CALLBACK(+[](GtkButton*, gpointer data) {
+                          auto* self = static_cast<Prototype*>(data);
+                          self->applyTextJustify(!self->state.textJustify);
+                      }));
+            auto* justifyButton = gtk_widget_get_last_child(row);
+            gtk_widget_set_tooltip_text(justifyButton, "Toggle justified text");
+            g_object_set_data_full(G_OBJECT(justifyButton), "gtk4-floating-text-layout",
+                                   g_strdup(token.c_str()), g_free);
         } else if (token.starts_with("FORMAT_")) {
             using Format = prototype::TextEditorOverlay::Format;
             std::optional<Format> format;
@@ -8701,6 +8776,8 @@ private:
                 item.text.assign(text, length);
                 item.fontName = self->state.textFontName;
                 item.fontSize = self->state.textFontSize;
+                item.alignment = self->state.textAlignment;
+                item.justify = self->state.textJustify;
                 item.color = 0xff000000U | (uint32_t(std::lround(self->state.textColor[0] * 255)) << 16U) |
                              (uint32_t(std::lround(self->state.textColor[1] * 255)) << 8U) |
                              uint32_t(std::lround(self->state.textColor[2] * 255));
@@ -9318,6 +9395,8 @@ private:
             item.y = hit->local.y;
             item.fontName = state.textFontName;
             item.fontSize = state.textFontSize;
+            item.alignment = state.textAlignment;
+            item.justify = state.textJustify;
             item.color = packTextColor(state.textColor);
         }
         textEditor->begin(item, index, state.zoom);
@@ -9381,6 +9460,65 @@ private:
         } else if (state.brush.tool == Tool::Text && !state.selectedTexts.empty()) {
             if (state.updateSelectedTexts([&](prototype::TextItem& item) {
                     prototype::TextEditorOverlay::applyFormatToItem(item, format);
+                    const auto [width, height] = prototype::textNaturalSize(item);
+                    item.layoutWidth = width;
+                    item.layoutHeight = height;
+                })) {
+                thumbnails.clear();
+                update();
+            }
+        }
+    }
+
+    void applyTextAlignment(int alignment) {
+        if (alignment < 0 || alignment > 2) {
+            return;
+        }
+        const int previous = importedConfig.settings.textAlignment;
+        importedConfig.settings.textAlignment = alignment;
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            importedConfig.settings.textAlignment = previous;
+            showAlert("Could not save text preferences", error);
+            return;
+        }
+        state.textAlignment = alignment;
+        if (textEditor && textEditor->active()) {
+            textEditor->setAlignment(alignment);
+            gtk_widget_grab_focus(textEditor->widget());
+            updateTextEditorPosition();
+            update();
+        } else if (state.brush.tool == Tool::Text && !state.selectedTexts.empty()) {
+            if (state.updateSelectedTexts([&](prototype::TextItem& item) {
+                    item.alignment = alignment;
+                    const auto [width, height] = prototype::textNaturalSize(item);
+                    item.layoutWidth = width;
+                    item.layoutHeight = height;
+                })) {
+                thumbnails.clear();
+                update();
+            }
+        }
+    }
+
+    void applyTextJustify(bool justify) {
+        const bool previous = importedConfig.settings.textJustify;
+        importedConfig.settings.textJustify = justify;
+        std::string error;
+        if (!prototype::saveGtk4Preferences(preferencesConfigDir, importedConfig.settings, error)) {
+            importedConfig.settings.textJustify = previous;
+            showAlert("Could not save text preferences", error);
+            return;
+        }
+        state.textJustify = justify;
+        if (textEditor && textEditor->active()) {
+            textEditor->setJustify(justify);
+            gtk_widget_grab_focus(textEditor->widget());
+            updateTextEditorPosition();
+            update();
+        } else if (state.brush.tool == Tool::Text && !state.selectedTexts.empty()) {
+            if (state.updateSelectedTexts([&](prototype::TextItem& item) {
+                    item.justify = justify;
                     const auto [width, height] = prototype::textNaturalSize(item);
                     item.layoutWidth = width;
                     item.layoutHeight = height;

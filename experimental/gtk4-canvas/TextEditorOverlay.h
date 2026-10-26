@@ -61,6 +61,7 @@ public:
         for (const auto& run: draft->styleRuns) {
             applyStyleRun(run);
         }
+        applyParagraphStyle();
         lastText = draft->text;
         g_signal_connect(editorBuffer, "changed", G_CALLBACK(+[](GtkTextBuffer*, gpointer data) {
                              auto* self = static_cast<TextEditorOverlay*>(data);
@@ -97,6 +98,22 @@ public:
 
     void setWrap(bool wrap) {
         gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), wrap ? GTK_WRAP_WORD_CHAR : GTK_WRAP_NONE);
+    }
+
+    void setAlignment(int alignment) {
+        if (!active() || alignment < 0 || alignment > 2) {
+            return;
+        }
+        draft->alignment = alignment;
+        applyParagraphStyle();
+    }
+
+    void setJustify(bool justify) {
+        if (!active()) {
+            return;
+        }
+        draft->justify = justify;
+        applyParagraphStyle();
     }
 
     void setBaseFont(const std::string& fontName, double size) {
@@ -292,6 +309,16 @@ private:
             g_object_set(baseTag, "font-desc", font, "foreground-rgba", &color, nullptr);
         }
         pango_font_description_free(font);
+    }
+
+    void applyParagraphStyle() {
+        if (!active()) {
+            return;
+        }
+        const auto justification = draft->justify ? GTK_JUSTIFY_FILL :
+                draft->alignment == 1 ? GTK_JUSTIFY_CENTER :
+                draft->alignment == 2 ? GTK_JUSTIFY_RIGHT : GTK_JUSTIFY_LEFT;
+        gtk_text_view_set_justification(GTK_TEXT_VIEW(view), justification);
     }
 
     GtkTextTag* createStyleTag(const TextStyleRun& run) {

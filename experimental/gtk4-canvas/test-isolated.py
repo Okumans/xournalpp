@@ -325,7 +325,7 @@ def verify_preferences(args, evidence):
 """, encoding="utf-8")
     (config / "toolbar.ini").write_text("""[Floating Toolbox (experimental)]
 toolbarFloat1=PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO
-toolbarFloat2=ZOOM_SLIDER,DRAW_ELLIPSE
+toolbarFloat2=ZOOM_SLIDER,DRAW_ELLIPSE,FORMAT_ALIGN_LEFT,FORMAT_ALIGN_CENTER,FORMAT_ALIGN_RIGHT,FORMAT_JUSTIFY
 toolbarFloat3=TOOL_FILL,FINE,THICK,DRAW_RECTANGLE
 toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
 """, encoding="utf-8")
@@ -469,7 +469,8 @@ def verify_plugins(args, evidence):
         "[Floating Toolbox]\n"
         "row-1=Plugin::GTK4_TEST_ACTION,Plugin::GTK4_TEST_STATUS\n"
         "row-2=FORMAT_BOLD,FORMAT_ITALIC,FORMAT_UNDERLINE,FORMAT_STRIKETHROUGH,"
-        "FORMAT_SUPERSCRIPT,FORMAT_SUBSCRIPT\n"
+        "FORMAT_SUPERSCRIPT,FORMAT_SUBSCRIPT,FORMAT_ALIGN_LEFT,FORMAT_ALIGN_CENTER,"
+        "FORMAT_ALIGN_RIGHT,FORMAT_JUSTIFY\n"
     )
     (config / "gtk4-canvas.ini").write_text(
         plugin_config, encoding="utf-8")
