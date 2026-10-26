@@ -76,29 +76,24 @@ width changes.
 
 ## User-directed completion order
 
-Continue in this order after the active ink-cache slice:
+Phases 111–114 addressed the text-box presentation/caret, touchpad axis bounds
+and synthetic momentum behavior, and Search highlight geometry on the user's
+PDF. The touchpad still needs verification on the user's physical device.
+Continue in this order:
 
-1. Fix the text editor presentation and interaction: size the initial box to
-   its content/font instead of a wide default, keep the caret easy to see,
-   ensure text and its selection/control geometry stay aligned, and verify
-   existing-text edit gestures and text rendering in the private Cage UI.
-2. Match original Xournal++ touchpad scrolling: keep horizontal drift minimal,
-   constrain movement to the page/grid navigation area, and add momentum. Test
-   synthetic deltas first, then verify the behavior on the user's physical
-   touchpad; synthetic input alone is not physical-device parity.
-3. Finish the other deferred user reports below, including ink frame-time on
+1. Finish the other deferred user reports below, including ink frame-time on
    the user's PDF, long-document Search responsiveness, raster-worker failures,
    Smart Select drag performance, cursor feedback, and remaining Eraser parity.
    Search highlight geometry has now been visually checked against the user's
    PDF in private Cage; keep the audit updated as each remaining issue is
    verified.
-4. Migrate native `.xopp` loading and saving into the GTK 4 process, reusing the
+2. Migrate native `.xopp` loading and saving into the GTK 4 process, reusing the
    existing document model/serialization where possible and removing the
    separate GTK 3 worker dependency. Record deliberate compatibility changes
    in the corresponding PR.
-5. Bring every remaining Partial audit item to Covered (or record an explicit
+3. Bring every remaining Partial audit item to Covered (or record an explicit
    obsolete decision with its rationale) before the final UI redesign.
-6. Reimagine the completed GTK 4 UI as a modern, cohesive workspace. At that
+4. Reimagine the completed GTK 4 UI as a modern, cohesive workspace. At that
    stage, use a GPT-6.1-Sol high-reasoning agent to plan the redesign, then
    implement and validate the chosen direction against the compact default
    tool layout and customizability requirements above.
@@ -114,13 +109,6 @@ chapter heading and body text. This verifies geometry on that document, while
 long-document search latency remains a separate follow-up.
 
 These user-requested follow-ups remain:
-
-The user-requested execution order is: finish the current text editor box and
-caret work; implement touchpad scrolling; resolve the other reported input,
-search, drawing, sidebar, and rendering issues below; migrate `.xopp` loading
-and saving into the GTK 4 process; close every remaining `Partial` audit item;
-then redesign the UI. Use a high-reasoning GPT-6.1-Sol planning agent for the
-final UI redesign phase.
 
 - Replace the optional separate GTK 3 document-worker process with an
   in-process GTK 4 document backend for native `.xopp` loading/saving and
@@ -186,9 +174,16 @@ final UI redesign phase.
   release-time Shift-click; broader parity still needs an upstream audit.
 - Investigate the reported mismatch between the PDF text-selection highlight
   and the blue selection frame.
-- Diagnose the intermittent page-raster worker failures reported as
-  `Cannot write page raster background`; the worker currently reports a generic
-  write error, so the underlying Cairo or filesystem cause is not yet confirmed.
+- A page-raster task previously failed as a whole if writing one of its optional
+  medium/low-detail copies failed, discarding an already-rendered primary page.
+  Optional tiers now fail independently and are omitted while the requested
+  raster remains usable; primary write errors identify the tier, output path,
+  Cairo status, and filesystem error when available. Parent-side worker errors
+  also include the subprocess exit status or signal. A fault-injection test
+  verifies that a blocked medium tier preserves full/low rasters and that a
+  blocked primary output reports its tier/path. The original intermittent
+  failure was not reproduced on the current machine, so the underlying cause
+  of the user's prior environment-specific failures remains unconfirmed.
 - Before release, verify that cursor shapes track the active tool and action,
   including selection, resize/rotate, pan, text editing, and erasing.
 

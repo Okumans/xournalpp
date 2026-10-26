@@ -1,6 +1,7 @@
 #include "PageRasterRenderer.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <deque>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -165,42 +167,138 @@ std::string pageRasterLayerPath(const std::filesystem::path& directory, size_t o
     return (directory / (std::string(prefix) + "layer-" + std::to_string(origin) + ".png")).string();
 }
 
-void writeRaster(const std::filesystem::path& directory, const PageRaster& raster, std::string_view prefix) {
-    const auto backgroundPath = (directory / (std::string(prefix) + "background.png")).string();
-    if (cairo_surface_write_to_png(raster.background.get(), backgroundPath.c_str()) != CAIRO_STATUS_SUCCESS) {
-        throw std::runtime_error("Cannot write page raster background");
+struct PngFileWriter {
+    std::ofstream* file = nullptr;
+    int errorNumber = 0;
+};
+
+cairo_status_t writePngBytes(void* closure, const unsigned char* bytes, unsigned int length) {
+    auto& writer = *static_cast<PngFileWriter*>(closure);
+    writer.file->write(reinterpret_cast<const char*>(bytes), static_cast<std::streamsize>(length));
+    if (!*writer.file) {
+        writer.errorNumber = errno;
+        return CAIRO_STATUS_WRITE_ERROR;
     }
-    for (const auto& [origin, surface]: raster.layers) {
-        if (cairo_surface_write_to_png(surface.get(), pageRasterLayerPath(directory, origin, prefix).c_str()) !=
-            CAIRO_STATUS_SUCCESS) {
-            throw std::runtime_error("Cannot write page raster layer");
+    return CAIRO_STATUS_SUCCESS;
+}
+
+void writePngSurface(cairo_surface_t* surface, const std::filesystem::path& path, const std::string& description) {
+    const auto pathString = path.string();
+    if (!surface) {
+        throw std::runtime_error("Cannot write " + description + " '" + pathString + "': Cairo surface is missing");
+    }
+    const auto surfaceStatus = cairo_surface_status(surface);
+    if (surfaceStatus != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error("Cannot write " + description + " '" + pathString + "': Cairo surface is " +
+                                 cairo_status_to_string(surfaceStatus));
+    }
+
+    errno = 0;
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        const auto errorNumber = errno;
+        std::string message = "Cannot open " + description + " '" + pathString + "'";
+        if (errorNumber != 0) {
+            message += ": " + std::error_code(errorNumber, std::generic_category()).message();
+        } else {
+            message += ": output stream open failed";
         }
+        throw std::runtime_error(message);
+    }
+
+    PngFileWriter writer{&file};
+    errno = 0;
+    const auto pngStatus = cairo_surface_write_to_png_stream(surface, writePngBytes, &writer);
+    const auto writeErrorNumber = writer.errorNumber;
+    errno = 0;
+    file.flush();
+    const bool flushFailed = !file;
+    const auto flushErrorNumber = flushFailed ? errno : 0;
+    errno = 0;
+    file.close();
+    const bool closeFailed = !file;
+    const auto closeErrorNumber = closeFailed ? errno : 0;
+    if (pngStatus == CAIRO_STATUS_SUCCESS && !flushFailed && !closeFailed) {
+        return;
+    }
+
+    std::string message = "Cannot write " + description + " '" + pathString + "'";
+    if (pngStatus != CAIRO_STATUS_SUCCESS) {
+        message += ": Cairo " + std::string(cairo_status_to_string(pngStatus));
+    }
+    const auto errorNumber = writeErrorNumber != 0 ? writeErrorNumber :
+                             flushErrorNumber != 0 ? flushErrorNumber :
+                                                     closeErrorNumber;
+    if (errorNumber != 0) {
+        message += ": " + std::error_code(errorNumber, std::generic_category()).message();
+    }
+    throw std::runtime_error(message);
+}
+
+void appendRasterError(std::string& errors, const std::string& error) {
+    if (!errors.empty()) {
+        errors += "; ";
+    }
+    errors += error;
+}
+
+void writeRaster(const std::filesystem::path& directory, const PageRaster& raster, std::string_view prefix,
+                 const std::string& tierName) {
+    const auto backgroundPath = directory / (std::string(prefix) + "background.png");
+    writePngSurface(raster.background.get(), backgroundPath, tierName + " page-raster background");
+    for (const auto& [origin, surface]: raster.layers) {
+        writePngSurface(surface.get(), directory / (std::string(prefix) + "layer-" + std::to_string(origin) + ".png"),
+                        tierName + " page-raster layer " + std::to_string(origin));
     }
     std::ofstream scale(directory / (std::string(prefix) + "scale.txt"));
     scale << std::setprecision(17) << raster.scale;
     if (!scale) {
-        throw std::runtime_error("Cannot write page raster scale");
+        throw std::runtime_error("Cannot write " + tierName + " page-raster scale in '" + directory.string() + "'");
     }
 }
 
 void writePageRasterTask(const PageRasterTask& task) {
     const std::filesystem::path directory(task.outputDirectory);
-    writeRaster(directory, task.preview, rasterPrefix(task.request.quality));
+    const std::string primaryTier = task.request.quality == PageRasterQuality::Thumbnail    ? "thumbnail" :
+                                    task.request.quality == PageRasterQuality::MediumDetail ? "medium-detail" :
+                                    task.request.quality == PageRasterQuality::LowDetail    ? "low-detail" :
+                                                                                              "full-detail";
+    writeRaster(directory, task.preview, rasterPrefix(task.request.quality), primaryTier);
+    std::string partialErrors = task.renderError;
+    const auto writeOptionalTier = [&directory, &partialErrors](const PageRaster& raster, std::string_view prefix,
+                                                                const char* tierName) {
+        if (!raster.background) {
+            return;
+        }
+        try {
+            writeRaster(directory, raster, prefix, tierName);
+        } catch (const std::exception& error) {
+            const std::string message = error.what();
+            appendRasterError(partialErrors, message);
+            std::cerr << "GTK4 optional page-raster tier failed: " << message << '\n';
+            std::error_code cleanupError;
+            std::filesystem::remove(directory / (std::string(prefix) + "background.png"), cleanupError);
+            if (cleanupError) {
+                std::cerr << "GTK4 could not discard the incomplete " << tierName
+                          << " raster marker: " << cleanupError.message() << '\n';
+            }
+        }
+    };
     if (task.mediumDetailPreview.background) {
-        writeRaster(directory, task.mediumDetailPreview, "medium-");
+        writeOptionalTier(task.mediumDetailPreview, "medium-", "medium-detail");
     }
     if (task.lowDetailPreview.background) {
-        writeRaster(directory, task.lowDetailPreview, "lod-");
+        writeOptionalTier(task.lowDetailPreview, "lod-", "low-detail");
     }
-    if (!task.renderError.empty()) {
+    if (!partialErrors.empty()) {
         std::ofstream error(directory / "error.txt");
-        error << task.renderError;
+        error << partialErrors;
         if (!error) {
-            throw std::runtime_error("Cannot write page raster error");
+            std::cerr << "GTK4 page raster errors could not be recorded in '" << directory.string()
+                      << "': " << partialErrors << '\n';
         }
     }
 }
-
 
 void loadRaster(const std::filesystem::path& directory, const PageRasterRequest& request, PageRaster& raster,
                 std::string_view prefix) {
@@ -228,18 +326,44 @@ void loadRaster(const std::filesystem::path& directory, const PageRasterRequest&
     }
 }
 
+bool loadOptionalRaster(const std::filesystem::path& directory, const PageRasterRequest& request, PageRaster& raster,
+                        std::string_view prefix, const char* tierName, std::string& errors) {
+    const auto backgroundPath = directory / (std::string(prefix) + "background.png");
+    std::error_code existsError;
+    if (!std::filesystem::exists(backgroundPath, existsError)) {
+        if (existsError) {
+            appendRasterError(errors, "Cannot check " + std::string(tierName) + " raster '" + backgroundPath.string() +
+                                              "': " + existsError.message());
+        }
+        return false;
+    }
+    try {
+        loadRaster(directory, request, raster, prefix);
+        return true;
+    } catch (const std::exception& error) {
+        appendRasterError(errors, "Cannot load optional " + std::string(tierName) + " raster: " + error.what());
+        raster = PageRaster{};
+        return false;
+    }
+}
+
 void loadPageRasterTask(PageRasterTask& task) {
     const std::filesystem::path directory(task.outputDirectory);
     loadRaster(directory, task.request, task.preview, rasterPrefix(task.request.quality));
+    std::string optionalRasterErrors;
     if (task.request.quality == PageRasterQuality::Full) {
-        loadRaster(directory, task.request, task.mediumDetailPreview, "medium-");
-        loadRaster(directory, task.request, task.lowDetailPreview, "lod-");
+        loadOptionalRaster(directory, task.request, task.mediumDetailPreview, "medium-", "medium-detail",
+                           optionalRasterErrors);
+        loadOptionalRaster(directory, task.request, task.lowDetailPreview, "lod-", "low-detail", optionalRasterErrors);
     } else if (task.request.quality == PageRasterQuality::MediumDetail) {
-        loadRaster(directory, task.request, task.lowDetailPreview, "lod-");
+        loadOptionalRaster(directory, task.request, task.lowDetailPreview, "lod-", "low-detail", optionalRasterErrors);
     }
     std::ifstream renderError(directory / "error.txt");
     if (renderError) {
         std::getline(renderError, task.renderError, '\0');
+    }
+    if (!optionalRasterErrors.empty()) {
+        appendRasterError(task.renderError, optionalRasterErrors);
     }
 }
 
@@ -631,7 +755,15 @@ void completePageRasterProcess(GObject* source, GAsyncResult* result, gpointer d
     if (!task->cancelled && !waited) {
         error = waitError ? waitError->message : "page raster process failed";
     } else if (!task->cancelled && !g_subprocess_get_successful(G_SUBPROCESS(source))) {
-        error = "page raster renderer exited unsuccessfully";
+        if (g_subprocess_get_if_exited(G_SUBPROCESS(source))) {
+            error = "page raster renderer exited with status " +
+                    std::to_string(g_subprocess_get_exit_status(G_SUBPROCESS(source)));
+        } else if (g_subprocess_get_if_signaled(G_SUBPROCESS(source))) {
+            error = "page raster renderer was terminated by signal " +
+                    std::to_string(g_subprocess_get_term_sig(G_SUBPROCESS(source)));
+        } else {
+            error = "page raster renderer exited unsuccessfully";
+        }
     }
     g_clear_error(&waitError);
     if (task->process) {
