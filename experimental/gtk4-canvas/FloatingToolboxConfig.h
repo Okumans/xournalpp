@@ -36,6 +36,39 @@ inline constexpr std::array<FloatingDrawingModeAction, 8> floatingDrawingModeAct
         {"SHAPE_RECOGNIZER", DrawingMode::ShapeRecognizer, "Shape recognizer"},
 }};
 
+struct FloatingDrawingModeChoice {
+    DrawingMode mode;
+    std::string_view label;
+};
+
+inline constexpr std::array<FloatingDrawingModeChoice, 9> floatingDrawingModeChoices = {{
+        {DrawingMode::Freehand, "Freehand"},
+        {DrawingMode::Rectangle, "Rectangle"},
+        {DrawingMode::Ellipse, "Ellipse"},
+        {DrawingMode::Arrow, "Arrow"},
+        {DrawingMode::DoubleArrow, "Double arrow"},
+        {DrawingMode::Line, "Line"},
+        {DrawingMode::CoordinateSystem, "Coordinate system"},
+        {DrawingMode::Spline, "Spline"},
+        {DrawingMode::ShapeRecognizer, "Shape recognizer"},
+}};
+
+inline constexpr std::size_t floatingDrawingModeComboIndex(DrawingMode mode) {
+    for (std::size_t index = 0; index < floatingDrawingModeChoices.size(); ++index) {
+        if (floatingDrawingModeChoices[index].mode == mode) {
+            return index;
+        }
+    }
+    return 0;
+}
+
+inline constexpr std::optional<DrawingMode> floatingDrawingModeComboMode(std::size_t index) {
+    if (index >= floatingDrawingModeChoices.size()) {
+        return std::nullopt;
+    }
+    return floatingDrawingModeChoices[index].mode;
+}
+
 inline std::optional<FloatingDrawingModeAction> floatingDrawingModeAction(std::string_view token) {
     if (token == "DRAW_LINE") {
         return floatingDrawingModeActions[0];

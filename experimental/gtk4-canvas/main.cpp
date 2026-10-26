@@ -8637,6 +8637,40 @@ private:
                              }),
                              this);
             gtk_box_append(GTK_BOX(row), scale);
+        } else if (token == "DRAW") {
+            auto* modeNames = gtk_string_list_new(nullptr);
+            for (const auto& choice: prototype::floatingDrawingModeChoices) {
+                const std::string label(choice.label);
+                gtk_string_list_append(modeNames, label.c_str());
+            }
+            auto* selector = GTK_DROP_DOWN(gtk_drop_down_new(G_LIST_MODEL(modeNames), nullptr));
+            gtk_widget_set_tooltip_text(GTK_WIDGET(selector), "Drawing type");
+            gtk_accessible_update_property(GTK_ACCESSIBLE(selector), GTK_ACCESSIBLE_PROPERTY_LABEL, "Drawing type", -1);
+            gtk_drop_down_set_selected(selector, static_cast<guint>(
+                    prototype::floatingDrawingModeComboIndex(state.drawingMode)));
+            g_object_set_data_full(G_OBJECT(selector), "floating-drawing-mode-token", g_strdup(token.c_str()), g_free);
+            g_signal_connect(selector, "notify::selected",
+                             G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 if (self->syncingBrush) {
+                                     return;
+                                 }
+                                 const auto selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(object));
+                                 const auto mode = prototype::floatingDrawingModeComboMode(selected);
+                                 if (!mode) {
+                                     return;
+                                 }
+                                 self->input.cancel();
+                                 self->state.drawingMode = *mode;
+                                 const bool supportsStabilizer = *mode == prototype::DrawingMode::Freehand ||
+                                                                 *mode == prototype::DrawingMode::ShapeRecognizer;
+                                 gtk_widget_set_visible(self->averagingDropdown, supportsStabilizer);
+                                 gtk_widget_set_visible(self->preprocessorDropdown, supportsStabilizer);
+                                 self->update();
+                             }),
+                             this);
+            floatingDrawingModeSelectors.push_back(selector);
+            gtk_box_append(GTK_BOX(row), GTK_WIDGET(selector));
         } else if (const auto drawingModeAction = prototype::floatingDrawingModeAction(token)) {
             const auto mode = drawingModeAction->mode;
             const std::string label(drawingModeAction->label);
@@ -8891,6 +8925,7 @@ private:
         if (!floatingToolboxRowsContainer) {
             return;
         }
+        floatingDrawingModeSelectors.clear();
         if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
             floatingToolboxToolButtons.erase(
                     floatingToolboxToolButtons.begin() +
@@ -11850,6 +11885,19 @@ private:
         gtk_label_set_text(GTK_LABEL(zoomLabel), (std::to_string(static_cast<int>(state.zoom * 100)) + "%").c_str());
         gtk_widget_set_sensitive(undoButton, state.canUndo());
         gtk_widget_set_sensitive(redoButton, state.canRedo());
+        const bool wasSyncingBrush = syncingBrush;
+        syncingBrush = true;
+        if (drawingModeDropdown &&
+            gtk_drop_down_get_selected(GTK_DROP_DOWN(drawingModeDropdown)) != static_cast<guint>(state.drawingMode)) {
+            gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown), static_cast<guint>(state.drawingMode));
+        }
+        const auto floatingModeIndex = static_cast<guint>(prototype::floatingDrawingModeComboIndex(state.drawingMode));
+        for (auto* selector: floatingDrawingModeSelectors) {
+            if (gtk_drop_down_get_selected(selector) != floatingModeIndex) {
+                gtk_drop_down_set_selected(selector, floatingModeIndex);
+            }
+        }
+        syncingBrush = wasSyncingBrush;
         if (pageList) {
             syncingPage = true;
             gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, state.page));
@@ -15221,7 +15269,7 @@ private:
     gboolean smokePreferencesVerify() {
         const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
         const prototype::FloatingToolboxRows floatingModeTestRows = {{
-                {"SMART_SELECT", "PEN"},
+                {"SMART_SELECT", "PEN", "DRAW"},
                 {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER",
                  "RULER"},
                 {"FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
@@ -15486,9 +15534,33 @@ private:
                         require(state.drawingMode == drawingAction.mode,
                                 "A configured master drawing-mode token selected the wrong drawing behavior");
                     }
+                    const auto findConfiguredDrawingModeCombo = [&]() -> GtkDropDown* {
+                        for (auto* row = gtk_widget_get_first_child(floatingToolboxRowsContainer); row;
+                             row = gtk_widget_get_next_sibling(row)) {
+                            for (auto* child = gtk_widget_get_first_child(row); child;
+                                 child = gtk_widget_get_next_sibling(child)) {
+                                const auto* configuredToken = static_cast<const char*>(
+                                        g_object_get_data(G_OBJECT(child), "floating-drawing-mode-token"));
+                                if (configuredToken && std::string_view(configuredToken) == "DRAW") {
+                                    return GTK_DROP_DOWN(child);
+                                }
+                            }
+                        }
+                        return nullptr;
+                    };
+                    auto* drawingModeCombo = findConfiguredDrawingModeCombo();
+                    require(drawingModeCombo, "The configured DRAW combo token did not render as a mode selector");
+                    for (size_t index = 0; index < prototype::floatingDrawingModeChoices.size(); ++index) {
+                        gtk_drop_down_set_selected(drawingModeCombo, static_cast<guint>(index));
+                        const auto selectedMode = prototype::floatingDrawingModeComboMode(index);
+                        require(selectedMode && state.drawingMode == *selectedMode,
+                                "The DRAW combo selected the wrong drawing mode");
+                    }
                     gtk_drop_down_set_selected(GTK_DROP_DOWN(drawingModeDropdown),
                                                static_cast<guint>(originalDrawingMode));
-                    require(state.drawingMode == originalDrawingMode,
+                    require(state.drawingMode == originalDrawingMode &&
+                                    gtk_drop_down_get_selected(drawingModeCombo) ==
+                                            prototype::floatingDrawingModeComboIndex(originalDrawingMode),
                             "The floating drawing-mode smoke check did not restore the selected mode");
                     require(importedConfig.settings.themeVariant == prototype::ThemeVariant::ForceLight &&
                                     importedConfig.settings.stylusButtonOne == prototype::ButtonToolAction::Pen &&
@@ -18104,6 +18176,7 @@ private:
     GtkWidget* widthButton = nullptr;
     GtkWidget* drawingOptionsExpander = nullptr;
     GtkWidget* drawingModeDropdown = nullptr;
+    std::vector<GtkDropDown*> floatingDrawingModeSelectors;
     GtkWidget* averagingDropdown = nullptr;
     GtkWidget* preprocessorDropdown = nullptr;
     std::array<GtkWidget*, 5> toolButtons{};
