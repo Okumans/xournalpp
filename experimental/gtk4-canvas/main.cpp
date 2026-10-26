@@ -477,6 +477,19 @@ ClipboardRender renderClipboardObjects(const std::vector<prototype::EditableObje
 
 class Prototype {
 public:
+    struct FloatingLayerMenuWidgets {
+        GtkMenuButton* button = nullptr;
+        GtkLabel* activeLayerLabel = nullptr;
+        GtkPopover* popover = nullptr;
+        GtkBox* layerRows = nullptr;
+        GtkButton* showAllButton = nullptr;
+        GtkButton* hideAllButton = nullptr;
+        GtkButton* addAboveButton = nullptr;
+        GtkButton* addBelowButton = nullptr;
+        int page = -1;
+        std::optional<prototype::PageLayers> snapshot;
+    };
+
     explicit Prototype(Options options): options(std::move(options)) {
         preferencesConfigDir = !this->options.configDirectory.empty() ?
                                        std::filesystem::path(this->options.configDirectory) :
@@ -567,6 +580,10 @@ public:
             floatingPageSpinTimeout = 0;
         }
         pendingFloatingPageSpin = nullptr;
+        if (floatingLayerRefreshSource) {
+            g_source_remove(floatingLayerRefreshSource);
+            floatingLayerRefreshSource = 0;
+        }
         if (floatingToolboxDismissSmokeSource) {
             g_source_remove(floatingToolboxDismissSmokeSource);
             floatingToolboxDismissSmokeSource = 0;
@@ -8821,6 +8838,331 @@ private:
         gtk_box_append(GTK_BOX(row), toolButton);
     }
 
+    static std::string layerDisplayName(const prototype::PageLayers& pageLayers, size_t layerId) {
+        if (layerId == 0) {
+            return pageLayers.backgroundName.value_or("Background");
+        }
+        if (layerId > pageLayers.layers.size()) {
+            return "No layer";
+        }
+        const auto& name = pageLayers.layers[layerId - 1].name;
+        return name.empty() ? "Layer " + std::to_string(layerId) : name;
+    }
+
+    void appendFloatingLayerControl(FloatingLayerMenuWidgets& menu, int page, size_t layerId,
+                                    const std::string& name, bool visible, bool selectable, bool active,
+                                    GtkCheckButton*& activeGroup) {
+        auto* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget* select = nullptr;
+        if (selectable) {
+            auto* check = GTK_CHECK_BUTTON(gtk_check_button_new_with_label(name.c_str()));
+            gtk_check_button_set_group(check, activeGroup);
+            activeGroup = check;
+            gtk_check_button_set_active(check, active);
+            gtk_widget_set_hexpand(GTK_WIDGET(check), true);
+            gtk_widget_set_halign(GTK_WIDGET(check), GTK_ALIGN_START);
+            gtk_widget_set_tooltip_text(GTK_WIDGET(check), name.c_str());
+            g_object_set_data(G_OBJECT(check), "floating-layer-id", GUINT_TO_POINTER(layerId));
+            g_object_set_data(G_OBJECT(check), "floating-layer-visibility", GINT_TO_POINTER(0));
+            g_object_set_data(G_OBJECT(check), "floating-layer-page", GINT_TO_POINTER(page + 1));
+            g_object_set_data(G_OBJECT(check), "floating-layer-popover", menu.popover);
+            g_signal_connect(check, "toggled", G_CALLBACK(+[](GtkCheckButton* button, gpointer data) {
+                                 if (!gtk_check_button_get_active(button)) {
+                                     return;
+                                 }
+                                 auto* self = static_cast<Prototype*>(data);
+                                 if (self->syncingFloatingLayers) {
+                                     return;
+                                 }
+                                 const int page = GPOINTER_TO_INT(
+                                         g_object_get_data(G_OBJECT(button), "floating-layer-page")) - 1;
+                                 const auto layerId = static_cast<size_t>(GPOINTER_TO_UINT(
+                                         g_object_get_data(G_OBJECT(button), "floating-layer-id")));
+                                 auto* popover = GTK_POPOVER(
+                                         g_object_get_data(G_OBJECT(button), "floating-layer-popover"));
+                                 if (page != self->state.page) {
+                                     gtk_popover_popdown(popover);
+                                     return;
+                                 }
+                                 self->finishTextEditing();
+                                 self->resetInput(true);
+                                 if (self->state.selectLayer(page, layerId)) {
+                                     self->selectedImageIndex.reset();
+                                     self->rebuildLayerStack();
+                                     self->update();
+                                 }
+                                 gtk_popover_popdown(popover);
+                             }),
+                             this);
+            select = GTK_WIDGET(check);
+        } else {
+            auto* label = gtk_label_new(name.c_str());
+            gtk_widget_set_hexpand(label, true);
+            gtk_widget_set_halign(label, GTK_ALIGN_START);
+            select = label;
+        }
+
+        auto* visibility = GTK_TOGGLE_BUTTON(gtk_toggle_button_new());
+        gtk_button_set_icon_name(GTK_BUTTON(visibility), visible ? "view-reveal-symbolic" :
+                                                                  "view-conceal-symbolic");
+        gtk_toggle_button_set_active(visibility, visible);
+        gtk_widget_add_css_class(GTK_WIDGET(visibility), "flat");
+        const auto visibilityLabel = std::string(visible ? "Hide " : "Show ") + name;
+        gtk_widget_set_tooltip_text(GTK_WIDGET(visibility), visibilityLabel.c_str());
+        gtk_accessible_update_property(GTK_ACCESSIBLE(visibility), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       visibilityLabel.c_str(), -1);
+        g_object_set_data(G_OBJECT(visibility), "floating-layer-id", GUINT_TO_POINTER(layerId));
+        g_object_set_data(G_OBJECT(visibility), "floating-layer-visibility", GINT_TO_POINTER(1));
+        g_object_set_data(G_OBJECT(visibility), "floating-layer-page", GINT_TO_POINTER(page + 1));
+        g_signal_connect(visibility, "toggled", G_CALLBACK(+[](GtkToggleButton* button, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             if (self->syncingFloatingLayers) {
+                                 return;
+                             }
+                             const int page = GPOINTER_TO_INT(
+                                     g_object_get_data(G_OBJECT(button), "floating-layer-page")) - 1;
+                             const auto layerId = static_cast<size_t>(GPOINTER_TO_UINT(
+                                     g_object_get_data(G_OBJECT(button), "floating-layer-id")));
+                             if (page != self->state.page) {
+                                 return;
+                             }
+                             const bool visible = gtk_toggle_button_get_active(button);
+                             self->finishTextEditing();
+                             self->resetInput(true);
+                             const auto label = std::string(visible ? "Hide " : "Show ") +
+                                                layerDisplayName(self->state.layersForPage(page), layerId);
+                             gtk_button_set_icon_name(GTK_BUTTON(button), visible ? "view-reveal-symbolic" :
+                                                                                     "view-conceal-symbolic");
+                             gtk_widget_set_tooltip_text(GTK_WIDGET(button), label.c_str());
+                             gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                                            label.c_str(), -1);
+                             if (self->state.setLayerVisible(page, layerId, visible)) {
+                                 if (self->selectedImageIndex &&
+                                     *self->selectedImageIndex < self->state.images.size() &&
+                                     self->state.images[*self->selectedImageIndex].page == page &&
+                                     self->state.images[*self->selectedImageIndex].layerId == layerId) {
+                                     self->selectedImageIndex.reset();
+                                 }
+                                 self->thumbnails.clear();
+                                 self->update();
+                             }
+                         }),
+                         this);
+
+        gtk_box_append(GTK_BOX(row), select);
+        gtk_box_append(GTK_BOX(row), GTK_WIDGET(visibility));
+        gtk_box_append(menu.layerRows, row);
+    }
+
+    static bool sameFloatingLayerStructure(const prototype::PageLayers& first,
+                                           const prototype::PageLayers& second) {
+        if (first.backgroundName != second.backgroundName || first.initialLayerCount != second.initialLayerCount ||
+            first.layers.size() != second.layers.size()) {
+            return false;
+        }
+        for (size_t index = 0; index < first.layers.size(); ++index) {
+            const auto& left = first.layers[index];
+            const auto& right = second.layers[index];
+            if (left.name != right.name || left.origins != right.origins ||
+                left.hasNonEditableElements != right.hasNonEditableElements) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void updateFloatingLayerMenuSensitivity(FloatingLayerMenuWidgets& menu,
+                                            const prototype::PageLayers& pageLayers) {
+        gtk_widget_set_sensitive(GTK_WIDGET(menu.showAllButton), bool(nativeSession) && !pageLayers.layers.empty());
+        gtk_widget_set_sensitive(GTK_WIDGET(menu.hideAllButton), bool(nativeSession) && !pageLayers.layers.empty());
+        gtk_widget_set_sensitive(GTK_WIDGET(menu.addAboveButton),
+                                 bool(nativeSession) && pageLayers.layers.size() < 1000);
+        gtk_widget_set_sensitive(GTK_WIDGET(menu.addBelowButton),
+                                 bool(nativeSession) && pageLayers.layers.size() < 1000);
+    }
+
+    void updateFloatingLayerMenuRows(FloatingLayerMenuWidgets& menu, int page,
+                                     const prototype::PageLayers& pageLayers) {
+        const bool wasSyncing = syncingFloatingLayers;
+        syncingFloatingLayers = true;
+        for (size_t layerId = 1; layerId <= pageLayers.layers.size(); ++layerId) {
+            if (auto* control = findFloatingLayerControl(menu, layerId, false)) {
+                gtk_check_button_set_active(GTK_CHECK_BUTTON(control), pageLayers.selectedLayer == layerId);
+            }
+            if (auto* control = findFloatingLayerControl(menu, layerId, true)) {
+                const bool visible = pageLayers.layers[layerId - 1].visible;
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(control), visible);
+                gtk_button_set_icon_name(GTK_BUTTON(control), visible ? "view-reveal-symbolic" :
+                                                                        "view-conceal-symbolic");
+                const auto label = std::string(visible ? "Hide " : "Show ") +
+                                   layerDisplayName(pageLayers, layerId);
+                gtk_widget_set_tooltip_text(control, label.c_str());
+                gtk_accessible_update_property(GTK_ACCESSIBLE(control), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                               label.c_str(), -1);
+            }
+        }
+        if (auto* control = findFloatingLayerControl(menu, 0, true)) {
+            const bool visible = pageLayers.backgroundVisible;
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(control), visible);
+            gtk_button_set_icon_name(GTK_BUTTON(control), visible ? "view-reveal-symbolic" :
+                                                                    "view-conceal-symbolic");
+            const auto label = std::string(visible ? "Hide " : "Show ") + layerDisplayName(pageLayers, 0);
+            gtk_widget_set_tooltip_text(control, label.c_str());
+            gtk_accessible_update_property(GTK_ACCESSIBLE(control), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                           label.c_str(), -1);
+        }
+        updateFloatingLayerMenuSensitivity(menu, pageLayers);
+        menu.page = page;
+        menu.snapshot = pageLayers;
+        syncingFloatingLayers = wasSyncing;
+    }
+
+    void rebuildFloatingLayerRows(FloatingLayerMenuWidgets& menu, int page,
+                                  const prototype::PageLayers& pageLayers) {
+        while (auto* child = gtk_widget_get_first_child(GTK_WIDGET(menu.layerRows))) {
+            gtk_box_remove(menu.layerRows, child);
+        }
+
+        GtkCheckButton* activeGroup = nullptr;
+        for (size_t layerId = pageLayers.layers.size(); layerId > 0; --layerId) {
+            const auto& layer = pageLayers.layers[layerId - 1];
+            appendFloatingLayerControl(menu, page, layerId, layerDisplayName(pageLayers, layerId), layer.visible,
+                                       true, pageLayers.selectedLayer == layerId, activeGroup);
+        }
+        appendFloatingLayerControl(menu, page, 0, layerDisplayName(pageLayers, 0), pageLayers.backgroundVisible,
+                                   false, false, activeGroup);
+
+        updateFloatingLayerMenuRows(menu, page, pageLayers);
+    }
+
+    void rebuildFloatingLayerMenus() {
+        for (auto& menu: floatingLayerMenus) {
+            const auto& pageLayers = state.layersForPage(state.page);
+            gtk_label_set_text(menu.activeLayerLabel,
+                               layerDisplayName(pageLayers, pageLayers.selectedLayer).c_str());
+            rebuildFloatingLayerRows(menu, state.page, pageLayers);
+        }
+    }
+
+    void scheduleFloatingLayerMenuRebuild() {
+        if (floatingLayerRefreshSource) {
+            return;
+        }
+        floatingLayerRefreshSource = g_idle_add(
+                +[](gpointer data) -> gboolean {
+                    auto* self = static_cast<Prototype*>(data);
+                    self->floatingLayerRefreshSource = 0;
+                    if (!self->closed) {
+                        self->rebuildFloatingLayerMenus();
+                    }
+                    return G_SOURCE_REMOVE;
+                },
+                this);
+    }
+
+    void updateFloatingLayerMenus() {
+        for (auto& menu: floatingLayerMenus) {
+            const auto& pageLayers = state.layersForPage(state.page);
+            gtk_label_set_text(menu.activeLayerLabel,
+                               layerDisplayName(pageLayers, pageLayers.selectedLayer).c_str());
+            updateFloatingLayerMenuSensitivity(menu, pageLayers);
+            if (menu.page != state.page || !menu.snapshot ||
+                !sameFloatingLayerStructure(*menu.snapshot, pageLayers)) {
+                scheduleFloatingLayerMenuRebuild();
+            } else if (*menu.snapshot != pageLayers) {
+                updateFloatingLayerMenuRows(menu, state.page, pageLayers);
+            }
+        }
+    }
+
+    GtkWidget* findFloatingLayerControl(const FloatingLayerMenuWidgets& menu, size_t layerId,
+                                        bool visibility) const {
+        for (auto* row = gtk_widget_get_first_child(GTK_WIDGET(menu.layerRows)); row;
+             row = gtk_widget_get_next_sibling(row)) {
+            for (auto* child = gtk_widget_get_first_child(row); child; child = gtk_widget_get_next_sibling(child)) {
+                if (static_cast<size_t>(GPOINTER_TO_UINT(
+                            g_object_get_data(G_OBJECT(child), "floating-layer-id"))) == layerId &&
+                    static_cast<bool>(GPOINTER_TO_INT(
+                            g_object_get_data(G_OBJECT(child), "floating-layer-visibility"))) == visibility) {
+                    return child;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    void addFloatingLayerMenu(GtkWidget* row) {
+        FloatingLayerMenuWidgets menu;
+        menu.button = GTK_MENU_BUTTON(gtk_menu_button_new());
+        menu.activeLayerLabel = GTK_LABEL(gtk_label_new("Layer 1"));
+        gtk_menu_button_set_child(menu.button, GTK_WIDGET(menu.activeLayerLabel));
+        gtk_menu_button_set_always_show_arrow(menu.button, true);
+        gtk_widget_add_css_class(GTK_WIDGET(menu.button), "flat");
+        gtk_widget_set_tooltip_text(GTK_WIDGET(menu.button), "Select the active layer and change visibility");
+
+        menu.popover = GTK_POPOVER(gtk_popover_new());
+        gtk_widget_add_css_class(GTK_WIDGET(menu.popover), "toolbar");
+        auto* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_widget_set_margin_top(content, 6);
+        gtk_widget_set_margin_bottom(content, 6);
+        gtk_widget_set_margin_start(content, 6);
+        gtk_widget_set_margin_end(content, 6);
+
+        auto* visibilityActions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_widget_add_css_class(visibilityActions, "linked");
+        const auto addMenuAction = [this](GtkBox* parent, const char* label, const char* actionName) {
+            auto* action = GTK_BUTTON(gtk_button_new_with_label(label));
+            gtk_widget_add_css_class(GTK_WIDGET(action), "flat");
+            g_object_set_data_full(G_OBJECT(action), "floating-layer-action", g_strdup(actionName), g_free);
+            g_signal_connect(action, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+                                 auto* self = static_cast<Prototype*>(data);
+                                 self->finishTextEditing();
+                                 self->resetInput(true);
+                                 const auto* name = static_cast<const char*>(
+                                         g_object_get_data(G_OBJECT(button), "floating-layer-action"));
+                                 const std::string_view action(name ? name : "");
+                                 bool changed = false;
+                                 if (action == "show-all") {
+                                     changed = self->state.setAllLayersVisible(self->state.page, true);
+                                 } else if (action == "hide-all") {
+                                     changed = self->state.setAllLayersVisible(self->state.page, false);
+                                 } else if (action == "add-above") {
+                                     changed = self->state.addLayerAboveCurrent();
+                                 } else if (action == "add-below") {
+                                     changed = self->state.addLayerBelowCurrent();
+                                 }
+                                 if (changed) {
+                                     self->refreshAfterLayerMutation();
+                                 }
+                             }),
+                             this);
+            gtk_box_append(parent, GTK_WIDGET(action));
+            return action;
+        };
+        menu.showAllButton = addMenuAction(GTK_BOX(visibilityActions), "Show all", "show-all");
+        menu.hideAllButton = addMenuAction(GTK_BOX(visibilityActions), "Hide all", "hide-all");
+        gtk_box_append(GTK_BOX(content), visibilityActions);
+        gtk_box_append(GTK_BOX(content), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+        auto* addActions = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        menu.addAboveButton =
+                addMenuAction(GTK_BOX(addActions), "Add a layer above the active layer", "add-above");
+        menu.addBelowButton =
+                addMenuAction(GTK_BOX(addActions), "Add a layer below the active layer", "add-below");
+        gtk_box_append(GTK_BOX(content), addActions);
+        gtk_box_append(GTK_BOX(content), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+        menu.layerRows = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2));
+        gtk_box_append(GTK_BOX(content), GTK_WIDGET(menu.layerRows));
+        gtk_popover_set_child(menu.popover, content);
+        gtk_menu_button_set_popover(menu.button, GTK_WIDGET(menu.popover));
+        floatingLayerMenus.push_back(menu);
+        auto* label = gtk_label_new("Layer");
+        gtk_widget_set_margin_start(label, 7);
+        gtk_widget_set_margin_end(label, 7);
+        gtk_box_append(GTK_BOX(row), label);
+        gtk_box_append(GTK_BOX(row), GTK_WIDGET(menu.button));
+        rebuildFloatingLayerRows(floatingLayerMenus.back(), state.page, state.layersForPage(state.page));
+    }
+
     void addFloatingToolboxAction(GtkWidget* row, const std::string& token) {
         auto addTool = [&](Tool tool, const char* label) { addFloatingToolboxToolAction(row, tool, label); };
         auto addButton = [&](const char* label, GCallback callback) {
@@ -8913,6 +9255,8 @@ private:
             gtk_box_append(GTK_BOX(pageControl), GTK_WIDGET(spin));
             gtk_box_append(GTK_BOX(pageControl), GTK_WIDGET(status));
             gtk_box_append(GTK_BOX(row), pageControl);
+        } else if (token == "LAYER") {
+            addFloatingLayerMenu(row);
         } else if (token == "ZOOM_SLIDER") {
             auto* scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 25.0, 400.0, 5.0);
             gtk_widget_set_size_request(scale, 132, -1);
@@ -9253,6 +9597,10 @@ private:
         if (!floatingToolboxRowsContainer) {
             return;
         }
+        if (floatingLayerRefreshSource) {
+            g_source_remove(floatingLayerRefreshSource);
+            floatingLayerRefreshSource = 0;
+        }
         if (floatingPageSpinTimeout) {
             g_source_remove(floatingPageSpinTimeout);
             floatingPageSpinTimeout = 0;
@@ -9262,6 +9610,7 @@ private:
         floatingFillToggles.clear();
         floatingFillOpacityButtons.clear();
         floatingPageSpinners.clear();
+        floatingLayerMenus.clear();
         if (floatingToolboxToolButtons.size() > floatingToolboxStaticToolButtonCount) {
             floatingToolboxToolButtons.erase(
                     floatingToolboxToolButtons.begin() +
@@ -12254,6 +12603,7 @@ private:
         }
         syncingBrush = wasSyncingBrush;
         updateFloatingPageSpinners();
+        updateFloatingLayerMenus();
         if (pageList) {
             syncingPage = true;
             gtk_list_box_select_row(pageList, gtk_list_box_get_row_at_index(pageList, state.page));
@@ -15652,7 +16002,7 @@ private:
     gboolean smokePreferencesVerify() {
         const auto control = [&](PreferenceKey key) { return preferenceControls[static_cast<size_t>(key)]; };
         const prototype::FloatingToolboxRows floatingModeTestRows = {{
-                {"SMART_SELECT", "PEN", "DRAW", "PAGE_SPIN"},
+                {"SMART_SELECT", "PEN", "DRAW", "PAGE_SPIN", "LAYER"},
                 {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER",
                  "RULER"},
                 {"TOOL_FILL", "FINE", "DRAW_RECTANGLE", "DRAW_ELLIPSE"},
@@ -16150,6 +16500,13 @@ private:
                     state.setPages({{595, 842}, {595, 842}, {595, 842}});
                     pageCount = state.pageCount();
                     state.selectActivePage(0);
+                    auto floatingLayers = state.pageLayers;
+                    floatingLayers[0].initialLayerCount = 3;
+                    floatingLayers[0].selectedLayer = 1;
+                    floatingLayers[0].backgroundName = "Paper";
+                    floatingLayers[0].layers = {
+                            {"Lower", true, {0}}, {"Upper", true, {1}}, {"Top", true, {2}}};
+                    state.setLayerDocument(floatingLayers);
                     update();
                     floatingToolboxSmokeReady = false;
                     floatingToolboxSmokeSource = g_timeout_add(
@@ -16166,9 +16523,17 @@ private:
                                                 self->floatingPageSpinners.front().first)) == 3 &&
                                         std::string(gtk_label_get_text(self->floatingPageSpinners.front().second)) ==
                                                 "of 3";
+                                const bool layerMenuReady = self->floatingLayerMenus.size() == 1 &&
+                                        std::string(gtk_label_get_text(
+                                                self->floatingLayerMenus.front().activeLayerLabel)) == "Lower" &&
+                                        self->findFloatingLayerControl(self->floatingLayerMenus.front(), 2, false) &&
+                                        self->findFloatingLayerControl(self->floatingLayerMenus.front(), 2, true) &&
+                                        self->findFloatingLayerControl(self->floatingLayerMenus.front(), 0, true) &&
+                                        !gtk_widget_get_sensitive(GTK_WIDGET(
+                                                self->floatingLayerMenus.front().addBelowButton));
                                 self->floatingToolboxSmokeReady = gtk_widget_get_visible(self->floatingToolbox) &&
                                                                   self->floatingToolboxToolButtons.size() >= 15 &&
-                                                                  pageSpinnerReady;
+                                                                  pageSpinnerReady && layerMenuReady;
                                 self->floatingToolboxSmokeSource = 0;
                                 return G_SOURCE_REMOVE;
                             },
@@ -16181,6 +16546,43 @@ private:
                                     gtk_spin_button_get_value_as_int(floatingPageSpinners.front().first) == 1 &&
                                     std::string(gtk_label_get_text(floatingPageSpinners.front().second)) == "of 3",
                             "PAGE_SPIN did not expose the current page and page count");
+                    require(floatingLayerMenus.size() == 1 &&
+                                    std::string(gtk_label_get_text(
+                                            floatingLayerMenus.front().activeLayerLabel)) == "Lower",
+                            "LAYER did not display the current active layer");
+                    gtk_menu_button_popup(floatingLayerMenus.front().button);
+                    require(gtk_widget_get_visible(GTK_WIDGET(floatingLayerMenus.front().popover)),
+                            "LAYER did not open its layer and visibility menu");
+                    auto* upperLayer = GTK_CHECK_BUTTON(
+                            findFloatingLayerControl(floatingLayerMenus.front(), 2, false));
+                    require(upperLayer, "LAYER did not list foreground layers for selection");
+                    gtk_check_button_set_active(upperLayer, true);
+                    require(state.activeLayerId(0) == 2 &&
+                                    std::string(gtk_label_get_text(
+                                            floatingLayerMenus.front().activeLayerLabel)) == "Upper" &&
+                                    !gtk_widget_get_visible(GTK_WIDGET(floatingLayerMenus.front().popover)),
+                            "Selecting a layer in LAYER did not update the current layer and close the menu");
+                    gtk_menu_button_popup(floatingLayerMenus.front().button);
+                    auto* upperVisibility = GTK_TOGGLE_BUTTON(
+                            findFloatingLayerControl(floatingLayerMenus.front(), 2, true));
+                    require(upperVisibility, "LAYER did not expose foreground visibility toggles");
+                    gtk_toggle_button_set_active(upperVisibility, false);
+                    require(!state.layerVisible(0, 2) &&
+                                    gtk_widget_get_visible(GTK_WIDGET(floatingLayerMenus.front().popover)),
+                            "LAYER did not hide the selected layer while keeping its menu open");
+                    auto* backgroundVisibility = GTK_TOGGLE_BUTTON(
+                            findFloatingLayerControl(floatingLayerMenus.front(), 0, true));
+                    require(backgroundVisibility, "LAYER did not expose background visibility");
+                    gtk_toggle_button_set_active(backgroundVisibility, false);
+                    require(!state.layerVisible(0, 0) &&
+                                    gtk_widget_get_visible(GTK_WIDGET(floatingLayerMenus.front().popover)),
+                            "LAYER did not toggle background visibility while keeping its menu open");
+                    gtk_popover_popdown(floatingLayerMenus.front().popover);
+                    while (state.canUndo()) {
+                        state.undo();
+                    }
+                    require(state.selectLayer(0, 1), "LAYER smoke checks could not restore the initial active layer");
+                    update();
                     floatingToolboxSmokeReady = false;
                     gtk_spin_button_set_value(floatingPageSpinners.front().first, 3);
                     floatingToolboxSmokeSource = g_timeout_add(
@@ -18651,6 +19053,7 @@ private:
     std::vector<prototype::AudioTarget> audioTargets;
     int pageCount = 1;
     bool syncingPage = false;
+    bool syncingFloatingLayers = false;
     GtkWidget* window = nullptr;
     GdkPaintable* windowPaintable = nullptr;
     GdkFrameClock* paintClock = nullptr;
@@ -18682,6 +19085,8 @@ private:
     guint floatingPageSpinTimeout = 0;
     GtkSpinButton* pendingFloatingPageSpin = nullptr;
     std::vector<std::pair<GtkSpinButton*, GtkLabel*>> floatingPageSpinners;
+    guint floatingLayerRefreshSource = 0;
+    std::vector<FloatingLayerMenuWidgets> floatingLayerMenus;
     std::array<GtkWidget*, 2> laserButtons{};
     GtkWidget* audioControls = nullptr;
     GtkWidget* audioBackButton = nullptr;

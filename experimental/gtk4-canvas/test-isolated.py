@@ -363,7 +363,7 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
                      "snap-grid-size=24", "snap-grid-tolerance=0.4", "button-one=1", "button-two=5",
                      "[Pointer Highlight]", "enabled=true", "fill-color=2131899478", "radius=17",
                      "border-color=3232484847", "border-width=2",
-                     "main-tool-rail=SMART_SELECT,TEXT,PEN,HAND", "row-1=SMART_SELECT,PEN,DRAW,PAGE_SPIN",
+                     "main-tool-rail=SMART_SELECT,TEXT,PEN,HAND", "row-1=SMART_SELECT,PEN,DRAW,PAGE_SPIN,LAYER",
                      "row-2=ZOOM_SLIDER,DRAW_DOUBLE_ARROW,DRAW_COORDINATE_SYSTEM,DRAW_SPLINE,SHAPE_RECOGNIZER,RULER",
                      "row-3=TOOL_FILL,FINE,DRAW_RECTANGLE,DRAW_ELLIPSE",
                      "row-4=DRAW_ARROW,FILL_OPACITY",

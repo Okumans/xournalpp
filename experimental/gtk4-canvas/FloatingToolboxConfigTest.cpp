@@ -49,12 +49,12 @@ int main() {
             "GTK 4 defaults do not match the four master floating-toolbar rows");
 
     const auto parsed = prototype::parseFloatingToolboxRow(
-            " pen, HIGHLIGHTER, PAGE_SPIN, COLOR(10), custom_action, plugin::MixedCase_Action-1 ");
-    require(parsed && *parsed == std::vector<std::string>({"PEN", "HIGHLIGHTER", "PAGE_SPIN", "COLOR(10)",
+            " pen, HIGHLIGHTER, PAGE_SPIN, LAYER, COLOR(10), custom_action, plugin::MixedCase_Action-1 ");
+    require(parsed && *parsed == std::vector<std::string>({"PEN", "HIGHLIGHTER", "PAGE_SPIN", "LAYER", "COLOR(10)",
                                                            "CUSTOM_ACTION", "Plugin::MixedCase_Action-1"}),
             "Toolbar row parsing did not trim and normalize item names");
     require(prototype::serializeFloatingToolboxRow(*parsed) ==
-                    "PEN,HIGHLIGHTER,PAGE_SPIN,COLOR(10),CUSTOM_ACTION,Plugin::MixedCase_Action-1",
+                    "PEN,HIGHLIGHTER,PAGE_SPIN,LAYER,COLOR(10),CUSTOM_ACTION,Plugin::MixedCase_Action-1",
             "Toolbar row serialization was not stable");
     require(!prototype::parseFloatingToolboxRow("PEN,,ERASER") &&
                     !prototype::parseFloatingToolboxRow("PEN,COLOR(foo)") &&
@@ -71,13 +71,14 @@ int main() {
     {
         std::ofstream out(path);
         out << "[Floating Toolbox (experimental)]\n"
-               "toolbarFloat1=PEN, PAGE_SPIN, SMART_SELECT,UNDO\n"
+               "toolbarFloat1=PEN, PAGE_SPIN, LAYER, SMART_SELECT,UNDO\n"
                "toolbarFloat2=\n"
                "toolbarFloat4=COLOR(3),DRAW_ARROW,Plugin::MixedCase_Action-1\n";
     }
     auto imported = prototype::importFloatingToolboxConfig(directory);
     require(imported.found && imported.warning.empty() &&
-                    imported.rows[0] == std::vector<std::string>({"PEN", "PAGE_SPIN", "SMART_SELECT", "UNDO"}) &&
+                    imported.rows[0] == std::vector<std::string>(
+                                                {"PEN", "PAGE_SPIN", "LAYER", "SMART_SELECT", "UNDO"}) &&
                     imported.rows[1].empty() &&
                     imported.rows[2] == defaultRows[2] &&
                     imported.rows[3] == std::vector<std::string>({"COLOR(3)", "DRAW_ARROW",
