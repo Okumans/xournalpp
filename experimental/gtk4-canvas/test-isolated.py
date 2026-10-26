@@ -485,7 +485,7 @@ def verify_plugins(args, evidence):
                  PATH=str(fake_bin) + os.pathsep + os.environ.get("PATH", "")),
     )
     expected = (
-        "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, "
+        "PASS: private GTK4 ColorCycle, Example dialog, ToolShortcuts, Smart Select shortcut, document Search, "
         "HighlightPosition, QuickScreenshot region capture/clipboard, Export PDF/SVG/PNG, ImageActions, "
         "FitToContent page resizing, SpaceForNotes page insertion, "
         "ToggleGrid paper changes, and background undo/redo"
@@ -494,7 +494,7 @@ def verify_plugins(args, evidence):
         raise RuntimeError("GTK 4 bundled plugin integration did not complete")
     if "PASS: GTK4 plugin toolbar action and placeholder registration, rendering, and updates" not in result:
         raise RuntimeError("GTK 4 private plugin toolbar action or placeholder did not render or update")
-    screenshots = ["plugins-menu", "plugins-manager", "position-highlight-on", "space-for-notes-pdf-gaps",
+    screenshots = ["plugins-menu", "plugins-manager", "search-native-text", "position-highlight-on", "space-for-notes-pdf-gaps",
                    "fit-to-content-page", "quick-screenshot.png"]
     if image_actions_available:
         screenshots.append("image-actions-split")
@@ -517,6 +517,38 @@ def verify_plugins(args, evidence):
         raise RuntimeError("HighlightPosition did not persist its final disabled state")
     print("PASS: private GTK4 plugin manager, asynchronous Lua dialogs, and bundled callbacks", flush=True)
     return str(directory)
+
+
+def verify_search(args, evidence):
+    directory = evidence / "search"
+    shutil.rmtree(directory, ignore_errors=True)
+    config = directory / "config"
+    output = directory / "run"
+    config.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
+    tool_shortcuts = Path(__file__).resolve().parents[2] / "plugins/ToolShortcuts"
+    (config / "gtk4-canvas.ini").write_text(
+        "[Plugins]\n"
+        f"enabled={tool_shortcuts.resolve()}\n"
+        "disabled=\n",
+        encoding="utf-8",
+    )
+    pdf = Path(__file__).resolve().parents[2] / "test/files/cjk/测试.pdf"
+    result = run(
+        [str(args.binary.resolve()), "--config-dir", str(config), "--smoke-dir", str(output),
+         "--pdf", str(pdf), "--verify-search"],
+        env=dict(os.environ, G_DEBUG="fatal-criticals"),
+    )
+    if "PASS: GTK4 document Search across PDF and editable text" not in result:
+        raise RuntimeError("GTK 4 document Search integration did not complete")
+    screenshot = output / "search-native-text.png"
+    if not screenshot.is_file() or screenshot.stat().st_size < 1000:
+        raise RuntimeError(f"Missing document Search screenshot: {screenshot}")
+    return {
+        "fixture_pdf": str(pdf),
+        "screenshot": str(screenshot),
+        "rendering": "Private headless Wayland via Cage",
+    }
 
 
 def write_beamer_pdf(path):
@@ -1110,6 +1142,13 @@ def inside(args):
              "rendering": "Private headless Wayland via Cage"},
             indent=2) + "\n")
         return
+    if args.search_only:
+        search_evidence = verify_search(args, evidence)
+        (evidence / "results.json").write_text(json.dumps(
+            {"checks": {"document-search": search_evidence},
+             "rendering": "Private headless Wayland via Cage"},
+            indent=2) + "\n")
+        return
     if args.play_object_only:
         play_evidence = verify_play_object(args, evidence)
         (evidence / "results.json").write_text(json.dumps(
@@ -1348,6 +1387,7 @@ def main():
     parser.add_argument("--play-object-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--plugins-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--search-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--beamer-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--layer-actions-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--latex-only", action="store_true", help=argparse.SUPPRESS)
@@ -1428,6 +1468,8 @@ def main():
             command.append("--preferences-only")
         if args.plugins_only:
             command.append("--plugins-only")
+        if args.search_only:
+            command.append("--search-only")
         if args.beamer_only:
             command.append("--beamer-only")
         if args.layer_actions_only:

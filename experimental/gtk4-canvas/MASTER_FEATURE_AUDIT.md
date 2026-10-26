@@ -113,7 +113,7 @@ it is part of the master plugin distribution.
 | `QuickScreenshot` | Capture a screen region to an image using supported platform utilities. | Covered — launches `grim` + `slurp` on Wayland or `scrot`/`maim` on X11 without a shell; opens the GTK 4 Save dialog, or copies PNG to the clipboard when the X11 `maim`/`xclip` setup is present. Cancel and failure paths remove temporary files. The Lua runtime and private Cage checks exercise menu dispatch, the async Wayland capture/save path, and PNG clipboard publication. |
 | `SpaceForNotes` | Add empty pages for notes. | Partial — both upstream modes run: add a lined page after each PDF page that is not already followed by a note page, or force a page after every page. Changes survive save/reopen; page insertions are not undoable yet. |
 | `ToggleGrid` | Toggle the page grid. | Covered — toggles grid snapping and switches the active page between plain and graph backgrounds; native document save, reopen, undo, and redo preserve the background. |
-| `ToolShortcuts` | Add canvas-scoped tool and page-navigation shortcuts. | Partial — bundled shortcuts select common tools including Smart Select, navigate pages, open Go to Page, and invoke undo/redo. Search and some master actions are missing. |
+| `ToolShortcuts` | Add canvas-scoped tool and page-navigation shortcuts. | Partial — bundled shortcuts select common tools including Smart Select, navigate pages, open Go to Page, invoke undo/redo, and open GTK 4 document Search. Search highlights original PDF and visible native text matches and wraps next/previous navigation across pages. Some other master actions remain missing. |
 
 ## Cross-cutting application behavior
 

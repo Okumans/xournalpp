@@ -180,6 +180,12 @@ target_compile_definitions(pdf-text-selection-test PRIVATE XOURNALPP_REPO_ROOT="
 target_link_libraries(pdf-text-selection-test PRIVATE PkgConfig::UI)
 add_test(NAME pdf-text-selection COMMAND pdf-text-selection-test)
 
+add_executable(canvas-search-test CanvasSearchTest.cpp)
+target_compile_features(canvas-search-test PRIVATE cxx_std_20)
+target_compile_options(canvas-search-test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(canvas-search-test PRIVATE PkgConfig::UI)
+add_test(NAME canvas-search COMMAND canvas-search-test)
+
 add_executable(document-pdf-pages-test DocumentPdfPagesTest.cpp)
 target_compile_features(document-pdf-pages-test PRIVATE cxx_std_20)
 target_compile_options(document-pdf-pages-test PRIVATE -Wall -Wextra -Wpedantic)
