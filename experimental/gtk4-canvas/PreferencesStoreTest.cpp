@@ -44,6 +44,10 @@ int main() {
 
     prototype::ImportedSettings saved;
     saved.themeVariant = prototype::ThemeVariant::ForceDark;
+    saved.penFillEnabled = true;
+    saved.penFillOpacity = 192;
+    saved.highlighterFillEnabled = false;
+    saved.highlighterFillOpacity = 64;
     saved.showSidebar = false;
     saved.pressureSensitivity = false;
     saved.highlightPosition = true;
@@ -96,6 +100,8 @@ int main() {
     const auto loadedResult = prototype::loadGtk4Preferences(directory, loaded);
     require(loadedResult.found && loadedResult.warning.empty(), "Saved GTK 4 preferences could not be loaded");
     require(loaded.themeVariant == prototype::ThemeVariant::ForceDark && !loaded.showSidebar &&
+                    loaded.penFillEnabled && loaded.penFillOpacity == 192 && !loaded.highlighterFillEnabled &&
+                    loaded.highlighterFillOpacity == 64 &&
                     !loaded.pressureSensitivity && near(loaded.minimumPressure, 0.17) && loaded.highlightPosition &&
                     loaded.cursorHighlightColor == saved.cursorHighlightColor &&
                     near(loaded.cursorHighlightRadius, 17.0) &&

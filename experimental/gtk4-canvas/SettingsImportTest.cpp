@@ -81,10 +81,14 @@ int main() {
     <data name="pen">
       <attribute name="color" type="hex" value="ff002e99"/>
       <attribute name="size" type="string" value="BIG"/>
+      <attribute name="fill" type="int" value="1"/>
+      <attribute name="fillAlpha" type="int" value="192"/>
     </data>
     <data name="highlighter">
       <attribute name="color" type="int" value="16753152"/>
       <attribute name="size" type="string" value="VERY_BIG"/>
+      <attribute name="fill" type="int" value="0"/>
+      <attribute name="fillAlpha" type="int" value="64"/>
     </data>
     <data name="eraser">
       <attribute name="size" type="string" value="THIN"/>
@@ -111,6 +115,9 @@ int main() {
     require(near(s.penColor[0], 0.0) && near(s.penColor[1], 0x2e / 255.0) && near(s.penColor[2], 0x99 / 255.0),
             "Alpha-prefixed hex pen color mismatch");
     require(near(s.penWidth, 2.26), "BIG pen preset should map to 2.26pt");
+    require(s.penFillEnabled && s.penFillOpacity == 192 && !s.highlighterFillEnabled &&
+                    s.highlighterFillOpacity == 64,
+            "Per-tool fill enablement and opacity settings were not imported");
     // 16753152 == 0xFFA200
     require(near(s.highlighterColor[0], 1.0) && near(s.highlighterColor[1], 0xa2 / 255.0) &&
                     near(s.highlighterColor[2], 0.0),

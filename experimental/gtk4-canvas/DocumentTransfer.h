@@ -44,7 +44,7 @@ inline void validate(const StrokePacket& stroke) {
     if (stroke.page < 0 || stroke.layerId == 0 || (stroke.highlighter && stroke.whiteout) ||
         !std::isfinite(stroke.width) || stroke.width <= 0 || stroke.points.empty() || stroke.fill < -1 ||
         stroke.fill > 255 || stroke.capStyle < 0 || stroke.capStyle > 2 ||
-        (stroke.fill >= 0 && !stroke.highlighter)) {
+        (stroke.fill >= 0 && stroke.whiteout)) {
         throw std::runtime_error("Invalid transferred stroke");
     }
     for (double channel: stroke.color) {

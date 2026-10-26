@@ -180,8 +180,11 @@ formatting, and text alignment/justification work in the floating rows. The
 master `RULER`, rectangle, ellipse, arrow, double-arrow, coordinate-system,
 spline, and stroke-recognizer drawing tokens select their matching modes.
 The `DRAW` token adds a synchronized mode dropdown with Freehand and all eight
-master drawing modes.
-`TOOL_FILL` and unknown tokens remain visible but disabled. Stylus side buttons
+master drawing modes. `TOOL_FILL` is a synchronized toggle for Pen and
+Highlighter: it fills new strokes using each tool's imported opacity and applies
+fill changes to selected Pen/Highlighter strokes with undo support. Its enabled
+state and per-tool opacity persist in `gtk4-canvas.ini`; the separate
+`FILL_OPACITY` action and other unknown tokens remain disabled. Stylus side buttons
 can temporarily select Pen, Highlighter, Eraser, or Hand while held. Releasing a
 mapped button restores the toolbar tool. A Floating Toolbox mapping opens the panel at the pointer without
 changing the active tool. Secondary tools stay under More tools. The panel closes

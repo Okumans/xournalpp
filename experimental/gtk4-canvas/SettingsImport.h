@@ -45,8 +45,12 @@ struct ImportedSettings {
     Tool activeTool = Tool::Pen;
     std::array<double, 3> penColor = behavior::defaultPenColor;
     double penWidth = behavior::penWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    bool penFillEnabled = false;
+    int penFillOpacity = 128;
     std::array<double, 3> highlighterColor = behavior::defaultHighlighterColor;
     double highlighterWidth = behavior::highlighterWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
+    bool highlighterFillEnabled = false;
+    int highlighterFillOpacity = 128;
     std::array<double, 3> laserPenColor = behavior::laserPointerColor;
     double laserPenWidth = behavior::laserPenWidths[static_cast<size_t>(behavior::ToolSize::Medium)];
     std::array<double, 3> laserHighlighterColor = behavior::laserPointerColor;
@@ -493,6 +497,14 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
             if (const auto sz = parseToolSizeName(value)) {
                 out.penWidth = behavior::penWidths[static_cast<size_t>(*sz)];
             }
+        } else if (name == "fill" && type == "int") {
+            if (const auto enabled = parseAsciiInt(value)) {
+                out.penFillEnabled = *enabled != 0;
+            }
+        } else if (name == "fillAlpha" && type == "int") {
+            if (const auto opacity = parseAsciiInt(value); opacity && *opacity >= 0 && *opacity <= 255) {
+                out.penFillOpacity = static_cast<int>(*opacity);
+            }
         }
     } else if (toolName == "highlighter") {
         if (name == "color") {
@@ -502,6 +514,14 @@ inline void applyToolAttribute(ImportedSettings& out, const std::vector<std::str
         } else if (name == "size" && type == "string") {
             if (const auto sz = parseToolSizeName(value)) {
                 out.highlighterWidth = behavior::highlighterWidths[static_cast<size_t>(*sz)];
+            }
+        } else if (name == "fill" && type == "int") {
+            if (const auto enabled = parseAsciiInt(value)) {
+                out.highlighterFillEnabled = *enabled != 0;
+            }
+        } else if (name == "fillAlpha" && type == "int") {
+            if (const auto opacity = parseAsciiInt(value); opacity && *opacity >= 0 && *opacity <= 255) {
+                out.highlighterFillOpacity = static_cast<int>(*opacity);
             }
         }
     } else if (toolName == "laserPointerPen") {

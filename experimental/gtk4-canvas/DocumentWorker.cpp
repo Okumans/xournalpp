@@ -372,9 +372,6 @@ std::optional<prototype::bridge::StrokePacket> toEditablePacket(const Element& e
     bool whiteout = false;
     bool pressureSensitive = false;
     if (tool == StrokeTool::PEN) {
-        if (fill != -1) {
-            return std::nullopt;
-        }
         pressureSensitive = stroke->hasPressure();
     } else if (tool == StrokeTool::HIGHLIGHTER) {
         if (stroke->hasPressure()) {

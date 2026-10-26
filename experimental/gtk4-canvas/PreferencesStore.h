@@ -201,6 +201,11 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
     }
 
     auto& detail = preferences_detail::readBool;
+    detail(keyFile.get(), "Tool Fill", "pen-enabled", settings.penFillEnabled);
+    preferences_detail::readInt(keyFile.get(), "Tool Fill", "pen-opacity", settings.penFillOpacity, 0, 255);
+    detail(keyFile.get(), "Tool Fill", "highlighter-enabled", settings.highlighterFillEnabled);
+    preferences_detail::readInt(keyFile.get(), "Tool Fill", "highlighter-opacity", settings.highlighterFillOpacity,
+                                0, 255);
     detail(keyFile.get(), "General", "show-sidebar", settings.showSidebar);
     detail(keyFile.get(), "Input", "pressure-sensitivity", settings.pressureSensitivity);
     detail(keyFile.get(), "Pointer Highlight", "enabled", settings.highlightPosition);
@@ -294,6 +299,8 @@ inline PreferencesStoreResult loadGtk4Preferences(const std::filesystem::path& c
 inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const ImportedSettings& settings,
                                 std::string& errorMessage) {
     if (settings.latexDefaultText.size() > maxCanvasLatexSourceBytes ||
+        settings.penFillOpacity < 0 || settings.penFillOpacity > 255 || settings.highlighterFillOpacity < 0 ||
+        settings.highlighterFillOpacity > 255 ||
         preferences_detail::pathToUtf8(settings.latexTemplatePath).size() > 4096 ||
         settings.latexGeneratorCommand.size() > 16384 || settings.latexSourceViewThemeId.size() > 128 ||
         settings.latexEditorFont.size() > 256 || settings.latexExternalEditorCommand.size() > 16384 ||
@@ -324,6 +331,10 @@ inline bool saveGtk4Preferences(const std::filesystem::path& configDir, const Im
     }
 
     std::unique_ptr<GKeyFile, preferences_detail::KeyFileDeleter> keyFile(g_key_file_new());
+    g_key_file_set_boolean(keyFile.get(), "Tool Fill", "pen-enabled", settings.penFillEnabled);
+    g_key_file_set_integer(keyFile.get(), "Tool Fill", "pen-opacity", settings.penFillOpacity);
+    g_key_file_set_boolean(keyFile.get(), "Tool Fill", "highlighter-enabled", settings.highlighterFillEnabled);
+    g_key_file_set_integer(keyFile.get(), "Tool Fill", "highlighter-opacity", settings.highlighterFillOpacity);
     g_key_file_set_string(keyFile.get(), "Appearance", "theme", preferences_detail::themeName(settings.themeVariant));
     g_key_file_set_boolean(keyFile.get(), "General", "show-sidebar", settings.showSidebar);
     g_key_file_set_boolean(keyFile.get(), "Input", "pressure-sensitivity", settings.pressureSensitivity);
