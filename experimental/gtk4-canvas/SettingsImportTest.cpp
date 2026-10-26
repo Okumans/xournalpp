@@ -36,6 +36,8 @@ int main() {
   <property name="pressureMultiplier" value="1.35"/>
   <property name="zoomStep" value="25.00000000"/>
   <property name="zoomStepScroll" value="4.50000000"/>
+  <property name="preloadPagesBefore" value="2"/>
+  <property name="preloadPagesAfter" value="7"/>
   <property name="edgePanSpeed" value="37"/>
   <property name="edgePanMaxMult" value="2.5"/>
   <property name="snapRotation" value="false"/>
@@ -153,6 +155,8 @@ int main() {
     require(s.pressureSensitivity && near(s.minimumPressure, 0.14) && near(s.pressureMultiplier, 1.35),
             "Pressure settings mismatch");
     require(near(s.zoomStep, 0.25) && near(s.scrollZoomStep, 0.045), "Zoom percent-to-fraction conversion mismatch");
+    require(s.preloadPagesBefore == 2 && s.preloadPagesAfter == 7,
+            "Adjacent page preload offsets were not imported");
     require(near(s.edgePanSpeed, 37) && near(s.edgePanMaxMultiplier, 2.5),
             "Selection edge-pan settings were not imported");
     require(near(s.snapRotationTolerance, 0.65), "Selection rotation tolerance import mismatch");

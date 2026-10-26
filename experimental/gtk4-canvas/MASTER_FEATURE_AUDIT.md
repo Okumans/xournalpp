@@ -52,28 +52,50 @@ Phase 101 connects sidebar scroll adjustments to visible-page prioritization and
 re-requests mapped visible thumbnails as the viewport changes. Its fast-scroll
 check no longer calls the prioritizer manually and verifies nonblank pixels on
 known content pages, so a cached white fallback cannot count as rendered.
-Layer-sidebar responsiveness and thumbnail latency on content-heavy PDFs remain
-unmeasured.
+The user confirms that the large-PDF sidebar freeze is resolved after Phase 101
+PR #107. Thumbnail latency during continued fast scrolling through the user's
+content-heavy PDF remains unmeasured.
 
 These user-requested follow-ups remain:
 
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
-  input is active, then refreshes at the settled zoom. The existing sparse
-  fixture does not establish smooth rendering on content-heavy PDFs.
+  input is active, then refreshes at the settled zoom. Phase 102 adds three
+  configurable raster tiers: defaults are 4 full-detail pages, 12 medium pages
+  (512 px and 32 MiB caps), and 128 low-detail pages (192 px and 32 MiB caps).
+  Preferences can change each tier's page count, the medium/low memory budgets,
+  the 35% overview and 18% low-detail zoom thresholds, and whether preloaded
+  pages automatically follow the zoom threshold or always use medium/low detail.
+  Full renders produce both lower tiers by downsampling; medium renders also
+  produce a low snapshot. At overview zoom, full-detail PDF rendering stays on
+  the pointer or active page, while other pages use cached snapshots or reduced-resolution
+  background requests. Medium snapshots stay within a 1.5-viewport margin and
+  low snapshots within a 6-viewport margin. Navigation preferences provide
+  configurable page-preload offsets (3 pages before and 5 after by default);
+  after a 150 ms settling delay, those pages queue medium or low-detail rasters
+  after visible pages, favoring the current scroll direction. Sidebar previews
+  use each PDF page's aspect ratio and a selected-page outline. A private GUI
+  cache check is available; real-device touchpad behavior and long-run
+  frame-time measurement remain outstanding. The private Cage check on the
+  775-page PDF verified that the first offset page reaches the raster cache;
+  fast-scroll previews settled on pages 25–27, and zoom-out reported 3 full,
+  3 medium, and 11 low-detail cached pages.
 - Implement touchpad momentum/kinetic scrolling and verify it on the user's
   physical touchpad. The existing synthetic scroll-unit check does not cover
   momentum or physical-device behavior.
-- Diagnose and fix the layer sidebar freezing when opened on a large PDF. The
-  independent scheduler currently covers page thumbnails, not layer-sidebar
-  construction or refresh work.
-- Measure page-thumbnail latency while rapidly scrolling the user's
+- Measure sidebar and canvas raster latency while rapidly scrolling the user's
   content-heavy PDF. The generated 10,000-page fixture verifies
   nearest-visible-first independent rendering and a synthetic 32-frame scroll,
   but not real-document latency under continued scrolling.
 - Complete Eraser gesture parity with Pen, including any remaining Shift and
   Shift-click behaviors. Phases 90 and 97 cover straight-line constraints and
   release-time Shift-click; broader parity still needs an upstream audit.
+- Fix the reported text and Smart Select interaction regressions: Text-tool
+  double-click does not edit existing text; Smart Select opens text on a single
+  click instead of a double-click; double-clicking text changes page size; and
+  selected text has no resize or rotation handles.
+- Fix the reported document-search highlight placement, which currently marks
+  the wrong location.
 
 ## Default UI target
 
@@ -138,8 +160,8 @@ it is not represented by a single `ToolType`.
 | Behavior | GTK 4 status | Remaining parity work |
 | --- | --- | --- |
 | Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes, text, and images. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching object from the first visible layer with matches; unsupported native objects remain outside general selection. Rectangular objects require all four transformed corners inside the selector, matching master behavior. |
-| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. After rotation the visible frame stays axis-aligned while later resize transforms use the accumulated rotation; undo and redo restore both. Transform-following text editor placement and device behavior remain. |
-| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, and newly created or edited text remains selected. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. The editor overlay does not follow transforms. |
+| Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. The user reports that selected text does not show resize or rotation handles. After rotation the visible frame stays axis-aligned while later resize transforms use the accumulated rotation; undo and redo restore both. Transform-following text editor placement and device behavior remain. |
+| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, and newly created or edited text remains selected. The user reports that double-clicking existing text in the Text tool does not enter editing. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. The editor overlay does not follow transforms. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` streams preserve ordered groups of supported strokes, rich text, links, raster images, and LaTeX images, including dash arrays in the internal codec. Copy also offers rendered PNG and SVG, plus plain text when text is selected; external plain-text paste creates an editable text item. Mixed copy/cut/paste/duplicate and cross-type paste/undo are grouped edits. Unsupported native types, audio attachments, and cross-process compatibility verification remain. |

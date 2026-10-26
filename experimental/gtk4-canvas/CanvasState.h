@@ -2327,16 +2327,17 @@ public:
         return pageLayout.pageTop(index, pages);
     }
 
-    std::vector<int> visiblePageIndices(double viewportWidth, double viewportHeight) const {
+    std::vector<int> visiblePageIndices(double viewportWidth, double viewportHeight, double marginX = 0,
+                                        double marginY = 0) const {
         if (!std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 ||
-            viewportHeight <= 0 || !std::isfinite(zoom) || zoom <= 0 || !std::isfinite(offsetX) ||
-            !std::isfinite(offsetY)) {
+            viewportHeight <= 0 || !std::isfinite(marginX) || !std::isfinite(marginY) || marginX < 0 || marginY < 0 ||
+            !std::isfinite(zoom) || zoom <= 0 || !std::isfinite(offsetX) || !std::isfinite(offsetY)) {
             return {};
         }
-        const double left = -offsetX / zoom;
-        const double top = -offsetY / zoom;
-        const double right = (viewportWidth - offsetX) / zoom;
-        const double bottom = (viewportHeight - offsetY) / zoom;
+        const double left = (-marginX - offsetX) / zoom;
+        const double top = (-marginY - offsetY) / zoom;
+        const double right = (viewportWidth + marginX - offsetX) / zoom;
+        const double bottom = (viewportHeight + marginY - offsetY) / zoom;
         if (pages.empty()) {
             const auto size = pageSize(0);
             if (left < size.width && right > 0 && top < size.height && bottom > 0) {

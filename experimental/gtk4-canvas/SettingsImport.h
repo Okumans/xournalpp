@@ -32,6 +32,12 @@ enum class ThemeVariant {
     ForceDark,
 };
 
+enum class CanvasPreloadDetail {
+    Automatic,
+    Medium,
+    Low,
+};
+
 enum class ButtonToolAction {
     None,
     Pen,
@@ -103,6 +109,16 @@ struct ImportedSettings {
     double pressureMultiplier = behavior::pressureMultiplier;
     double zoomStep = behavior::zoomStep;
     double scrollZoomStep = behavior::scrollZoomStep;
+    unsigned int preloadPagesBefore = 3;
+    unsigned int preloadPagesAfter = 5;
+    int fullDetailCachePages = 4;
+    int mediumDetailCachePages = 12;
+    int mediumDetailCacheMegabytes = 32;
+    int lowDetailCachePages = 128;
+    int lowDetailCacheMegabytes = 32;
+    int overviewZoomThresholdPercent = 35;
+    int lowDetailZoomThresholdPercent = 18;
+    CanvasPreloadDetail preloadDetail = CanvasPreloadDetail::Automatic;
     double edgePanSpeed = 20.0;
     double edgePanMaxMultiplier = 5.0;
     std::string textFontName = "Sans";
@@ -354,6 +370,14 @@ inline void applyProperty(ImportedSettings& out, std::string_view name, std::str
         // Settings.cpp stores zoomStepScroll in percent (default 2.0 -> 0.02).
         if (const auto pct = parseAsciiDouble(value); pct && *pct > 0.0) {
             out.scrollZoomStep = std::clamp(*pct / 100.0, 0.005, 2.0);
+        }
+    } else if (name == "preloadPagesBefore") {
+        if (const auto pages = parseAsciiInt(value)) {
+            out.preloadPagesBefore = static_cast<unsigned int>(std::clamp<long long>(*pages, 0, 99));
+        }
+    } else if (name == "preloadPagesAfter") {
+        if (const auto pages = parseAsciiInt(value)) {
+            out.preloadPagesAfter = static_cast<unsigned int>(std::clamp<long long>(*pages, 0, 99));
         }
     } else if (name == "numColumns") {
         if (const auto count = parseAsciiInt(value)) {

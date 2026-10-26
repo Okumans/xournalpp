@@ -115,155 +115,266 @@ struct SurfaceDeleter {
     void operator()(cairo_surface_t* surface) const { cairo_surface_destroy(surface); }
 };
 
-struct PageCacheEntry {
-    int pageIndex = -1;
-    size_t originLayer = prototype::newLayerOrigin;
-    double scale = 0;
-    bool audioMode = false;
-    uint64_t stamp = 0;
-    std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface;
-};
+constexpr int maxPageThumbnailWidth = 144;
+constexpr int maxPageThumbnailHeight = 112;
+constexpr int maxCanvasMediumLodDimension = 512;
+constexpr int maxCanvasLowLodDimension = 192;
+constexpr size_t defaultMaxCachedCanvasMediumLodPages = 12;
+constexpr size_t defaultMaxCachedCanvasLodPages = 128;
+constexpr size_t defaultCanvasMediumLodCacheBytes = 32 * 1024 * 1024;
+constexpr size_t defaultCanvasLodCacheBytes = 32 * 1024 * 1024;
+std::string pageRasterWorkerExecutable;
 
-constexpr int pageThumbnailWidth = 112;
-constexpr int pageThumbnailHeight = 150;
-std::string thumbnailWorkerExecutable;
-
-struct ThumbnailLayerSource {
+struct PageRasterLayerSource {
     size_t origin = 0;
     std::string path;
 };
 
-struct ThumbnailRequest {
+enum class PageRasterQuality { Thumbnail, Full, MediumDetail, LowDetail };
+
+struct PageRasterRequest {
     int page = -1;
     uint64_t generation = 0;
     uint64_t requestId = 0;
     double priority = std::numeric_limits<double>::infinity();
+    double renderScale = 0;
+    double mediumDetailScale = 0;
+    double lowDetailScale = 0;
+    PageRasterQuality quality = PageRasterQuality::Thumbnail;
+    bool audioMode = false;
     prototype::PageSize pageSize;
     std::string backgroundPath;
-    std::vector<ThumbnailLayerSource> layers;
+    std::vector<PageRasterLayerSource> layers;
 };
 
-struct ThumbnailPreview {
+struct PageRaster {
     double scale = 1;
+    bool audioMode = false;
     uint64_t stamp = 0;
     std::unique_ptr<cairo_surface_t, SurfaceDeleter> background;
     std::map<size_t, std::unique_ptr<cairo_surface_t, SurfaceDeleter>> layers;
 };
 
-struct ThumbnailTask;
+size_t rasterBytes(const PageRaster& raster) {
+    size_t bytes = 0;
+    const auto addSurface = [&bytes](cairo_surface_t* surface) {
+        if (surface) {
+            bytes += static_cast<size_t>(cairo_image_surface_get_stride(surface)) *
+                     static_cast<size_t>(cairo_image_surface_get_height(surface));
+        }
+    };
+    addSurface(raster.background.get());
+    for (const auto& layer: raster.layers) {
+        addSurface(layer.second.get());
+    }
+    return bytes;
+}
 
-struct ThumbnailWidgetReference {
-    ThumbnailWidgetReference() { g_weak_ref_init(&reference, nullptr); }
-    ~ThumbnailWidgetReference() { g_weak_ref_clear(&reference); }
+size_t rasterCacheBytes(const std::map<int, PageRaster>& cache) {
+    size_t bytes = 0;
+    for (const auto& [page, raster]: cache) {
+        bytes += rasterBytes(raster);
+    }
+    return bytes;
+}
+
+struct PageRasterTask;
+
+struct PreviewWidgetReference {
+    PreviewWidgetReference() { g_weak_ref_init(&reference, nullptr); }
+    ~PreviewWidgetReference() { g_weak_ref_clear(&reference); }
 
     GWeakRef reference;
 };
 
-struct ThumbnailRendererState {
-    ThumbnailRendererState() { g_weak_ref_init(&pageList, nullptr); }
-    ~ThumbnailRendererState() { g_weak_ref_clear(&pageList); }
+struct PageRasterRendererState {
+    explicit PageRasterRendererState(size_t maxCachedPages = 16, size_t maxConcurrentTasks = 2,
+                                     size_t maxQueuedRequests = 12):
+            maxCachedPages(maxCachedPages),
+            maxConcurrentTasks(maxConcurrentTasks),
+            maxQueuedRequests(maxQueuedRequests) {
+        g_weak_ref_init(&redrawWidget, nullptr);
+    }
+    ~PageRasterRendererState() { g_weak_ref_clear(&redrawWidget); }
 
-    GWeakRef pageList;
-    std::map<int, ThumbnailPreview> previews;
+    GWeakRef redrawWidget;
+    size_t maxCachedPages;
+    size_t maxConcurrentTasks;
+    size_t maxQueuedRequests;
+    size_t maxCachedMediumDetailPages = defaultMaxCachedCanvasMediumLodPages;
+    size_t maxCachedLowDetailPages = defaultMaxCachedCanvasLodPages;
+    size_t maxMediumDetailCacheBytes = defaultCanvasMediumLodCacheBytes;
+    size_t maxLowDetailCacheBytes = defaultCanvasLodCacheBytes;
+    std::map<int, PageRaster> previews;
+    std::map<int, PageRaster> mediumDetailPreviews;
+    std::map<int, PageRaster> lowDetailPreviews;
     std::map<int, uint64_t> pending;
-    std::map<int, uint64_t> failed;
+    std::map<std::pair<int, PageRasterQuality>, uint64_t> failed;
     std::map<int, double> visiblePages;
-    std::map<int, std::unique_ptr<ThumbnailWidgetReference>> boundThumbnails;
-    std::deque<ThumbnailRequest> queue;
-    std::vector<std::shared_ptr<ThumbnailTask>> activeTasks;
+    std::map<int, double> fullDetailPages;
+    std::map<int, double> mediumRetainedPages;
+    std::map<int, double> lowRetainedPages;
+    std::map<int, std::unique_ptr<PreviewWidgetReference>> boundThumbnails;
+    std::deque<PageRasterRequest> queue;
+    std::vector<std::shared_ptr<PageRasterTask>> activeTasks;
     std::vector<int> lastDispatchOrder;
     size_t offscreenCancellations = 0;
     uint64_t generation = 0;
     uint64_t requestSequence = 0;
     uint64_t stamp = 0;
+    size_t completedRequests = 0;
+    size_t completedFullRequests = 0;
+    size_t completedMediumDetailRequests = 0;
+    size_t completedLowDetailRequests = 0;
     int selectedPage = -1;
     guint dispatchSource = 0;
     bool stopping = false;
 };
 
-struct ThumbnailTask {
-    ThumbnailRequest request;
-    ThumbnailPreview preview;
+struct PageRasterTask {
+    PageRasterRequest request;
+    PageRaster preview;
+    PageRaster mediumDetailPreview;
+    PageRaster lowDetailPreview;
     std::string outputDirectory;
     std::string renderError;
     GSubprocess* process = nullptr;
     bool cancelled = false;
 };
 
-struct ThumbnailCompletion {
-    std::shared_ptr<ThumbnailRendererState> state;
-    std::shared_ptr<ThumbnailTask> task;
+struct PageRasterCompletion {
+    std::shared_ptr<PageRasterRendererState> state;
+    std::shared_ptr<PageRasterTask> task;
 };
 
-void scheduleThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state);
-void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state);
+void schedulePageRasterTasks(const std::shared_ptr<PageRasterRendererState>& state);
+void startPageRasterTasks(const std::shared_ptr<PageRasterRendererState>& state);
 
-std::string thumbnailLayerPath(const std::filesystem::path& directory, size_t origin) {
-    return (directory / ("layer-" + std::to_string(origin) + ".png")).string();
+std::string_view rasterPrefix(PageRasterQuality quality) {
+    switch (quality) {
+        case PageRasterQuality::MediumDetail:
+            return "medium-";
+        case PageRasterQuality::LowDetail:
+            return "lod-";
+        default:
+            return "";
+    }
 }
 
-void writeThumbnailTask(const ThumbnailTask& task) {
-    const std::filesystem::path directory(task.outputDirectory);
-    const auto backgroundPath = (directory / "background.png").string();
-    if (cairo_surface_write_to_png(task.preview.background.get(), backgroundPath.c_str()) != CAIRO_STATUS_SUCCESS) {
-        throw std::runtime_error("Cannot write sidebar thumbnail background");
+int rasterQualityRank(PageRasterQuality quality) {
+    switch (quality) {
+        case PageRasterQuality::Full:
+            return 3;
+        case PageRasterQuality::MediumDetail:
+            return 2;
+        case PageRasterQuality::LowDetail:
+            return 1;
+        case PageRasterQuality::Thumbnail:
+            return 0;
     }
-    for (const auto& [origin, surface]: task.preview.layers) {
-        if (cairo_surface_write_to_png(surface.get(), thumbnailLayerPath(directory, origin).c_str()) !=
+    return 0;
+}
+
+bool sameRasterRequest(const PageRasterRequest& left, const PageRasterRequest& right) {
+    return left.quality == right.quality && left.pageSize.width == right.pageSize.width &&
+           left.pageSize.height == right.pageSize.height && left.audioMode == right.audioMode &&
+           std::abs(left.renderScale - right.renderScale) < 0.0001 &&
+           std::abs(left.mediumDetailScale - right.mediumDetailScale) < 0.0001 &&
+           std::abs(left.lowDetailScale - right.lowDetailScale) < 0.0001 &&
+           left.backgroundPath == right.backgroundPath && left.layers.size() == right.layers.size() &&
+           std::equal(left.layers.begin(), left.layers.end(), right.layers.begin(), [](const auto& a, const auto& b) {
+               return a.origin == b.origin && a.path == b.path;
+           });
+}
+
+std::string pageRasterLayerPath(const std::filesystem::path& directory, size_t origin, std::string_view prefix) {
+    return (directory / (std::string(prefix) + "layer-" + std::to_string(origin) + ".png")).string();
+}
+
+void writeRaster(const std::filesystem::path& directory, const PageRaster& raster, std::string_view prefix) {
+    const auto backgroundPath = (directory / (std::string(prefix) + "background.png")).string();
+    if (cairo_surface_write_to_png(raster.background.get(), backgroundPath.c_str()) != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error("Cannot write page raster background");
+    }
+    for (const auto& [origin, surface]: raster.layers) {
+        if (cairo_surface_write_to_png(surface.get(), pageRasterLayerPath(directory, origin, prefix).c_str()) !=
             CAIRO_STATUS_SUCCESS) {
-            throw std::runtime_error("Cannot write sidebar thumbnail layer");
+            throw std::runtime_error("Cannot write page raster layer");
         }
     }
-    std::ofstream scale(directory / "scale.txt");
-    scale << std::setprecision(17) << task.preview.scale;
+    std::ofstream scale(directory / (std::string(prefix) + "scale.txt"));
+    scale << std::setprecision(17) << raster.scale;
     if (!scale) {
-        throw std::runtime_error("Cannot write sidebar thumbnail scale");
+        throw std::runtime_error("Cannot write page raster scale");
+    }
+}
+
+void writePageRasterTask(const PageRasterTask& task) {
+    const std::filesystem::path directory(task.outputDirectory);
+    writeRaster(directory, task.preview, rasterPrefix(task.request.quality));
+    if (task.mediumDetailPreview.background) {
+        writeRaster(directory, task.mediumDetailPreview, "medium-");
+    }
+    if (task.lowDetailPreview.background) {
+        writeRaster(directory, task.lowDetailPreview, "lod-");
     }
     if (!task.renderError.empty()) {
         std::ofstream error(directory / "error.txt");
         error << task.renderError;
         if (!error) {
-            throw std::runtime_error("Cannot write sidebar thumbnail error");
+            throw std::runtime_error("Cannot write page raster error");
         }
     }
 }
 
-int runThumbnailWorker(int argc, char** argv);
+int runPageRasterWorker(int argc, char** argv);
 
-void loadThumbnailTask(ThumbnailTask& task) {
-    const std::filesystem::path directory(task.outputDirectory);
-    const auto backgroundPath = (directory / "background.png").string();
-    task.preview.background.reset(cairo_image_surface_create_from_png(backgroundPath.c_str()));
-    if (cairo_surface_status(task.preview.background.get()) != CAIRO_STATUS_SUCCESS) {
-        throw std::runtime_error("Cannot load sidebar thumbnail background");
+void loadRaster(const std::filesystem::path& directory, const PageRasterRequest& request, PageRaster& raster,
+                std::string_view prefix) {
+    const auto backgroundPath = (directory / (std::string(prefix) + "background.png")).string();
+    raster.background.reset(cairo_image_surface_create_from_png(backgroundPath.c_str()));
+    if (cairo_surface_status(raster.background.get()) != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error("Cannot load page raster background");
     }
-    std::ifstream scale(directory / "scale.txt");
-    if (!(scale >> task.preview.scale) || !std::isfinite(task.preview.scale)) {
-        throw std::runtime_error("Cannot load sidebar thumbnail scale");
+    std::ifstream scale(directory / (std::string(prefix) + "scale.txt"));
+    if (!(scale >> raster.scale) || !std::isfinite(raster.scale)) {
+        throw std::runtime_error("Cannot load page raster scale");
     }
-    std::ifstream renderError(directory / "error.txt");
-    if (renderError) {
-        std::getline(renderError, task.renderError, '\0');
-    }
-    for (const auto& layer: task.request.layers) {
-        const auto path = thumbnailLayerPath(directory, layer.origin);
+    raster.audioMode = request.audioMode;
+    for (const auto& layer: request.layers) {
+        const auto path = pageRasterLayerPath(directory, layer.origin, prefix);
         if (!std::filesystem::exists(path)) {
             continue;
         }
         auto surface = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(cairo_image_surface_create_from_png(path.c_str()));
         if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
-            throw std::runtime_error("Cannot load sidebar thumbnail layer");
+            throw std::runtime_error("Cannot load page raster layer");
         }
-        task.preview.layers.emplace(layer.origin, std::move(surface));
+        raster.layers.emplace(layer.origin, std::move(surface));
     }
 }
 
-void removeThumbnailTaskFiles(const ThumbnailTask& task) {
+void loadPageRasterTask(PageRasterTask& task) {
+    const std::filesystem::path directory(task.outputDirectory);
+    loadRaster(directory, task.request, task.preview, rasterPrefix(task.request.quality));
+    if (task.request.quality == PageRasterQuality::Full) {
+        loadRaster(directory, task.request, task.mediumDetailPreview, "medium-");
+        loadRaster(directory, task.request, task.lowDetailPreview, "lod-");
+    } else if (task.request.quality == PageRasterQuality::MediumDetail) {
+        loadRaster(directory, task.request, task.lowDetailPreview, "lod-");
+    }
+    std::ifstream renderError(directory / "error.txt");
+    if (renderError) {
+        std::getline(renderError, task.renderError, '\0');
+    }
+}
+
+void removePageRasterTaskFiles(const PageRasterTask& task) {
     std::error_code error;
     std::filesystem::remove_all(task.outputDirectory, error);
 }
 
-double thumbnailPriority(const ThumbnailRendererState& state, int page) {
+double pageRasterPriority(const PageRasterRendererState& state, int page) {
     if (page == state.selectedPage) {
         return -1;
     }
@@ -273,14 +384,99 @@ double thumbnailPriority(const ThumbnailRendererState& state, int page) {
     return std::numeric_limits<double>::infinity();
 }
 
-void sortThumbnailQueue(ThumbnailRendererState& state) {
+double rasterPriority(const PageRasterRendererState& state, const PageRasterRequest& request) {
+    if (request.quality == PageRasterQuality::Full && !state.fullDetailPages.empty()) {
+        const auto found = state.fullDetailPages.find(request.page);
+        if (found == state.fullDetailPages.end()) {
+            return std::numeric_limits<double>::infinity();
+        }
+        return request.page == state.selectedPage ? -1 : found->second;
+    }
+    if (request.quality == PageRasterQuality::MediumDetail || request.quality == PageRasterQuality::LowDetail) {
+        const double tierPriority = request.quality == PageRasterQuality::MediumDetail ? 10000 : 20000;
+        if (state.visiblePages.contains(request.page)) {
+            return pageRasterPriority(state, request.page) + tierPriority;
+        }
+        const auto& retained = request.quality == PageRasterQuality::MediumDetail ? state.mediumRetainedPages :
+                                                                                   state.lowRetainedPages;
+        if (const auto found = retained.find(request.page); found != retained.end()) {
+            return found->second + tierPriority + 10000;
+        }
+        return std::numeric_limits<double>::infinity();
+    }
+    return pageRasterPriority(state, request.page);
+}
+
+void sortPageRasterQueue(PageRasterRendererState& state) {
     std::stable_sort(state.queue.begin(), state.queue.end(), [](const auto& left, const auto& right) {
         return left.priority < right.priority;
     });
 }
 
-void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
-                         const std::shared_ptr<ThumbnailTask>& task, const std::string& error) {
+std::map<int, PageRaster>& pageRasterCache(PageRasterRendererState& state, PageRasterQuality quality) {
+    if (quality == PageRasterQuality::MediumDetail) {
+        return state.mediumDetailPreviews;
+    }
+    if (quality == PageRasterQuality::LowDetail) {
+        return state.lowDetailPreviews;
+    }
+    return state.previews;
+}
+
+const std::map<int, double>& retainedRasterPages(const PageRasterRendererState& state, PageRasterQuality quality) {
+    if (quality == PageRasterQuality::Full) {
+        return state.fullDetailPages;
+    }
+    if (quality == PageRasterQuality::MediumDetail) {
+        return state.mediumRetainedPages;
+    }
+    if (quality == PageRasterQuality::LowDetail) {
+        return state.lowRetainedPages;
+    }
+    return state.visiblePages;
+}
+
+bool evictLeastRecentRaster(PageRasterRendererState& state, PageRasterQuality quality, bool offscreenOnly) {
+    auto& cache = pageRasterCache(state, quality);
+    const auto& retainedPages = retainedRasterPages(state, quality);
+    auto oldest = cache.end();
+    for (auto it = cache.begin(); it != cache.end(); ++it) {
+        if ((!offscreenOnly || !retainedPages.contains(it->first)) &&
+            (oldest == cache.end() || it->second.stamp < oldest->second.stamp)) {
+            oldest = it;
+        }
+    }
+    if (oldest == cache.end()) {
+        return false;
+    }
+    cache.erase(oldest);
+    return true;
+}
+
+void trimPageRasterCache(PageRasterRendererState& state, PageRasterQuality quality) {
+    auto& cache = pageRasterCache(state, quality);
+    const size_t maxPages = quality == PageRasterQuality::MediumDetail ? state.maxCachedMediumDetailPages :
+                            quality == PageRasterQuality::LowDetail ? state.maxCachedLowDetailPages :
+                                                                      state.maxCachedPages;
+    const size_t maxBytes = quality == PageRasterQuality::MediumDetail ? state.maxMediumDetailCacheBytes :
+                            quality == PageRasterQuality::LowDetail ? state.maxLowDetailCacheBytes :
+                                                                      std::numeric_limits<size_t>::max();
+    while (cache.size() > maxPages || rasterCacheBytes(cache) > maxBytes) {
+        if (!evictLeastRecentRaster(state, quality, true) && !evictLeastRecentRaster(state, quality, false)) {
+            break;
+        }
+    }
+}
+
+void cachePageRaster(PageRasterRendererState& state, PageRasterQuality quality, int page, PageRaster raster) {
+    auto& cache = pageRasterCache(state, quality);
+    raster.stamp = ++state.stamp;
+    cache.insert_or_assign(page, std::move(raster));
+    trimPageRasterCache(state, quality);
+}
+
+void finishPageRasterTask(const std::shared_ptr<PageRasterRendererState>& state,
+                          const std::shared_ptr<PageRasterTask>& task, const std::string& error) {
     const auto active = std::find(state->activeTasks.begin(), state->activeTasks.end(), task);
     if (active != state->activeTasks.end()) {
         state->activeTasks.erase(active);
@@ -289,31 +485,40 @@ void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
         found != state->pending.end() && found->second == task->request.requestId) {
         state->pending.erase(found);
     }
-    removeThumbnailTaskFiles(*task);
+    removePageRasterTaskFiles(*task);
     if (state->stopping) {
-        scheduleThumbnailTasks(state);
+        schedulePageRasterTasks(state);
         return;
     }
     if (!task->cancelled && task->request.generation == state->generation) {
-        if (!task->preview.background) {
+        if (!task->preview.background || !error.empty()) {
             if (state->failed.size() == 16) {
                 state->failed.erase(state->failed.begin());
             }
-            state->failed[task->request.page] = task->request.generation;
+            state->failed[{task->request.page, task->request.quality}] = task->request.generation;
+        }
+        if (!task->preview.background) {
             if (!error.empty()) {
-                std::cerr << "GTK4 page thumbnail failed: " << error << '\n';
+                std::cerr << "GTK4 page raster failed: " << error << '\n';
             }
         } else {
-            if (state->previews.size() >= 16) {
-                const auto oldest = std::min_element(
-                        state->previews.begin(), state->previews.end(),
-                        [](const auto& left, const auto& right) { return left.second.stamp < right.second.stamp; });
-                state->previews.erase(oldest);
+            ++state->completedRequests;
+            cachePageRaster(*state, task->request.quality, task->request.page, std::move(task->preview));
+            if (task->request.quality == PageRasterQuality::Full) {
+                ++state->completedFullRequests;
+                cachePageRaster(*state, PageRasterQuality::MediumDetail, task->request.page,
+                                std::move(task->mediumDetailPreview));
+                cachePageRaster(*state, PageRasterQuality::LowDetail, task->request.page,
+                                std::move(task->lowDetailPreview));
+            } else if (task->request.quality == PageRasterQuality::MediumDetail) {
+                ++state->completedMediumDetailRequests;
+                cachePageRaster(*state, PageRasterQuality::LowDetail, task->request.page,
+                                std::move(task->lowDetailPreview));
+            } else if (task->request.quality == PageRasterQuality::LowDetail) {
+                ++state->completedLowDetailRequests;
             }
-            task->preview.stamp = ++state->stamp;
-            state->previews.insert_or_assign(task->request.page, std::move(task->preview));
             if (!error.empty()) {
-                std::cerr << "GTK4 page thumbnail partially rendered: " << error << '\n';
+                std::cerr << "GTK4 page raster partially rendered: " << error << '\n';
             }
             if (const auto found = state->boundThumbnails.find(task->request.page);
                 found != state->boundThumbnails.end()) {
@@ -322,16 +527,16 @@ void finishThumbnailTask(const std::shared_ptr<ThumbnailRendererState>& state,
                     g_object_unref(thumbnail);
                 }
             }
-            if (auto* list = GTK_WIDGET(g_weak_ref_get(&state->pageList))) {
-                gtk_widget_queue_draw(list);
-                g_object_unref(list);
+            if (auto* widget = GTK_WIDGET(g_weak_ref_get(&state->redrawWidget))) {
+                gtk_widget_queue_draw(widget);
+                g_object_unref(widget);
             }
         }
     }
-    scheduleThumbnailTasks(state);
+    schedulePageRasterTasks(state);
 }
 
-PopplerDocument* openThumbnailDocument(const std::string& path) {
+PopplerDocument* openPageRasterDocument(const std::string& path) {
     GError* error = nullptr;
     const auto absolutePath = std::filesystem::absolute(path).string();
     auto* uri = g_filename_to_uri(absolutePath.c_str(), nullptr, &error);
@@ -350,8 +555,8 @@ PopplerDocument* openThumbnailDocument(const std::string& path) {
     return document;
 }
 
-void renderThumbnailPdf(const std::string& path, int pageNumber, double scale, cairo_surface_t* surface) {
-    auto* document = openThumbnailDocument(path);
+void renderPageRasterPdf(const std::string& path, int pageNumber, double scale, cairo_surface_t* surface) {
+    auto* document = openPageRasterDocument(path);
     auto* page = poppler_document_get_page(document, pageNumber);
     g_object_unref(document);
     if (!page) {
@@ -372,13 +577,52 @@ void renderThumbnailPdf(const std::string& path, int pageNumber, double scale, c
     }
 }
 
-void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
+std::unique_ptr<cairo_surface_t, SurfaceDeleter> downsampleRaster(cairo_surface_t* source, int width, int height) {
+    auto target = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(
+            cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
+    if (cairo_surface_status(target.get()) != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error(cairo_status_to_string(cairo_surface_status(target.get())));
+    }
+    const int sourceWidth = cairo_image_surface_get_width(source);
+    const int sourceHeight = cairo_image_surface_get_height(source);
+    auto* context = cairo_create(target.get());
+    cairo_scale(context, static_cast<double>(width) / sourceWidth, static_cast<double>(height) / sourceHeight);
+    cairo_set_source_surface(context, source, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(context), CAIRO_FILTER_BILINEAR);
+    cairo_paint(context);
+    const auto status = cairo_status(context);
+    cairo_destroy(context);
+    if (status != CAIRO_STATUS_SUCCESS) {
+        throw std::runtime_error(cairo_status_to_string(status));
+    }
+    return target;
+}
+
+PageRaster makeLowDetailRaster(const PageRaster& source, prototype::PageSize pageSize, double scale) {
+    const double pageWidth = pageSize.width > 0 ? pageSize.width : 595;
+    const double pageHeight = pageSize.height > 0 ? pageSize.height : 842;
+    PageRaster raster;
+    raster.scale = scale;
+    raster.audioMode = source.audioMode;
+    const int width = std::max(1, static_cast<int>(std::ceil(pageWidth * raster.scale)));
+    const int height = std::max(1, static_cast<int>(std::ceil(pageHeight * raster.scale)));
+    raster.background = downsampleRaster(source.background.get(), width, height);
+    for (const auto& [origin, surface]: source.layers) {
+        raster.layers.emplace(origin, downsampleRaster(surface.get(), width, height));
+    }
+    return raster;
+}
+
+void renderPageRasterTask(const std::shared_ptr<PageRasterTask>& task) {
     const auto& request = task->request;
     const double pageWidth = request.pageSize.width > 0 ? request.pageSize.width : 595;
     const double pageHeight = request.pageSize.height > 0 ? request.pageSize.height : 842;
-    task->preview.scale = std::min(pageThumbnailWidth / pageWidth, pageThumbnailHeight / pageHeight);
-    task->preview.background.reset(
-            cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pageThumbnailWidth, pageThumbnailHeight));
+    task->preview.scale = request.renderScale > 0 ?
+                                  request.renderScale :
+                                  std::min(maxPageThumbnailWidth / pageWidth, maxPageThumbnailHeight / pageHeight);
+    const int width = std::max(1, static_cast<int>(std::ceil(pageWidth * task->preview.scale)));
+    const int height = std::max(1, static_cast<int>(std::ceil(pageHeight * task->preview.scale)));
+    task->preview.background.reset(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
     if (cairo_surface_status(task->preview.background.get()) != CAIRO_STATUS_SUCCESS) {
         throw std::runtime_error(cairo_status_to_string(cairo_surface_status(task->preview.background.get())));
     }
@@ -390,17 +634,11 @@ void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
     std::string firstError;
     if (!request.backgroundPath.empty()) {
         try {
-            auto* document = openThumbnailDocument(request.backgroundPath);
+            auto* document = openPageRasterDocument(request.backgroundPath);
             auto* page = poppler_document_get_page(document, request.page);
             if (!page) {
                 g_object_unref(document);
                 throw std::runtime_error("Cannot open PDF thumbnail page " + std::to_string(request.page + 1));
-            }
-            double width = 0;
-            double height = 0;
-            poppler_page_get_size(page, &width, &height);
-            if (width > 0 && height > 0 && std::isfinite(width) && std::isfinite(height)) {
-                task->preview.scale = std::min(pageThumbnailWidth / width, pageThumbnailHeight / height);
             }
             context = cairo_create(task->preview.background.get());
             cairo_scale(context, task->preview.scale, task->preview.scale);
@@ -418,7 +656,7 @@ void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
     }
     for (const auto& layer: request.layers) {
         auto surface = std::unique_ptr<cairo_surface_t, SurfaceDeleter>(
-                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pageThumbnailWidth, pageThumbnailHeight));
+                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
         if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
             if (firstError.empty()) {
                 firstError = cairo_status_to_string(cairo_surface_status(surface.get()));
@@ -426,7 +664,7 @@ void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
             continue;
         }
         try {
-            renderThumbnailPdf(layer.path, request.page, task->preview.scale, surface.get());
+            renderPageRasterPdf(layer.path, request.page, task->preview.scale, surface.get());
             task->preview.layers.emplace(layer.origin, std::move(surface));
         } catch (const std::exception& error) {
             if (firstError.empty()) {
@@ -434,12 +672,24 @@ void renderThumbnailTask(const std::shared_ptr<ThumbnailTask>& task) {
             }
         }
     }
+    if (request.quality == PageRasterQuality::Full || request.quality == PageRasterQuality::MediumDetail) {
+        if (!std::isfinite(request.lowDetailScale) || request.lowDetailScale <= 0) {
+            throw std::runtime_error("Invalid low-detail raster scale");
+        }
+        task->lowDetailPreview = makeLowDetailRaster(task->preview, request.pageSize, request.lowDetailScale);
+    }
+    if (request.quality == PageRasterQuality::Full) {
+        if (!std::isfinite(request.mediumDetailScale) || request.mediumDetailScale <= 0) {
+            throw std::runtime_error("Invalid medium-detail raster scale");
+        }
+        task->mediumDetailPreview = makeLowDetailRaster(task->preview, request.pageSize, request.mediumDetailScale);
+    }
     task->renderError = std::move(firstError);
 }
 
-int runThumbnailWorker(int argc, char** argv) {
+int runPageRasterWorker(int argc, char** argv) {
     try {
-        auto task = std::make_shared<ThumbnailTask>();
+        auto task = std::make_shared<PageRasterTask>();
         for (int index = 2; index < argc; ++index) {
             const std::string_view argument(argv[index]);
             if (argument == "--page" && index + 1 < argc) {
@@ -448,6 +698,32 @@ int runThumbnailWorker(int argc, char** argv) {
                 task->request.pageSize.width = std::stod(argv[++index]);
             } else if (argument == "--height" && index + 1 < argc) {
                 task->request.pageSize.height = std::stod(argv[++index]);
+            } else if (argument == "--scale" && index + 1 < argc) {
+                task->request.renderScale = std::stod(argv[++index]);
+                if (!std::isfinite(task->request.renderScale) || task->request.renderScale <= 0) {
+                    throw std::runtime_error("Invalid PDF render scale");
+                }
+            } else if (argument == "--lod-scale" && index + 1 < argc) {
+                task->request.lowDetailScale = std::stod(argv[++index]);
+                if (!std::isfinite(task->request.lowDetailScale) || task->request.lowDetailScale <= 0) {
+                    throw std::runtime_error("Invalid low-detail raster scale");
+                }
+            } else if (argument == "--medium-scale" && index + 1 < argc) {
+                task->request.mediumDetailScale = std::stod(argv[++index]);
+                if (!std::isfinite(task->request.mediumDetailScale) || task->request.mediumDetailScale <= 0) {
+                    throw std::runtime_error("Invalid medium-detail raster scale");
+                }
+            } else if (argument == "--quality" && index + 1 < argc) {
+                const std::string_view quality(argv[++index]);
+                if (quality == "full") {
+                    task->request.quality = PageRasterQuality::Full;
+                } else if (quality == "medium") {
+                    task->request.quality = PageRasterQuality::MediumDetail;
+                } else if (quality == "lod") {
+                    task->request.quality = PageRasterQuality::LowDetail;
+                } else {
+                    throw std::runtime_error("Invalid page raster quality");
+                }
             } else if (argument == "--background" && index + 1 < argc) {
                 task->request.backgroundPath = argv[++index];
             } else if (argument == "--layer" && index + 2 < argc) {
@@ -456,14 +732,14 @@ int runThumbnailWorker(int argc, char** argv) {
             } else if (argument == "--output-dir" && index + 1 < argc) {
                 task->outputDirectory = argv[++index];
             } else {
-                throw std::runtime_error("Invalid sidebar thumbnail worker arguments");
+                throw std::runtime_error("Invalid page raster worker arguments");
             }
         }
         if (task->request.page < 0 || task->outputDirectory.empty()) {
-            throw std::runtime_error("Incomplete sidebar thumbnail worker request");
+            throw std::runtime_error("Incomplete page raster worker request");
         }
-        renderThumbnailTask(task);
-        writeThumbnailTask(*task);
+        renderPageRasterTask(task);
+        writePageRasterTask(*task);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
@@ -471,17 +747,17 @@ int runThumbnailWorker(int argc, char** argv) {
     }
 }
 
-void completeThumbnailProcess(GObject* source, GAsyncResult* result, gpointer data) {
-    std::unique_ptr<ThumbnailCompletion> completion(static_cast<ThumbnailCompletion*>(data));
+void completePageRasterProcess(GObject* source, GAsyncResult* result, gpointer data) {
+    std::unique_ptr<PageRasterCompletion> completion(static_cast<PageRasterCompletion*>(data));
     const auto& state = completion->state;
     const auto& task = completion->task;
     GError* waitError = nullptr;
     const bool waited = g_subprocess_wait_finish(G_SUBPROCESS(source), result, &waitError);
     std::string error;
     if (!task->cancelled && !waited) {
-        error = waitError ? waitError->message : "Sidebar thumbnail process failed";
+        error = waitError ? waitError->message : "page raster process failed";
     } else if (!task->cancelled && !g_subprocess_get_successful(G_SUBPROCESS(source))) {
-        error = "Sidebar thumbnail renderer exited unsuccessfully";
+        error = "page raster renderer exited unsuccessfully";
     }
     g_clear_error(&waitError);
     if (task->process) {
@@ -490,45 +766,46 @@ void completeThumbnailProcess(GObject* source, GAsyncResult* result, gpointer da
     }
     if (!task->cancelled && error.empty()) {
         try {
-            loadThumbnailTask(*task);
+            loadPageRasterTask(*task);
+            task->preview.audioMode = task->request.audioMode;
             error = task->renderError;
         } catch (const std::exception& loadError) {
             error = loadError.what();
         }
     }
-    finishThumbnailTask(state, task, error);
+    finishPageRasterTask(state, task, error);
 }
 
-void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
+void startPageRasterTasks(const std::shared_ptr<PageRasterRendererState>& state) {
     if (state->activeTasks.empty()) {
         state->lastDispatchOrder.clear();
     }
-    while (!state->stopping && state->activeTasks.size() < 2 && !state->queue.empty()) {
+    while (!state->stopping && state->activeTasks.size() < state->maxConcurrentTasks && !state->queue.empty()) {
         auto request = std::move(state->queue.front());
         state->queue.pop_front();
         if (request.generation != state->generation ||
-            (!state->visiblePages.empty() && !state->visiblePages.contains(request.page))) {
+            (!state->visiblePages.empty() && !std::isfinite(rasterPriority(*state, request)))) {
             if (const auto found = state->pending.find(request.page);
                 found != state->pending.end() && found->second == request.requestId) {
                 state->pending.erase(found);
             }
             continue;
         }
-        auto task = std::make_shared<ThumbnailTask>();
+        auto task = std::make_shared<PageRasterTask>();
         task->request = std::move(request);
         GError* directoryError = nullptr;
-        auto* outputDirectory = g_dir_make_tmp("xournalpp-sidebar-thumb-XXXXXX", &directoryError);
+        auto* outputDirectory = g_dir_make_tmp("xournalpp-page-raster-XXXXXX", &directoryError);
         if (!outputDirectory) {
             const std::string error = directoryError ? directoryError->message : "Cannot create thumbnail directory";
             g_clear_error(&directoryError);
-            finishThumbnailTask(state, task, error);
+            finishPageRasterTask(state, task, error);
             continue;
         }
         task->outputDirectory = outputDirectory;
         g_free(outputDirectory);
 
-        std::vector<std::string> arguments{thumbnailWorkerExecutable,
-                                           "--gtk4-sidebar-thumbnail-worker",
+        std::vector<std::string> arguments{pageRasterWorkerExecutable,
+                                           "--gtk4-page-raster-worker",
                                            "--page",
                                            std::to_string(task->request.page),
                                            "--width",
@@ -537,6 +814,24 @@ void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
                                            std::to_string(task->request.pageSize.height),
                                            "--output-dir",
                                            task->outputDirectory};
+        if (task->request.quality != PageRasterQuality::Thumbnail) {
+            arguments.push_back("--quality");
+            arguments.push_back(task->request.quality == PageRasterQuality::Full ? "full" :
+                                task->request.quality == PageRasterQuality::MediumDetail ? "medium" : "lod");
+        }
+        if (task->request.quality == PageRasterQuality::Full) {
+            arguments.push_back("--medium-scale");
+            arguments.push_back(std::to_string(task->request.mediumDetailScale));
+            arguments.push_back("--lod-scale");
+            arguments.push_back(std::to_string(task->request.lowDetailScale));
+        } else if (task->request.quality == PageRasterQuality::MediumDetail) {
+            arguments.push_back("--lod-scale");
+            arguments.push_back(std::to_string(task->request.lowDetailScale));
+        }
+        if (task->request.renderScale > 0) {
+            arguments.push_back("--scale");
+            arguments.push_back(std::to_string(task->request.renderScale));
+        }
         if (!task->request.backgroundPath.empty()) {
             arguments.push_back("--background");
             arguments.push_back(task->request.backgroundPath);
@@ -555,38 +850,40 @@ void startThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
         GError* spawnError = nullptr;
         task->process = g_subprocess_newv(argumentPointers.data(), G_SUBPROCESS_FLAGS_STDOUT_SILENCE, &spawnError);
         if (!task->process) {
-            const std::string error = spawnError ? spawnError->message : "Cannot start sidebar thumbnail renderer";
+            const std::string error = spawnError ? spawnError->message : "Cannot start page raster renderer";
             g_clear_error(&spawnError);
-            finishThumbnailTask(state, task, error);
+            finishPageRasterTask(state, task, error);
             continue;
         }
         state->activeTasks.push_back(task);
         state->lastDispatchOrder.push_back(task->request.page);
         auto* process = task->process;
-        g_subprocess_wait_async(process, nullptr, completeThumbnailProcess, new ThumbnailCompletion{state, task});
+        g_subprocess_wait_async(process, nullptr, completePageRasterProcess, new PageRasterCompletion{state, task});
     }
 }
 
-void scheduleThumbnailTasks(const std::shared_ptr<ThumbnailRendererState>& state) {
+void schedulePageRasterTasks(const std::shared_ptr<PageRasterRendererState>& state) {
     if (state->stopping || state->dispatchSource) {
         return;
     }
     state->dispatchSource = g_idle_add_full(
             G_PRIORITY_DEFAULT_IDLE,
             +[](gpointer data) -> gboolean {
-                auto state = *static_cast<std::shared_ptr<ThumbnailRendererState>*>(data);
+                auto state = *static_cast<std::shared_ptr<PageRasterRendererState>*>(data);
                 state->dispatchSource = 0;
-                startThumbnailTasks(state);
+                startPageRasterTasks(state);
                 return G_SOURCE_REMOVE;
             },
-            new std::shared_ptr<ThumbnailRendererState>(state),
-            +[](gpointer data) { delete static_cast<std::shared_ptr<ThumbnailRendererState>*>(data); });
+            new std::shared_ptr<PageRasterRendererState>(state),
+            +[](gpointer data) { delete static_cast<std::shared_ptr<PageRasterRendererState>*>(data); });
 }
 
-class PageThumbnailRenderer {
+class PageRasterRenderer {
 public:
-    PageThumbnailRenderer(): state(std::make_shared<ThumbnailRendererState>()) {}
-    ~PageThumbnailRenderer() {
+    explicit PageRasterRenderer(size_t maxCachedPages = 16, size_t maxConcurrentTasks = 2,
+                                size_t maxQueuedRequests = 12):
+            state(std::make_shared<PageRasterRendererState>(maxCachedPages, maxConcurrentTasks, maxQueuedRequests)) {}
+    ~PageRasterRenderer() {
         state->stopping = true;
         state->queue.clear();
         state->pending.clear();
@@ -602,12 +899,23 @@ public:
         }
     }
 
-    void setPageList(GtkWidget* list) { g_weak_ref_set(&state->pageList, G_OBJECT(list)); }
+    void setRedrawWidget(GtkWidget* widget) { g_weak_ref_set(&state->redrawWidget, G_OBJECT(widget)); }
+
+    void setCacheLimits(size_t fullPages, size_t mediumPages, size_t mediumBytes, size_t lowPages, size_t lowBytes) {
+        state->maxCachedPages = fullPages;
+        state->maxCachedMediumDetailPages = mediumPages;
+        state->maxMediumDetailCacheBytes = mediumBytes;
+        state->maxCachedLowDetailPages = lowPages;
+        state->maxLowDetailCacheBytes = lowBytes;
+        trimPageRasterCache(*state, PageRasterQuality::Full);
+        trimPageRasterCache(*state, PageRasterQuality::MediumDetail);
+        trimPageRasterCache(*state, PageRasterQuality::LowDetail);
+    }
 
     void bindThumbnailWidget(int page, GtkWidget* widget) {
         auto& reference = state->boundThumbnails[page];
         if (!reference) {
-            reference = std::make_unique<ThumbnailWidgetReference>();
+            reference = std::make_unique<PreviewWidgetReference>();
         }
         g_weak_ref_set(&reference->reference, G_OBJECT(widget));
     }
@@ -630,6 +938,8 @@ public:
     void invalidate() {
         ++state->generation;
         state->previews.clear();
+        state->mediumDetailPreviews.clear();
+        state->lowDetailPreviews.clear();
         state->pending.clear();
         state->failed.clear();
         state->queue.clear();
@@ -648,7 +958,7 @@ public:
         state->visiblePages = std::move(visiblePages);
         state->selectedPage = state->visiblePages.contains(selectedPage) ? selectedPage : -1;
         for (auto it = state->queue.begin(); it != state->queue.end();) {
-            if (const auto priority = thumbnailPriority(*state, it->page); std::isfinite(priority)) {
+            if (const auto priority = rasterPriority(*state, *it); std::isfinite(priority)) {
                 it->priority = priority;
                 ++it;
             } else {
@@ -660,9 +970,9 @@ public:
                 it = state->queue.erase(it);
             }
         }
-        sortThumbnailQueue(*state);
+        sortPageRasterQueue(*state);
         for (const auto& task: state->activeTasks) {
-            if (!state->visiblePages.contains(task->request.page)) {
+            if (!std::isfinite(rasterPriority(*state, task->request))) {
                 if (!task->cancelled) {
                     task->cancelled = true;
                     ++state->offscreenCancellations;
@@ -676,26 +986,136 @@ public:
                 }
             }
         }
-        scheduleThumbnailTasks(state);
+        schedulePageRasterTasks(state);
     }
 
-    void request(ThumbnailRequest request) {
+    void setFullDetailPages(std::map<int, double> fullDetailPages) {
+        state->fullDetailPages = std::move(fullDetailPages);
+        for (auto it = state->queue.begin(); it != state->queue.end();) {
+            if (it->quality == PageRasterQuality::Full && !state->fullDetailPages.contains(it->page)) {
+                if (const auto pending = state->pending.find(it->page);
+                    pending != state->pending.end() && pending->second == it->requestId) {
+                    state->pending.erase(pending);
+                }
+                ++state->offscreenCancellations;
+                it = state->queue.erase(it);
+            } else {
+                it->priority = rasterPriority(*state, *it);
+                ++it;
+            }
+        }
+        for (const auto& task: state->activeTasks) {
+            if (task->request.quality == PageRasterQuality::Full &&
+                !state->fullDetailPages.contains(task->request.page)) {
+                task->cancelled = true;
+                if (const auto pending = state->pending.find(task->request.page);
+                    pending != state->pending.end() && pending->second == task->request.requestId) {
+                    state->pending.erase(pending);
+                }
+                if (task->process) {
+                    g_subprocess_force_exit(task->process);
+                }
+            }
+        }
+        sortPageRasterQueue(*state);
+        schedulePageRasterTasks(state);
+    }
+
+    void setRetainedPages(std::map<int, double> mediumRetainedPages, std::map<int, double> lowRetainedPages) {
+        state->mediumRetainedPages = std::move(mediumRetainedPages);
+        state->lowRetainedPages = std::move(lowRetainedPages);
+        for (const auto& [page, distance]: state->visiblePages) {
+            state->mediumRetainedPages.try_emplace(page, distance);
+            state->lowRetainedPages.try_emplace(page, distance);
+        }
+        std::erase_if(state->mediumDetailPreviews,
+                      [this](const auto& entry) { return !state->mediumRetainedPages.contains(entry.first); });
+        std::erase_if(state->lowDetailPreviews,
+                      [this](const auto& entry) { return !state->lowRetainedPages.contains(entry.first); });
+        for (auto it = state->queue.begin(); it != state->queue.end();) {
+            const auto& retainedPages = it->quality == PageRasterQuality::MediumDetail ?
+                                                state->mediumRetainedPages : state->lowRetainedPages;
+            if ((it->quality == PageRasterQuality::MediumDetail || it->quality == PageRasterQuality::LowDetail) &&
+                !retainedPages.contains(it->page)) {
+                if (const auto pending = state->pending.find(it->page);
+                    pending != state->pending.end() && pending->second == it->requestId) {
+                    state->pending.erase(pending);
+                }
+                it = state->queue.erase(it);
+            } else {
+                it->priority = rasterPriority(*state, *it);
+                ++it;
+            }
+        }
+        for (const auto& task: state->activeTasks) {
+            const auto& retainedPages = task->request.quality == PageRasterQuality::MediumDetail ?
+                                                state->mediumRetainedPages : state->lowRetainedPages;
+            if ((task->request.quality == PageRasterQuality::MediumDetail ||
+                 task->request.quality == PageRasterQuality::LowDetail) &&
+                !retainedPages.contains(task->request.page)) {
+                task->cancelled = true;
+                if (const auto pending = state->pending.find(task->request.page);
+                    pending != state->pending.end() && pending->second == task->request.requestId) {
+                    state->pending.erase(pending);
+                }
+                if (task->process) {
+                    g_subprocess_force_exit(task->process);
+                }
+            }
+        }
+        sortPageRasterQueue(*state);
+        schedulePageRasterTasks(state);
+    }
+
+    void request(PageRasterRequest request) {
         const auto generation = state->generation;
-        request.priority = thumbnailPriority(*state, request.page);
+        request.priority = rasterPriority(*state, request);
         if (!state->visiblePages.empty() && !std::isfinite(request.priority)) {
             return;
         }
-        if (state->previews.contains(request.page) || state->pending.contains(request.page) ||
-            (state->failed.contains(request.page) && state->failed.at(request.page) == generation)) {
+        const auto failedKey = std::make_pair(request.page, request.quality);
+        if (matches(request) || (state->failed.contains(failedKey) && state->failed.at(failedKey) == generation)) {
             return;
+        }
+        if (const auto pending = state->pending.find(request.page); pending != state->pending.end()) {
+            const uint64_t pendingId = pending->second;
+            const PageRasterRequest* existing = nullptr;
+            for (const auto& queued: state->queue) {
+                if (queued.requestId == pendingId) {
+                    existing = &queued;
+                    break;
+                }
+            }
+            if (!existing) {
+                for (const auto& task: state->activeTasks) {
+                    if (task->request.requestId == pendingId) {
+                        existing = &task->request;
+                        break;
+                    }
+                }
+            }
+            if (existing && (rasterQualityRank(existing->quality) > rasterQualityRank(request.quality) ||
+                             sameRasterRequest(*existing, request))) {
+                return;
+            }
+            std::erase_if(state->queue, [pendingId](const auto& queued) { return queued.requestId == pendingId; });
+            for (const auto& task: state->activeTasks) {
+                if (task->request.requestId == pendingId && !task->cancelled) {
+                    task->cancelled = true;
+                    if (task->process) {
+                        g_subprocess_force_exit(task->process);
+                    }
+                }
+            }
+            state->pending.erase(pending);
         }
         request.generation = generation;
         request.requestId = ++state->requestSequence;
         state->pending[request.page] = request.requestId;
         state->queue.push_back(std::move(request));
-        sortThumbnailQueue(*state);
+        sortPageRasterQueue(*state);
         // shortcut: keep 12 visible requests queued; grow only if large-document measurements justify it.
-        while (state->queue.size() > 12) {
+        while (state->queue.size() > state->maxQueuedRequests) {
             const auto dropped = state->queue.back();
             state->queue.pop_back();
             if (const auto found = state->pending.find(dropped.page);
@@ -703,24 +1123,65 @@ public:
                 state->pending.erase(found);
             }
         }
-        scheduleThumbnailTasks(state);
+        schedulePageRasterTasks(state);
     }
 
-    const ThumbnailPreview* find(int page) {
-        const auto found = state->previews.find(page);
-        if (found == state->previews.end()) {
-            return nullptr;
+    const PageRaster* find(int page) {
+        PageRaster* best = nullptr;
+        const auto preferSharper = [page, &best](auto& cache) {
+            const auto found = cache.find(page);
+            if (found != cache.end() && (!best || found->second.scale > best->scale)) {
+                best = &found->second;
+            }
+        };
+        preferSharper(state->previews);
+        preferSharper(state->mediumDetailPreviews);
+        preferSharper(state->lowDetailPreviews);
+        if (best) {
+            best->stamp = ++state->stamp;
         }
-        found->second.stamp = ++state->stamp;
-        return &found->second;
+        return best;
     }
 
-    bool empty() const { return state->previews.empty(); }
+    bool matches(const PageRasterRequest& request) const {
+        const auto& cache = pageRasterCache(*state, request.quality);
+        const auto found = cache.find(request.page);
+        if (found == cache.end()) {
+            return false;
+        }
+        const auto& preview = found->second;
+        if (request.renderScale <= 0) {
+            return true;
+        }
+        return std::abs(preview.scale - request.renderScale) < 0.0001 && preview.audioMode == request.audioMode &&
+               std::all_of(
+                       request.layers.begin(), request.layers.end(),
+                       [&preview](const auto& layer) { return preview.layers.contains(layer.origin); });
+    }
+
+    bool empty() const {
+        return state->previews.empty() && state->mediumDetailPreviews.empty() && state->lowDetailPreviews.empty();
+    }
+    size_t cacheBytes() const {
+        return rasterCacheBytes(state->previews) + rasterCacheBytes(state->mediumDetailPreviews) +
+               rasterCacheBytes(state->lowDetailPreviews);
+    }
+    size_t fullDetailCachePages() const { return state->previews.size(); }
+    size_t mediumDetailCacheBytes() const { return rasterCacheBytes(state->mediumDetailPreviews); }
+    size_t mediumDetailCachePages() const { return state->mediumDetailPreviews.size(); }
+    size_t lowDetailCacheBytes() const { return rasterCacheBytes(state->lowDetailPreviews); }
+    size_t lowDetailCachePages() const { return state->lowDetailPreviews.size(); }
+    size_t completedRequests() const { return state->completedRequests; }
+    size_t completedFullRequests() const { return state->completedFullRequests; }
+    size_t completedMediumDetailRequests() const { return state->completedMediumDetailRequests; }
+    size_t completedLowDetailRequests() const { return state->completedLowDetailRequests; }
     size_t pendingCount() const { return state->pending.size(); }
     size_t activeCount() const { return state->activeTasks.size(); }
     size_t offscreenCancellations() const { return state->offscreenCancellations; }
     bool hasPending(int page) const { return state->pending.contains(page); }
-    bool hasFailed(int page) const { return state->failed.contains(page); }
+    bool hasFailed(int page, PageRasterQuality quality = PageRasterQuality::Thumbnail) const {
+        return state->failed.contains({page, quality});
+    }
 
     int nextQueuedPage() const { return state->queue.empty() ? -1 : state->queue.front().page; }
 
@@ -741,7 +1202,7 @@ public:
     }
 
 private:
-    std::shared_ptr<ThumbnailRendererState> state;
+    std::shared_ptr<PageRasterRendererState> state;
 };
 
 struct ImageGesture {
@@ -1130,6 +1591,7 @@ public:
         if (!preferenceLoad.warning.empty()) {
             std::cerr << "xournalpp-gtk4-canvas: " << preferenceLoad.warning << '\n';
         }
+        applyCanvasCacheLimits();
         presentationMode = importedConfig.settings.pageLayout.presentationMode;
         prototype::applyImportedSettingsToCanvas(state, importedConfig.settings);
         state.backgroundChangedCallback = [this](int page) { refreshNativeDocumentRevision(page); };
@@ -1193,7 +1655,7 @@ public:
         }
         quickScreenshotOperations.clear();
         for (guint* source: {&heartbeatSource, &autosaveSource, &crashHelperSource, &recoveryVerifySource,
-                            &selectionEdgePanSource, &zoomPreviewSource}) {
+                            &selectionEdgePanSource, &zoomPreviewSource, &canvasPreloadSource}) {
             if (*source) {
                 g_source_remove(*source);
                 *source = 0;
@@ -1864,6 +2326,16 @@ private:
         AutosaveTimeout,
         ZoomStep,
         ScrollZoomStep,
+        PreloadPagesBefore,
+        PreloadPagesAfter,
+        FullDetailCachePages,
+        MediumDetailCachePages,
+        MediumDetailCacheMegabytes,
+        LowDetailCachePages,
+        LowDetailCacheMegabytes,
+        OverviewZoomThreshold,
+        LowDetailZoomThreshold,
+        PreloadDetail,
         EdgePanSpeed,
         EdgePanMaxMultiplier,
         RotationSnapTolerance,
@@ -2342,6 +2814,14 @@ private:
                                         key == PreferenceKey::PresentationMenubar ||
                                         key == PreferenceKey::PresentationToolbar ||
                                         key == PreferenceKey::PresentationSidebar;
+        const bool preloadPreference = key == PreferenceKey::PreloadPagesBefore ||
+                                       key == PreferenceKey::PreloadPagesAfter ||
+                                       key == PreferenceKey::PreloadDetail;
+        const bool canvasCachePreference = key == PreferenceKey::FullDetailCachePages ||
+                                           key == PreferenceKey::MediumDetailCachePages ||
+                                           key == PreferenceKey::MediumDetailCacheMegabytes ||
+                                           key == PreferenceKey::LowDetailCachePages ||
+                                           key == PreferenceKey::LowDetailCacheMegabytes;
         switch (key) {
             case PreferenceKey::Theme:
                 switch (adw_combo_row_get_selected(ADW_COMBO_ROW(control))) {
@@ -2523,6 +3003,46 @@ private:
             case PreferenceKey::ScrollZoomStep:
                 settings.scrollZoomStep = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control)) / 100.0;
                 break;
+            case PreferenceKey::PreloadPagesBefore:
+                settings.preloadPagesBefore = static_cast<unsigned int>(
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 0, 99));
+                break;
+            case PreferenceKey::PreloadPagesAfter:
+                settings.preloadPagesAfter = static_cast<unsigned int>(
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 0, 99));
+                break;
+            case PreferenceKey::FullDetailCachePages:
+                settings.fullDetailCachePages =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 1, 8);
+                break;
+            case PreferenceKey::MediumDetailCachePages:
+                settings.mediumDetailCachePages =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 1, 64);
+                break;
+            case PreferenceKey::MediumDetailCacheMegabytes:
+                settings.mediumDetailCacheMegabytes =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 1, 512);
+                break;
+            case PreferenceKey::LowDetailCachePages:
+                settings.lowDetailCachePages =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 1, 512);
+                break;
+            case PreferenceKey::LowDetailCacheMegabytes:
+                settings.lowDetailCacheMegabytes =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 1, 512);
+                break;
+            case PreferenceKey::OverviewZoomThreshold:
+                settings.overviewZoomThresholdPercent =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 5, 100);
+                break;
+            case PreferenceKey::LowDetailZoomThreshold:
+                settings.lowDetailZoomThresholdPercent =
+                        std::clamp(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(control)), 5, 50);
+                break;
+            case PreferenceKey::PreloadDetail:
+                settings.preloadDetail = static_cast<prototype::CanvasPreloadDetail>(
+                        adw_combo_row_get_selected(ADW_COMBO_ROW(control)));
+                break;
             case PreferenceKey::EdgePanSpeed:
                 settings.edgePanSpeed = gtk_spin_button_get_value(GTK_SPIN_BUTTON(control));
                 break;
@@ -2558,6 +3078,12 @@ private:
                 return;
         }
 
+        if (preloadPreference) {
+            scheduleCanvasPagePreload();
+        }
+        if (canvasCachePreference) {
+            applyCanvasCacheLimits();
+        }
         prototype::applyImportedSettingsToCanvas(state, settings);
         if (layoutPreference) {
             syncPageLayoutActions();
@@ -3441,8 +3967,7 @@ private:
                     state.setLayerDocument(layerState);
                     g_clear_object(&pdfTextDocument);
                     pdfTextDocumentPath.clear();
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -4239,8 +4764,7 @@ private:
             error = "Called applib_refreshPage, but there is no current page.";
             return false;
         }
-        pageCache.clear();
-        layerPageCache.clear();
+        canvasRenderer.invalidate();
         thumbnailRenderer.invalidate();
         update();
         return true;
@@ -5286,8 +5810,7 @@ private:
                     savedCopyPath.clear();
                     g_clear_object(&pdfTextDocument);
                     pdfTextDocumentPath.clear();
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -5395,8 +5918,7 @@ private:
                     savedCopyPath.clear();
                     g_clear_object(&pdfTextDocument);
                     pdfTextDocumentPath.clear();
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -5497,8 +6019,7 @@ private:
                     selectedImageIndex.reset();
                     g_clear_object(&pdfTextDocument);
                     pdfTextDocumentPath.clear();
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -5719,9 +6240,9 @@ private:
         preferenceCombo(appearanceGroup, "Color scheme", "Choose how the canvas follows the desktop appearance",
                         themes, static_cast<guint>(settingsThemeIndex(importedConfig.settings.themeVariant)),
                         PreferenceKey::Theme);
-        preferenceSwitch(appearanceGroup, "Show pages sidebar", "Keep page thumbnails beside the canvas",
-                         importedConfig.settings.viewModes[
-                                 static_cast<std::size_t>(prototype::ViewModePreset::Default)].showSidebar,
+        preferenceSwitch(appearanceGroup, "Show pages sidebar", "Keep page rasters beside the canvas",
+                         importedConfig.settings.viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Default)]
+                                 .showSidebar,
                          PreferenceKey::Sidebar);
         adw_preferences_page_add(appearance, appearanceGroup);
 
@@ -5734,7 +6255,7 @@ private:
         preferenceSwitch(fullscreenGroup, "Show tool controls", "Keep the canvas toolbar and tool rail visible",
                          viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showToolbar,
                          PreferenceKey::FullscreenToolbar);
-        preferenceSwitch(fullscreenGroup, "Show pages sidebar", "Keep page thumbnails visible in fullscreen",
+        preferenceSwitch(fullscreenGroup, "Show pages sidebar", "Keep page rasters visible in fullscreen",
                          viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Fullscreen)].showSidebar,
                          PreferenceKey::FullscreenSidebar);
         adw_preferences_page_add(appearance, fullscreenGroup);
@@ -5750,7 +6271,7 @@ private:
         preferenceSwitch(presentationGroup, "Show tool controls", "Keep canvas tools visible while presenting",
                          viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showToolbar,
                          PreferenceKey::PresentationToolbar);
-        preferenceSwitch(presentationGroup, "Show pages sidebar", "Keep page thumbnails visible while presenting",
+        preferenceSwitch(presentationGroup, "Show pages sidebar", "Keep page rasters visible while presenting",
                          viewModes[static_cast<std::size_t>(prototype::ViewModePreset::Presentation)].showSidebar,
                          PreferenceKey::PresentationSidebar);
         adw_preferences_page_add(appearance, presentationGroup);
@@ -5969,13 +6490,23 @@ private:
                        PreferenceKey::AutosaveTimeout);
         adw_preferences_page_add(behavior, autosaveGroup);
         auto* navigationGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
-        adw_preferences_group_set_title(navigationGroup, "Zoom");
+        adw_preferences_group_set_title(navigationGroup, "Navigation and zoom");
         preferenceSpin(navigationGroup, "Keyboard zoom step", "Change zoom with the keyboard",
                        importedConfig.settings.zoomStep * 100.0, 0.5, 200.0, 0.5, 1, "%",
                        PreferenceKey::ZoomStep);
         preferenceSpin(navigationGroup, "Scroll zoom step", "Change zoom with the pointer wheel",
                        importedConfig.settings.scrollZoomStep * 100.0, 0.5, 200.0, 0.5, 1, "%",
                        PreferenceKey::ScrollZoomStep);
+        preferenceSpin(navigationGroup, "Preload pages before", "Render this many preceding pages after scrolling settles",
+                       importedConfig.settings.preloadPagesBefore, 0, 99, 1, 0, "pages",
+                       PreferenceKey::PreloadPagesBefore);
+        preferenceSpin(navigationGroup, "Preload pages after", "Render this many following pages after scrolling settles",
+                       importedConfig.settings.preloadPagesAfter, 0, 99, 1, 0, "pages",
+                       PreferenceKey::PreloadPagesAfter);
+        static const char* const preloadDetailOptions[] = {"Automatic", "Medium", "Low", nullptr};
+        preferenceCombo(navigationGroup, "Preload detail", "Use the zoom threshold or always preload one LOD tier",
+                        preloadDetailOptions, static_cast<guint>(importedConfig.settings.preloadDetail),
+                        PreferenceKey::PreloadDetail);
         preferenceSpin(navigationGroup, "Selection edge-pan speed",
                        "Move the canvas as a selection is dragged beyond its visible edge",
                        importedConfig.settings.edgePanSpeed, 0.0, 100.0, 1.0, 0, "%",
@@ -5985,6 +6516,32 @@ private:
                        importedConfig.settings.edgePanMaxMultiplier, 0.1, 10.0, 0.5, 1, "×",
                        PreferenceKey::EdgePanMaxMultiplier);
         adw_preferences_page_add(behavior, navigationGroup);
+        auto* renderingGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(renderingGroup, "Canvas rendering");
+        preferenceSpin(renderingGroup, "Full-detail cache", "Maximum number of full-resolution pages to keep",
+                       importedConfig.settings.fullDetailCachePages, 1, 8, 1, 0, "pages",
+                       PreferenceKey::FullDetailCachePages);
+        preferenceSpin(renderingGroup, "Medium-detail cache", "Maximum pages kept at medium detail",
+                       importedConfig.settings.mediumDetailCachePages, 1, 64, 1, 0, "pages",
+                       PreferenceKey::MediumDetailCachePages);
+        preferenceSpin(renderingGroup, "Medium-detail memory budget", "Maximum memory used by medium rasters",
+                       importedConfig.settings.mediumDetailCacheMegabytes, 1, 512, 1, 0, "MiB",
+                       PreferenceKey::MediumDetailCacheMegabytes);
+        preferenceSpin(renderingGroup, "Low-detail cache", "Maximum pages kept at low detail",
+                       importedConfig.settings.lowDetailCachePages, 1, 512, 1, 0, "pages",
+                       PreferenceKey::LowDetailCachePages);
+        preferenceSpin(renderingGroup, "Low-detail memory budget", "Maximum memory used by low-detail rasters",
+                       importedConfig.settings.lowDetailCacheMegabytes, 1, 512, 1, 0, "MiB",
+                       PreferenceKey::LowDetailCacheMegabytes);
+        preferenceSpin(renderingGroup, "Overview zoom threshold",
+                       "At or below this zoom, keep full detail only for the pointer or active page",
+                       importedConfig.settings.overviewZoomThresholdPercent, 5, 100, 1, 0, "%",
+                       PreferenceKey::OverviewZoomThreshold);
+        preferenceSpin(renderingGroup, "Low-detail zoom threshold",
+                       "Below this zoom, neighboring and automatically preloaded pages use low detail",
+                       importedConfig.settings.lowDetailZoomThresholdPercent, 5, 50, 1, 0, "%",
+                       PreferenceKey::LowDetailZoomThreshold);
+        adw_preferences_page_add(behavior, renderingGroup);
         auto* selectionGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
         adw_preferences_group_set_title(selectionGroup, "Selection");
         preferenceSwitch(selectionGroup, "Snap image rotation",
@@ -6834,7 +7391,7 @@ private:
                 g_usleep(1000);
             }
             require(thumbnailRenderer.find(page) != nullptr,
-                    "An asynchronous page thumbnail did not finish within five seconds");
+                    "An asynchronous page raster did not finish within five seconds");
         };
         waitForThumbnail(0);
         const auto initialThumbnailsDeadline = g_get_monotonic_time() + 5000000;
@@ -6843,7 +7400,7 @@ private:
             g_usleep(1000);
         }
         require(thumbnailRenderer.pendingCount() == 0,
-                "The initial visible sidebar thumbnails did not drain their render queue");
+                "The initial visible page rasters did not drain their render queue");
         const auto maxMappedRows = static_cast<size_t>(gtk_widget_get_height(GTK_WIDGET(pageList)) / 180 + 3);
         const auto [firstPage, lastPage] = pageRange();
         std::cout << "SIDEBAR OPEN: pages=" << pageCount << " realized=" << thumbnailWidgets.size()
@@ -6867,8 +7424,7 @@ private:
 
         thumbnailRenderer.invalidate();
         sidebarCanvasRenderSuppressed = true;
-        pageCache.clear();
-        layerPageCache.clear();
+        canvasRenderer.invalidate();
         gtk_adjustment_set_value(adjustment, lower + scrollable / 2.0);
         gtk_widget_queue_draw(GTK_WIDGET(pageList));
         waitForNextWindowFrame();
@@ -6884,12 +7440,11 @@ private:
         require(thumbnailRenderer.firstDispatchedPage() == preferredSidebarPage,
                 "The sidebar scheduler did not dispatch the nearest visible page first");
         waitForThumbnail(preferredSidebarPage);
-        require(pageCache.empty() && layerPageCache.empty(),
-                "Sidebar thumbnails depended on the main canvas PDF cache");
+        require(canvasRenderer.empty(), "page rasters depended on the main canvas PDF cache");
         const size_t cancellationsBeforeScroll = thumbnailRenderer.offscreenCancellations();
         const int offscreenPage = pageCount + 1;
         thumbnailRenderer.setVisiblePages({{offscreenPage, 0}}, -1);
-        ThumbnailRequest offscreenRequest;
+        PageRasterRequest offscreenRequest;
         offscreenRequest.page = offscreenPage;
         offscreenRequest.pageSize = {595, 842};
         thumbnailRenderer.request(std::move(offscreenRequest));
@@ -6945,24 +7500,28 @@ private:
                         gtk_adjustment_get_value(adjustment) <= gtk_adjustment_get_lower(adjustment) + 1.0,
                 "Go to Page did not synchronize the sidebar selection and scroll position");
         waitForThumbnail(0);
+        require(waitForCanvasRaster(state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))),
+                "The canvas PDF renderer did not finish the current page");
         const double anchorX = gtk_widget_get_width(canvas) / 2.0;
         const double anchorY = gtk_widget_get_height(canvas) / 2.0;
         const auto documentAnchor = state.documentPoint(anchorX, anchorY);
         const double zoomBefore = state.zoom;
         const double zoomTarget = prototype::behavior::zoomFromScrollDelta(zoomBefore, -8, false,
                                                                            state.scrollZoomStep);
-        const int cachedRasters = rasterizations;
+        const size_t cachedRasters = canvasRenderer.completedRequests();
         zoom(zoomTarget, anchorX, anchorY, true);
         waitForNextWindowFrame();
         const auto movedAnchor = state.documentPoint(anchorX, anchorY);
-        require(rasterizations == cachedRasters && std::abs(state.zoom - zoomTarget) < 1e-9 && state.zoom > zoomBefore &&
-                        std::abs(movedAnchor.x - documentAnchor.x) < 1e-9 &&
+        require(canvasRenderer.completedRequests() == cachedRasters && std::abs(state.zoom - zoomTarget) < 1e-9 &&
+                        state.zoom > zoomBefore && std::abs(movedAnchor.x - documentAnchor.x) < 1e-9 &&
                         std::abs(movedAnchor.y - documentAnchor.y) < 1e-9,
                 "Smooth zoom did not reuse the current raster or preserve the pointer anchor");
         finishZoomPreview();
         update();
         waitForNextWindowFrame();
-        require(rasterizations > cachedRasters, "Settled smooth zoom did not refresh the page raster");
+        require(waitForCanvasRaster(state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))) &&
+                        canvasRenderer.completedRequests() > cachedRasters,
+                "Settled smooth zoom did not refresh the page raster");
         std::cout << "PASS: GTK4 pages sidebar realizes a bounded number of thumbnails for 10000 PDF pages\n";
     }
 
@@ -6978,9 +7537,35 @@ private:
             g_usleep(1000);
         }
         require(thumbnailRenderer.find(0) && sidebarStartupReadyDraws > 0,
-                "The first page thumbnail did not render and redraw without input");
-        require(gtk_widget_get_width(GTK_WIDGET(pageList)) >= pageThumbnailWidth,
+                "The first page raster did not render and redraw without input");
+        require(gtk_widget_get_width(GTK_WIDGET(pageList)) >= maxPageThumbnailWidth,
                 "The Pages sidebar did not finish opening for the no-input startup check");
+        const auto& preloadSettings = importedConfig.settings;
+        const int expectedPreloads =
+                std::min<int>(preloadSettings.preloadPagesBefore, state.page) +
+                std::min<int>(preloadSettings.preloadPagesAfter, pageCount - state.page - 1);
+        const auto preloadDeadline = g_get_monotonic_time() + 1000000;
+        while (static_cast<int>(canvasPreloadedPages.size()) != expectedPreloads &&
+               g_get_monotonic_time() < preloadDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(static_cast<int>(canvasPreloadedPages.size()) == expectedPreloads &&
+                        !canvasPreloadedPages.contains(state.page),
+                "The configured page-preload offsets were not scheduled around the active page");
+        if (!canvasPreloadedPages.empty()) {
+            const int preloadPage = canvasPreloadedPages.begin()->first;
+            const auto rasterDeadline = g_get_monotonic_time() + 10000000;
+            while (!canvasRenderer.find(preloadPage) && g_get_monotonic_time() < rasterDeadline) {
+                g_main_context_iteration(nullptr, false);
+                g_usleep(1000);
+            }
+            require(canvasRenderer.find(preloadPage),
+                    "A page selected by the preload offsets did not receive a cached raster");
+        }
+        require(waitForCanvasRaster(state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))),
+                "The main canvas did not render the content-heavy PDF without input");
+        waitForNextWindowFrame();
         capture("sidebar-startup-no-input");
         std::cout << "PASS: GTK4 sidebar renders its first visible thumbnail without input\n";
 
@@ -7029,9 +7614,11 @@ private:
             cairo_surface_flush(surface);
             const auto* pixels = cairo_image_surface_get_data(surface);
             const int stride = cairo_image_surface_get_stride(surface);
-            for (int y = 0; y < pageThumbnailHeight; ++y) {
+            const int surfaceHeight = cairo_image_surface_get_height(surface);
+            const int surfaceWidth = cairo_image_surface_get_width(surface);
+            for (int y = 0; y < surfaceHeight; ++y) {
                 const auto* row = reinterpret_cast<const uint32_t*>(pixels + y * stride);
-                for (int x = 0; x < pageThumbnailWidth; ++x) {
+                for (int x = 0; x < surfaceWidth; ++x) {
                     if ((row[x] & 0x00ffffffU) < 0x00f0f0f0U) {
                         return true;
                     }
@@ -7073,7 +7660,7 @@ private:
                       << " next=" << thumbnailRenderer.nextQueuedPage() << '\n';
         }
         require(state.page == canvasPage && targetPageVisible && allVisibleThumbnailsReady && knownContentPagesReady,
-                "Visible sidebar thumbnails did not all finish after fast scrolling stopped");
+                "Visible page rasters did not all finish after fast scrolling stopped");
         capture("sidebar-fast-scroll-stop");
         std::cout << "SIDEBAR FAST STOP: canvas_page=" << state.page << " visible_pages=";
         for (const int page: visiblePages) {
@@ -7081,6 +7668,126 @@ private:
         }
         std::cout << " rendered=" << visiblePages.size() << '\n';
         std::cout << "PASS: GTK4 sidebar renders visible thumbnails after fast scrolling stops\n";
+
+        const int canvasWidth = gtk_widget_get_width(canvas);
+        const int canvasHeight = gtk_widget_get_height(canvas);
+        navigateToPage(pageCount / 2);
+        require(waitForCanvasRaster(state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))),
+                "The canvas did not render the middle page before zooming out");
+        const size_t fullRendersBeforeZoomOut = canvasRenderer.completedFullRequests();
+        zoom(0.1, canvasWidth / 2.0, canvasHeight / 2.0, true);
+        trackPointerPosition(canvasWidth / 2.0, canvasHeight / 2.0);
+        finishZoomPreview();
+        update();
+        std::vector<int> zoomedOutPages;
+        const auto zoomOutDeadline = g_get_monotonic_time() + 20000000;
+        const auto visibleCanvasPagesReady = [this, &zoomedOutPages, canvasWidth, canvasHeight] {
+            zoomedOutPages = state.visiblePageIndices(canvasWidth, canvasHeight);
+            std::map<int, double> visiblePagePriorities;
+            for (const int page: zoomedOutPages) {
+                const auto size = state.pageSize(page);
+                const double centerY = state.offsetY + (state.pageTop(page) + size.height / 2.0) * state.zoom;
+                visiblePagePriorities.emplace(page, std::abs(centerY - canvasHeight / 2.0));
+            }
+            if (visiblePagePriorities.empty()) {
+                visiblePagePriorities.emplace(state.page, 0);
+            }
+            const int detailPage = canvasDetailPage(visiblePagePriorities);
+            const bool useMediumDetail = canvasUsesMediumDetail();
+            return !zoomedOutPages.empty() &&
+                   std::all_of(
+                           zoomedOutPages.begin(), zoomedOutPages.end(),
+                           [this, detailPage, useMediumDetail](int page) {
+                               return page == detailPage ?
+                                              canvasRenderer.matches(canvasRenderRequest(
+                                                      page, canvasDetailRenderScale(
+                                                                    page, gtk_widget_get_scale_factor(canvas), true))) :
+                                      useMediumDetail ? canvasRenderer.matches(canvasMediumDetailRequest(page)) :
+                                                        canvasRenderer.matches(canvasLodRequest(page));
+                           }) &&
+                   canvasRenderer.matches(canvasMediumDetailRequest(detailPage)) &&
+                   canvasRenderer.matches(canvasLodRequest(detailPage));
+        };
+        while (!visibleCanvasPagesReady() && g_get_monotonic_time() < zoomOutDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(visibleCanvasPagesReady(), "Zooming out left pages without full-, medium-, and low-detail rasters");
+        require(canvasRenderer.completedFullRequests() - fullRendersBeforeZoomOut <= 1,
+                "Zooming out rendered full-resolution PDF rasters for multiple pages");
+        const auto& renderingSettings = importedConfig.settings;
+        constexpr size_t bytesPerMegabyte = 1024 * 1024;
+        require(canvasRenderer.fullDetailCachePages() <= static_cast<size_t>(renderingSettings.fullDetailCachePages) &&
+                        canvasRenderer.mediumDetailCachePages() <=
+                                static_cast<size_t>(renderingSettings.mediumDetailCachePages) &&
+                        canvasRenderer.mediumDetailCacheBytes() <=
+                                static_cast<size_t>(renderingSettings.mediumDetailCacheMegabytes) * bytesPerMegabyte &&
+                        canvasRenderer.lowDetailCachePages() <= static_cast<size_t>(renderingSettings.lowDetailCachePages) &&
+                        canvasRenderer.lowDetailCacheBytes() <=
+                                static_cast<size_t>(renderingSettings.lowDetailCacheMegabytes) * bytesPerMegabyte,
+                "Canvas raster caches exceeded their page or byte budgets");
+        capture("canvas-zoom-out-settled");
+        std::cout << "CANVAS ZOOM OUT SETTLED: visible_pages=" << zoomedOutPages.size()
+                  << " full_pages=" << canvasRenderer.fullDetailCachePages()
+                  << " medium_pages=" << canvasRenderer.mediumDetailCachePages()
+                  << " medium_bytes=" << canvasRenderer.mediumDetailCacheBytes()
+                  << " low_pages=" << canvasRenderer.lowDetailCachePages()
+                  << " low_bytes=" << canvasRenderer.lowDetailCacheBytes()
+                  << " cache_bytes=" << canvasRenderer.cacheBytes() << '\n';
+        require(zoomedOutPages.size() > static_cast<size_t>(renderingSettings.fullDetailCachePages),
+                "Zoom-out cache check did not expose more pages than the configured full-detail cache");
+
+        const double mediumDetailTestZoom = renderingSettings.overviewZoomThresholdPercent / 100.0 * 0.75;
+        zoom(mediumDetailTestZoom, canvasWidth / 2.0, canvasHeight / 2.0, true);
+        trackPointerPosition(canvasWidth / 2.0, canvasHeight / 2.0);
+        finishZoomPreview();
+        update();
+        const auto mediumDeadline = g_get_monotonic_time() + 20000000;
+        const auto visibleMediumPagesReady = [this, &zoomedOutPages, canvasWidth, canvasHeight] {
+            zoomedOutPages = state.visiblePageIndices(canvasWidth, canvasHeight);
+            std::map<int, double> priorities;
+            for (const int page: zoomedOutPages) {
+                const auto size = state.pageSize(page);
+                const double centerY = state.offsetY + (state.pageTop(page) + size.height / 2.0) * state.zoom;
+                priorities.emplace(page, std::abs(centerY - canvasHeight / 2.0));
+            }
+            if (priorities.empty()) {
+                priorities.emplace(state.page, 0);
+            }
+            const int detailPage = canvasDetailPage(priorities);
+            const bool useMediumDetail = canvasUsesMediumDetail();
+            return std::all_of(zoomedOutPages.begin(), zoomedOutPages.end(),
+                               [this, detailPage, useMediumDetail](int page) {
+                                   return page == detailPage ?
+                                                  canvasRenderer.matches(canvasRenderRequest(
+                                                          page, canvasDetailRenderScale(
+                                                                        page,
+                                                                        gtk_widget_get_scale_factor(canvas),
+                                                                        true))) :
+                                          useMediumDetail ?
+                                                  canvasRenderer.matches(canvasMediumDetailRequest(page)) :
+                                                  canvasRenderer.matches(canvasLodRequest(page));
+                               });
+        };
+        while (!visibleMediumPagesReady() && g_get_monotonic_time() < mediumDeadline) {
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        require(visibleMediumPagesReady(), "Configured neighboring LOD pages were not ready after zoom settled");
+        require(canvasRenderer.mediumDetailCachePages() <=
+                                static_cast<size_t>(renderingSettings.mediumDetailCachePages) &&
+                        canvasRenderer.mediumDetailCacheBytes() <=
+                                static_cast<size_t>(renderingSettings.mediumDetailCacheMegabytes) * bytesPerMegabyte,
+                "Medium-detail cache exceeded its page or byte budget");
+        capture("canvas-medium-detail-settled");
+        canvasRenderer.setCacheLimits(1, 1, bytesPerMegabyte, 1, bytesPerMegabyte);
+        require(canvasRenderer.fullDetailCachePages() <= 1 && canvasRenderer.mediumDetailCachePages() <= 1 &&
+                        canvasRenderer.mediumDetailCacheBytes() <= bytesPerMegabyte &&
+                        canvasRenderer.lowDetailCachePages() <= 1 &&
+                        canvasRenderer.lowDetailCacheBytes() <= bytesPerMegabyte,
+                "Changing LOD cache preferences did not trim existing raster caches");
+        applyCanvasCacheLimits();
+        std::cout << "PASS: GTK4 LOD cache limits trim rasters and zoom thresholds select visible detail\n";
     }
 
     void verifySearchIntegration() {
@@ -7375,12 +8082,13 @@ private:
         const auto refreshPageRevision = state.revision();
         const bool refreshPageCanUndo = state.canUndo();
         const bool refreshPageCanRedo = state.canRedo();
-        ensurePageCache(state.page, gtk_widget_get_scale_factor(canvas));
-        require(!pageCache.empty(), "Plugin page-refresh verification could not build the current page cache");
+        require(waitForCanvasRaster(state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))),
+                "Plugin page-refresh verification could not render the current page");
+        require(!canvasRenderer.empty(), "Plugin page-refresh verification could not build the current page cache");
         std::string refreshPageError;
-        require(refreshPluginPage(refreshPageError) && pageCache.empty() && layerPageCache.empty() &&
-                        thumbnailRenderer.empty() && state.revision() == refreshPageRevision &&
-                        state.canUndo() == refreshPageCanUndo && state.canRedo() == refreshPageCanRedo,
+        require(refreshPluginPage(refreshPageError) && canvasRenderer.empty() && thumbnailRenderer.empty() &&
+                        state.revision() == refreshPageRevision && state.canUndo() == refreshPageCanUndo &&
+                        state.canRedo() == refreshPageCanRedo,
                 refreshPageError.empty() ? "app.refreshPage did not invalidate page surfaces without changing history" :
                                            refreshPageError.c_str());
         std::string firstPdfPageLabel;
@@ -8969,6 +9677,12 @@ private:
         input.reset();
         imageGesture.reset();
         selectedImageIndex.reset();
+        if (canvasPreloadSource) {
+            g_source_remove(canvasPreloadSource);
+            canvasPreloadSource = 0;
+        }
+        lastPreloadPage = -1;
+        canvasPreloadedPages.clear();
         const auto brush = state.brush;
         const auto eraserMode = state.eraserMode;
         const auto eraserWidth = state.eraserWidth;
@@ -9008,8 +9722,7 @@ private:
         sourcePath = source;
         saveTarget = recovery ? recovery->saveTarget : session->originalSavePath;
         saveVersion = recovery ? recovery->saveVersion : session->originalVersion;
-        pageCache.clear();
-        layerPageCache.clear();
+        canvasRenderer.invalidate();
         thumbnailRenderer.invalidate();
         thumbnailWidgets.clear();
         pageList = nullptr;
@@ -9410,6 +10123,58 @@ private:
         adw_dialog_present(ADW_DIALOG(messageDialog), window);
     }
 
+    void scheduleCanvasPagePreload() {
+        if (canvasPreloadSource) {
+            g_source_remove(canvasPreloadSource);
+            canvasPreloadSource = 0;
+        }
+        if (state.page < 0 || state.page >= pageCount) {
+            return;
+        }
+        if (lastPreloadPage != state.page) {
+            if (lastPreloadPage >= 0) {
+                canvasPreloadDirection = state.page > lastPreloadPage ? 1 : -1;
+            }
+            lastPreloadPage = state.page;
+        }
+        canvasPreloadedPages.clear();
+        canvasPreloadSource = g_timeout_add(
+                150,
+                +[](gpointer data) -> gboolean {
+                    auto* self = static_cast<Prototype*>(data);
+                    self->canvasPreloadSource = 0;
+                    const int page = self->state.page;
+                    if (page >= 0 && page < self->pageCount) {
+                        const auto& settings = self->importedConfig.settings;
+                        const int before = std::min<int>(settings.preloadPagesBefore, page);
+                        const int after = std::min<int>(settings.preloadPagesAfter, self->pageCount - page - 1);
+                        const int lower = page - before;
+                        const int upper = page + after + 1;
+                        double priority = 0;
+                        const auto addBefore = [&] {
+                            for (int adjacent = page; adjacent > lower;) {
+                                self->canvasPreloadedPages.emplace(--adjacent, priority++);
+                            }
+                        };
+                        const auto addAfter = [&] {
+                            for (int adjacent = page + 1; adjacent < upper; ++adjacent) {
+                                self->canvasPreloadedPages.emplace(adjacent, priority++);
+                            }
+                        };
+                        if (self->canvasPreloadDirection < 0) {
+                            addBefore();
+                            addAfter();
+                        } else {
+                            addAfter();
+                            addBefore();
+                        }
+                        self->update();
+                    }
+                    return G_SOURCE_REMOVE;
+                },
+                this);
+    }
+
     void navigateToPage(int number) {
         if (number < 0 || number >= pageCount) {
             return;
@@ -9779,8 +10544,7 @@ private:
                            }
                            state.setPages(std::move(sizes));
                            session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
-                           pageCache.clear();
-                           layerPageCache.clear();
+                           canvasRenderer.invalidate();
                            thumbnailRenderer.invalidate();
                            thumbnailWidgets.clear();
                            pageList = nullptr;
@@ -9849,8 +10613,7 @@ private:
                     state.recordPageInsertion(afterPage + 1);
                     session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
                     state.selectActivePage(afterPage + 1);
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -9965,8 +10728,7 @@ private:
                         state.recordPageInsertion(historyPage, finalPage);
                     }
                     session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -10032,8 +10794,7 @@ private:
                     const int nextActive = std::min(removeIndex, pageCount - 1);
                     state.selectActivePage(nextActive);
                     session->prunePageHistorySnapshots(state.pageHistorySnapshotPaths());
-                    pageCache.clear();
-                    layerPageCache.clear();
+                    canvasRenderer.invalidate();
                     thumbnailRenderer.invalidate();
                     thumbnailWidgets.clear();
                     pageList = nullptr;
@@ -13508,25 +14269,38 @@ private:
                              auto* self = static_cast<Prototype*>(data);
                              auto* contents = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
                              auto* preview = gtk_drawing_area_new();
-                             gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(preview), pageThumbnailWidth);
-                             gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(preview), pageThumbnailHeight);
+                             gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(preview), maxPageThumbnailWidth);
+                             gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(preview), maxPageThumbnailHeight);
+                             gtk_widget_set_halign(preview, GTK_ALIGN_CENTER);
+                             gtk_widget_add_css_class(preview, "page-thumbnail");
                              gtk_drawing_area_set_draw_func(
                                      GTK_DRAWING_AREA(preview),
                                      +[](GtkDrawingArea* area, cairo_t* cr, int width, int height, gpointer owner) {
                                          auto* self = static_cast<Prototype*>(owner);
                                          self->prioritizeVisibleSidebarThumbnails();
+                                         auto* item = GTK_LIST_ITEM(g_object_get_data(G_OBJECT(area), "list-item"));
                                          self->drawThumbnail(
                                                  cr, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(area), "page")), width,
-                                                 height);
+                                                 height, item && gtk_list_item_get_selected(item));
                                      },
                                      self, nullptr);
                              auto* label = gtk_label_new("");
+                             gtk_widget_set_halign(label, GTK_ALIGN_CENTER);
+                             gtk_widget_add_css_class(label, "page-thumbnail-number");
                              gtk_box_append(GTK_BOX(contents), preview);
                              gtk_box_append(GTK_BOX(contents), label);
                              gtk_widget_set_margin_top(contents, 8);
                              gtk_widget_set_margin_bottom(contents, 8);
                              g_object_set_data(G_OBJECT(item), "thumbnail", preview);
                              g_object_set_data(G_OBJECT(item), "page-label", label);
+                             g_signal_connect(item, "notify::selected",
+                                              G_CALLBACK(+[](GObject* object, GParamSpec*, gpointer) {
+                                                  auto* preview = GTK_WIDGET(g_object_get_data(object, "thumbnail"));
+                                                  if (preview) {
+                                                      gtk_widget_queue_draw(preview);
+                                                  }
+                                              }),
+                                              nullptr);
                              gtk_list_item_set_child(item, contents);
                          }),
                          this);
@@ -13536,9 +14310,20 @@ private:
                              auto* preview = GTK_WIDGET(g_object_get_data(G_OBJECT(item), "thumbnail"));
                              auto* label = GTK_LABEL(g_object_get_data(G_OBJECT(item), "page-label"));
                              const auto page = gtk_list_item_get_position(item);
+                             const auto pageSize = self->state.pageSize(static_cast<int>(page));
+                             const double thumbnailScale =
+                                     std::min(maxPageThumbnailWidth / pageSize.width,
+                                              maxPageThumbnailHeight / pageSize.height);
+                             gtk_drawing_area_set_content_width(
+                                     GTK_DRAWING_AREA(preview),
+                                     std::max(1, static_cast<int>(std::ceil(pageSize.width * thumbnailScale))));
+                             gtk_drawing_area_set_content_height(
+                                     GTK_DRAWING_AREA(preview),
+                                     std::max(1, static_cast<int>(std::ceil(pageSize.height * thumbnailScale))));
                              g_object_set_data(G_OBJECT(preview), "page", GUINT_TO_POINTER(page));
-                             gtk_label_set_text(label, gtk_string_object_get_string(
-                                                              GTK_STRING_OBJECT(gtk_list_item_get_item(item))));
+                             g_object_set_data(G_OBJECT(preview), "list-item", item);
+                             const auto pageNumber = std::to_string(page + 1);
+                             gtk_label_set_text(label, pageNumber.c_str());
                              self->thumbnailWidgets.push_back(preview);
                              self->thumbnailRenderer.bindThumbnailWidget(static_cast<int>(page), preview);
                              self->prioritizeVisibleSidebarThumbnails();
@@ -13552,6 +14337,7 @@ private:
                              auto* preview = GTK_WIDGET(g_object_get_data(G_OBJECT(item), "thumbnail"));
                              const int page = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(preview), "page"));
                              self->thumbnailRenderer.unbindThumbnailWidget(page, preview);
+                             g_object_set_data(G_OBJECT(preview), "list-item", nullptr);
                              const auto found = std::find(self->thumbnailWidgets.begin(), self->thumbnailWidgets.end(),
                                                           preview);
                              if (found != self->thumbnailWidgets.end()) {
@@ -13561,8 +14347,17 @@ private:
                          }),
                          this);
         pageList = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(selection), factory));
-        thumbnailRenderer.setPageList(GTK_WIDGET(pageList));
+        thumbnailRenderer.setRedrawWidget(GTK_WIDGET(pageList));
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
+        gtk_widget_add_css_class(GTK_WIDGET(pageList), "page-thumbnails");
+        auto* sidebarCss = gtk_css_provider_new();
+        constexpr char sidebarCssData[] =
+                "listview.page-thumbnails row:selected { background-color: transparent; box-shadow: none; }\n"
+                "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n";
+        gtk_css_provider_load_from_string(sidebarCss, sidebarCssData);
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(sidebarCss),
+                                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        g_object_unref(sidebarCss);
         gtk_list_view_set_show_separators(pageList, false);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
         g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)), "value-changed",
@@ -13891,6 +14686,7 @@ private:
 
     void refreshAfterLayerMutation() {
         selectedImageIndex.reset();
+        canvasRenderer.invalidate();
         thumbnailRenderer.invalidate();
         rebuildLayerStack();
         update();
@@ -13933,7 +14729,7 @@ private:
             return;
         }
         const auto& pageLayers = state.layersForPage(number);
-        ThumbnailRequest request;
+        PageRasterRequest request;
         request.page = number;
         request.pageSize = state.pageSize(number);
         if (document && pageLayers.backgroundVisible) {
@@ -13946,8 +14742,9 @@ private:
                 }
                 for (const size_t origin: layer.origins) {
                     if (origin < nativeSession->layerPreviewPaths.size() &&
-                        std::none_of(request.layers.begin(), request.layers.end(),
-                                     [origin](const ThumbnailLayerSource& source) { return source.origin == origin; })) {
+                        std::none_of(
+                                request.layers.begin(), request.layers.end(),
+                                [origin](const PageRasterLayerSource& source) { return source.origin == origin; })) {
                         request.layers.push_back({origin, nativeSession->layerPreviewPaths[origin].string()});
                     }
                 }
@@ -13956,8 +14753,8 @@ private:
         thumbnailRenderer.request(std::move(request));
     }
 
-    void drawThumbnail(cairo_t* cr, int number, int width, int height) {
-        if (number < 0 || number >= pageCount) {
+    void drawThumbnail(cairo_t* cr, int number, int width, int height, bool selected) {
+        if (number < 0 || number >= pageCount || width <= 0 || height <= 0) {
             return;
         }
         requestSidebarThumbnail(number);
@@ -13966,21 +14763,28 @@ private:
         if (options.verifySidebarStartup && number == 0 && preview && preview->background) {
             ++sidebarStartupReadyDraws;
         }
+        const auto pageSize = state.pageSize(number);
+        const double scale = std::min(width / pageSize.width, height / pageSize.height);
+        const double pageWidth = pageSize.width * scale;
+        const double pageHeight = pageSize.height * scale;
+        const double pageX = (width - pageWidth) / 2.0;
+        const double pageY = (height - pageHeight) / 2.0;
         cairo_save(cr);
-        cairo_translate(cr, (width - pageThumbnailWidth) / 2.0, (height - pageThumbnailHeight) / 2.0);
-        cairo_rectangle(cr, 0, 0, pageThumbnailWidth, pageThumbnailHeight);
-        cairo_clip(cr);
+        cairo_rectangle(cr, pageX + 1, pageY + 2, pageWidth, pageHeight);
+        cairo_set_source_rgba(cr, 0, 0, 0, 0.22);
+        cairo_fill(cr);
+        cairo_rectangle(cr, pageX, pageY, pageWidth, pageHeight);
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_fill(cr);
+        cairo_save(cr);
+        cairo_translate(cr, pageX, pageY);
         if (preview && preview->background) {
+            cairo_save(cr);
+            cairo_scale(cr, scale / preview->scale, scale / preview->scale);
             cairo_set_source_surface(cr, preview->background.get(), 0, 0);
             cairo_paint(cr);
-        } else {
-            cairo_set_source_rgb(cr, 1, 1, 1);
-            cairo_paint(cr);
+            cairo_restore(cr);
         }
-        const auto pageSize = state.pageSize(number);
-        const double fallbackScale =
-                std::min(pageThumbnailWidth / pageSize.width, pageThumbnailHeight / pageSize.height);
-        const double scale = preview ? preview->scale : fallbackScale;
         enum class EditableKind { Ink, Text, Image };
         struct LayerItem {
             size_t order;
@@ -13997,8 +14801,11 @@ private:
                 if (preview) {
                     const auto nativePreview = preview->layers.find(origin);
                     if (nativePreview != preview->layers.end()) {
+                        cairo_save(cr);
+                        cairo_scale(cr, scale / preview->scale, scale / preview->scale);
                         cairo_set_source_surface(cr, nativePreview->second.get(), 0, 0);
                         cairo_paint(cr);
+                        cairo_restore(cr);
                     }
                 }
                 std::vector<LayerItem> items;
@@ -14041,6 +14848,15 @@ private:
                 cairo_restore(cr);
             }
         }
+        cairo_restore(cr);
+        cairo_rectangle(cr, pageX + 0.5, pageY + 0.5, pageWidth - 1.0, pageHeight - 1.0);
+        cairo_set_line_width(cr, selected ? 2.0 : 0.75);
+        if (selected) {
+            cairo_set_source_rgb(cr, 0.20, 0.52, 0.89);
+        } else {
+            cairo_set_source_rgba(cr, 0, 0, 0, 0.18);
+        }
+        cairo_stroke(cr);
         cairo_restore(cr);
     }
 
@@ -14730,6 +15546,7 @@ private:
         selectTool(importedConfig.settings.activeTool);
 
         canvas = gtk_drawing_area_new();
+        canvasRenderer.setRedrawWidget(canvas);
         gtk_widget_set_focusable(canvas, true);
         gtk_widget_set_hexpand(canvas, true);
         gtk_widget_set_vexpand(canvas, true);
@@ -14938,9 +15755,9 @@ private:
                     this);
         }
         if (!options.smokeDirectory.empty() && !options.verifyPlugins && !options.verifySearch &&
-            !options.verifySidebarPerformance &&
-            !options.verifyPageLayout && !options.verifyPresentationMode && !options.verifyPenLineStyle &&
-            !options.verifyBeamer && !options.verifyLayerActions && !options.verifyLatex) {
+            !options.verifySidebarPerformance && !options.verifySidebarStartup && !options.verifyPageLayout &&
+            !options.verifyPresentationMode && !options.verifyPenLineStyle && !options.verifyBeamer &&
+            !options.verifyLayerActions && !options.verifyLatex) {
             if (const char* verifyMode = g_getenv("XOURNALPP_SETTINGS_VERIFY_MODE"); verifyMode && *verifyMode) {
                 settingsVerifyMode = verifyMode;
             }
@@ -15041,6 +15858,10 @@ private:
             return;
         }
 #if GTK_CHECK_VERSION(4, 12, 0)
+        auto* model = gtk_list_view_get_model(pageList);
+        if (!model || static_cast<guint>(state.page) >= g_list_model_get_n_items(G_LIST_MODEL(model))) {
+            return;
+        }
         gtk_list_view_scroll_to(pageList, static_cast<guint>(state.page), GTK_LIST_SCROLL_NONE, nullptr);
 #else
         auto* scroll = gtk_widget_get_parent(GTK_WIDGET(pageList));
@@ -15062,6 +15883,9 @@ private:
     void update() {
         if (closed) {
             return;
+        }
+        if (state.page != lastPreloadPage) {
+            scheduleCanvasPagePreload();
         }
         if (pdfTextSelection && pdfTextSelection->finalized && state.page != pdfTextSelection->page) {
             clearPdfTextSelection(false);
@@ -15803,6 +16627,9 @@ private:
             return;
         }
         pointerPosition = prototype::Point{x, y};
+        if (canvasOverviewMode()) {
+            gtk_widget_queue_draw(canvas);
+        }
         if (importedConfig.settings.highlightPosition && canvas) {
             gtk_widget_queue_draw(canvas);
         }
@@ -16246,7 +17073,8 @@ private:
                              auto* self = static_cast<Prototype*>(data);
                              const bool hadPointer = self->pointerPosition.has_value();
                              self->pointerPosition.reset();
-                             if (hadPointer && self->importedConfig.settings.highlightPosition) {
+                             if (hadPointer &&
+                                 (self->importedConfig.settings.highlightPosition || self->canvasOverviewMode())) {
                                  gtk_widget_queue_draw(self->canvas);
                              }
                              self->scheduleFloatingToolboxHide();
@@ -16794,143 +17622,158 @@ private:
         gtk_widget_add_controller(canvas, GTK_EVENT_CONTROLLER(gesture));
     }
 
-    static constexpr size_t maxCachedPages = 4;
-
-    const PageCacheEntry& ensurePageCache(int pageIndex, int deviceScale) {
-        const auto sz = state.pageSize(pageIndex);
-        // Bound both dimensions and memory per page, even when zoomed into a huge PDF page.
-        const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
-        // Reuse current rasters during continuous zoom; rerender once input settles.
-        for (auto& entry: pageCache) {
-            if (entry.pageIndex == pageIndex && entry.originLayer == prototype::newLayerOrigin &&
-                (zoomPreview || std::abs(entry.scale - scale) < 0.0001)) {
-                entry.stamp = ++cacheClock;
-                return entry;
+    PageRasterRequest canvasRenderRequest(int page, double scale) const {
+        PageRasterRequest request;
+        request.page = page;
+        request.pageSize = state.pageSize(page);
+        const int deviceScale = canvas ? gtk_widget_get_scale_factor(canvas) : 1;
+        request.mediumDetailScale = canvasMediumDetailScale(page, deviceScale);
+        request.lowDetailScale = canvasLodScale(page, deviceScale);
+        request.renderScale = std::max(scale, request.mediumDetailScale);
+        request.quality = PageRasterQuality::Full;
+        request.audioMode = state.brush.tool == Tool::PlayObject;
+        const auto& pageLayers = state.layersForPage(page);
+        if (document && pageLayers.backgroundVisible) {
+            request.backgroundPath = nativeSession ? nativeSession->previewPath().string() : sourcePath;
+        }
+        if (nativeSession) {
+            const auto& paths =
+                    request.audioMode ? nativeSession->audioLayerPreviewPaths : nativeSession->layerPreviewPaths;
+            const auto& documents = request.audioMode ? audioLayerDocuments : layerDocuments;
+            for (const auto& layer: pageLayers.layers) {
+                if (!layer.visible) {
+                    continue;
+                }
+                for (const size_t origin: layer.origins) {
+                    if (origin < documents.size() && origin < paths.size() &&
+                        std::none_of(
+                                request.layers.begin(), request.layers.end(),
+                                [origin](const PageRasterLayerSource& source) { return source.origin == origin; })) {
+                        request.layers.push_back({origin, paths[origin].string()});
+                    }
+                }
             }
         }
-        const int width = std::max(1, static_cast<int>(std::ceil(sz.width * scale)));
-        const int height = std::max(1, static_cast<int>(std::ceil(sz.height * scale)));
-        std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface(
-                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
-        if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
-            throw std::runtime_error("Cannot allocate page surface");
-        }
-        auto* cr = cairo_create(surface.get());
-        cairo_set_source_rgb(cr, 1, 1, 1);
-        cairo_paint(cr);
-        cairo_scale(cr, scale, scale);
-        if (document && pageIndex >= 0 && pageIndex < pageCount) {
-            if (auto* pdfPage = poppler_document_get_page(document, pageIndex)) {
-                poppler_page_render(pdfPage, cr);
-                g_object_unref(pdfPage);
-            }
-        }
-        cairo_destroy(cr);
-        ++rasterizations;
-        PageCacheEntry* slot = nullptr;
-        for (auto& entry: pageCache) {
-            if (entry.pageIndex == pageIndex && entry.originLayer == prototype::newLayerOrigin) {
-                slot = &entry;
-                break;
-            }
-        }
-        if (!slot) {
-            if (pageCache.size() < maxCachedPages) {
-                pageCache.push_back({});
-                slot = &pageCache.back();
-            } else {
-                slot = &*std::min_element(pageCache.begin(), pageCache.end(),
-                                          [](const PageCacheEntry& a, const PageCacheEntry& b) {
-                                              return a.stamp < b.stamp;
-                                          });
-            }
-        }
-        slot->pageIndex = pageIndex;
-        slot->originLayer = prototype::newLayerOrigin;
-        slot->scale = scale;
-        slot->stamp = ++cacheClock;
-        slot->surface = std::move(surface);
-        return *slot;
+        // shortcut: cap each page at 64 MiB; raise after measuring large native-layer stacks.
+        const auto size = request.pageSize;
+        const double pixelsPerSurface =
+                static_cast<double>(64 * 1024 * 1024 / sizeof(uint32_t)) / (1 + request.layers.size());
+        request.renderScale = std::min(request.renderScale, std::sqrt(pixelsPerSurface / (size.width * size.height)));
+        return request;
     }
 
-    const PageCacheEntry& ensureLayerPageCache(int pageIndex, size_t originLayer, int deviceScale) {
-        const auto sz = state.pageSize(pageIndex);
-        const auto scale = std::min({state.zoom * deviceScale, 4096.0 / sz.width, 4096.0 / sz.height});
-        const bool audioMode = state.brush.tool == Tool::PlayObject;
-        for (auto& entry: layerPageCache) {
-            if (entry.pageIndex == pageIndex && entry.originLayer == originLayer &&
-                entry.audioMode == audioMode && (zoomPreview || std::abs(entry.scale - scale) < 0.0001)) {
-                entry.stamp = ++cacheClock;
-                return entry;
-            }
-        }
-        const int width = std::max(1, static_cast<int>(std::ceil(sz.width * scale)));
-        const int height = std::max(1, static_cast<int>(std::ceil(sz.height * scale)));
-        std::unique_ptr<cairo_surface_t, SurfaceDeleter> surface(
-                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height));
-        if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS) {
-            throw std::runtime_error("Cannot allocate native layer surface");
-        }
-        auto* cr = cairo_create(surface.get());
-        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-        cairo_paint(cr);
-        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-        cairo_scale(cr, scale, scale);
-        const auto& documents = audioMode ? audioLayerDocuments : layerDocuments;
-        if (originLayer < documents.size() && pageIndex >= 0 && pageIndex < pageCount) {
-            if (auto* pdfPage = poppler_document_get_page(documents[originLayer], pageIndex)) {
-                poppler_page_render(pdfPage, cr);
-                g_object_unref(pdfPage);
-            }
-        }
-        cairo_destroy(cr);
-        ++rasterizations;
-        PageCacheEntry* slot = nullptr;
-        for (auto& entry: layerPageCache) {
-            if (entry.pageIndex == pageIndex && entry.originLayer == originLayer && entry.audioMode == audioMode) {
-                slot = &entry;
-                break;
-            }
-        }
-        if (!slot) {
-            constexpr size_t maxCachedLayerPages = 16;
-            if (layerPageCache.size() < maxCachedLayerPages) {
-                layerPageCache.push_back({});
-                slot = &layerPageCache.back();
-            } else {
-                slot = &*std::min_element(layerPageCache.begin(), layerPageCache.end(),
-                                          [](const PageCacheEntry& a, const PageCacheEntry& b) {
-                                              return a.stamp < b.stamp;
-                                          });
-            }
-        }
-        slot->pageIndex = pageIndex;
-        slot->originLayer = originLayer;
-        slot->scale = scale;
-        slot->audioMode = audioMode;
-        slot->stamp = ++cacheClock;
-        slot->surface = std::move(surface);
-        return *slot;
+    double canvasLodScale(int page, int deviceScale) const {
+        return canvasCacheScale(page, deviceScale, 1.0, maxCanvasLowLodDimension);
     }
 
-    const PageCacheEntry& ensureCache(int deviceScale) { return ensurePageCache(state.page, deviceScale); }
-
-    size_t totalCacheBytes() const {
-        size_t total = 0;
-        for (const auto& entry: pageCache) {
-            if (entry.surface) {
-                total += static_cast<size_t>(cairo_image_surface_get_stride(entry.surface.get())) *
-                         static_cast<size_t>(cairo_image_surface_get_height(entry.surface.get()));
-            }
-        }
-        for (const auto& entry: layerPageCache) {
-            if (entry.surface) {
-                total += static_cast<size_t>(cairo_image_surface_get_stride(entry.surface.get())) *
-                         static_cast<size_t>(cairo_image_surface_get_height(entry.surface.get()));
-            }
-        }
-        return total;
+    double canvasMediumDetailScale(int page, int deviceScale) const {
+        return canvasCacheScale(page, deviceScale, 2.0, maxCanvasMediumLodDimension);
     }
+
+    double canvasCacheScale(int page, int deviceScale, double zoomMultiplier, int maxDimension) const {
+        const auto size = state.pageSize(page);
+        const double desiredScale = state.zoom * deviceScale * zoomMultiplier;
+        const double roundedScale = std::max(0.125, std::round(desiredScale * 4) / 4);
+        return std::min({roundedScale, maxDimension / size.width, maxDimension / size.height});
+    }
+
+    PageRasterRequest canvasMediumDetailRequest(int page) const {
+        const int deviceScale = canvas ? gtk_widget_get_scale_factor(canvas) : 1;
+        auto request = canvasRenderRequest(page, canvasMediumDetailScale(page, deviceScale));
+        request.renderScale = request.mediumDetailScale;
+        request.quality = PageRasterQuality::MediumDetail;
+        return request;
+    }
+
+    PageRasterRequest canvasLodRequest(int page) const {
+        const int deviceScale = canvas ? gtk_widget_get_scale_factor(canvas) : 1;
+        auto request = canvasRenderRequest(page, canvasLodScale(page, deviceScale));
+        request.renderScale = request.lowDetailScale;
+        request.quality = PageRasterQuality::LowDetail;
+        return request;
+    }
+
+    PageRasterRequest canvasPreloadRequest(int page) const {
+        switch (importedConfig.settings.preloadDetail) {
+            case prototype::CanvasPreloadDetail::Medium:
+                return canvasMediumDetailRequest(page);
+            case prototype::CanvasPreloadDetail::Low:
+                return canvasLodRequest(page);
+            case prototype::CanvasPreloadDetail::Automatic:
+                return canvasUsesMediumDetail() ? canvasMediumDetailRequest(page) : canvasLodRequest(page);
+        }
+        return canvasLodRequest(page);
+    }
+
+    void applyCanvasCacheLimits() {
+        const auto& settings = importedConfig.settings;
+        constexpr size_t bytesPerMegabyte = 1024 * 1024;
+        canvasRenderer.setCacheLimits(static_cast<size_t>(settings.fullDetailCachePages),
+                                      static_cast<size_t>(settings.mediumDetailCachePages),
+                                      static_cast<size_t>(settings.mediumDetailCacheMegabytes) * bytesPerMegabyte,
+                                      static_cast<size_t>(settings.lowDetailCachePages),
+                                      static_cast<size_t>(settings.lowDetailCacheMegabytes) * bytesPerMegabyte);
+    }
+
+    bool canvasUsesMediumDetail() const {
+        return state.zoom > importedConfig.settings.lowDetailZoomThresholdPercent / 100.0;
+    }
+
+    bool canvasOverviewMode(size_t visiblePageCount) const {
+        return state.zoom <= importedConfig.settings.overviewZoomThresholdPercent / 100.0 || visiblePageCount > 4;
+    }
+
+    bool canvasOverviewMode() const {
+        return canvas &&
+               canvasOverviewMode(
+                       state.visiblePageIndices(gtk_widget_get_width(canvas), gtk_widget_get_height(canvas)).size());
+    }
+
+    int canvasDetailPage(const std::map<int, double>& visiblePages) const {
+        if (pointerPosition) {
+            if (const auto hit = state.hitPage(pointerPosition->x, pointerPosition->y);
+                hit && visiblePages.contains(hit->page)) {
+                return hit->page;
+            }
+        }
+        if (visiblePages.contains(state.page)) {
+            return state.page;
+        }
+        return std::min_element(visiblePages.begin(), visiblePages.end(),
+                                [](const auto& left, const auto& right) { return left.second < right.second; })
+                ->first;
+    }
+
+    double canvasRenderScale(int page, int deviceScale) const {
+        const auto size = state.pageSize(page);
+        const auto scale = std::min({state.zoom * deviceScale, 4096.0 / size.width, 4096.0 / size.height});
+        return canvasRenderRequest(page, scale).renderScale;
+    }
+
+    double canvasDetailRenderScale(int page, int deviceScale, bool overview) const {
+        const double scale = canvasRenderScale(page, deviceScale);
+        return overview ? std::max(scale, canvasMediumDetailRequest(page).renderScale * 2) : scale;
+    }
+
+    bool waitForCanvasRaster(int page, double scale, int timeoutMilliseconds = 6000) {
+        const auto request = canvasRenderRequest(page, scale);
+        canvasRenderer.setVisiblePages({{page, 0}}, page);
+        canvasRenderer.setFullDetailPages({{page, 0}});
+        canvasRenderer.setRetainedPages({{page, 0}}, {{page, 0}});
+        const auto deadline = g_get_monotonic_time() + timeoutMilliseconds * 1000LL;
+        while (g_get_monotonic_time() < deadline) {
+            canvasRenderer.request(request);
+            if (canvasRenderer.matches(request)) {
+                canvasRenderer.find(page);
+                return true;
+            }
+            g_main_context_iteration(nullptr, false);
+            g_usleep(1000);
+        }
+        return false;
+    }
+
+    size_t totalCacheBytes() const { return canvasRenderer.cacheBytes(); }
 
     void drawSearchMatches(cairo_t* cr, int page) const {
         for (size_t index = 0; index < searchMatches.size(); ++index) {
@@ -16989,8 +17832,69 @@ private:
         if (sidebarCanvasRenderSuppressed) {
             return;
         }
-        bool drewAny = false;
-        for (const int i: state.visiblePageIndices(width, height)) {
+        const auto visiblePageIndices = state.visiblePageIndices(width, height);
+        std::map<int, double> visiblePages;
+        for (const int page: visiblePageIndices) {
+            const auto size = state.pageSize(page);
+            const double centerY = state.offsetY + (state.pageTop(page) + size.height / 2.0) * state.zoom;
+            visiblePages.emplace(page, std::abs(centerY - height / 2.0));
+        }
+        if (visiblePages.empty()) {
+            visiblePages.emplace(state.page, 0);
+        }
+        const auto retainedPages = [this, width, height](double margin) {
+            std::map<int, double> pages;
+            for (const int page: state.visiblePageIndices(width, height, width * margin, height * margin)) {
+                const auto size = state.pageSize(page);
+                const double centerY = state.offsetY + (state.pageTop(page) + size.height / 2.0) * state.zoom;
+                pages.emplace(page, std::abs(centerY - height / 2.0));
+            }
+            if (pages.empty()) {
+                pages.emplace(state.page, 0);
+            }
+            return pages;
+        };
+        auto mediumRetainedPages = retainedPages(1.5);
+        auto lowRetainedPages = retainedPages(6.0);
+        for (const auto& [page, order]: canvasPreloadedPages) {
+            mediumRetainedPages.try_emplace(page, height * 8.0 + order);
+            lowRetainedPages.try_emplace(page, height * 8.0 + order);
+        }
+        canvasRenderer.setVisiblePages(visiblePages, state.page);
+        const bool overview = canvasOverviewMode(visiblePageIndices.size());
+        const int detailPage = canvasDetailPage(visiblePages);
+        canvasRenderer.setFullDetailPages(overview ? std::map<int, double>{{detailPage, visiblePages.at(detailPage)}} :
+                                                     visiblePages);
+        canvasRenderer.setRetainedPages(std::move(mediumRetainedPages), std::move(lowRetainedPages));
+        if (!zoomPreview) {
+            if (overview) {
+                const double scale = canvasDetailRenderScale(detailPage, deviceScale, true);
+                canvasRenderer.request(canvasRenderRequest(detailPage, scale));
+                for (const auto& [page, distance]: visiblePages) {
+                    if (page != detailPage) {
+                        canvasRenderer.request(canvasUsesMediumDetail() ? canvasMediumDetailRequest(page) :
+                                                                         canvasLodRequest(page));
+                    }
+                }
+            } else {
+                for (const auto& [page, distance]: visiblePages) {
+                    const auto size = state.pageSize(page);
+                    const double scale =
+                            std::min({state.zoom * deviceScale, 4096.0 / size.width, 4096.0 / size.height});
+                    canvasRenderer.request(canvasRenderRequest(page, scale));
+                }
+            }
+        }
+        if (!zoomPreview) {
+            for (const auto& preload: canvasPreloadedPages) {
+                const int page = preload.first;
+                if (visiblePages.contains(page)) {
+                    continue;
+                }
+                canvasRenderer.request(canvasPreloadRequest(page));
+            }
+        }
+        for (const int i: visiblePageIndices) {
             const auto sz = state.pageSize(i);
             const double sx0 = state.offsetX + state.pageLeft(i) * state.zoom;
             const double sy0 = state.offsetY + state.pageTop(i) * state.zoom;
@@ -16999,8 +17903,7 @@ private:
             if (sx1 <= 0 || sy1 <= 0 || sx0 >= width || sy0 >= height) {
                 continue;
             }
-            drewAny = true;
-            const auto& cached = ensurePageCache(i, deviceScale);
+            const auto* cached = canvasRenderer.find(i);
             cairo_save(cr);
             cairo_set_source_rgba(cr, 0, 0, 0, darkCanvas ? 0.45 : 0.18);
             cairo_rectangle(cr, sx0 - 0.5, sy0 - 0.5, (sx1 - sx0) + 1.0, (sy1 - sy0) + 1.0);
@@ -17015,10 +17918,10 @@ private:
             cairo_clip(cr);
             cairo_set_source_rgb(cr, 1, 1, 1);
             cairo_paint(cr);
-            if (state.layerVisible(i, 0)) {
+            if (state.layerVisible(i, 0) && cached && cached->background) {
                 cairo_save(cr);
-                cairo_scale(cr, 1.0 / cached.scale, 1.0 / cached.scale);
-                cairo_set_source_surface(cr, cached.surface.get(), 0, 0);
+                cairo_scale(cr, 1.0 / cached->scale, 1.0 / cached->scale);
+                cairo_set_source_surface(cr, cached->background.get(), 0, 0);
                 cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
                 cairo_paint(cr);
                 cairo_restore(cr);
@@ -17030,6 +17933,7 @@ private:
                 size_t index;
             };
             const bool fadeEditableObjects = state.brush.tool == Tool::PlayObject;
+            const auto& layerSources = fadeEditableObjects ? audioLayerDocuments : layerDocuments;
             const auto drawEditableObject = [&](auto&& drawObject) {
                 if (!fadeEditableObjects) {
                     drawObject();
@@ -17047,14 +17951,16 @@ private:
                     continue;
                 }
                 for (size_t origin: layer.origins) {
-                    if (origin < layerDocuments.size()) {
-                        const auto& nativeLayer = ensureLayerPageCache(i, origin, deviceScale);
-                        cairo_save(cr);
-                        cairo_scale(cr, 1.0 / nativeLayer.scale, 1.0 / nativeLayer.scale);
-                        cairo_set_source_surface(cr, nativeLayer.surface.get(), 0, 0);
-                        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
-                        cairo_paint(cr);
-                        cairo_restore(cr);
+                    if (origin < layerSources.size() && cached && cached->audioMode == fadeEditableObjects) {
+                        const auto nativeLayer = cached->layers.find(origin);
+                        if (nativeLayer != cached->layers.end()) {
+                            cairo_save(cr);
+                            cairo_scale(cr, 1.0 / cached->scale, 1.0 / cached->scale);
+                            cairo_set_source_surface(cr, nativeLayer->second.get(), 0, 0);
+                            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+                            cairo_paint(cr);
+                            cairo_restore(cr);
+                        }
                     }
                     std::vector<LayerItem> layerItems;
                     layerItems.reserve(state.ink.size() + state.texts.size());
@@ -17132,9 +18038,6 @@ private:
             }
             drawSearchMatches(cr, i);
             cairo_restore(cr);
-        }
-        if (!drewAny) {
-            ensurePageCache(state.page, deviceScale);
         }
         if (importedConfig.settings.highlightPosition && pointerPosition && pointerPosition->x >= 0 &&
             pointerPosition->y >= 0 && pointerPosition->x < width && pointerPosition->y < height) {
@@ -17572,7 +18475,7 @@ private:
 
     gboolean stepCrashHelper() {
         require(++crashHelperTicks < 240, "Crash helper timed out waiting for autosave");
-        if (busy || !frames || pageCache.empty() || !nativeSession) {
+        if (busy || !frames || canvasRenderer.empty() || !nativeSession) {
             return G_SOURCE_CONTINUE;
         }
         if (crashHelperStep == 0) {
@@ -17626,7 +18529,7 @@ private:
             return G_SOURCE_CONTINUE;
         }
         if (recoveryVerifyStep == 1) {
-            if (!frames || pageCache.empty() || g_get_monotonic_time() - lastDocumentCompletion < 150000) {
+            if (!frames || canvasRenderer.empty() || g_get_monotonic_time() - lastDocumentCompletion < 150000) {
                 return G_SOURCE_CONTINUE;
             }
             if (recoveryActionSpec == "delete" || recoveryActionSpec == "discard") {
@@ -20492,9 +21395,13 @@ private:
             throw std::runtime_error("Window did not finish painting the requested state");
         }
         paintWaits = 0;
-        if (preferencesVerifyMode.empty() && imageVerifyMode.empty() && (!frames || pageCache.empty())) {
-            require(++smokeWaits < 60, "Canvas has not rendered");
-            return G_SOURCE_CONTINUE;
+        if (preferencesVerifyMode.empty() && imageVerifyMode.empty()) {
+            const bool currentRasterReady = canvasRenderer.matches(canvasRenderRequest(
+                    state.page, canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))));
+            if (!frames || !currentRasterReady) {
+                require(++smokeWaits < 60, "Canvas has not rendered");
+                return G_SOURCE_CONTINUE;
+            }
         }
         if (!preferencesVerifyMode.empty()) {
             return smokePreferencesVerify();
@@ -20547,7 +21454,7 @@ private:
                 require(converted && std::abs(converted->x - 40) < 0.01 && std::abs(converted->y - 60) < 0.01,
                         "Pointer anchor failed to account for sidebar and toolbar offsets");
                 capture("initial");
-                baselineRasters = rasterizations;
+                baselineRasters = canvasRenderer.completedRequests();
                 require(std::abs(state.brush.width - 1.41) < 1e-6 &&
                                 gtk_drop_down_get_selected(GTK_DROP_DOWN(sizeDropdown)) == 2u,
                         "Initial Pen preset did not match Medium 1.41pt");
@@ -20566,7 +21473,7 @@ private:
                 break;
             }
             case 1: {
-                require(rasterizations == baselineRasters, "Ink unnecessarily rerasterized PDF");
+                require(canvasRenderer.completedRequests() == baselineRasters, "Ink unnecessarily rerasterized PDF");
                 capture("ink");
                 gboolean handled = false;
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_z, 0u, GDK_CONTROL_MASK, &handled);
@@ -20592,7 +21499,8 @@ private:
                 break;
             }
             case 2:
-                require(rasterizations == baselineRasters, "Brush changes unnecessarily rerasterized PDF");
+                require(canvasRenderer.completedRequests() == baselineRasters,
+                        "Brush changes unnecessarily rerasterized PDF");
                 capture("tools");
                 gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toolButtons[0]), true);
                 require(state.brush.width == 6 && state.brush.color[0] == 1 &&
@@ -20650,16 +21558,28 @@ private:
                 require(!state.pinching && state.scrollBlockedUntil > g_get_monotonic_time(), "Pinch cleanup failed");
                 break;
             case 5: {
-                require(rasterizations > baselineRasters, "Zoom did not refresh PDF resolution");
+                require(waitForCanvasRaster(state.page,
+                                            canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))) &&
+                                canvasRenderer.completedRequests() > baselineRasters,
+                        "Zoom did not refresh PDF resolution");
                 capture("zoom");
-                const auto& cached1x = ensureCache(1);
-                const auto width1x = cairo_image_surface_get_width(cached1x.surface.get());
-                const auto& cached2x = ensureCache(2);
-                require(cairo_image_surface_get_width(cached2x.surface.get()) >= width1x * 2 - 1,
+                zoomPreview = true;
+                require(waitForCanvasRaster(state.page, 1), "The 1x canvas raster did not finish");
+                const auto* cached1x = canvasRenderer.find(state.page);
+                const auto width1x = cairo_image_surface_get_width(cached1x->background.get());
+                require(waitForCanvasRaster(state.page, 2), "The 2x canvas raster did not finish");
+                const auto* cached2x = canvasRenderer.find(state.page);
+                require(cairo_image_surface_get_width(cached2x->background.get()) >= width1x * 2 - 1,
                         "2x cache must preserve logical page size and increase resolution");
-                require(cairo_image_surface_get_width(cached2x.surface.get()) <= 4096 &&
-                                cairo_image_surface_get_height(cached2x.surface.get()) <= 4096,
+                require(cairo_image_surface_get_width(cached2x->background.get()) <= 4096 &&
+                                cairo_image_surface_get_height(cached2x->background.get()) <= 4096,
                         "Cache exceeds dimension limit");
+                zoomPreview = false;
+                update();
+                require(waitForCanvasRaster(state.page,
+                                            canvasRenderScale(state.page, gtk_widget_get_scale_factor(canvas))),
+                        "The settled canvas raster did not finish");
+                baselineRasters = canvasRenderer.completedRequests();
                 smokeDrawingTools();
                 if (pageCount > 1) {
                     const double zoomBeforeNav = state.zoom;
@@ -20834,10 +21754,10 @@ private:
             std::cout << "PASS: GTK4 Cairo canvas, real PDF, colors, widths, highlight, undo/redo, eraser, "
                          "sidebar navigation/overlay, stylus/backlog/Space adapters, cancel, pinch, narrow "
                          "viewport, geometric drawing, shape recognition, stabilization, rich text, 2x raster cache"
-                      << "\nframes=" << frames << " rasterizations=" << rasterizations
+                      << "\nframes=" << frames << " rasterizations=" << canvasRenderer.completedRequests()
                       << " device_scale=" << gtk_widget_get_scale_factor(canvas)
-                      << " viewport_width=" << gtk_widget_get_width(canvas)
-                      << " cache_bytes=" << smokeCacheBytes << '\n';
+                      << " viewport_width=" << gtk_widget_get_width(canvas) << " cache_bytes=" << smokeCacheBytes
+                      << '\n';
             if (options.worker.empty()) {
                 g_application_quit(G_APPLICATION(gtk_window_get_application(GTK_WINDOW(window))));
                 return G_SOURCE_REMOVE;
@@ -21423,7 +22343,7 @@ private:
             case 37: {
                 capture("continuous-pages");
                 // Cross-page scrolling must reuse the bounded 4-page LRU raster cache without rerasterizing Poppler.
-                const int rastersBeforeScroll = rasterizations;
+                const size_t rastersBeforeScroll = canvasRenderer.completedRequests();
                 const double zoomBeforeShortcuts = state.zoom;
                 gboolean handled = false;
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_Home, 0u, GDK_CONTROL_MASK, &handled);
@@ -21437,7 +22357,7 @@ private:
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_End, 0u, GDK_CONTROL_MASK, &handled);
                 require(handled && state.page == 1, "Ctrl+End last-page shortcut failed");
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_K, 0u, GDK_SHIFT_MASK, &handled);
-                require(handled && state.page == 0 && rasterizations == rastersBeforeScroll,
+                require(handled && state.page == 0 && canvasRenderer.completedRequests() == rastersBeforeScroll,
                         "Page navigation across cached pages unnecessarily rerasterized PDF");
                 // Exercise ':' and Ctrl+G Go-to-Page dialogs.
                 g_signal_emit_by_name(keys, "key-pressed", GDK_KEY_colon, 0u, GdkModifierType(0), &handled);
@@ -21917,6 +22837,10 @@ private:
     std::vector<PopplerDocument*> audioLayerDocuments;
     std::vector<prototype::AudioTarget> audioTargets;
     int pageCount = 1;
+    int lastPreloadPage = -1;
+    int canvasPreloadDirection = 1;
+    guint canvasPreloadSource = 0;
+    std::map<int, double> canvasPreloadedPages;
     bool syncingPage = false;
     bool syncingFloatingLayers = false;
     GtkWidget* window = nullptr;
@@ -22066,7 +22990,8 @@ private:
     std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> preferenceControls{};
     GtkListView* pageList = nullptr;
     std::vector<GtkWidget*> thumbnailWidgets;
-    PageThumbnailRenderer thumbnailRenderer;
+    PageRasterRenderer thumbnailRenderer;
+    PageRasterRenderer canvasRenderer{4, 1, 4};
     size_t sidebarStartupReadyDraws = 0;
     bool sidebarCanvasRenderSuppressed = false;
     GtkWidget* layerRows = nullptr;
@@ -22111,9 +23036,6 @@ private:
     std::vector<GtkGesture*> panGestures;
     GtkGesture* pinch = nullptr;
     GtkEventController* keys = nullptr;
-    std::vector<PageCacheEntry> pageCache;
-    std::vector<PageCacheEntry> layerPageCache;
-    uint64_t cacheClock = 0;
     double dragX = 0;
     double dragY = 0;
     double pinchX = 0;
@@ -22125,8 +23047,7 @@ private:
     int lastWidth = 0;
     int lastHeight = 0;
     int frames = 0;
-    int rasterizations = 0;
-    int baselineRasters = 0;
+    size_t baselineRasters = 0;
     int smokeStep = 0;
     size_t smokeCacheBytes = 0;
     int snapshotWaits = 0;
@@ -22140,17 +23061,17 @@ private:
 
 int main(int argc, char** argv) {
     try {
-        if (argc > 1 && std::string_view(argv[1]) == "--gtk4-sidebar-thumbnail-worker") {
-            return runThumbnailWorker(argc, argv);
+        if (argc > 1 && std::string_view(argv[1]) == "--gtk4-page-raster-worker") {
+            return runPageRasterWorker(argc, argv);
         }
         const std::filesystem::path executable(argv[0]);
         if (executable.has_parent_path()) {
-            thumbnailWorkerExecutable = std::filesystem::absolute(executable).string();
+            pageRasterWorkerExecutable = std::filesystem::absolute(executable).string();
         } else if (auto* resolved = g_find_program_in_path(argv[0])) {
-            thumbnailWorkerExecutable = resolved;
+            pageRasterWorkerExecutable = resolved;
             g_free(resolved);
         } else {
-            throw std::runtime_error("Cannot locate the sidebar thumbnail renderer");
+            throw std::runtime_error("Cannot locate the page raster renderer");
         }
         Options options;
         for (int i = 1; i < argc; ++i) {
