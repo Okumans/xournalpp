@@ -795,17 +795,56 @@ def main():
         rejected_clone.mkdir()
         rejected_snapshot = rejected_clone / "snapshot.xopp"
         rejected_preview = rejected_clone / "preview.pdf"
+        rejected_target_history = rejected_clone / "replaced-page.xopp"
+        rejected_clone_history = rejected_clone / "inserted-page.xopp"
         clone_arguments = [annotated_args[0], rejected_snapshot, rejected_preview, "0", "1", "0",
-                           *annotated_args[1:], audio_folder, audio_cache]
+                           *annotated_args[1:], audio_folder, audio_cache, pdf_bg_open / "page-sizes.dat",
+                           rejected_target_history, rejected_clone_history]
         run("layer-actions-clone-next", *clone_arguments, succeeds=False)
         assert not rejected_snapshot.exists() and not rejected_preview.exists()
+        assert not rejected_target_history.exists() and not rejected_clone_history.exists()
 
         accepted_clone = temporary / "layer-action-accepted"
         accepted_clone.mkdir()
         accepted_snapshot = accepted_clone / "snapshot.xopp"
         accepted_preview = accepted_clone / "preview.pdf"
+        replaced_page_history = accepted_clone / "replaced-page.xopp"
+        inserted_page_history = accepted_clone / "inserted-page.xopp"
         run("layer-actions-clone-next", annotated_args[0], accepted_snapshot, accepted_preview, "0", "1", "1",
-            *annotated_args[1:], audio_folder, audio_cache)
+            *annotated_args[1:], audio_folder, audio_cache, pdf_bg_open / "page-sizes.dat",
+            replaced_page_history, inserted_page_history)
+        assert len(xml(replaced_page_history).findall("page")) == 1
+        assert len(xml(inserted_page_history).findall("page")) == 1
+        assert xml(replaced_page_history).find("page/background").attrib.get("pageno") == "2"
+        assert xml(inserted_page_history).find("page/background").attrib.get("pageno") == "2"
+
+        # Replaying the master plugin's two page-history steps must preserve the old target and cloned page.
+        target_restored = accepted_clone / "target-restored"
+        target_restored.mkdir()
+        run("restore-page", accepted_snapshot, replaced_page_history,
+            target_restored / "snapshot.xopp", target_restored / "preview.pdf", "2",
+            audio_folder, audio_cache, accepted_clone / "page-sizes.dat")
+        assert read_pdf_page_map(target_restored / "pdf-pages.dat") == [0, 1, 1]
+
+        clone_removed = accepted_clone / "clone-removed"
+        clone_removed.mkdir()
+        run("delete-page", target_restored / "snapshot.xopp", clone_removed / "snapshot.xopp",
+            clone_removed / "preview.pdf", "1", audio_folder, audio_cache)
+        assert read_pdf_page_map(clone_removed / "pdf-pages.dat") == [0, 1]
+
+        clone_restored = accepted_clone / "clone-restored"
+        clone_restored.mkdir()
+        run("restore-page", clone_removed / "snapshot.xopp", inserted_page_history,
+            clone_restored / "snapshot.xopp", clone_restored / "preview.pdf", "1",
+            audio_folder, audio_cache, clone_removed / "page-sizes.dat")
+        assert read_pdf_page_map(clone_restored / "pdf-pages.dat") == [0, 1, 1]
+
+        original_target_removed = accepted_clone / "original-target-removed"
+        original_target_removed.mkdir()
+        run("delete-page", clone_restored / "snapshot.xopp", original_target_removed / "snapshot.xopp",
+            original_target_removed / "preview.pdf", "2", audio_folder, audio_cache)
+        assert read_pdf_page_map(original_target_removed / "pdf-pages.dat") == [0, 1]
+
         clone_saved = accepted_clone / "native-round-trip.xopp"
         run("save-copy", accepted_snapshot, clone_saved, accepted_clone / "editable-ink.dat",
             accepted_clone / "editable-text.dat", accepted_clone / "layers.dat",
@@ -859,7 +898,9 @@ def main():
         non_pdf_clone.mkdir()
         run("layer-actions-clone-next", pdf_bg_ins / "snapshot.xopp", non_pdf_clone / "snapshot.xopp",
             non_pdf_clone / "preview.pdf", "0", "1", "1", empty, pdf_bg_open / "text.dat",
-            pdf_bg_ins / "layers.dat", pdf_bg_open / "images.dat", audio_folder, audio_cache, succeeds=False)
+            pdf_bg_ins / "layers.dat", pdf_bg_open / "images.dat", audio_folder, audio_cache,
+            pdf_bg_ins / "page-sizes.dat", non_pdf_clone / "replaced-page.xopp",
+            non_pdf_clone / "inserted-page.xopp", succeeds=False)
         assert not (non_pdf_clone / "snapshot.xopp").exists() and not (non_pdf_clone / "preview.pdf").exists()
 
         # Batch insertion uses original page indices in descending order, preserving each PDF page association.

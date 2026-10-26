@@ -4441,7 +4441,10 @@ private:
                     releaseLayerPreviewPdfs(audioLayerDocuments);
                     audioLayerDocuments = std::move(candidateAudioLayers);
                     audioTargets = session->audioTargets;
-                    if (!state.replaceNextPageWithClone(currentPage, sizes.at(static_cast<size_t>(currentPage + 1)))) {
+                    if (!state.replaceNextPageWithClone(
+                                currentPage, sizes.at(static_cast<size_t>(currentPage + 1)),
+                                staged->insertedPageHistorySnapshotPath.string(),
+                                staged->pageHistorySnapshotPath.string())) {
                         throw std::runtime_error("Cannot replace the next page with the cloned page");
                     }
                     pageCount = static_cast<int>(sizes.size());
@@ -4451,9 +4454,6 @@ private:
                     state.texts = std::move(hydratedTexts);
                     state.images = std::move(hydratedImages);
                     state.selectActivePage(currentPage + 1);
-                    savedRevision.reset();
-                    savedNormally = false;
-                    savedCopyPath.clear();
                     selectedImageIndex.reset();
                     g_clear_object(&pdfTextDocument);
                     pdfTextDocumentPath.clear();
@@ -6859,11 +6859,8 @@ private:
         require(pluginRuntime->invokeMenu("LayerActions", 0),
                 "LayerActions clone did not start its target-page check");
         waitForPluginDocumentJob();
-        require(messageDialog &&
-                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-1"), "Cancel") ==
-                                0 &&
-                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-2"), "Proceed") ==
-                                0,
+        require(dialogHasResponseLabel("plugin-response-1", "Cancel") &&
+                        dialogHasResponseLabel("plugin-response-2", "Proceed"),
                 "LayerActions did not ask before replacing an annotated next page");
         answerDialog("plugin-response-1");
         require(messageDialog == nullptr && pageCount == 2 && state.ink.size() == 2 &&
@@ -6899,11 +6896,36 @@ private:
                         cloneReopened.initialLayers[1].backgroundVisible,
                 "LayerActions clone did not preserve its page layers and editable content through save/reopen");
 
+        performHistoryStep(false);
+        waitForPluginDocumentJob();
+        require(pageCount == 3 && nativeSession->pdfPageMap == std::vector<int>({0, 1, 1}) &&
+                        state.ink.size() == 3 && state.ink[1].page == 2 && state.ink[1].points.front().x == 160 &&
+                        state.ink[2].page == 1 && state.ink[2].points.front().x == 35,
+                "Undo did not restore the deleted target after the inserted clone");
+
+        performHistoryStep(false);
+        waitForPluginDocumentJob();
+        require(pageCount == 2 && nativeSession->pdfPageMap == std::vector<int>({0, 1}) &&
+                        state.ink.size() == 2 && state.ink[1].page == 1 && state.ink[1].points.front().x == 160,
+                "The second undo did not remove the clone and restore the original annotated target");
+
+        performHistoryStep(true);
+        waitForPluginDocumentJob();
+        require(pageCount == 3 && nativeSession->pdfPageMap == std::vector<int>({0, 1, 1}) &&
+                        state.ink.size() == 3 && state.ink[1].page == 2 && state.ink[1].points.front().x == 160 &&
+                        state.ink[2].page == 1 && state.ink[2].points.front().x == 35,
+                "Redo did not restore the clone before the annotated target");
+
+        performHistoryStep(true);
+        waitForPluginDocumentJob();
+        require(pageCount == 2 && nativeSession->pdfPageMap == std::vector<int>({0, 1}) &&
+                        state.ink.size() == 2 && state.ink[1].page == 1 && state.ink[1].points.front().x == 35,
+                "The second redo did not replace the annotated target with the source clone");
+
         require(pluginRuntime->invokeMenu("LayerActions", 0),
                 "LayerActions clone did not start its final-page check");
         waitForPluginDocumentJob();
-        require(messageDialog &&
-                        g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, "plugin-response-1"), "OK") == 0,
+        require(dialogHasResponseLabel("plugin-response-1", "OK"),
                 "LayerActions did not report that the final page has no successor");
         answerDialog("plugin-response-1");
 
@@ -7967,7 +7989,7 @@ private:
                         pageSnapshotPath] {
                            if (!shouldExistAfter) {
                                *staged = session->stageDeletePageAt(worker, pageIndex, pageSizes, false);
-                           } else if (!pageExistsAfter) {
+                           } else if (!pageSnapshotPath.empty()) {
                                *staged = session->stageRestorePageAt(worker, pageIndex, pageSnapshotPath, pageSizes);
                            } else {
                                *staged = session->stageInsertPageAfter(worker, pageIndex - 1, pageSizes);
@@ -18884,8 +18906,22 @@ private:
         return nullptr;
     }
 
+    bool dialogHasResponseLabel(const char* response, const char* expectedLabel) const {
+        if (!messageDialog || !adw_alert_dialog_has_response(messageDialog, response)) {
+            if (messageDialog) {
+                const char* heading = adw_alert_dialog_get_heading(messageDialog);
+                const char* body = adw_alert_dialog_get_body(messageDialog);
+                std::cerr << "Missing dialog response " << response << " in alert '" << (heading ? heading : "")
+                          << "': " << (body ? body : "") << '\n';
+            }
+            return false;
+        }
+        return g_strcmp0(adw_alert_dialog_get_response_label(messageDialog, response), expectedLabel) == 0;
+    }
+
     void answerDialog(const char* response) {
         require(messageDialog, "Expected a document dialog");
+        require(adw_alert_dialog_has_response(messageDialog, response), "Dialog response is unavailable");
         auto* button = responseButton(GTK_WIDGET(messageDialog),
                                       adw_alert_dialog_get_response_label(messageDialog, response));
         require(button && gtk_widget_is_sensitive(button), "Dialog response is unavailable");

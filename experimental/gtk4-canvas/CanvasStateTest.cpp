@@ -1396,6 +1396,7 @@ static void pdfAnnotationInkHistory() {
 static void replaceNextPageWithClone() {
     CanvasState state;
     state.setPages({{595, 842}, {595, 842}, {500, 700}});
+    const PageLayers emptyLayers{};
     PageLayers sourceLayers;
     sourceLayers.initialLayerCount = 2;
     sourceLayers.selectedLayer = 2;
@@ -1441,7 +1442,8 @@ static void replaceNextPageWithClone() {
     followingImage.encodedData = "following image";
     state.images = {sourceImage, replacedImage, followingImage};
 
-    check(state.replaceNextPageWithClone(0, {800, 600}), "cloning should replace an existing next page");
+    check(state.replaceNextPageWithClone(0, {800, 600}, "clone-page.xopp", "replaced-page.xopp"),
+          "cloning should replace an existing next page");
     check(state.pageCount() == 3 && state.page == 1 && state.pages[1].width == 800 && state.pages[1].height == 600,
           "cloning should preserve document length and select the replacement at the target page size");
     auto clonedLayers = sourceLayers;
@@ -1463,7 +1465,33 @@ static void replaceNextPageWithClone() {
                   state.images[1].encodedData == "following image" && state.images[2].page == 1 &&
                   state.images[2].encodedData == "source image",
           "cloning should duplicate source images and preserve following-page images");
-    check(!state.replaceNextPageWithClone(2, {595, 842}), "cloning must reject the final page without a successor");
+
+    bool pageExistsAfter = true;
+    int pageIndex = -1;
+    std::string snapshotPath;
+    check(state.nextUndoPageStructureChange(pageExistsAfter, pageIndex, snapshotPath) && !pageExistsAfter &&
+                  pageIndex == 2 && snapshotPath == "replaced-page.xopp",
+          "the latest clone history step should undo deletion of the original target page");
+    state.undo();
+    check(state.pageCount() == 4 && state.pageStructureGeneration > 0 && state.ink.size() == 4 &&
+                  state.ink[1].page == 2 && state.ink[1].points[0].x == 200 &&
+                  state.ink[2].page == 3 && state.ink[3].page == 1 && state.ink[3].points[0].x == 10,
+          "undoing clone replacement should restore the original annotated target after the clone");
+    state.undo();
+    check(state.pageCount() == 3 && state.ink.size() == 3 && state.ink[1].page == 1 &&
+                  state.ink[1].points[0].x == 200 && state.pageLayers[1] == emptyLayers,
+          "the second undo should remove the inserted clone and recover the original document");
+    state.redo();
+    check(state.pageCount() == 4 && state.ink.size() == 4 && state.ink[1].page == 2 &&
+                  state.ink[1].points[0].x == 200 && state.ink[2].page == 3 &&
+                  state.ink[3].page == 1 && state.ink[3].points[0].x == 10,
+          "redo should restore the cloned page before the original target");
+    state.redo();
+    check(state.pageCount() == 3 && state.ink.size() == 3 && state.ink[1].page == 2 &&
+                  state.ink[2].page == 1 && state.ink[2].points[0].x == 10,
+          "the second redo should remove the old target and restore the clone replacement");
+    check(!state.replaceNextPageWithClone(2, {595, 842}, "unused-clone.xopp", "unused-target.xopp"),
+          "cloning must reject the final page without a successor");
 }
 
 int main() {

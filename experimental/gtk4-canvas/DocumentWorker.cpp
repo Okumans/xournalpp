@@ -1334,6 +1334,31 @@ void saveCopy(Document& document, const fs::path& output) {
     saveDocument(document, output, prototype::bridge::documentVersion(output).token, true);
 }
 
+void saveSinglePageHistorySnapshot(const Document& source, const std::shared_ptr<XojPage>& page, size_t pageIndex,
+                                   const fs::path& output, LoadContext& context) {
+    if (!page || pageIndex >= source.getPageCount()) {
+        throw std::runtime_error("Cannot capture the page for history");
+    }
+    requireNewTarget(output);
+
+    Document pageHistory(&context.handler);
+    pageHistory.lock();
+    pageHistory = source;
+    pageHistory.unlock();
+    pageHistory.deletePage(pageIndex);
+    pageHistory.insertPage(page, pageIndex);
+    for (size_t index = pageHistory.getPageCount(); index-- > 0;) {
+        if (index != pageIndex) {
+            pageHistory.deletePage(index);
+        }
+    }
+    if (pageHistory.getPageCount() != 1) {
+        throw std::runtime_error("Cannot isolate the page for history");
+    }
+    discardEditableObjects(pageHistory);
+    saveCopy(pageHistory, output);
+}
+
 void autosaveDocument(Document& document, const fs::path& output) {
     if (!prototype::bridge::isRecoveryArtifact(output)) {
         throw std::runtime_error("Autosave target must use an .autosave.xopp or emergencysave.xopp filename");
@@ -1403,7 +1428,7 @@ int main(int argc, char** argv) {
                     "[AUDIO_FOLDER AUDIO_CACHE] | "
                     "layer-actions-inspect-target INPUT CURRENT_PAGE INK TEXT LAYERS IMAGES | "
                     "layer-actions-clone-next INPUT SNAPSHOT PDF CURRENT_PAGE PDF_PAGE ALLOW_ANNOTATED INK TEXT "
-                    "LAYERS IMAGES [AUDIO_FOLDER AUDIO_CACHE] | "
+                    "LAYERS IMAGES AUDIO_FOLDER AUDIO_CACHE PAGE_SIZES REPLACED_PAGE_HISTORY INSERTED_PAGE_HISTORY | "
                     "revision INPUT SNAPSHOT PDF INK TEXT LAYERS IMAGES [AUDIO_FOLDER [AUDIO_CACHE]] | "
                     "save-copy INPUT XOPP INK [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | "
                     "save INPUT XOPP INK VERSION [TEXT [LAYERS [IMAGES [PAGE_SIZES]]]] | "
@@ -1664,8 +1689,7 @@ int main(int argc, char** argv) {
             renderPreviewBundle(*document, pdf, pdf.parent_path() / "layers.dat",
                                 hasAudioPaths ? fs::path(argv[11]) : fs::path{},
                                 hasAudioPaths ? fs::path(argv[12]) : fs::path{}, &layers);
-        } else if (command == "layer-actions-clone-next" &&
-                   (argc == 12 || argc == 13 || argc == 14 || argc == 15)) {
+        } else if (command == "layer-actions-clone-next" && argc == 17) {
             const auto sourcePage = parsePageIndex(argv[5], document->getPageCount(), "source page index");
             const auto pdfPage = parsePageIndex(argv[6], document->getPdfPageCount(), "next PDF page index");
             if (std::string_view(argv[7]) != "0" && std::string_view(argv[7]) != "1") {
@@ -1674,11 +1698,15 @@ int main(int argc, char** argv) {
             const bool allowAnnotated = std::string_view(argv[7]) == "1";
             const auto snapshot = fs::absolute(argv[3]);
             const auto pdf = fs::absolute(argv[4]);
+            const auto replacedPageHistoryPath = fs::absolute(argv[15]);
+            const auto insertedPageHistoryPath = fs::absolute(argv[16]);
             const auto inkPath = fs::absolute(snapshot.parent_path() / "editable-ink.dat");
             const auto textPath = fs::absolute(snapshot.parent_path() / "editable-text.dat");
             const auto imagePath = fs::absolute(snapshot.parent_path() / "editable-images.dat");
             requireNewTarget(snapshot);
             requireNewTarget(pdf);
+            requireNewTarget(replacedPageHistoryPath);
+            requireNewTarget(insertedPageHistoryPath);
             requireNewTarget(inkPath);
             requireNewTarget(textPath);
             requireNewTarget(imagePath);
@@ -1686,16 +1714,19 @@ int main(int argc, char** argv) {
             const auto texts = prototype::bridge::readTextTransfer(fs::absolute(argv[9]));
             const auto layers = prototype::bridge::readLayerTransfer(fs::absolute(argv[10]));
             const auto images = prototype::bridge::readImageTransfer(fs::absolute(argv[11]));
-            const bool hasAudioPaths = argc == 14 || argc == 15;
-            const bool hasPageSizes = argc == 13 || argc == 15;
-            if (hasPageSizes) {
-                applyPageSizes(*document, fs::absolute(argv[hasAudioPaths ? 14 : 12]));
-            }
-            discardEditableObjects(*document);
-            appendLayerAwareObjects(*document, strokes, texts, images, layers);
+            applyPageSizes(*document, fs::absolute(argv[14]));
             if (sourcePage + 1 >= document->getPageCount()) {
                 throw std::runtime_error("No next page");
             }
+            const auto sourcePageRef = document->getPage(sourcePage);
+            const auto targetPageRef = document->getPage(sourcePage + 1);
+            const auto targetPdfPage = document->getPdfPage(pdfPage);
+            if (!sourcePageRef || !targetPageRef || !targetPdfPage || !targetPageRef->getBackgroundType().isPdfPage() ||
+                targetPageRef->getPdfPageNr() != pdfPage) {
+                throw std::runtime_error("The next page has no PDF background");
+            }
+            discardEditableObjects(*document);
+            appendLayerAwareObjects(*document, strokes, texts, images, layers);
             const auto next = document->getPage(sourcePage + 1);
             if (!next || !next->getBackgroundType().isPdfPage() || next->getPdfPageNr() != pdfPage) {
                 throw std::runtime_error("The next page has no PDF background");
@@ -1704,6 +1735,14 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("The next page contains annotations and requires confirmation");
             }
 
+            auto insertedPageBackup = std::make_shared<XojPage>(*sourcePageRef);
+            insertedPageBackup->setBackgroundPdfPageNr(pdfPage);
+            insertedPageBackup->setSize(targetPdfPage->getWidth(), targetPdfPage->getHeight());
+            auto replacedPageBackup = std::make_shared<XojPage>(*targetPageRef);
+            saveSinglePageHistorySnapshot(*document, replacedPageBackup, sourcePage + 1, replacedPageHistoryPath,
+                                          pageHistoryContext);
+            saveSinglePageHistorySnapshot(*document, insertedPageBackup, sourcePage + 1, insertedPageHistoryPath,
+                                          pageHistoryContext);
             replaceFollowingPageWithClone(*document, sourcePage, pdfPage);
             std::vector<prototype::TextItem> editableTexts;
             std::vector<prototype::bridge::ImagePacket> editableImages;
@@ -1715,8 +1754,7 @@ int main(int argc, char** argv) {
             document = load(snapshot, snapshotContext);
             const auto layerStatePath = pdf.parent_path() / "layers.dat";
             renderPreviewBundle(*document, pdf, layerStatePath,
-                                hasAudioPaths ? fs::path(argv[12]) : fs::path{},
-                                hasAudioPaths ? fs::path(argv[13]) : fs::path{}, &layers);
+                                fs::path(argv[12]), fs::path(argv[13]), &layers);
             auto clonedLayers = prototype::bridge::readLayerTransfer(layerStatePath);
             if (clonedLayers.size() != layers.size()) {
                 throw std::runtime_error("LayerActions clone output does not match its source layers");

@@ -2502,7 +2502,7 @@ public:
         selectActivePage(insertedIndex);
     }
 
-    void recordPageInsertion(int pageIndex, int currentPageIndex = -1) {
+    void recordPageInsertion(int pageIndex, int currentPageIndex = -1, std::string sourceSnapshotPath = {}) {
         if (pageIndex < 0 || pageIndex >= pageCount()) {
             throw std::out_of_range("Inserted page is outside the document");
         }
@@ -2515,6 +2515,7 @@ public:
         Edit edit;
         edit.pageStructureChange = PageStructureChange{capturePage(currentPageIndex), true};
         edit.pageStructureChange->page.pageIndex = pageIndex;
+        edit.pageStructureChange->page.sourceSnapshotPath = std::move(sourceSnapshotPath);
         forEachPageObject(edit.pageStructureChange->page, [pageIndex](auto& object) { object.page = pageIndex; });
         record(std::move(edit));
     }
@@ -2553,9 +2554,11 @@ public:
         return paths;
     }
 
-    bool replaceNextPageWithClone(int sourcePage, PageSize replacementSize) {
+    bool replaceNextPageWithClone(int sourcePage, PageSize replacementSize,
+                                  std::string insertedPageSnapshotPath, std::string replacedPageSnapshotPath) {
         if (sourcePage < 0 || sourcePage + 1 >= pageCount() ||
-            static_cast<size_t>(sourcePage) >= pageLayers.size()) {
+            static_cast<size_t>(sourcePage) >= pageLayers.size() || insertedPageSnapshotPath.empty() ||
+            replacedPageSnapshotPath.empty()) {
             return false;
         }
 
@@ -2601,7 +2604,8 @@ public:
         texts.insert(texts.end(), std::make_move_iterator(clonedTexts.begin()), std::make_move_iterator(clonedTexts.end()));
         images.insert(images.end(), std::make_move_iterator(clonedImages.begin()),
                       std::make_move_iterator(clonedImages.end()));
-        if (!deletePageAt(insertedPage + 1)) {
+        recordPageInsertion(insertedPage, insertedPage, std::move(insertedPageSnapshotPath));
+        if (!deletePageWithHistory(insertedPage + 1, std::move(replacedPageSnapshotPath))) {
             return false;
         }
         selectActivePage(insertedPage);
