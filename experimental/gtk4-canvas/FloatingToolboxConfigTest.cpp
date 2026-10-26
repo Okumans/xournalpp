@@ -25,10 +25,18 @@ int main() {
         require(mapped && mapped->mode == action.mode && mapped->label == action.label,
                 "A master floating drawing token did not map to its mode and label");
     }
+    for (std::size_t index = 0; index < prototype::floatingDrawingModeChoices.size(); ++index) {
+        const auto mode = prototype::floatingDrawingModeComboMode(index);
+        require(mode && *mode == prototype::floatingDrawingModeChoices[index].mode &&
+                        prototype::floatingDrawingModeComboIndex(*mode) == index,
+                "The DRAW combo order did not map between GTK choices and master drawing modes");
+    }
     const auto rulerAlias = prototype::floatingDrawingModeAction("DRAW_LINE");
     const auto rectangleAlias = prototype::floatingDrawingModeAction("DRAW_RECT");
     require(rulerAlias && rulerAlias->mode == prototype::DrawingMode::Line && rectangleAlias &&
                     rectangleAlias->mode == prototype::DrawingMode::Rectangle &&
+                    prototype::floatingDrawingModeComboIndex(prototype::DrawingMode::Freehand) == 0 &&
+                    !prototype::floatingDrawingModeComboMode(prototype::floatingDrawingModeChoices.size()) &&
                     !prototype::floatingDrawingModeAction("TOOL_FILL"),
             "Drawing token aliases or unsupported fill handling changed unexpectedly");
 
