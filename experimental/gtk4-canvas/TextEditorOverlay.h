@@ -43,6 +43,7 @@ public:
     GtkWidget* widget() const { return view; }
     bool active() const { return draft.has_value(); }
     const TextItem* item() const { return draft ? &*draft : nullptr; }
+    std::optional<size_t> existingItemIndex() const { return existingIndex; }
 
     void selectWordAt(int x, int y) {
         if (!active()) {

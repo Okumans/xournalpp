@@ -104,21 +104,22 @@ int main(int argc, char** argv) {
         drag(state, originalRotationHandle,
              {selectionCenter.x, selectionCenter.y + frameRotationRadius});
         state.finishSelection();
-        check(near(state.selectionBox()->x0, originalFrame.x0) &&
-                      near(state.selectionBox()->y0, originalFrame.y0) &&
-                      near(state.selectionBox()->x1, originalFrame.x1) &&
-                      near(state.selectionBox()->y1, originalFrame.y1),
-              "A committed rotation must keep the axis-aligned native selection frame");
+        check(near(state.selectionBox()->x0, 110) && near(state.selectionBox()->y0, 90) &&
+                      near(state.selectionBox()->x1, 170) && near(state.selectionBox()->y1, 170) &&
+                      near(state.selectionHandles()[3].x, 140) && near(state.selectionHandles()[3].y, 170),
+              "A committed rotation must rotate the visible selection frame and its handles");
         const auto frameRotationHandle = state.selectionHandles()[3];
-        drag(state, frameRotationHandle, {frameRotationHandle.x + 40, frameRotationHandle.y});
+        drag(state, frameRotationHandle, {frameRotationHandle.x, frameRotationHandle.y + 40});
         state.finishSelection();
         check(near(state.ink[0].points[0].x, 170) && near(state.ink[0].points[0].y, 90) &&
                       near(state.ink[0].points[1].x, 110) && near(state.ink[0].points[1].y, 210) &&
-                      near(state.selectionBox()->x0, 100) && near(state.selectionBox()->x1, 220) &&
-                      near(state.selectionBox()->y0, 100) && near(state.selectionBox()->y1, 160),
+                      near(state.selectionBox()->x0, 110) && near(state.selectionBox()->x1, 170) &&
+                      near(state.selectionBox()->y0, 90) && near(state.selectionBox()->y1, 210),
               "Resizing a rotated selection must scale along its accumulated native rotation");
         state.undo();
-        check(near(state.ink[0].points[1].y, 170) && near(state.selectionBox()->x1, originalFrame.x1),
+        check(near(state.ink[0].points[1].y, 170) && near(state.selectionBox()->x0, 110) &&
+                      near(state.selectionBox()->x1, 170) && near(state.selectionBox()->y0, 90) &&
+                      near(state.selectionBox()->y1, 170),
               "Undo resize did not restore the rotated selection frame and objects");
         state.undo();
         check(near(state.ink[0].points[0].x, 100) && near(state.ink[0].points[0].y, 100) &&
@@ -126,7 +127,9 @@ int main(int argc, char** argv) {
               "Undo rotation did not restore the original selection frame");
         state.redo();
         state.redo();
-        check(near(state.ink[0].points[1].y, 210) && near(state.selectionBox()->x1, 220),
+        check(near(state.ink[0].points[1].y, 210) && near(state.selectionBox()->x0, 110) &&
+                      near(state.selectionBox()->x1, 170) && near(state.selectionBox()->y0, 90) &&
+                      near(state.selectionBox()->y1, 210),
               "Redo did not restore accumulated rotation-aware resize");
         state = fixture();
         const auto deleteFrame = *state.selectionBox();
@@ -140,7 +143,7 @@ int main(int argc, char** argv) {
         state.deleteSelection();
         state.undo();
         const auto restoredRightHandle = state.selectionHandles()[3];
-        drag(state, restoredRightHandle, {restoredRightHandle.x + 40, restoredRightHandle.y});
+        drag(state, restoredRightHandle, {restoredRightHandle.x, restoredRightHandle.y + 40});
         state.finishSelection();
         check(near(state.ink[0].points[0].x, 170) && near(state.ink[0].points[0].y, 90) &&
                       near(state.ink[0].points[1].x, 110) && near(state.ink[0].points[1].y, 210),
@@ -750,6 +753,20 @@ int main(int argc, char** argv) {
         state.ink[1].points = {{50, 100.2}, {150, 100.2}};
         check(state.selectObjectAt(0, {100, 100.3}) && state.selected == std::vector<size_t>{1},
               "Select Object must choose the frontmost object when multiple hits contain the pointer");
+
+        state = fixture();
+        state.selected.clear();
+        state.ink = {{0, {{100, 105}, {120, 105}}, {Tool::Pen, {0, 0, 0}, 2}, false, 0, 1, 0}};
+        state.texts = {{0, 0, 1, 0, "overlap", "Sans", "", false, 12, 0xff000000U, -1, 0, false,
+                        1, 0, 0, 1, 100, 100, 20, 10, {}}};
+        state.images = {imageAt(0, 100, 100)};
+        const auto topmostImage = state.pickSmartSelectObject(0, {110, 105});
+        check(topmostImage && topmostImage->kind == SelectableObjectKind::Image,
+              "Smart Select must keep the later image on top when all object-order keys tie");
+        state.images.clear();
+        const auto topmostText = state.pickSmartSelectObject(0, {110, 105});
+        check(topmostText && topmostText->kind == SelectableObjectKind::Text,
+              "Smart Select must keep text above strokes when all object-order keys tie");
 
         state = fixture();
         state.clearSelection();

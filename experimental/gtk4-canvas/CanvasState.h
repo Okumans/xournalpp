@@ -16,6 +16,7 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -943,15 +944,26 @@ public:
     }
 
     std::optional<SelectionBox> selectionBox() const {
+        const auto bounds = selectionLocalBounds();
+        if (!bounds) {
+            return std::nullopt;
+        }
         if (selectionGesture && selectionGesture->moving) {
-            const auto& g = *selectionGesture;
-            const auto corners = transformedCorners(g.bounds, g.frameTransform);
-            SelectionBox box{g.targetPage, corners[0].x, corners[0].y, corners[0].x, corners[0].y};
-            for (const auto& p: corners) {
-                box.x0 = std::min(box.x0, p.x); box.y0 = std::min(box.y0, p.y);
-                box.x1 = std::max(box.x1, p.x); box.y1 = std::max(box.y1, p.y);
+            auto corners = transformedCorners(*bounds, selectionGesture->baseFrameTransform);
+            for (auto& point: corners) {
+                point = selectionGesture->transform.apply(point);
             }
-            return box;
+            return boundsForCorners(selectionGesture->targetPage, corners);
+        }
+        if (selectionFrameMatchesCurrentSelection()) {
+            return boundsForCorners(bounds->page, transformedCorners(*bounds, selectionFrame->transform));
+        }
+        return bounds;
+    }
+
+    std::optional<SelectionBox> selectionLocalBounds() const {
+        if (selectionGesture && selectionGesture->moving) {
+            return selectionGesture->bounds;
         }
         if (selectionGesture) {
             const auto& g = *selectionGesture;
@@ -1032,6 +1044,41 @@ public:
     static std::array<Point, 4> transformedCorners(const SelectionBox& b, const SelectionTransform& matrix = {}) {
         return {matrix.apply({b.x0, b.y0}), matrix.apply({b.x1, b.y0}),
                 matrix.apply({b.x1, b.y1}), matrix.apply({b.x0, b.y1})};
+    }
+
+    static SelectionTransform composeSelectionTransforms(const SelectionTransform& outer,
+                                                          const SelectionTransform& inner) {
+        return {outer.xx * inner.xx + outer.xy * inner.yx, outer.yx * inner.xx + outer.yy * inner.yx,
+                outer.xx * inner.xy + outer.xy * inner.yy, outer.yx * inner.xy + outer.yy * inner.yy,
+                outer.xx * inner.x0 + outer.xy * inner.y0 + outer.x0,
+                outer.yx * inner.x0 + outer.yy * inner.y0 + outer.y0,
+                outer.widthScale * inner.widthScale};
+    }
+
+    static SelectionTransform inverseSelectionTransform(const SelectionTransform& transform) {
+        const double determinant = transform.xx * transform.yy - transform.xy * transform.yx;
+        if (!std::isfinite(determinant) || std::abs(determinant) < 1e-12) {
+            const double invalid = std::numeric_limits<double>::quiet_NaN();
+            return {invalid, invalid, invalid, invalid, invalid, invalid, invalid};
+        }
+        const double xx = transform.yy / determinant;
+        const double xy = -transform.xy / determinant;
+        const double yx = -transform.yx / determinant;
+        const double yy = transform.xx / determinant;
+        return {xx, yx, xy, yy, -(xx * transform.x0 + xy * transform.y0),
+                -(yx * transform.x0 + yy * transform.y0),
+                transform.widthScale > 0 ? 1 / transform.widthScale : 1};
+    }
+
+    static SelectionBox boundsForCorners(int page, const std::array<Point, 4>& corners) {
+        SelectionBox bounds{page, corners[0].x, corners[0].y, corners[0].x, corners[0].y};
+        for (const auto& point: corners) {
+            bounds.x0 = std::min(bounds.x0, point.x);
+            bounds.y0 = std::min(bounds.y0, point.y);
+            bounds.x1 = std::max(bounds.x1, point.x);
+            bounds.y1 = std::max(bounds.y1, point.y);
+        }
+        return bounds;
     }
 
     SelectionTransform selectionMatrix(size_t index) const {
@@ -1125,25 +1172,33 @@ public:
         return {};
     }
 
-    SelectionBox handleBounds(SelectionBox box) const {
-        const auto extent = 20 / zoom;
-        if (box.x1-box.x0 < extent) {
+    SelectionBox handleBounds(SelectionBox box, const SelectionTransform& transform = {}) const {
+        const auto extentX = 20 / (zoom * std::hypot(transform.xx, transform.yx));
+        const auto extentY = 20 / (zoom * std::hypot(transform.xy, transform.yy));
+        if (box.x1-box.x0 < extentX) {
             const auto center = (box.x0+box.x1)/2;
-            box.x0 = center-extent/2; box.x1 = center+extent/2;
+            box.x0 = center-extentX/2; box.x1 = center+extentX/2;
         }
-        if (box.y1-box.y0 < extent) {
+        if (box.y1-box.y0 < extentY) {
             const auto center = (box.y0+box.y1)/2;
-            box.y0 = center-extent/2; box.y1 = center+extent/2;
+            box.y0 = center-extentY/2; box.y1 = center+extentY/2;
         }
         return box;
     }
 
     std::array<Point, 9> selectionHandles() const {
-        const auto b = selectionBox();
+        const auto b = selectionLocalBounds();
         if (!b) return {};
-        auto corners = selectionGesture && selectionGesture->moving ?
-                               transformedCorners(selectionGesture->bounds, selectionGesture->frameTransform) :
-                               transformedCorners(handleBounds(*b));
+        SelectionTransform transform;
+        if (selectionGesture && selectionGesture->moving) {
+            transform = composeSelectionTransforms(selectionGesture->transform,
+                                                   selectionGesture->baseFrameTransform);
+        } else {
+            if (selectionFrameMatchesCurrentSelection()) {
+                transform = selectionFrame->transform;
+            }
+        }
+        const auto corners = transformedCorners(handleBounds(*b, transform), transform);
         auto mid = [](Point a, Point b) { return Point{(a.x + b.x) / 2, (a.y + b.y) / 2}; };
         const auto right = mid(corners[1], corners[2]);
         const auto center = mid(corners[0], corners[2]);
@@ -1429,21 +1484,29 @@ public:
         gesture.previousSelectionFrame = selectionFrame;
         gesture.baseRotation = selectionFrame ? selectionFrame->rotation : 0;
         gesture.rotationTarget = gesture.baseRotation;
+        gesture.baseFrameTransform = selectionFrame ? selectionFrame->transform : SelectionTransform{};
         gesture.multiLayer = selectionAcrossLayers;
-        auto bounds = selectionBox();
+        auto bounds = selectionLocalBounds();
         if (bounds && bounds->page == hit->page && !forceRectangle) {
             const auto handles = selectionHandles();
             for (int n = 0; n < 9; ++n) {
-                if (std::hypot(handles[n].x-hit->local.x, handles[n].y-hit->local.y) <= 5/zoom) {
+                if (std::hypot(handles[n].x - hit->local.x, handles[n].y - hit->local.y) <= 5 / zoom) {
                     gesture.handle = n;
                     break;
                 }
             }
         }
-        const auto padding = 5 / zoom;
-        gesture.moving = !forceRectangle && (gesture.handle >= 0 || (bounds && bounds->page == hit->page && hit->local.x >= bounds->x0 - padding &&
-                         hit->local.x <= bounds->x1 + padding && hit->local.y >= bounds->y0 - padding &&
-                         hit->local.y <= bounds->y1 + padding));
+        const auto inverseFrame = inverseSelectionTransform(gesture.baseFrameTransform);
+        const auto framePoint = inverseFrame.apply(hit->local);
+        const auto paddingX = 5 / (zoom * std::max(0.01, std::hypot(gesture.baseFrameTransform.xx,
+                                                                    gesture.baseFrameTransform.yx)));
+        const auto paddingY = 5 / (zoom * std::max(0.01, std::hypot(gesture.baseFrameTransform.xy,
+                                                                    gesture.baseFrameTransform.yy)));
+        gesture.moving = !forceRectangle &&
+                         (gesture.handle >= 0 ||
+                          (bounds && bounds->page == hit->page && framePoint.x >= bounds->x0 - paddingX &&
+                           framePoint.x <= bounds->x1 + paddingX && framePoint.y >= bounds->y0 - paddingY &&
+                           framePoint.y <= bounds->y1 + paddingY));
         if (brush.tool == Tool::SelectObject) {
             if (gesture.moving) {
                 gesture.indices = selected;
@@ -1466,6 +1529,7 @@ public:
                 selectionFrame.reset();
                 gesture.baseRotation = 0;
                 gesture.rotationTarget = 0;
+                gesture.baseFrameTransform = {};
                 switch (pickedObject->kind) {
                     case SelectableObjectKind::Stroke:
                         selected = {pickedObject->index};
@@ -1477,7 +1541,7 @@ public:
                         selectedImages = {pickedObject->index};
                         break;
                 }
-                bounds = selectionBox();
+                bounds = selectionLocalBounds();
                 gesture.moving = true;
             }
         }
@@ -1485,8 +1549,9 @@ public:
             gesture.indices = selected;
             gesture.textIndices = selectedTexts;
             gesture.imageIndices = selectedImages;
-            gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds) : *bounds;
-            gesture.snapAnchor = closestSelectionCorner(*bounds, gesture.start);
+            gesture.bounds = gesture.handle >= 0 ? handleBounds(*bounds, gesture.baseFrameTransform) : *bounds;
+            gesture.snapAnchor = closestSelectionCorner(transformedCorners(*bounds, gesture.baseFrameTransform),
+                                                        gesture.start);
         } else {
             selected.clear();
             selectedTexts.clear();
@@ -1524,7 +1589,9 @@ public:
                 g.transform.y0 = snapped.y - g.snapAnchor.y;
                 g.frameTransform = g.transform;
             } else if (g.handle == 8) {
-                const auto cx = (g.bounds.x0+g.bounds.x1)/2, cy = (g.bounds.y0+g.bounds.y1)/2;
+                const auto corners = transformedCorners(g.bounds, g.baseFrameTransform);
+                const auto cx = (corners[0].x + corners[2].x) / 2;
+                const auto cy = (corners[0].y + corners[2].y) / 2;
                 auto angle = std::atan2(g.latest.y - cy, g.latest.x - cx) -
                              std::atan2(g.start.y - cy, g.start.x - cx);
                 if (!g.imageIndices.empty() && snapRotationEnabled != altHeld) {
@@ -1544,7 +1611,8 @@ public:
                 const auto ax = xs < 0 ? g.bounds.x1 : g.bounds.x0;
                 const auto ay = ys < 0 ? g.bounds.y1 : g.bounds.y0;
                 const auto vx = xs*width, vy = ys*height;
-                const auto projection = (xs ? (g.latest.x-ax)*vx : 0) + (ys ? (g.latest.y-ay)*vy : 0);
+                const auto latest = inverseSelectionTransform(g.baseFrameTransform).apply(g.latest);
+                const auto projection = (xs ? (latest.x-ax)*vx : 0) + (ys ? (latest.y-ay)*vy : 0);
                 auto factor = projection/(vx*vx+vy*vy);
                 const auto constrained = xs && ys ? std::min(width, height) : (xs ? width : height);
                 factor = std::copysign(std::max(std::abs(factor), (5 / zoom) / constrained), factor);
@@ -1558,8 +1626,15 @@ public:
                                             g.frameTransform.x0;
                 const auto candidateEdgeY = g.frameTransform.yy * (ys < 0 ? g.bounds.y0 : g.bounds.y1) +
                                             g.frameTransform.y0;
-                const auto snappedX = snapSelectionResizeAxis(g.targetPage, candidateEdgeX, true, altHeld);
-                const auto snappedY = snapSelectionResizeAxis(g.targetPage, candidateEdgeY, false, altHeld);
+                const Point candidateHandleLocal{xs ? candidateEdgeX : (g.bounds.x0 + g.bounds.x1) / 2,
+                                                 ys ? candidateEdgeY : (g.bounds.y0 + g.bounds.y1) / 2};
+                const auto candidateHandle = g.baseFrameTransform.apply(candidateHandleLocal);
+                const Point snappedHandle{
+                        snapSelectionResizeAxis(g.targetPage, candidateHandle.x, true, altHeld),
+                        snapSelectionResizeAxis(g.targetPage, candidateHandle.y, false, altHeld)};
+                const auto snappedLocal = inverseSelectionTransform(g.baseFrameTransform).apply(snappedHandle);
+                const auto snappedX = xs ? snappedLocal.x : candidateEdgeX;
+                const auto snappedY = ys ? snappedLocal.y : candidateEdgeY;
                 const auto dx = snappedX - candidateEdgeX;
                 const auto dy = snappedY - candidateEdgeY;
                 const auto currentWidth = (g.bounds.x1 - g.bounds.x0) * g.frameTransform.xx;
@@ -1580,18 +1655,11 @@ public:
                 g.frameTransform = {fx, 0, 0, fy, ax * (1 - fx), ay * (1 - fy),
                                     std::sqrt(std::abs(fx * fy))};
 
-                const auto cx = (g.bounds.x0 + g.bounds.x1) / 2;
-                const auto cy = (g.bounds.y0 + g.bounds.y1) / 2;
-                const auto cosine = std::cos(g.baseRotation);
-                const auto sine = std::sin(g.baseRotation);
-                const auto pivotX = cx + cosine * (ax - cx) - sine * (ay - cy);
-                const auto pivotY = cy + sine * (ax - cx) + cosine * (ay - cy);
-                const auto xx = cosine * cosine * fx + sine * sine * fy;
-                const auto xy = cosine * sine * (fx - fy);
-                const auto yx = xy;
-                const auto yy = sine * sine * fx + cosine * cosine * fy;
-                g.transform = {xx, yx, xy, yy, pivotX - xx * pivotX - xy * pivotY,
-                               pivotY - yx * pivotX - yy * pivotY, std::sqrt(std::abs(fx * fy))};
+                g.transform = composeSelectionTransforms(
+                        g.baseFrameTransform,
+                        composeSelectionTransforms(g.frameTransform,
+                                                   inverseSelectionTransform(g.baseFrameTransform)));
+                g.transform.widthScale = g.frameTransform.widthScale;
             }
             const auto& m = g.transform;
             if (!std::isfinite(m.xx) || !std::isfinite(m.xy) || !std::isfinite(m.yx) || !std::isfinite(m.yy) ||
@@ -1774,15 +1842,10 @@ public:
                     }
                 }
                 if (selectionFrame || g.handle == 8 || std::abs(g.baseRotation) > 1e-12) {
-                    const auto corners = transformedCorners(g.bounds, g.frameTransform);
                     SelectionFrameState nextFrame;
-                    nextFrame.bounds = {g.targetPage, corners[0].x, corners[0].y, corners[0].x, corners[0].y};
-                    for (const auto& point: corners) {
-                        nextFrame.bounds.x0 = std::min(nextFrame.bounds.x0, point.x);
-                        nextFrame.bounds.y0 = std::min(nextFrame.bounds.y0, point.y);
-                        nextFrame.bounds.x1 = std::max(nextFrame.bounds.x1, point.x);
-                        nextFrame.bounds.y1 = std::max(nextFrame.bounds.y1, point.y);
-                    }
+                    nextFrame.bounds = g.bounds;
+                    nextFrame.bounds.page = g.targetPage;
+                    nextFrame.transform = composeSelectionTransforms(g.transform, g.baseFrameTransform);
                     nextFrame.rotation = g.handle == 8 ? g.rotationTarget : g.baseRotation;
                     nextFrame.inkIndices = edit.selectionAfter.value_or(selected);
                     nextFrame.textIndices = edit.textSelectionAfter.value_or(selectedTexts);
@@ -3629,62 +3692,67 @@ public:
         }
 
         const auto& layer = layersForPage(pageIndex).layers.at(layerId - 1);
-        struct OrderedObject {
-            size_t originOrder;
-            size_t layerOrder;
-            SelectableObject object;
+        std::unordered_map<size_t, size_t> originOrders;
+        originOrders.reserve(layer.origins.size());
+        for (size_t i = 0; i < layer.origins.size(); ++i) {
+            originOrders.try_emplace(layer.origins[i], i);
+        }
+        const auto originOrder = [&](size_t origin) {
+            const auto it = originOrders.find(origin);
+            return it == originOrders.end() ? layer.origins.size() : it->second;
         };
-        std::vector<OrderedObject> objects;
-        const auto addObject = [&](size_t origin, size_t order, SelectableObject object) {
-            const auto it = std::find(layer.origins.begin(), layer.origins.end(), origin);
-            const auto originOrder = it == layer.origins.end() ? layer.origins.size() :
-                                                                  static_cast<size_t>(it - layer.origins.begin());
-            objects.push_back({originOrder, order, object});
-        };
-        for (size_t i = 0; i < ink.size(); ++i) {
-            const auto& stroke = ink[i];
-            if (stroke.page == pageIndex && stroke.layerId == layerId && !stroke.points.empty()) {
-                addObject(stroke.originLayer, stroke.layerOrder, {SelectableObjectKind::Stroke, i});
-            }
-        }
-        for (size_t i = 0; i < texts.size(); ++i) {
-            const auto& text = texts[i];
-            if (text.page == pageIndex && text.layerId == layerId && !text.text.empty() && validTextPage(text)) {
-                addObject(text.originLayer, text.layerOrder, {SelectableObjectKind::Text, i});
-            }
-        }
-        for (size_t i = 0; i < images.size(); ++i) {
-            const auto& image = images[i];
-            if (image.page == pageIndex && image.layerId == layerId && validCanvasImage(image)) {
-                addObject(image.originLayer, image.layerOrder, {SelectableObjectKind::Image, i});
-            }
-        }
-        std::stable_sort(objects.begin(), objects.end(), [](const OrderedObject& a, const OrderedObject& b) {
-            return std::tie(a.originOrder, a.layerOrder) < std::tie(b.originOrder, b.layerOrder);
-        });
 
+        using ObjectOrder = std::tuple<size_t, size_t, int, size_t>;
         constexpr double actionRadius = 0.5;
         double minimumDistance = actionRadius;
         std::optional<SelectableObject> best;
-        for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-            double distance = std::numeric_limits<double>::infinity();
-            switch (it->object.kind) {
-                case SelectableObjectKind::Stroke:
-                    distance = strokeDistance(ink[it->object.index], point);
-                    break;
-                case SelectableObjectKind::Text:
-                    distance = quadrilateralDistance(textCorners(texts[it->object.index]), point);
-                    break;
-                case SelectableObjectKind::Image:
-                    distance = quadrilateralDistance(canvasImageCorners(images[it->object.index]), point);
-                    break;
+        ObjectOrder bestOrder{};
+        for (size_t i = 0; i < ink.size(); ++i) {
+            const auto& stroke = ink[i];
+            if (stroke.page != pageIndex || stroke.layerId != layerId || stroke.points.empty()) {
+                continue;
             }
-            if (distance == 0) {
-                return it->object;
+
+            const auto bounds = inkBounds(stroke);
+            // shortcut: this still scans points; cache bounds if profiling justifies invalidation work.
+            if (bounds && (point.x < bounds->x0 - actionRadius || point.x > bounds->x1 + actionRadius ||
+                           point.y < bounds->y0 - actionRadius || point.y > bounds->y1 + actionRadius)) {
+                continue;
             }
-            if (distance < minimumDistance) {
+
+            const double distance = strokeDistance(stroke, point);
+            const ObjectOrder order{originOrder(stroke.originLayer), stroke.layerOrder,
+                                    static_cast<int>(SelectableObjectKind::Stroke), i};
+            if (distance < minimumDistance ||
+                (best && distance == minimumDistance && order > bestOrder)) {
                 minimumDistance = distance;
-                best = it->object;
+                best = SelectableObject{SelectableObjectKind::Stroke, i};
+                bestOrder = order;
+            }
+        }
+
+        const auto consider = [&](SelectableObjectKind kind, size_t index, size_t origin, size_t layerOrder,
+                                  double distance) {
+            const ObjectOrder order{originOrder(origin), layerOrder, static_cast<int>(kind), index};
+            if (distance < minimumDistance || (best && distance == minimumDistance && order > bestOrder)) {
+                minimumDistance = distance;
+                best = SelectableObject{kind, index};
+                bestOrder = order;
+            }
+        };
+        for (size_t i = 0; i < images.size(); ++i) {
+            const auto& image = images[i];
+            if (image.page == pageIndex && image.layerId == layerId && validCanvasImage(image)) {
+                consider(SelectableObjectKind::Image, i, image.originLayer, image.layerOrder,
+                         quadrilateralDistance(canvasImageCorners(image), point));
+            }
+        }
+
+        for (size_t i = 0; i < texts.size(); ++i) {
+            const auto& text = texts[i];
+            if (text.page == pageIndex && text.layerId == layerId && !text.text.empty() && validTextPage(text)) {
+                consider(SelectableObjectKind::Text, i, text.originLayer, text.layerOrder,
+                         quadrilateralDistance(textCorners(text), point));
             }
         }
         return best;
@@ -3912,6 +3980,7 @@ private:
 
     struct SelectionFrameState {
         SelectionBox bounds{};
+        SelectionTransform transform;
         double rotation = 0;
         std::vector<size_t> inkIndices;
         std::vector<size_t> textIndices;
@@ -4241,6 +4310,7 @@ private:
         bool multiLayer = false;
         int handle = -1, targetPage = 0;
         Point snapAnchor{};
+        SelectionTransform baseFrameTransform;
         double baseRotation = 0;
         double rotationTarget = 0;
         std::vector<size_t> previousSelection;
@@ -4308,9 +4378,7 @@ private:
         return std::abs(snapped - y) < snapGridTolerance * snapGridSize / 2.0 ? snapped : y;
     }
 
-    static Point closestSelectionCorner(const SelectionBox& bounds, Point point) {
-        const std::array<Point, 4> corners{{{bounds.x0, bounds.y0}, {bounds.x1, bounds.y0},
-                                            {bounds.x1, bounds.y1}, {bounds.x0, bounds.y1}}};
+    static Point closestSelectionCorner(const std::array<Point, 4>& corners, Point point) {
         return *std::min_element(corners.begin(), corners.end(), [&](const Point& a, const Point& b) {
             return std::hypot(a.x - point.x, a.y - point.y) < std::hypot(b.x - point.x, b.y - point.y);
         });

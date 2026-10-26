@@ -13000,14 +13000,15 @@ private:
         thumbnailRenderer.setRedrawWidget(GTK_WIDGET(pageList));
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "navigation-sidebar");
         gtk_widget_add_css_class(GTK_WIDGET(pageList), "page-thumbnails");
-        auto* sidebarCss = gtk_css_provider_new();
-        constexpr char sidebarCssData[] =
+        auto* canvasCss = gtk_css_provider_new();
+        constexpr char canvasCssData[] =
                 "listview.page-thumbnails row:selected { background-color: transparent; box-shadow: none; }\n"
-                "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n";
-        gtk_css_provider_load_from_string(sidebarCss, sidebarCssData);
-        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(sidebarCss),
+                "listview.page-thumbnails row:selected .page-thumbnail-number { color: #78aeed; font-weight: bold; }\n"
+                ".canvas-text-editor, .canvas-text-editor text { background-color: transparent; }\n";
+        gtk_css_provider_load_from_string(canvasCss, canvasCssData);
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(canvasCss),
                                                    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        g_object_unref(sidebarCss);
+        g_object_unref(canvasCss);
         gtk_list_view_set_show_separators(pageList, false);
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(pageList));
         g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)), "value-changed",
@@ -15436,7 +15437,7 @@ private:
         if (textSelectionOwner && *textSelectionOwner == device) {
             state.moveSelectionPointer(x, y, input.altHeld);
             scheduleSelectionEdgePan(x, y);
-            update();
+            gtk_widget_queue_draw(canvas);
             return;
         }
         if (pdfTextSelection && pdfTextSelection->dragging && pdfTextSelection->owner == device) {
@@ -15454,7 +15455,11 @@ private:
             fitMode = false;
             state.syncActivePage(gtk_widget_get_width(canvas), gtk_widget_get_height(canvas));
         }
-        update();
+        if (state.selecting()) {
+            gtk_widget_queue_draw(canvas);
+        } else {
+            update();
+        }
     }
 
     void finish(Device device, std::optional<double> releasePressure = std::nullopt,
@@ -16412,6 +16417,9 @@ private:
     }
 
     int canvasDetailPage(const std::map<int, double>& visiblePages) const {
+        if (state.selecting() && visiblePages.contains(state.page)) {
+            return state.page;
+        }
         if (pointerPosition) {
             if (const auto hit = state.hitPage(pointerPosition->x, pointerPosition->y);
                 hit && visiblePages.contains(hit->page)) {
@@ -16653,6 +16661,9 @@ private:
                         }
                     }
                     for (size_t index = 0; index < state.texts.size(); ++index) {
+                        if (textEditor && textEditor->active() && textEditor->existingItemIndex() == index) {
+                            continue;
+                        }
                         if (state.verticalSpaceAffectsText(index)) {
                             continue;
                         }
@@ -17838,40 +17849,72 @@ private:
                                                        (originalFrame.y0 + originalFrame.y1) / 2};
                 const auto radius = std::hypot(rotationHandle.x - rotationCenter.x,
                                                rotationHandle.y - rotationCenter.y);
+                constexpr double rotationAngle = 0.7853981633974483;
+                const auto rotationCosine = std::cos(rotationAngle);
+                const auto rotationSine = std::sin(rotationAngle);
+                const auto rotateAroundCenter = [&](prototype::Point point) {
+                    const auto x = point.x - rotationCenter.x;
+                    const auto y = point.y - rotationCenter.y;
+                    return prototype::Point{rotationCenter.x + rotationCosine * x - rotationSine * y,
+                                            rotationCenter.y + rotationSine * x + rotationCosine * y};
+                };
+                const std::array<prototype::Point, 4> rotatedCorners{
+                        rotateAroundCenter({120, 300}), rotateAroundCenter({220, 300}),
+                        rotateAroundCenter({220, 340}), rotateAroundCenter({120, 340})};
+                const auto rotatedBounds = prototype::CanvasState::boundsForCorners(0, rotatedCorners);
                 const auto rotationStart = state.pageScreenPoint(0, rotationHandle.x, rotationHandle.y);
-                const auto rotationEnd = state.pageScreenPoint(0, rotationCenter.x, rotationCenter.y + radius);
+                const auto rotationEnd = state.pageScreenPoint(
+                        0, rotationCenter.x + radius * rotationCosine,
+                        rotationCenter.y + radius * rotationSine);
                 g_signal_emit_by_name(mouse, "drag-begin", rotationStart.x, rotationStart.y);
                 g_signal_emit_by_name(mouse, "drag-update", rotationEnd.x - rotationStart.x,
                                       rotationEnd.y - rotationStart.y);
                 g_signal_emit_by_name(mouse, "drag-end", rotationEnd.x - rotationStart.x,
                                       rotationEnd.y - rotationStart.y);
                 require(state.selectionBox() &&
-                                std::abs(state.selectionBox()->x0 - originalFrame.x0) < 1e-6 &&
-                                std::abs(state.selectionBox()->y0 - originalFrame.y0) < 1e-6 &&
-                                std::abs(state.selectionBox()->x1 - originalFrame.x1) < 1e-6 &&
-                                std::abs(state.selectionBox()->y1 - originalFrame.y1) < 1e-6,
-                        "Smart Select rotation did not retain the native axis-aligned handle frame");
+                                std::abs(state.selectionBox()->x0 - rotatedBounds.x0) < 1e-6 &&
+                                std::abs(state.selectionBox()->y0 - rotatedBounds.y0) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - rotatedBounds.x1) < 1e-6 &&
+                                std::abs(state.selectionBox()->y1 - rotatedBounds.y1) < 1e-6 &&
+                                std::abs(state.selectionHandles()[0].y - state.selectionHandles()[2].y) > 1,
+                        "Smart Select rotation did not rotate the visible handle frame");
                 waitForNextPaint();
                 capture("smart-select-rotated-frame");
                 const auto rightHandle = state.selectionHandles()[3];
                 const auto rotationResizeStart = state.pageScreenPoint(0, rightHandle.x, rightHandle.y);
-                const auto rotationResizeEnd = state.pageScreenPoint(0, rightHandle.x + 40, rightHandle.y);
+                const auto rotationResizeEnd = state.pageScreenPoint(
+                        0, rightHandle.x + 40 * rotationCosine, rightHandle.y + 40 * rotationSine);
                 g_signal_emit_by_name(mouse, "drag-begin", rotationResizeStart.x, rotationResizeStart.y);
                 g_signal_emit_by_name(mouse, "drag-update", rotationResizeEnd.x - rotationResizeStart.x,
                                       rotationResizeEnd.y - rotationResizeStart.y);
                 g_signal_emit_by_name(mouse, "drag-end", rotationResizeEnd.x - rotationResizeStart.x,
                                       rotationResizeEnd.y - rotationResizeStart.y);
-                require(state.selectionBox() && std::abs(state.selectionBox()->x1 - 260) < 1e-6 &&
-                                std::abs(state.ink[rotationStrokeIndex].points[0].x - 190) < 1e-6 &&
-                                std::abs(state.ink[rotationStrokeIndex].points[0].y - 270) < 1e-6 &&
-                                std::abs(state.ink[rotationStrokeIndex].points[1].x - 150) < 1e-6 &&
-                                std::abs(state.ink[rotationStrokeIndex].points[1].y - 410) < 1e-6,
+                const std::array<prototype::Point, 4> resizedCorners{
+                        rotateAroundCenter({120, 300}), rotateAroundCenter({260, 300}),
+                        rotateAroundCenter({260, 340}), rotateAroundCenter({120, 340})};
+                const auto resizedBounds = prototype::CanvasState::boundsForCorners(0, resizedCorners);
+                const auto resizedStart = rotateAroundCenter({120, 300});
+                const auto resizedEnd = rotateAroundCenter({260, 340});
+                require(state.selectionBox() && std::abs(state.selectionBox()->x0 - resizedBounds.x0) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - resizedBounds.x1) < 1e-6 &&
+                                std::abs(state.selectionBox()->y0 - resizedBounds.y0) < 1e-6 &&
+                                std::abs(state.selectionBox()->y1 - resizedBounds.y1) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[0].x - resizedStart.x) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[0].y - resizedStart.y) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].x - resizedEnd.x) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].y - resizedEnd.y) < 1e-6,
                         "Smart Select resize did not apply scaling in the accumulated rotated coordinates");
                 waitForNextPaint();
                 capture("smart-select-rotated-resize");
                 state.undo();
-                require(state.selectionBox() && std::abs(state.selectionBox()->x1 - originalFrame.x1) < 1e-6 &&
-                                std::abs(state.ink[rotationStrokeIndex].points[1].y - 370) < 1e-6,
+                require(state.selectionBox() && std::abs(state.selectionBox()->x0 - rotatedBounds.x0) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - rotatedBounds.x1) < 1e-6 &&
+                                std::abs(state.selectionBox()->y0 - rotatedBounds.y0) < 1e-6 &&
+                                std::abs(state.selectionBox()->y1 - rotatedBounds.y1) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].x -
+                                         rotateAroundCenter({220, 340}).x) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].y -
+                                         rotateAroundCenter({220, 340}).y) < 1e-6,
                         "Undo did not restore the rotated handle frame and stroke geometry");
                 state.undo();
                 require(std::abs(state.ink[rotationStrokeIndex].points[0].x - 120) < 1e-6 &&
@@ -17880,8 +17923,12 @@ private:
                         "Undo rotation did not restore the original Smart Select state");
                 state.redo();
                 state.redo();
-                require(std::abs(state.ink[rotationStrokeIndex].points[1].y - 410) < 1e-6 &&
-                                std::abs(state.selectionBox()->x1 - 260) < 1e-6,
+                require(std::abs(state.ink[rotationStrokeIndex].points[1].x - resizedEnd.x) < 1e-6 &&
+                                std::abs(state.ink[rotationStrokeIndex].points[1].y - resizedEnd.y) < 1e-6 &&
+                                std::abs(state.selectionBox()->x0 - resizedBounds.x0) < 1e-6 &&
+                                std::abs(state.selectionBox()->x1 - resizedBounds.x1) < 1e-6 &&
+                                std::abs(state.selectionBox()->y0 - resizedBounds.y0) < 1e-6 &&
+                                std::abs(state.selectionBox()->y1 - resizedBounds.y1) < 1e-6,
                         "Redo did not restore the rotated Smart Select resize");
                 state.undo();
                 state.undo();
