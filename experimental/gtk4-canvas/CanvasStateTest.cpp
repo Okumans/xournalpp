@@ -712,6 +712,21 @@ static void pluginBackgroundNameSetter() {
           "the plugin background-name setter should reject page indices outside the document");
 }
 
+static void scrollDeltaUnits() {
+    CanvasState state;
+    state.offsetX = 100;
+    state.offsetY = 200;
+    state.scrollBy(1.25, -2.5, false);
+    check(std::abs(state.offsetX - 98.75) < 1e-9 && std::abs(state.offsetY - 202.5) < 1e-9,
+          "smooth surface scroll deltas should map one-to-one to canvas logical pixels");
+    state.scrollBy(-1, 2, true);
+    check(std::abs(state.offsetX - 133.75) < 1e-9 && std::abs(state.offsetY - 132.5) < 1e-9,
+          "discrete wheel detents should retain their existing 35-pixel movement");
+    state.scrollBy(std::numeric_limits<double>::infinity(), 10, false);
+    check(std::abs(state.offsetX - 133.75) < 1e-9 && std::abs(state.offsetY - 132.5) < 1e-9,
+          "non-finite scroll deltas should not move the canvas");
+}
+
 static void layerManagement() {
     CanvasState state;
     state.setPages({{595, 842}, {595, 842}});
@@ -1342,6 +1357,7 @@ int main() {
         brushAndHistory();
         partialAndWhiteoutEraser();
         continuousMultiPageLayout();
+        scrollDeltaUnits();
         pluginBackgroundNameSetter();
         layerManagement();
         replaceNextPageWithClone();
