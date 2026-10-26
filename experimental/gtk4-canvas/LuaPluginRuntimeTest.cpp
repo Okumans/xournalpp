@@ -580,6 +580,19 @@ int main() {
                 "    highlighter.size.name .. ':' .. eraser.type .. ':' .. text.font.name)\n"
                 "end\n"
                 "function missingSelection() app.getToolInfo('selection') end\n");
+    const auto backgroundNameApiPlugin = root / "BackgroundNameApiPlugin";
+    writePlugin(backgroundNameApiPlugin,
+                "[about]\ndescription=Set the current background name\n[default]\nenabled=true\n"
+                "[plugin]\nmainfile=main.lua\n",
+                "function initUi()\n"
+                "  app.registerUi({menu='Set background name', callback='setName'})\n"
+                "  app.registerUi({menu='Reject missing page', callback='missingPage'})\n"
+                "end\n"
+                "function setName()\n"
+                "  assert(app.setBackgroundName('Custom paper') == nil)\n"
+                "  assert(app.setBackgroundName(false) == nil)\n"
+                "end\n"
+                "function missingPage() app.setBackgroundName('No page') end\n");
     const auto quickScreenshotPlugin = root / "QuickScreenshot";
     writePlugin(quickScreenshotPlugin,
                 readFile(std::filesystem::path(XOURNALPP_REPO_ROOT) / "plugins/QuickScreenshot/plugin.ini"),
@@ -596,10 +609,11 @@ int main() {
                              pageLabelApiPlugin.string() + "," + colorPaletteApiPlugin.string() + "," +
                              currentLayerApiPlugin.string() + "," + scrollApiPlugin.string() + "," +
                              fontApiPlugin.string() + "," + refreshPageApiPlugin.string() + "," +
-                             actionStateApiPlugin.string() + "," + toolInfoApiPlugin.string(),
+                             actionStateApiPlugin.string() + "," + toolInfoApiPlugin.string() + "," +
+                             backgroundNameApiPlugin.string(),
                      {});
     const auto discovered = runtime.plugins();
-    require(discovered.size() == 28, "Plugin discovery did not enumerate all plugin directories");
+    require(discovered.size() == 29, "Plugin discovery did not enumerate all plugin directories");
     const auto colorSummary = runtime.findPlugin("ColorCycle");
     require(colorSummary && colorSummary->valid && colorSummary->enabled && !colorSummary->loaded,
             "Explicitly enabled plugin path did not override the disabled default");
@@ -652,6 +666,8 @@ int main() {
     std::string actionStateSummary;
     std::string toolInfoSummary;
     bool pluginSelectionInfoAvailable = false;
+    bool backgroundNameAvailable = true;
+    std::string changedBackgroundName;
     prototype::PluginFont currentPluginFont{systemFontFamilies.front(), 12.5};
     std::size_t fontChangeCount = 0;
     bool refreshPageAvailable = true;
@@ -744,6 +760,14 @@ int main() {
             info.snappedBounds = rectangle;
             info.rotation = 0.25;
         }
+        return true;
+    };
+    host.setBackgroundName = [&](std::string_view name, std::string& error) {
+        if (!backgroundNameAvailable) {
+            error = "No page!";
+            return false;
+        }
+        changedBackgroundName = name;
         return true;
     };
     host.changeActionState = [&](std::string_view action, const prototype::PluginActionValue& value, std::string&) {
@@ -1236,6 +1260,13 @@ int main() {
     require(!runtime.invokeMenu("ToolInfoApiPlugin", 1) &&
                     runtime.findPlugin("ToolInfoApiPlugin")->error.find("There is no selection") != std::string::npos,
             "app.getToolInfo did not propagate the missing-selection error");
+    require(runtime.invokeMenu("BackgroundNameApiPlugin", 0) && changedBackgroundName == "Custom paper",
+            "app.setBackgroundName did not call the host or reject a non-string argument as a no-op");
+    backgroundNameAvailable = false;
+    require(!runtime.invokeMenu("BackgroundNameApiPlugin", 1) &&
+                    runtime.findPlugin("BackgroundNameApiPlugin")->error.find("No page!") != std::string::npos,
+            "app.setBackgroundName did not propagate the no-page error");
+    backgroundNameAvailable = true;
     require(runtime.invokeMenu("BackgroundPlugin", 0) && changedBackgroundFormat == "graph" &&
                     changedBackgroundConfig == "r1=14.17",
             "Page background type and configuration did not reach the GTK4 host callback");
@@ -1444,8 +1475,8 @@ int main() {
 
     auto* actionGroup = g_simple_action_group_new();
     auto* menu = g_menu_new();
-    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 89 &&
-                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 25,
+    require(runtime.appendMenuSections(menu, G_ACTION_MAP(actionGroup), nullptr) == 91 &&
+                    g_menu_model_get_n_items(G_MENU_MODEL(menu)) == 26,
             "Loaded plugin menus were not exposed as a named menu section");
     g_object_unref(menu);
     g_object_unref(actionGroup);

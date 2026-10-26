@@ -381,6 +381,14 @@ public:
         return true;
     }
 
+    bool setBackgroundName(int pageIndex, const std::string& name) {
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageLayers.size()) {
+            return false;
+        }
+        pageLayers[static_cast<size_t>(pageIndex)].backgroundName = name;
+        return true;
+    }
+
     bool resizePage(int pageIndex, double width, double height) {
         if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= static_cast<size_t>(pageCount()) ||
             !std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
