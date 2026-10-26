@@ -48,6 +48,10 @@ on page 0 with its raster cache suppressed, verifies first dispatch, then drives
 775-page PDF starts with the sidebar open from saved preferences and confirms
 the first visible thumbnail renders and redraws, then rapidly scrolls to page 25
 and waits for visible pages 25–27 to render while the canvas stays on page 1.
+Phase 101 connects sidebar scroll adjustments to visible-page prioritization and
+re-requests mapped visible thumbnails as the viewport changes. Its fast-scroll
+check no longer calls the prioritizer manually and verifies nonblank pixels on
+known content pages, so a cached white fallback cannot count as rendered.
 Layer-sidebar responsiveness and thumbnail latency on content-heavy PDFs remain
 unmeasured.
 
