@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -55,6 +56,51 @@ inline std::string_view mainToolRailToken(MainToolAction action) {
         return entry.first == action;
     });
     return found == mainToolRailNames.end() ? std::string_view{} : found->second;
+}
+
+inline std::string_view mainToolRailLabel(MainToolAction action) {
+    switch (action) {
+        case MainToolAction::SmartSelect: return "Smart Select";
+        case MainToolAction::Pen: return "Pen";
+        case MainToolAction::Highlighter: return "Highlighter";
+        case MainToolAction::Eraser: return "Eraser";
+        case MainToolAction::Text: return "Text";
+        case MainToolAction::Hand: return "Hand";
+        case MainToolAction::Link: return "Link";
+        case MainToolAction::LaserPointerPen: return "Laser Pointer";
+        case MainToolAction::LaserPointerHighlighter: return "Laser Highlighter";
+        case MainToolAction::PlayObject: return "Play Object";
+        case MainToolAction::FloatingToolbox: return "Floating Toolbox";
+        case MainToolAction::Latex: return "LaTeX";
+    }
+    return {};
+}
+
+inline bool moveMainToolRailAction(std::vector<MainToolAction>& actions, MainToolAction action, bool toRail,
+                                   std::size_t targetIndex) {
+    const auto found = std::find(actions.begin(), actions.end(), action);
+    if (!toRail) {
+        if (action == MainToolAction::SmartSelect || found == actions.end()) {
+            return false;
+        }
+        actions.erase(found);
+        return true;
+    }
+
+    const auto oldIndex = found == actions.end() ? actions.size() : static_cast<std::size_t>(found - actions.begin());
+    targetIndex = std::min(targetIndex, actions.size());
+    if (found != actions.end()) {
+        if (targetIndex == oldIndex || targetIndex == oldIndex + 1) {
+            return false;
+        }
+        actions.erase(found);
+        if (oldIndex < targetIndex) {
+            --targetIndex;
+        }
+    }
+    targetIndex = std::min(targetIndex, actions.size());
+    actions.insert(actions.begin() + static_cast<std::ptrdiff_t>(targetIndex), action);
+    return true;
 }
 
 inline std::optional<MainToolAction> parseMainToolRailToken(std::string_view token) {

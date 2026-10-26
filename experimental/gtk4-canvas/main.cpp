@@ -1229,8 +1229,149 @@ private:
             showAlert("Could not save toolbar preferences", error);
             return false;
         }
+        pendingMainToolRail = *parsed;
+        rebuildMainToolRailEditor();
         rebuildMainToolRail();
         return true;
+    }
+
+    GtkWidget* createMainToolRailEditorRow(prototype::MainToolAction action) {
+        auto* row = gtk_list_box_row_new();
+        auto* content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_margin_top(content, 4);
+        gtk_widget_set_margin_bottom(content, 4);
+        gtk_widget_set_margin_start(content, 8);
+        gtk_widget_set_margin_end(content, 8);
+        auto* label = gtk_label_new(std::string(prototype::mainToolRailLabel(action)).c_str());
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0F);
+        gtk_widget_set_hexpand(label, true);
+        gtk_box_append(GTK_BOX(content), label);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), content);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(row), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                       std::string(prototype::mainToolRailLabel(action)).c_str(), -1);
+
+        auto* source = gtk_drag_source_new();
+        gtk_drag_source_set_actions(source, GDK_ACTION_MOVE);
+        const auto token = prototype::mainToolRailToken(action);
+        const std::string actionToken(token);
+        g_object_set_data_full(G_OBJECT(source), "gtk4-main-tool-action", g_strdup(actionToken.c_str()), g_free);
+        g_signal_connect(source, "prepare",
+                         G_CALLBACK(+[](GtkDragSource* dragSource, double, double, gpointer) -> GdkContentProvider* {
+                             const auto* actionName = static_cast<const char*>(
+                                     g_object_get_data(G_OBJECT(dragSource), "gtk4-main-tool-action"));
+                             return actionName ? gdk_content_provider_new_typed(G_TYPE_STRING, actionName) : nullptr;
+                         }),
+                         nullptr);
+        g_object_set_data(G_OBJECT(row), "gtk4-main-tool-drag-source", source);
+        gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(source));
+        gtk_widget_set_cursor_from_name(row, "grab");
+        return row;
+    }
+
+    GtkWidget* createMainToolRailEditorList(bool visible) {
+        auto* list = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+        gtk_widget_add_css_class(list, "boxed-list");
+
+        auto* target = gtk_drop_target_new(G_TYPE_STRING, GDK_ACTION_MOVE);
+        g_object_set_data(G_OBJECT(list), "gtk4-main-tool-drop-target", target);
+        g_object_set_data(G_OBJECT(target), "gtk4-main-tool-list", list);
+        g_object_set_data(G_OBJECT(target), "gtk4-main-tool-list-visible", GINT_TO_POINTER(visible));
+        gtk_drop_target_set_preload(target, true);
+        g_signal_connect(target, "drop",
+                         G_CALLBACK(+[](GtkDropTarget* dropTarget, const GValue* value, double, double y,
+                                        gpointer data) -> gboolean {
+                             auto* self = static_cast<Prototype*>(data);
+                             const char* actionName = g_value_get_string(value);
+                             auto* list = GTK_LIST_BOX(g_object_get_data(G_OBJECT(dropTarget),
+                                                                        "gtk4-main-tool-list"));
+                             const bool toRail = GPOINTER_TO_INT(g_object_get_data(
+                                                         G_OBJECT(dropTarget), "gtk4-main-tool-list-visible")) != 0;
+                             if (!actionName || !list) {
+                                 return false;
+                             }
+
+                             std::size_t targetIndex = 0;
+                             if (toRail) {
+                                 auto* row = gtk_list_box_get_row_at_y(list, static_cast<int>(y));
+                                 for (auto* child = gtk_widget_get_first_child(GTK_WIDGET(list)); child;
+                                      child = gtk_widget_get_next_sibling(child)) {
+                                     ++targetIndex;
+                                 }
+                                 if (row) {
+                                     graphene_rect_t bounds{};
+                                     targetIndex = static_cast<std::size_t>(gtk_list_box_row_get_index(row));
+                                     if (gtk_widget_compute_bounds(GTK_WIDGET(row), GTK_WIDGET(list), &bounds) &&
+                                         y >= bounds.origin.y + bounds.size.height / 2.0F) {
+                                         ++targetIndex;
+                                     }
+                                 }
+                             }
+                             return self->applyMainToolRailDrop(actionName, toRail, targetIndex);
+                         }),
+                         this);
+        gtk_widget_add_controller(list, GTK_EVENT_CONTROLLER(target));
+        return list;
+    }
+
+    void rebuildMainToolRailEditor() {
+        if (!mainToolRailVisibleList || !mainToolRailAvailableList) {
+            return;
+        }
+        for (auto* list: {mainToolRailVisibleList, mainToolRailAvailableList}) {
+            while (auto* row = gtk_widget_get_first_child(list)) {
+                gtk_list_box_remove(GTK_LIST_BOX(list), row);
+            }
+        }
+        for (const auto action: pendingMainToolRail) {
+            gtk_list_box_append(GTK_LIST_BOX(mainToolRailVisibleList),
+                                createMainToolRailEditorRow(action));
+        }
+        for (const auto& entry: prototype::mainToolRailNames) {
+            if (std::find(pendingMainToolRail.begin(), pendingMainToolRail.end(), entry.first) !=
+                pendingMainToolRail.end()) {
+                continue;
+            }
+            gtk_list_box_append(GTK_LIST_BOX(mainToolRailAvailableList),
+                                createMainToolRailEditorRow(entry.first));
+        }
+    }
+
+    bool applyMainToolRailDrop(std::string_view actionToken, bool toRail, std::size_t targetIndex) {
+        const auto action = prototype::parseMainToolRailToken(actionToken);
+        auto* entry = preferenceControls[static_cast<size_t>(PreferenceKey::MainToolRail)];
+        const char* rawLayout = gtk_editable_get_text(GTK_EDITABLE(entry));
+        const auto parsedLayout = prototype::parseMainToolRail(rawLayout ? rawLayout : "");
+        if (!action || !parsedLayout) {
+            return false;
+        }
+        if (pendingMainToolRail != *parsedLayout) {
+            pendingMainToolRail = *parsedLayout;
+            rebuildMainToolRailEditor();
+        }
+        if (!prototype::moveMainToolRailAction(pendingMainToolRail, *action, toRail, targetIndex)) {
+            return false;
+        }
+        const auto serialized = prototype::serializeMainToolRail(pendingMainToolRail);
+        gtk_editable_set_text(GTK_EDITABLE(entry), serialized.c_str());
+        gtk_widget_remove_css_class(entry, "error");
+        rebuildMainToolRailEditor();
+        return true;
+    }
+
+    bool emitMainToolRailDropForTest(GtkWidget* list, std::string_view actionToken, double y) {
+        auto* target = GTK_DROP_TARGET(g_object_get_data(G_OBJECT(list), "gtk4-main-tool-drop-target"));
+        if (!target) {
+            return false;
+        }
+        const std::string token(actionToken);
+        GValue value = G_VALUE_INIT;
+        g_value_init(&value, G_TYPE_STRING);
+        g_value_set_string(&value, token.c_str());
+        gboolean accepted = false;
+        g_signal_emit_by_name(target, "drop", &value, 0.0, y, &accepted);
+        g_value_unset(&value);
+        return accepted;
     }
 
     void changePreference(PreferenceKey key, GtkWidget* control) {
@@ -4455,6 +4596,7 @@ private:
 
         preferencesDialog = ADW_PREFERENCES_DIALOG(g_object_ref_sink(adw_preferences_dialog_new()));
         adw_preferences_dialog_set_search_enabled(preferencesDialog, true);
+        pendingMainToolRail = importedConfig.settings.mainToolRail;
 
         auto* appearance = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
         adw_preferences_page_set_name(appearance, "appearance");
@@ -4725,11 +4867,20 @@ private:
         adw_preferences_group_set_title(mainRailGroup, "Main tool rail");
         adw_preferences_group_set_description(
                 mainRailGroup,
-                "Choose the tools shown directly beside the canvas. Omitted tools stay available under More tools. "
-                "Keep SMART_SELECT in this list so it is always one click away.");
-        preferenceTextEntry(mainRailGroup, "Tool order", "Comma-separated actions",
-                            prototype::serializeMainToolRail(importedConfig.settings.mainToolRail),
-                            PreferenceKey::MainToolRail);
+                "Choose and order the tools shown beside the canvas. Smart Select stays on the rail; omitted tools "
+                "remain available under More tools.");
+        auto* mainToolRailEntry = preferenceTextEntry(
+                mainRailGroup, "Tool order", "Comma-separated actions; edit visually below",
+                prototype::serializeMainToolRail(importedConfig.settings.mainToolRail), PreferenceKey::MainToolRail);
+        g_signal_connect(mainToolRailEntry, "changed", G_CALLBACK(+[](GtkEditable* editable, gpointer data) {
+                             auto* self = static_cast<Prototype*>(data);
+                             const char* raw = gtk_editable_get_text(editable);
+                             const auto parsed = prototype::parseMainToolRail(raw ? raw : "");
+                             if (parsed && self->pendingMainToolRail != *parsed) {
+                                 self->pendingMainToolRail = *parsed;
+                                 self->rebuildMainToolRailEditor();
+                             }
+                         }), this);
         auto* mainRailApplyRow = ADW_ACTION_ROW(adw_action_row_new());
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(mainRailApplyRow), "Save main tool rail");
         adw_action_row_set_subtitle(mainRailApplyRow, "Apply the tool order and save it for future sessions");
@@ -4741,6 +4892,46 @@ private:
         adw_action_row_add_suffix(mainRailApplyRow, mainRailApplyButton);
         adw_preferences_group_add(mainRailGroup, GTK_WIDGET(mainRailApplyRow));
         adw_preferences_page_add(toolbarPage, mainRailGroup);
+
+        auto* mainRailEditorGroup = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(mainRailEditorGroup, "Arrange tools");
+        adw_preferences_group_set_description(
+                mainRailEditorGroup,
+                "Drag tools into the main rail to add them. Drop within the rail to reorder; drag a tool back to "
+                "More tools to remove it. Changes take effect when you apply the layout.");
+        auto* mainRailEditor = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+
+        auto* visibleColumn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        auto* visibleLabel = gtk_label_new("Main tool rail");
+        gtk_widget_add_css_class(visibleLabel, "heading");
+        gtk_widget_set_halign(visibleLabel, GTK_ALIGN_START);
+        mainToolRailVisibleList = createMainToolRailEditorList(true);
+        auto* visibleScroll = gtk_scrolled_window_new();
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(visibleScroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(visibleScroll), 220);
+        gtk_widget_set_hexpand(visibleScroll, true);
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(visibleScroll), mainToolRailVisibleList);
+        gtk_box_append(GTK_BOX(visibleColumn), visibleLabel);
+        gtk_box_append(GTK_BOX(visibleColumn), visibleScroll);
+
+        auto* availableColumn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        auto* availableLabel = gtk_label_new("More tools");
+        gtk_widget_add_css_class(availableLabel, "heading");
+        gtk_widget_set_halign(availableLabel, GTK_ALIGN_START);
+        mainToolRailAvailableList = createMainToolRailEditorList(false);
+        auto* availableScroll = gtk_scrolled_window_new();
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(availableScroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(availableScroll), 220);
+        gtk_widget_set_hexpand(availableScroll, true);
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(availableScroll), mainToolRailAvailableList);
+        gtk_box_append(GTK_BOX(availableColumn), availableLabel);
+        gtk_box_append(GTK_BOX(availableColumn), availableScroll);
+
+        gtk_box_append(GTK_BOX(mainRailEditor), visibleColumn);
+        gtk_box_append(GTK_BOX(mainRailEditor), availableColumn);
+        adw_preferences_group_add(mainRailEditorGroup, mainRailEditor);
+        rebuildMainToolRailEditor();
+        adw_preferences_page_add(toolbarPage, mainRailEditorGroup);
         adw_dialog_present(ADW_DIALOG(preferencesDialog), window);
     }
 
@@ -16234,10 +16425,21 @@ private:
                                     latexSettingsApplyButton && latexSetupTestButton,
                             "LaTeX Preferences page is missing an imported setting or editor control");
                     require(control(PreferenceKey::MainToolRail) && mainToolRailApplyButton &&
+                                    mainToolRailVisibleList && mainToolRailAvailableList &&
                                     std::string(gtk_editable_get_text(GTK_EDITABLE(
                                             control(PreferenceKey::MainToolRail)))) ==
                                             "SMART_SELECT,PEN,HIGHLIGHTER,ERASER,TEXT,HAND",
                             "Preferences dialog did not show the canvas-first main tool rail layout");
+                    const auto listRows = [](GtkWidget* list) {
+                        size_t count = 0;
+                        for (auto* row = gtk_widget_get_first_child(list); row;
+                             row = gtk_widget_get_next_sibling(row)) {
+                            ++count;
+                        }
+                        return count;
+                    };
+                    require(listRows(mainToolRailVisibleList) == 6 && listRows(mainToolRailAvailableList) == 6,
+                            "Main tool rail editor did not split visible and available tools");
                     require(std::string(gtk_editable_get_text(GTK_EDITABLE(
                                             control(PreferenceKey::FloatingToolboxRow1)))) ==
                                             "PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO" &&
@@ -16266,6 +16468,21 @@ private:
                 }
                 case 2:
                     capture("preferences-toolbar");
+                    {
+                        GtkWidget* pageScroll = nullptr;
+                        for (auto* parent = mainToolRailVisibleList ? gtk_widget_get_parent(mainToolRailVisibleList) : nullptr;
+                             parent; parent = gtk_widget_get_parent(parent)) {
+                            if (GTK_IS_SCROLLED_WINDOW(parent)) {
+                                pageScroll = parent;
+                            }
+                        }
+                        require(pageScroll, "Toolbar Preferences page does not provide a scroll container");
+                        auto* adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(pageScroll));
+                        gtk_adjustment_set_value(adjustment,
+                                                 gtk_adjustment_get_upper(adjustment) -
+                                                         gtk_adjustment_get_page_size(adjustment));
+                        capture("preferences-main-tool-rail", GTK_WIDGET(preferencesDialog), true);
+                    }
                     adw_preferences_dialog_set_visible_page_name(preferencesDialog, "input");
                     require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog)) == "input",
                             "Preferences dialog did not switch to the Input page");
@@ -16365,6 +16582,55 @@ private:
                     require(importedConfig.settings.floatingToolboxRows == floatingModeTestRows,
                             "Applying toolbar rows did not update the active layout");
                     g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
+                    const auto listRows = [](GtkWidget* list) {
+                        size_t count = 0;
+                        for (auto* row = gtk_widget_get_first_child(list); row;
+                             row = gtk_widget_get_next_sibling(row)) {
+                            ++count;
+                        }
+                        return count;
+                    };
+                    auto* penEditorRow = gtk_list_box_get_row_at_index(GTK_LIST_BOX(mainToolRailVisibleList), 1);
+                    auto* penDragSource = penEditorRow ? GTK_DRAG_SOURCE(g_object_get_data(
+                                                                 G_OBJECT(penEditorRow),
+                                                                 "gtk4-main-tool-drag-source")) : nullptr;
+                    GdkContentProvider* dragProvider = nullptr;
+                    if (penDragSource) {
+                        g_signal_emit_by_name(penDragSource, "prepare", 0.0, 0.0, &dragProvider);
+                    }
+                    auto* dragFormats = dragProvider ? gdk_content_provider_ref_formats(dragProvider) : nullptr;
+                    require(dragFormats && gdk_content_formats_contain_gtype(dragFormats, G_TYPE_STRING),
+                            "Main tool rail drag source did not provide a string action token");
+                    gdk_content_formats_unref(dragFormats);
+                    g_object_unref(dragProvider);
+
+                    auto* highlighterRow = gtk_list_box_get_row_at_index(GTK_LIST_BOX(mainToolRailVisibleList), 2);
+                    graphene_rect_t highlighterRowBounds{};
+                    require(highlighterRow && gtk_widget_compute_bounds(GTK_WIDGET(highlighterRow),
+                                                                        mainToolRailVisibleList,
+                                                                        &highlighterRowBounds),
+                            "Could not locate the target row for rail reordering");
+                    const double reorderTextY = highlighterRowBounds.origin.y + highlighterRowBounds.size.height * 0.25;
+                    const bool reorderAccepted =
+                            emitMainToolRailDropForTest(mainToolRailVisibleList, "TEXT", reorderTextY);
+                    const std::string reorderedLayout = gtk_editable_get_text(GTK_EDITABLE(
+                            control(PreferenceKey::MainToolRail)));
+                    require(reorderAccepted && reorderedLayout == "SMART_SELECT,PEN,TEXT,HIGHLIGHTER,ERASER,HAND",
+                            "Dropping a visible rail tool did not reorder the action layout");
+                    require(applyMainToolRailDrop("LINK", true, 1) &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::MainToolRail)))) ==
+                                            "SMART_SELECT,LINK,PEN,TEXT,HIGHLIGHTER,ERASER,HAND" &&
+                                    listRows(mainToolRailVisibleList) == 7 && listRows(mainToolRailAvailableList) == 5,
+                            "Adding an available tool did not update both lists and the saved order");
+                    require(applyMainToolRailDrop("LINK", false, 0) &&
+                                    std::string(gtk_editable_get_text(GTK_EDITABLE(
+                                            control(PreferenceKey::MainToolRail)))) ==
+                                            "SMART_SELECT,PEN,TEXT,HIGHLIGHTER,ERASER,HAND" &&
+                                    listRows(mainToolRailVisibleList) == 6 && listRows(mainToolRailAvailableList) == 6,
+                            "Removing a visible tool did not return it to More tools");
+                    require(!applyMainToolRailDrop("SMART_SELECT", false, 0),
+                            "Smart Select was accepted for removal from the main tool rail");
                     gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)),
                                           "SMART_SELECT,TEXT,PEN,HAND");
                     g_signal_emit_by_name(mainToolRailApplyButton, "clicked");
@@ -19242,6 +19508,9 @@ private:
     GtkWidget* floatingToolboxRowsContainer = nullptr;
     GtkWidget* floatingToolboxApplyButton = nullptr;
     GtkWidget* mainToolRailApplyButton = nullptr;
+    GtkWidget* mainToolRailVisibleList = nullptr;
+    GtkWidget* mainToolRailAvailableList = nullptr;
+    std::vector<prototype::MainToolAction> pendingMainToolRail;
     size_t floatingToolboxStaticToolButtonCount = 0;
     std::vector<std::pair<Tool, GtkWidget*>> floatingToolboxToolButtons;
     prototype::Point floatingToolboxAnchor{};

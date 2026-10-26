@@ -352,7 +352,7 @@ toolbarFloat4=COLOR(10),COLOR(1),COLOR(8),COLOR(4),DRAW_ARROW
 
     for name in (
             "main-tool-rail-default", "preferences-dialog", "preferences-latex", "preferences-input",
-            "preferences-behavior", "preferences-toolbar",
+            "preferences-behavior", "preferences-toolbar", "preferences-main-tool-rail",
             "preferences-edited", "preferences-reloaded"):
         path = directory / ("edit" if name != "preferences-reloaded" else "reload") / f"{name}.png"
         if not path.is_file() or path.stat().st_size < 1000:
