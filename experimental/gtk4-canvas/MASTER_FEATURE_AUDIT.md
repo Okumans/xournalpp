@@ -231,6 +231,13 @@ remains the sole document and history owner. The full default build, all 40
 CTests, and the private Cage canvas, text, clipboard, selection, document, and
 preferences smoke checks passed.
 
+Phase 134 moves the laser-pointer lifecycle, drawing input, spline editing, and
+current-stroke completion helpers into `CanvasStateInput.cpp`. All 20 moved
+method bodies are token-identical to Phase 133; default arguments and input
+state ownership remain on `CanvasState`. The full default build, all 40 CTests,
+and the private Cage canvas, text, clipboard, selection, document, and
+preferences smoke checks passed.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
