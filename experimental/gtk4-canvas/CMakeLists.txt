@@ -161,6 +161,7 @@ add_executable(
     InkRasterCache.cpp
     ClipboardRenderer.cpp
     LuaPluginRuntime.cpp
+    LuaPluginHostApi.cpp
     CanvasImageActions.cpp
     LatexEditor.cpp)
 target_include_directories(xournalpp-gtk4-canvas PRIVATE
@@ -335,7 +336,7 @@ target_compile_features(main-tool-rail-test PRIVATE cxx_std_20)
 target_compile_options(main-tool-rail-test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME main-tool-rail COMMAND main-tool-rail-test)
 
-add_executable(lua-plugin-runtime-test LuaPluginRuntimeTest.cpp LuaPluginRuntime.cpp)
+add_executable(lua-plugin-runtime-test LuaPluginRuntimeTest.cpp LuaPluginRuntime.cpp LuaPluginHostApi.cpp)
 target_compile_features(lua-plugin-runtime-test PRIVATE cxx_std_20)
 target_compile_options(lua-plugin-runtime-test PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(lua-plugin-runtime-test PRIVATE XOURNALPP_REPO_ROOT="${XOURNALPP_REPO_ROOT}")

@@ -267,6 +267,12 @@ same `CanvasState` instance. The full default build, all 40 CTests, and the
 private Cage canvas, text, clipboard, selection, document, and preferences
 smoke checks passed.
 
+Phase 139 extracts 39 Lua plugin host API adapters from the runtime
+monolith into `LuaPluginHostApi.cpp`. Each moved definition is token-identical
+to Phase 138; Lua state, plugin ownership, and callback dispatch remain
+unchanged. The full default build, all 40 CTests, and the private Cage canvas,
+text, clipboard, selection, document, and preferences smoke checks passed.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
