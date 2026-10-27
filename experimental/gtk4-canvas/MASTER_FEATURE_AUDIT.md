@@ -130,7 +130,8 @@ each phase lands:
    momentum, keep horizontal drift very low in a single-column document, allow
    horizontal travel only where the page grid provides it, and clamp movement
    to the grid bounds. Synthetic GTK controller signals do not establish
-   physical-device sensitivity or momentum parity.
+   physical-device sensitivity or momentum parity. The user reports momentum
+   feels missing or too short on the Phase 127 build.
 3. Finish the other deferred user reports below, including real-document ink
    frame-time, sidebar latency on content-heavy PDFs, raster-worker failures,
    Smart Select drag performance, and any remaining tool parity. Phase 122
@@ -250,6 +251,14 @@ selection into `CanvasStateObjectPicking.cpp`. All 7 moved method bodies are
 token-identical to Phase 135; the selection model and hit-test behavior are
 unchanged. The full default build, all 40 CTests, and the private Cage canvas,
 text, clipboard, selection, document, and preferences smoke checks passed.
+
+Phase 137 moves the selected-ink styling/edit operations and text/image insert,
+replace, paste, recolor, and delete operations into
+`CanvasStateObjectEditing.cpp`. The 14 moved method bodies are
+token-identical to Phase 136; object, selection, and history state stay
+owned by the same `CanvasState` instance. The full default build, all 40 CTests,
+and private Cage canvas, text, clipboard, selection, document, and preferences
+smoke checks passed.
 
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
