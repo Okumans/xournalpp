@@ -976,16 +976,16 @@ static void constrainedScrollAndMomentum() {
         momentum.advance(frame, step);
         totalDistance += step.y;
     }
-    check(!momentum.isActive() && totalDistance > 150 && totalDistance < 250,
-          "touchpad momentum should ease to a stop with a shorter bounded coast");
+    check(!momentum.isActive() && totalDistance > 380 && totalDistance < 440,
+          "touchpad momentum should ease to a stop with the longer bounded coast");
     check(momentum.start(10.0, 0.0), "high release velocity should start capped momentum");
     totalDistance = 0;
     for (long long frame = 2000000; momentum.isActive() && frame < 4000000; frame += 16000) {
         momentum.advance(frame, step);
         totalDistance += step.x;
     }
-    check(!momentum.isActive() && totalDistance > 200 && totalDistance < 250,
-          "fast touchpad releases should be capped to a shorter horizontal coast");
+    check(!momentum.isActive() && totalDistance > 380 && totalDistance < 440,
+          "fast touchpad releases should be capped to the longer horizontal coast");
     check(!momentum.start(std::numeric_limits<double>::quiet_NaN(), 1.0) && !momentum.isActive(),
           "non-finite device velocity must not start a momentum animation");
 }

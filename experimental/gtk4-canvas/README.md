@@ -537,9 +537,10 @@ selectable or editable, and selection coverage remains partial. Signal-handler
 emergency dump, full document undo, the complete Lua plugin API, remaining
 plugin-specific actions, most bundled plugin behaviors, and full toolbar
 configuration import remain migration work. Phase 118 tightens horizontal
-touchpad intent, uses the actual page-grid bounds, and shortens synthetic
-momentum travel. The user's report of fast, jumpy scrolling still needs
-verification and sensitivity tuning on their physical device. Its eraser edits session ink and supported native strokes
+touchpad intent and uses the actual page-grid bounds. Phase 144 extends the
+synthetic momentum coast to about 414 logical pixels after the user reported it
+felt too short. Physical-device momentum tuning and the reported next-page lag
+remain unverified. Its eraser edits session ink and supported native strokes
 on the active layer; it cannot erase flattened PDF content or unsupported native
 objects. Do not use its screenshots as evidence of full migration readiness or
 improved performance relative to GTK 3.

@@ -133,7 +133,7 @@ public:
 private:
     static constexpr double maxSpeed = 1.0;
     static constexpr double stopSpeed = 0.015;
-    static constexpr double timeConstantMs = 220.0;
+    static constexpr double timeConstantMs = 420.0;
 
     ScrollDelta velocity;
     long long lastFrameTime = 0;
