@@ -217,6 +217,13 @@ The 7 method bodies are token-identical to the parent implementation. The full
 default build and 40 CTests passed, and the private no-worker Cage canvas smoke
 passed. `CanvasState` and its history remain the single state owner.
 
+Phase 132 moves the selection geometry, snapping, transform, intersection, and
+eraser helpers into `CanvasStateSelection.cpp`, compiled as part of the same
+model library. All 19 moved method bodies are token-identical to Phase 131;
+state and history ownership remain unchanged. The full default build, 40
+CTests, and the private Cage canvas, text, clipboard, selection, document, and
+preferences smoke checks passed.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
