@@ -245,6 +245,12 @@ token-identical to Phase 134, with selection state still owned by `CanvasState`.
 The full default build, all 40 CTests, and the private Cage canvas, text,
 clipboard, selection, document, and preferences smoke checks passed.
 
+Phase 136 moves Smart Select, stroke/text/link/image picking, and object
+selection into `CanvasStateObjectPicking.cpp`. All 7 moved method bodies are
+token-identical to Phase 135; the selection model and hit-test behavior are
+unchanged. The full default build, all 40 CTests, and the private Cage canvas,
+text, clipboard, selection, document, and preferences smoke checks passed.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
