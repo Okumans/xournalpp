@@ -122,9 +122,12 @@ each phase lands:
 
 1. Fix the remaining text editor UI report after the refactor: in the current
    GTK 4 binary, the user repro shows the box/caret dimensions scaling with
-   canvas zoom rather than text/font size. Phase 128's typed-fixture checks
-   passed, but they did not catch this report. Recheck the user's PDF, initial
-   box width, caret visibility, and transform bounds in the real UI.
+   canvas zoom rather than text/font size. Phase 143 fixes the requested-size
+   calculation, hides transform handles while editing, and covers Text-tool
+   cross-target word selection in the private smoke. Private Cage Vulkan
+   screenshots show the text, frame, and caret, while the Cairo fallback
+   paints a pink block over the GtkTextView. The user's exact PDF remains to
+   be checked, so keep this item open.
 2. Verify and tune touchpad scrolling on the user's physical device. Preserve
    momentum, keep horizontal drift very low in a single-column document, allow
    horizontal travel only where the page grid provides it, and clamp movement
@@ -135,7 +138,8 @@ each phase lands:
    `/home/okumnas/Cedt/comp_security/slides/lecture_8.pdf`.
 3. Finish the other deferred user reports below, including real-document ink
    frame-time, sidebar latency on content-heavy PDFs, raster-worker failures,
-   Smart Select drag performance, and any remaining tool parity. Phase 122
+   Smart Select drag performance, overly fast object rotation, and any
+   remaining tool parity. Phase 122
    covers contextual cursor feedback. Search highlight geometry has been
    visually checked against the user's PDF in private Cage, and Phase 116 made
    Search page-at-a-time and asynchronous; update this list as each item is
@@ -297,6 +301,18 @@ and audit counts are unchanged. The GTK4 target built, all 40 CTests passed,
 and the private Cage Preferences edit/restart check passed; evidence is in
 `/tmp/phase142-preferences-dialog`.
 
+Phase 143 sizes the inline editor from the live Pango layout with a 12 px total
+frame inset, clears stale transform controls while editing, and carries a
+Text-tool click across the focus change so the following click can select a
+word. The private Cage smoke checks compact allocation, live text sizing,
+transformed word selection, a collapsed caret, and that no object transform
+handles remain during editing; light and dark interaction checks pass under
+both Cairo and Vulkan. The GTK4 target builds and all 40 CTests pass. Vulkan
+renders the text and transformed frame correctly; Cairo paints a solid pink
+block over the GtkTextView. The user's exact PDF remains unverified, so the
+reported editor appearance is still open. Evidence is in
+`/tmp/phase143-rebuilt-cairo` and `/tmp/phase143-rebuilt-vulkan`.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
@@ -449,7 +465,7 @@ it is not represented by a single `ToolType`.
 | --- | --- | --- |
 | Rectangle/lasso object selection | Partial | Active-layer and visible-layer modes select editable strokes, text, and images. Multi-layer mode searches top to bottom, skips hidden layers, and selects every matching object from the first visible layer with matches; unsupported native objects remain outside general selection. Rectangular objects require all four transformed corners inside the selector, matching master behavior. |
 | Stroke/text/image move, resize, mirror, rotate | Partial | Shared undoable transforms work for ink, text, and images, including nearest-corner grid snapping during moves, axis-aware page-grid snapping during resize, configured edge-pan while moving beyond the viewport, direct Text-tool text movement, resize immediately after editing, mixed-object edits, and cross-page transfer. Text and image selections draw the shared resize and rotation handles. After rotation the visible frame and handles rotate with the selection while later resize transforms use the accumulated rotation; undo and redo restore both. Physical input behavior remains. |
-| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, opens existing text on click or double-click, and selects the clicked word on double-click. Smart Select single-click selects objects and double-click edits native text while preserving the current canvas zoom. The inline editor follows the text item's affine transform, and transformed word picking maps the pointer through the inverse matrix. New unwrapped text editors request a compact 40 px width and resize from the live Pango layout; wrapped editors use their configured width. The caret uses the accent color and a 0.5 aspect ratio only while editing, restoring the prior GTK setting afterward. Newly created or edited text remains selected. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. |
+| Text editing | Partial | Inline rich-text editing, left/center/right alignment, justification, and toolbar font/size/style/color controls work; the Text tool directly moves and transforms text, opens existing text on click or double-click, and selects the clicked word on double-click. Smart Select single-click selects objects and double-click edits native text while preserving the current canvas zoom. The inline editor follows the text item's affine transform, and transformed word picking maps the pointer through the inverse matrix. New unwrapped text editors start at a 12 px frame inset and resize from the live Pango layout; wrapped editors use their configured width. The caret uses the accent color and a 0.5 aspect ratio only while editing, restoring the prior GTK setting afterward. Newly created or edited text remains selected. The private Cage Cairo screenshot still has a pink block for transformed text editing, so visual parity on the user's renderer and PDF remains to be confirmed. Alignment and justification defaults import from legacy tool settings and persist in the GTK 4 overlay. |
 | Layer selection and operations | Partial | Add/delete/merge/duplicate/rename/reorder/visibility and visible-layer stroke/text/image selection work. The master model has no layer-lock action. |
 | Native object picking | Partial | Smart Select and the distinct Select Object tool pick editable strokes, images, text, and links; Select Object uses nearest-hit selection and Shift-add. Unsupported native objects cannot be edited. |
 | Clipboard | Partial | Bounded `application/xournal` streams preserve ordered groups of supported strokes, rich text, links, raster images, and LaTeX images, including dash arrays in the internal codec. Copy also offers rendered PNG and SVG, plus plain text when text is selected; external plain-text paste creates an editable text item. Mixed copy/cut/paste/duplicate and cross-type paste/undo are grouped edits. Unsupported native types, audio attachments, and cross-process compatibility verification remain. |

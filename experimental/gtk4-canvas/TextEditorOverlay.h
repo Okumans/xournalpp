@@ -19,6 +19,7 @@ namespace prototype {
 class TextEditorOverlay {
 public:
     enum class Format { Bold, Italic, Underline, Strikethrough, Superscript, Subscript };
+    static constexpr int frameInsets = 12;
 
     struct Completion {
         std::optional<size_t> existingIndex;
@@ -38,10 +39,10 @@ public:
 
         view = gtk_text_view_new();
         gtk_widget_add_css_class(view, "canvas-text-editor");
-        gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 0);
-        gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 0);
-        gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view), 0);
-        gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(view), 0);
+        gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 5);
+        gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 5);
+        gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view), 5);
+        gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(view), 5);
         gtk_text_view_set_accepts_tab(GTK_TEXT_VIEW(view), false);
         gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_NONE);
         gtk_widget_set_halign(view, GTK_ALIGN_START);
@@ -74,9 +75,9 @@ public:
         return result;
     }
 
-    void selectWordAt(int x, int y) {
+    bool selectWordAt(int x, int y) {
         if (!active()) {
-            return;
+            return false;
         }
 
         int bufferX = 0;
@@ -86,7 +87,7 @@ public:
         GtkTextIter cursor;
         int trailing = 0;
         if (!gtk_text_view_get_iter_at_position(GTK_TEXT_VIEW(view), &cursor, &trailing, bufferX, bufferY)) {
-            return;
+            return false;
         }
         if (trailing > 0) {
             gtk_text_iter_forward_chars(&cursor, trailing);
@@ -97,7 +98,7 @@ public:
         if (!gtk_text_iter_inside_word(&cursor) && !gtk_text_iter_starts_word(&cursor) &&
             !gtk_text_iter_ends_word(&cursor)) {
             gtk_text_buffer_place_cursor(editorBuffer, &cursor);
-            return;
+            return true;
         }
         if (!gtk_text_iter_starts_word(&start)) {
             gtk_text_iter_backward_word_start(&start);
@@ -110,6 +111,7 @@ public:
         } else {
             gtk_text_buffer_place_cursor(editorBuffer, &cursor);
         }
+        return true;
     }
 
     void begin(TextItem item, std::optional<size_t> index, double zoom) {
@@ -146,8 +148,8 @@ public:
         if (!active()) {
             return;
         }
-        const int requestedWidth = std::max(40, width);
-        const int requestedHeight = std::max(24, height);
+        const int requestedWidth = std::max(frameInsets, width);
+        const int requestedHeight = std::max(frameInsets, height);
         if (requestedWidth != positionedWidth || requestedHeight != positionedHeight) {
             gtk_widget_set_size_request(view, requestedWidth, requestedHeight);
             positionedWidth = requestedWidth;

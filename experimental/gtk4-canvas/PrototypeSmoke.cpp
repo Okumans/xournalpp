@@ -510,15 +510,18 @@ gboolean Prototype::smoke() {
                 gtk_widget_get_size_request(textEditor->widget(), &smokeTextEditorInitialWidth, &initialEditorHeight);
                 gdouble activeCursorAspectRatio = 0;
                 g_object_get(textSettings, "gtk-cursor-aspect-ratio", &activeCursorAspectRatio, nullptr);
-                require(smokeTextEditorInitialWidth >= 40 && smokeTextEditorInitialWidth <= 64 &&
-                                initialEditorHeight >= 24 && activeCursorAspectRatio >= 0.5,
-                        "A new text editor did not start compact with a visible caret");
+                require(smokeTextEditorInitialWidth >= prototype::TextEditorOverlay::frameInsets &&
+                                smokeTextEditorInitialWidth <= 28 &&
+                                initialEditorHeight >= prototype::TextEditorOverlay::frameInsets &&
+                                activeCursorAspectRatio >= 0.5,
+                        "A new text editor did not start close to its font metrics with a visible caret");
                 waitForNextWindowFrame();
                 const int allocatedEditorWidth = gtk_widget_get_width(textEditor->widget());
                 capture("text-editor-initial");
-                if (allocatedEditorWidth < 32 || allocatedEditorWidth > 64) {
+                if (allocatedEditorWidth < prototype::TextEditorOverlay::frameInsets - 2 ||
+                    allocatedEditorWidth > 32) {
                     throw std::runtime_error("A new text editor allocated " + std::to_string(allocatedEditorWidth) +
-                                             " px instead of its compact initial width");
+                                             " px instead of its font-sized initial width");
                 }
                 auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
                 gtk_text_buffer_set_text(buffer, "GTK rich π", -1);
@@ -557,17 +560,24 @@ gboolean Prototype::smoke() {
             const auto layoutItem = textEditor->layoutItem();
             const auto [naturalWidth, naturalHeight] = prototype::textNaturalSize(layoutItem);
             const auto screen = state.pageScreenPoint(layoutItem.page, layoutItem.x, layoutItem.y);
-            const double availableWidth = std::max(40.0, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - 8.0);
+            const double frameInsets = prototype::TextEditorOverlay::frameInsets;
+            const double availableWidth =
+                    std::max(frameInsets, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - frameInsets);
             const double contentWidth =
                     layoutItem.wrapWidth >= 0 ? layoutItem.wrapWidth * state.zoom : naturalWidth * state.zoom;
-            const int expectedWidth = static_cast<int>(std::ceil(std::clamp(contentWidth + 8.0, 40.0, availableWidth)));
-            const int expectedHeight = static_cast<int>(std::ceil(std::max(24.0, naturalHeight * state.zoom + 6.0)));
+            const int expectedWidth = static_cast<int>(
+                    std::ceil(std::clamp(contentWidth + frameInsets, frameInsets, availableWidth)));
+            const int expectedHeight = static_cast<int>(std::ceil(std::max(frameInsets, naturalHeight * state.zoom +
+                                                                                         frameInsets)));
             gdouble activeCursorAspectRatio = 0;
             g_object_get(gtk_widget_get_settings(textEditor->widget()), "gtk-cursor-aspect-ratio",
                          &activeCursorAspectRatio, nullptr);
             require(requestedWidth == expectedWidth && requestedHeight == expectedHeight &&
                             requestedWidth > smokeTextEditorInitialWidth && activeCursorAspectRatio >= 0.5,
                     "Inline text editor geometry or active caret sizing does not match the live Pango layout");
+            require(std::abs(gtk_widget_get_width(textEditor->widget()) - requestedWidth) <= 2 &&
+                            std::abs(gtk_widget_get_height(textEditor->widget()) - requestedHeight) <= 2,
+                    "The allocated text editor frame does not match its content-sized request");
             capture("text-editor");
             auto* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
             GtkTextIter caret;
@@ -626,7 +636,8 @@ gboolean Prototype::smoke() {
             capture("smart-text-selected");
             g_signal_emit_by_name(textClick, "pressed", 2, editAt.x, editAt.y);
             g_signal_emit_by_name(textClick, "released", 2, editAt.x, editAt.y);
-            require(textEditor->active() && std::abs(state.zoom - zoomBeforeSmartSelect) < 1e-9 && !fitMode,
+            require(textEditor->active() && std::abs(state.zoom - zoomBeforeSmartSelect) < 1e-9 && !fitMode &&
+                            !state.hasSelection() && !selectedImageIndex,
                     "Smart Select double-click did not edit text at the existing canvas zoom");
             waitForNextWindowFrame();
             const graphene_point_t editorOrigin{0, 0};
@@ -671,6 +682,10 @@ gboolean Prototype::smoke() {
             GtkTextIter textEnd;
             gtk_text_buffer_get_end_iter(buffer, &textEnd);
             gtk_text_buffer_place_cursor(buffer, &textEnd);
+            GtkTextIter collapsedStart;
+            GtkTextIter collapsedEnd;
+            require(!gtk_text_buffer_get_selection_bounds(buffer, &collapsedStart, &collapsedEnd),
+                    "Moving the caret left a stale word selection in the transformed editor");
             capture("smart-text-editor-transformed");
             gtk_text_buffer_insert(buffer, &textEnd, "!", 1);
             finishTextEditing();
@@ -695,9 +710,28 @@ gboolean Prototype::smoke() {
             const auto zoomBeforeTextToolDoubleClick = state.zoom;
             const auto textToolEditAt = state.pageScreenPoint(created.page, created.x + created.layoutWidth * 0.12,
                                                               created.y + created.layoutHeight / 2);
-            g_signal_emit_by_name(textClick, "released", 2, textToolEditAt.x, textToolEditAt.y);
+            g_signal_emit_by_name(textClick, "released", 1, textToolEditAt.x, textToolEditAt.y);
             require(textEditor->active() && std::abs(state.zoom - zoomBeforeTextToolDoubleClick) < 1e-9,
-                    "Text-tool double-click did not edit existing text at the existing canvas zoom");
+                    "Text-tool click did not open existing text at the existing canvas zoom");
+            graphene_point_t canvasClick{static_cast<float>(textToolEditAt.x), static_cast<float>(textToolEditAt.y)};
+            graphene_point_t editorClick;
+            require(gtk_widget_compute_point(canvas, textEditor->widget(), &canvasClick, &editorClick),
+                    "Cannot map the second Text-tool click into the inline editor");
+            g_signal_emit_by_name(textEditorClick, "pressed", 1, editorClick.x, editorClick.y);
+            auto* textToolBuffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
+            GtkTextIter textToolSelectionStart;
+            GtkTextIter textToolSelectionEnd;
+            require(gtk_text_buffer_get_selection_bounds(textToolBuffer, &textToolSelectionStart,
+                                                         &textToolSelectionEnd),
+                    "Text-tool double-click did not select a word after editor focus changed");
+            gchar* textToolSelectedWord = gtk_text_buffer_get_text(
+                    textToolBuffer, &textToolSelectionStart, &textToolSelectionEnd, true);
+            require(textToolSelectedWord && std::string(textToolSelectedWord) == "GTK",
+                    "Text-tool double-click selected the wrong word after editor focus changed");
+            g_free(textToolSelectedWord);
+            require(!state.hasSelection() && !selectedImageIndex,
+                    "Text-tool word selection retained object transform controls");
+            capture("text-tool-double-click-word");
             finishTextEditing();
             created = state.texts.back();
             const auto moveStart = state.pageScreenPoint(created.page, created.x + created.layoutWidth / 2,

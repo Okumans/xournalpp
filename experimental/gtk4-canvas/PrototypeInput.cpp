@@ -128,6 +128,7 @@ void Prototype::connectInput() {
                             self->startTextEditing(x, y);
                         }
                         self->selectTextWordAt(x, y);
+                        self->pendingTextToolClick.reset();
                         self->update();
                         return;
                     }
@@ -136,6 +137,15 @@ void Prototype::connectInput() {
                     return;
                 if (tool == Tool::Text) {
                     self->startTextEditing(x, y);
+                    if (self->textEditor->active() && self->textEditor->existingItemIndex()) {
+                        auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                        prototype::gtk4::PendingTextToolClick click;
+                        click.time = event ? gdk_event_get_time(event) : 0;
+                        click.textIndex = *self->textEditor->existingItemIndex();
+                        click.x = x;
+                        click.y = y;
+                        self->pendingTextToolClick = click;
+                    }
                 } else if (tool == Tool::SmartSelect) {
                     if (self->textEditor->active()) {
                         self->finishTextEditing();
@@ -161,6 +171,70 @@ void Prototype::connectInput() {
                      }),
                      this);
     addGesture(GTK_GESTURE(textClick));
+
+    textEditorClick = GTK_GESTURE_CLICK(gtk_gesture_click_new());
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(textEditorClick), GDK_BUTTON_PRIMARY);
+    g_signal_connect(textEditorClick, "pressed",
+                     G_CALLBACK((+[](GtkGestureClick* gesture, int presses, double x, double y, gpointer data) {
+                         auto* self = static_cast<Prototype*>(data);
+                         if (!mouseEvent(GTK_EVENT_CONTROLLER(gesture)) || !self->textEditor ||
+                             !self->textEditor->active()) {
+                             return;
+                         }
+
+                         const auto tool = self->state.brush.tool;
+                         const auto selectWordAtEditorPoint = [self, x, y] {
+                             if (!self->textEditor->selectWordAt(static_cast<int>(std::lround(x)),
+                                                                 static_cast<int>(std::lround(y)))) {
+                                 graphene_point_t editorPoint{};
+                                 editorPoint.x = static_cast<float>(x);
+                                 editorPoint.y = static_cast<float>(y);
+                                 graphene_point_t canvasPoint{};
+                                 if (gtk_widget_compute_point(self->textEditor->widget(), self->canvas, &editorPoint,
+                                                              &canvasPoint)) {
+                                     self->selectTextWordAt(canvasPoint.x, canvasPoint.y);
+                                 }
+                             }
+                             self->update();
+                         };
+                         if (presses >= 2 && (tool == Tool::Text || tool == Tool::SmartSelect)) {
+                             selectWordAtEditorPoint();
+                             self->pendingTextToolClick.reset();
+                             return;
+                         }
+
+                         if (presses != 1 || tool != Tool::Text || !self->pendingTextToolClick) {
+                             return;
+                         }
+
+                         const auto index = self->textEditor->existingItemIndex();
+                         if (!index || *index != self->pendingTextToolClick->textIndex) {
+                             self->pendingTextToolClick.reset();
+                             return;
+                         }
+
+                         graphene_point_t viewPoint{static_cast<float>(x), static_cast<float>(y)};
+                         graphene_point_t canvasPoint;
+                         const bool mapped = gtk_widget_compute_point(self->textEditor->widget(), self->canvas,
+                                                                      &viewPoint, &canvasPoint);
+                         auto* settings = gtk_widget_get_settings(self->textEditor->widget());
+                         guint doubleClickTime = 400;
+                         int doubleClickDistance = 5;
+                         g_object_get(settings, "gtk-double-click-time", &doubleClickTime,
+                                      "gtk-double-click-distance", &doubleClickDistance, nullptr);
+                         auto* event = gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(gesture));
+                         const guint32 eventTime = event ? gdk_event_get_time(event) : 0;
+                         const guint32 elapsed = eventTime - self->pendingTextToolClick->time;
+                         const bool closeEnough = mapped &&
+                                 std::abs(canvasPoint.x - self->pendingTextToolClick->x) <= doubleClickDistance &&
+                                 std::abs(canvasPoint.y - self->pendingTextToolClick->y) <= doubleClickDistance;
+                         if (elapsed <= doubleClickTime && closeEnough) {
+                             selectWordAtEditorPoint();
+                         }
+                         self->pendingTextToolClick.reset();
+                     })),
+                     this);
+    gtk_widget_add_controller(textEditor->widget(), GTK_EVENT_CONTROLLER(textEditorClick));
 
     pointerMotion = gtk_event_controller_motion_new();
     g_signal_connect(pointerMotion, "motion",
