@@ -116,7 +116,8 @@ target_link_libraries(gtk4-stroke-contour PUBLIC PkgConfig::CAIRO PkgConfig::GLI
 
 add_library(gtk4-canvas-state STATIC CanvasStateGeometry.cpp CanvasStateSelection.cpp CanvasStateHistory.cpp
             CanvasStateInput.cpp CanvasStateSelectionGestures.cpp CanvasStateObjectPicking.cpp
-            CanvasStateObjectEditing.cpp CanvasStateLayers.cpp CanvasStatePluginObjects.cpp)
+            CanvasStateObjectEditing.cpp CanvasStateLayers.cpp CanvasStatePluginObjects.cpp
+            CanvasStateClipboard.cpp)
 target_compile_features(gtk4-canvas-state PUBLIC cxx_std_20)
 target_compile_options(gtk4-canvas-state PRIVATE -Wall -Wextra -Wpedantic)
 
