@@ -282,6 +282,13 @@ Phase 139; the model and plugin reference ownership remain in `CanvasState`.
 The full default build, all 40 CTests, and the private Cage canvas, text,
 clipboard, selection, document, and preferences smoke checks passed.
 
+Phase 141 extracts selected-object copying and stroke, text, and mixed-object
+paste into `CanvasStateClipboard.cpp`. The six method definitions are
+token-identical to Phase 140; clipboard placement, ordering, and undo
+behavior remain unchanged. The full build, all 40 CTests, and the private Cage
+canvas, selection, mixed-clipboard, document, and preferences checks passed;
+evidence is in `/tmp/phase141-canvas-clipboard-smoke`.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
