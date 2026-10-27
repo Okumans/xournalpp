@@ -39,8 +39,8 @@ void Prototype::capture(const std::string& name, GtkWidget* target, bool capture
                            gtk_widget_get_height(window));
     // A window paintable may lag a just-queued drawing-area frame. Overlay a
     // fresh canvas snapshot so smoke captures include the state being tested.
-    const bool overlayDialogVisible =
-            messageDialog || (preferencesUi.dialog && gtk_widget_get_visible(GTK_WIDGET(preferencesUi.dialog)));
+    const bool overlayDialogVisible = messageDialog || (preferencesDialog.widget() &&
+                                                        gtk_widget_get_visible(GTK_WIDGET(preferencesDialog.widget())));
     if (!target && canvasOverlay && !overlayDialogVisible) {
         graphene_rect_t canvasBounds;
         if (gtk_widget_compute_bounds(canvasOverlay, window, &canvasBounds)) {
@@ -602,11 +602,11 @@ gboolean Prototype::smoke() {
             const double cosine = scale * std::cos(rotation);
             const double sine = scale * std::sin(rotation);
             require(state.updateSelectedTexts([=](prototype::TextItem& item) {
-                        item.xx = cosine;
-                        item.yx = sine;
-                        item.xy = -sine;
-                        item.yy = cosine;
-                    }),
+                item.xx = cosine;
+                item.yx = sine;
+                item.xy = -sine;
+                item.yy = cosine;
+            }),
                     "Text smoke could not prepare a transformed text object");
             update();
 
@@ -641,8 +641,9 @@ gboolean Prototype::smoke() {
             const double originDeltaX = canvasOrigin.x - expectedOriginX;
             const double originDeltaY = canvasOrigin.y - expectedOriginY;
             if (std::abs(originDeltaX) >= 0.75 || std::abs(originDeltaY) >= 0.75) {
-                throw std::runtime_error("The transformed text editor origin does not match the document text origin: dx=" +
-                                         std::to_string(originDeltaX) + ", dy=" + std::to_string(originDeltaY));
+                throw std::runtime_error(
+                        "The transformed text editor origin does not match the document text origin: dx=" +
+                        std::to_string(originDeltaX) + ", dy=" + std::to_string(originDeltaY));
             }
             const graphene_point_t editorSample{32, 18};
             graphene_point_t canvasSample;
@@ -653,8 +654,9 @@ gboolean Prototype::smoke() {
             const double sampleDeltaX = canvasSample.x - expectedSampleX;
             const double sampleDeltaY = canvasSample.y - expectedSampleY;
             if (std::abs(sampleDeltaX) >= 0.75 || std::abs(sampleDeltaY) >= 0.75) {
-                throw std::runtime_error("The transformed text editor does not follow the text object's affine matrix: dx=" +
-                                         std::to_string(sampleDeltaX) + ", dy=" + std::to_string(sampleDeltaY));
+                throw std::runtime_error(
+                        "The transformed text editor does not follow the text object's affine matrix: dx=" +
+                        std::to_string(sampleDeltaX) + ", dy=" + std::to_string(sampleDeltaY));
             }
             buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textEditor->widget()));
             GtkTextIter selectedStart;
@@ -680,11 +682,11 @@ gboolean Prototype::smoke() {
                             std::abs(state.texts.back().yy - created.yy) < 1e-9,
                     "Editing transformed rich text lost its content, styles, or affine matrix");
             require(state.updateSelectedTexts([](prototype::TextItem& item) {
-                        item.xx = 1;
-                        item.yx = 0;
-                        item.xy = 0;
-                        item.yy = 1;
-                    }),
+                item.xx = 1;
+                item.yx = 0;
+                item.xy = 0;
+                item.yy = 1;
+            }),
                     "Text smoke could not restore the identity transform for later interactions");
 
             selectTool(Tool::Text);

@@ -572,16 +572,4 @@ void Prototype::waitForPluginDocumentJob() {
     waitForNextWindowFrame();
 }
 
-guint Prototype::settingsThemeIndex(prototype::ThemeVariant theme) {
-    switch (theme) {
-        case prototype::ThemeVariant::ForceLight:
-            return 1;
-        case prototype::ThemeVariant::ForceDark:
-            return 2;
-        case prototype::ThemeVariant::UseSystem:
-        default:
-            return 0;
-    }
-}
-
 }  // namespace prototype::gtk4

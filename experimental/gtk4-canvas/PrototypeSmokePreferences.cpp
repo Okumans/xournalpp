@@ -3,7 +3,7 @@
 namespace prototype::gtk4 {
 
 gboolean Prototype::smokePreferencesVerify() {
-    const auto control = [&](PreferenceKey key) { return preferencesUi.controls[static_cast<size_t>(key)]; };
+    const auto control = [&](PreferenceKey key) { return preferencesDialog.control(key); };
     const prototype::FloatingToolboxRows floatingModeTestRows = {{
             {"SMART_SELECT", "PEN", "DRAW", "PAGE_SPIN", "LAYER"},
             {"ZOOM_SLIDER", "DRAW_DOUBLE_ARROW", "DRAW_COORDINATE_SYSTEM", "DRAW_SPLINE", "SHAPE_RECOGNIZER", "RULER"},
@@ -45,7 +45,8 @@ gboolean Prototype::smokePreferencesVerify() {
                         "Preferences dialog is missing appearance, stylus or autosave controls");
                 require(control(PreferenceKey::FloatingToolboxRow1) && control(PreferenceKey::FloatingToolboxRow2) &&
                                 control(PreferenceKey::FloatingToolboxRow3) &&
-                                control(PreferenceKey::FloatingToolboxRow4) && floatingToolboxApplyButton,
+                                control(PreferenceKey::FloatingToolboxRow4) &&
+                                preferencesDialog.floatingToolboxApplyButton(),
                         "Preferences dialog is missing the four floating toolbox rows");
                 require(control(PreferenceKey::LatexAutoCheckDependencies) &&
                                 control(PreferenceKey::LatexDefaultText) && control(PreferenceKey::LatexTemplatePath) &&
@@ -60,11 +61,13 @@ gboolean Prototype::smokePreferencesVerify() {
                                 control(PreferenceKey::LatexUseExternalEditor) &&
                                 control(PreferenceKey::LatexExternalEditorAutoConfirm) &&
                                 control(PreferenceKey::LatexExternalEditorCommand) &&
-                                control(PreferenceKey::LatexTemporaryFileExtension) && preferencesUi.latexSettingsApplyButton &&
-                                preferencesUi.latexSetupTestButton,
+                                control(PreferenceKey::LatexTemporaryFileExtension) &&
+                                preferencesDialog.latexSettingsApplyButton() &&
+                                preferencesDialog.latexSetupTestButton(),
                         "LaTeX Preferences page is missing an imported setting or editor control");
-                require(control(PreferenceKey::MainToolRail) && mainToolRailApplyButton && mainToolRailVisibleList &&
-                                mainToolRailAvailableList &&
+                require(control(PreferenceKey::MainToolRail) && preferencesDialog.mainToolRailApplyButton() &&
+                                preferencesDialog.mainToolRailVisibleList() &&
+                                preferencesDialog.mainToolRailAvailableList() &&
                                 std::string(
                                         gtk_editable_get_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)))) ==
                                         "SMART_SELECT,PEN,HIGHLIGHTER,ERASER,TEXT,HAND",
@@ -76,7 +79,8 @@ gboolean Prototype::smokePreferencesVerify() {
                     }
                     return count;
                 };
-                require(listRows(mainToolRailVisibleList) == 6 && listRows(mainToolRailAvailableList) == 6,
+                require(listRows(preferencesDialog.mainToolRailVisibleList()) == 6 &&
+                                listRows(preferencesDialog.mainToolRailAvailableList()) == 6,
                         "Main tool rail editor did not split visible and available tools");
                 require(std::string(gtk_editable_get_text(GTK_EDITABLE(control(PreferenceKey::FloatingToolboxRow1)))) ==
                                         "PEN,HIGHLIGHTER,LASER_POINTER,PDF_TOOL,UNDO" &&
@@ -92,13 +96,15 @@ gboolean Prototype::smokePreferencesVerify() {
                         "Preferences rows did not show imported stylus mappings");
                 require(adw_switch_row_get_active(ADW_SWITCH_ROW(control(PreferenceKey::SnapRotation))),
                         "Rotation snapping should be enabled by default in Preferences");
-                capture("preferences-dialog", GTK_WIDGET(preferencesUi.dialog), true);
-                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "latex");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "latex",
+                capture("preferences-dialog", GTK_WIDGET(preferencesDialog.widget()), true);
+                adw_preferences_dialog_set_visible_page_name(preferencesDialog.widget(), "latex");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog.widget())) ==
+                                "latex",
                         "Preferences dialog did not open the LaTeX page");
-                capture("preferences-latex", GTK_WIDGET(preferencesUi.dialog), true);
-                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "toolbar");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "toolbar",
+                capture("preferences-latex", GTK_WIDGET(preferencesDialog.widget()), true);
+                adw_preferences_dialog_set_visible_page_name(preferencesDialog.widget(), "toolbar");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog.widget())) ==
+                                "toolbar",
                         "Preferences dialog did not switch to the Toolbar page");
                 break;
             }
@@ -106,8 +112,9 @@ gboolean Prototype::smokePreferencesVerify() {
                 capture("preferences-toolbar");
                 {
                     GtkWidget* pageScroll = nullptr;
-                    for (auto* parent = mainToolRailVisibleList ? gtk_widget_get_parent(mainToolRailVisibleList) :
-                                                                  nullptr;
+                    for (auto* parent = preferencesDialog.mainToolRailVisibleList() ?
+                                                gtk_widget_get_parent(preferencesDialog.mainToolRailVisibleList()) :
+                                                nullptr;
                          parent; parent = gtk_widget_get_parent(parent)) {
                         if (GTK_IS_SCROLLED_WINDOW(parent)) {
                             pageScroll = parent;
@@ -117,10 +124,11 @@ gboolean Prototype::smokePreferencesVerify() {
                     auto* adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(pageScroll));
                     gtk_adjustment_set_value(adjustment, gtk_adjustment_get_upper(adjustment) -
                                                                  gtk_adjustment_get_page_size(adjustment));
-                    capture("preferences-main-tool-rail", GTK_WIDGET(preferencesUi.dialog), true);
+                    capture("preferences-main-tool-rail", GTK_WIDGET(preferencesDialog.widget()), true);
                 }
-                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "input");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "input",
+                adw_preferences_dialog_set_visible_page_name(preferencesDialog.widget(), "input");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog.widget())) ==
+                                "input",
                         "Preferences dialog did not switch to the Input page");
                 break;
             case 3: {
@@ -134,8 +142,9 @@ gboolean Prototype::smokePreferencesVerify() {
                 gtk_color_dialog_button_set_rgba(
                         GTK_COLOR_DIALOG_BUTTON(control(PreferenceKey::CursorHighlightBorderColor)), &border);
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::CursorHighlightBorderWidth)), 2.0);
-                adw_preferences_dialog_set_visible_page_name(preferencesUi.dialog, "behavior");
-                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesUi.dialog)) == "behavior",
+                adw_preferences_dialog_set_visible_page_name(preferencesDialog.widget(), "behavior");
+                require(std::string(adw_preferences_dialog_get_visible_page_name(preferencesDialog.widget())) ==
+                                "behavior",
                         "Preferences dialog did not switch to the Behavior page");
                 capture("preferences-behavior");
                 adw_combo_row_set_selected(ADW_COMBO_ROW(control(PreferenceKey::Theme)), 1);
@@ -175,7 +184,7 @@ gboolean Prototype::smokePreferencesVerify() {
                                 gtk_widget_get_sensitive(control(PreferenceKey::LatexExternalEditorCommand)) &&
                                 gtk_widget_get_sensitive(control(PreferenceKey::LatexExternalEditorAutoConfirm)),
                         "LaTeX preference sensitivity did not follow custom font and external-editor settings");
-                g_signal_emit_by_name(preferencesUi.latexSettingsApplyButton, "clicked");
+                g_signal_emit_by_name(preferencesDialog.latexSettingsApplyButton(), "clicked");
                 require(importedConfig.settings.latexDefaultText == "\\frac{\\alpha}{2}" &&
                                 prototype::preferences_detail::pathToUtf8(importedConfig.settings.latexTemplatePath) ==
                                         "/tmp/template with spaces.tex" &&
@@ -192,7 +201,8 @@ gboolean Prototype::smokePreferencesVerify() {
                                 importedConfig.settings.latexUseExternalEditor &&
                                 importedConfig.settings.latexExternalEditorAutoConfirm &&
                                 importedConfig.settings.latexTemporaryFileExtension == "tex" &&
-                                std::string(gtk_label_get_text(GTK_LABEL(preferencesUi.latexSettingsApplyStatus))) == "Saved",
+                                std::string(gtk_label_get_text(
+                                        GTK_LABEL(preferencesDialog.latexSettingsApplyStatus()))) == "Saved",
                         "Applying LaTeX preferences did not persist the text fields and editor options");
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanSpeed)), 31.0);
                 gtk_spin_button_set_value(GTK_SPIN_BUTTON(control(PreferenceKey::EdgePanMaxMultiplier)), 3.5);
@@ -206,10 +216,10 @@ gboolean Prototype::smokePreferencesVerify() {
                     const auto serialized = prototype::serializeFloatingToolboxRow(floatingModeTestRows[index]);
                     gtk_editable_set_text(GTK_EDITABLE(control(rowKeys[index])), serialized.c_str());
                 }
-                g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
+                g_signal_emit_by_name(preferencesDialog.floatingToolboxApplyButton(), "clicked");
                 require(importedConfig.settings.floatingToolboxRows == floatingModeTestRows,
                         "Applying toolbar rows did not update the active layout");
-                g_signal_emit_by_name(floatingToolboxApplyButton, "clicked");
+                g_signal_emit_by_name(preferencesDialog.floatingToolboxApplyButton(), "clicked");
                 const auto listRows = [](GtkWidget* list) {
                     size_t count = 0;
                     for (auto* row = gtk_widget_get_first_child(list); row; row = gtk_widget_get_next_sibling(row)) {
@@ -217,7 +227,8 @@ gboolean Prototype::smokePreferencesVerify() {
                     }
                     return count;
                 };
-                auto* penEditorRow = gtk_list_box_get_row_at_index(GTK_LIST_BOX(mainToolRailVisibleList), 1);
+                auto* penEditorRow =
+                        gtk_list_box_get_row_at_index(GTK_LIST_BOX(preferencesDialog.mainToolRailVisibleList()), 1);
                 auto* penDragSource = penEditorRow ? GTK_DRAG_SOURCE(g_object_get_data(G_OBJECT(penEditorRow),
                                                                                        "gtk4-main-tool-drag-source")) :
                                                      nullptr;
@@ -231,33 +242,38 @@ gboolean Prototype::smokePreferencesVerify() {
                 gdk_content_formats_unref(dragFormats);
                 g_object_unref(dragProvider);
 
-                auto* highlighterRow = gtk_list_box_get_row_at_index(GTK_LIST_BOX(mainToolRailVisibleList), 2);
+                auto* highlighterRow =
+                        gtk_list_box_get_row_at_index(GTK_LIST_BOX(preferencesDialog.mainToolRailVisibleList()), 2);
                 graphene_rect_t highlighterRowBounds{};
-                require(highlighterRow && gtk_widget_compute_bounds(GTK_WIDGET(highlighterRow), mainToolRailVisibleList,
+                require(highlighterRow && gtk_widget_compute_bounds(GTK_WIDGET(highlighterRow),
+                                                                    preferencesDialog.mainToolRailVisibleList(),
                                                                     &highlighterRowBounds),
                         "Could not locate the target row for rail reordering");
                 const double reorderTextY = highlighterRowBounds.origin.y + highlighterRowBounds.size.height * 0.25;
-                const bool reorderAccepted = emitMainToolRailDropForTest(mainToolRailVisibleList, "TEXT", reorderTextY);
+                const bool reorderAccepted = preferencesDialog.emitMainToolRailDropForTest(
+                        preferencesDialog.mainToolRailVisibleList(), "TEXT", reorderTextY);
                 const std::string reorderedLayout =
                         gtk_editable_get_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)));
                 require(reorderAccepted && reorderedLayout == "SMART_SELECT,PEN,TEXT,HIGHLIGHTER,ERASER,HAND",
                         "Dropping a visible rail tool did not reorder the action layout");
-                require(applyMainToolRailDrop("LINK", true, 1) &&
+                require(preferencesDialog.applyMainToolRailDropForTest("LINK", true, 1) &&
                                 std::string(
                                         gtk_editable_get_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)))) ==
                                         "SMART_SELECT,LINK,PEN,TEXT,HIGHLIGHTER,ERASER,HAND" &&
-                                listRows(mainToolRailVisibleList) == 7 && listRows(mainToolRailAvailableList) == 5,
+                                listRows(preferencesDialog.mainToolRailVisibleList()) == 7 &&
+                                listRows(preferencesDialog.mainToolRailAvailableList()) == 5,
                         "Adding an available tool did not update both lists and the saved order");
-                require(applyMainToolRailDrop("LINK", false, 0) &&
+                require(preferencesDialog.applyMainToolRailDropForTest("LINK", false, 0) &&
                                 std::string(
                                         gtk_editable_get_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)))) ==
                                         "SMART_SELECT,PEN,TEXT,HIGHLIGHTER,ERASER,HAND" &&
-                                listRows(mainToolRailVisibleList) == 6 && listRows(mainToolRailAvailableList) == 6,
+                                listRows(preferencesDialog.mainToolRailVisibleList()) == 6 &&
+                                listRows(preferencesDialog.mainToolRailAvailableList()) == 6,
                         "Removing a visible tool did not return it to More tools");
-                require(!applyMainToolRailDrop("SMART_SELECT", false, 0),
+                require(!preferencesDialog.applyMainToolRailDropForTest("SMART_SELECT", false, 0),
                         "Smart Select was accepted for removal from the main tool rail");
                 gtk_editable_set_text(GTK_EDITABLE(control(PreferenceKey::MainToolRail)), "SMART_SELECT,TEXT,PEN,HAND");
-                g_signal_emit_by_name(mainToolRailApplyButton, "clicked");
+                g_signal_emit_by_name(preferencesDialog.mainToolRailApplyButton(), "clicked");
                 require(importedConfig.settings.mainToolRail == std::vector<prototype::MainToolAction>({
                                                                         prototype::MainToolAction::SmartSelect,
                                                                         prototype::MainToolAction::Text,
@@ -513,7 +529,7 @@ gboolean Prototype::smokePreferencesVerify() {
                                     state.brush.tool == Tool::Pen,
                             "The stylus Hand mapping did not pan without changing the toolbar tool");
                 }
-                adw_dialog_close(ADW_DIALOG(preferencesUi.dialog));
+                adw_dialog_close(ADW_DIALOG(preferencesDialog.widget()));
                 {
                     const auto anchor =
                             prototype::Point{gtk_widget_get_width(canvas) / 2.0, gtk_widget_get_height(canvas) / 2.0};
@@ -796,7 +812,7 @@ gboolean Prototype::smokePreferencesVerify() {
                         "Preferences dialog did not restore LaTeX settings and editor options");
                 capture("preferences-reloaded");
                 std::cout << "PASS: GTK 4 preferences survive application restart\n";
-                adw_dialog_close(ADW_DIALOG(preferencesUi.dialog));
+                adw_dialog_close(ADW_DIALOG(preferencesDialog.widget()));
                 gtk_window_close(GTK_WINDOW(window));
                 return G_SOURCE_REMOVE;
         }

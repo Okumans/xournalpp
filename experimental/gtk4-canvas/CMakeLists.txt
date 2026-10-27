@@ -146,6 +146,7 @@ add_executable(
     PrototypePluginTools.cpp
     PrototypePluginVerification.cpp
     PrototypePreferences.cpp
+    PreferencesDialog.cpp
     PrototypeRendering.cpp
     PrototypeSearch.cpp
     PrototypeSidebar.cpp
