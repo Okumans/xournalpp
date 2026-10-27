@@ -120,12 +120,11 @@ bounds and momentum, and Search highlight geometry on the user's PDF. The user
 has requested the following completion order; keep this sequence current as
 each phase lands:
 
-1. Reopen text-box editing for a real UI check and fix any remaining reports:
-   text/layout size mismatch, an overly wide initial box, a hard-to-see caret,
-   and editor bounds that are missing or do not track the text. Phase 128 now
-   requires the relevant no-worker screenshots and passes its GTK/Pango sizing,
-   caret, and transformed-editor checks in both themes on the typed-text
-   fixture; recheck the user's separate PDF if the issue is still visible there.
+1. Fix the remaining text editor UI report after the refactor: in the current
+   GTK 4 binary, the user repro shows the box/caret dimensions scaling with
+   canvas zoom rather than text/font size. Phase 128's typed-fixture checks
+   passed, but they did not catch this report. Recheck the user's PDF, initial
+   box width, caret visibility, and transform bounds in the real UI.
 2. Verify and tune touchpad scrolling on the user's physical device. Preserve
    momentum, keep horizontal drift very low in a single-column document, allow
    horizontal travel only where the page grid provides it, and clamp movement
@@ -258,6 +257,14 @@ replace, paste, recolor, and delete operations into
 token-identical to Phase 136; object, selection, and history state stay
 owned by the same `CanvasState` instance. The full default build, all 40 CTests,
 and private Cage canvas, text, clipboard, selection, document, and preferences
+smoke checks passed.
+
+Phase 138 moves layer selection, visibility and name changes, layer insertion,
+duplication, reordering, merge/delete, and layer-history recording into
+`CanvasStateLayers.cpp`. The 12 moved method bodies are token-identical
+to Phase 137; document objects and edit history remain owned by the
+same `CanvasState` instance. The full default build, all 40 CTests, and the
+private Cage canvas, text, clipboard, selection, document, and preferences
 smoke checks passed.
 
 These user-requested follow-ups remain:
