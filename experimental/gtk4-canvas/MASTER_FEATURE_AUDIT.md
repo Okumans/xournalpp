@@ -211,6 +211,12 @@ canvas smoke passed. This is the first staged extraction from the remaining
 large model header; selection, edit, and history ownership stay in the same
 `CanvasState` instance.
 
+Phase 131 moves canvas fit/presentation fit, scroll-bound constraints, page
+navigation, and active-page synchronization into the same compiled model unit.
+The 7 method bodies are token-identical to the parent implementation. The full
+default build and 40 CTests passed, and the private no-worker Cage canvas smoke
+passed. `CanvasState` and its history remain the single state owner.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
