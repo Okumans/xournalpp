@@ -151,4 +151,122 @@ std::optional<PageHit> CanvasState::hitSelectionHandle(double x, double y) const
     return std::nullopt;
 }
 
+void CanvasState::fit(double width, double height) {
+    cancel();
+    if (!pages.empty()) {
+        selectActivePage(std::clamp(page, 0, pageCount() - 1));
+    }
+    const auto sz = pageSize(page);
+    zoom = std::clamp(std::min(std::max(1.0, width - 64) / sz.width, std::max(1.0, height - 48) / sz.height), 0.1, 8.0);
+    if (pages.empty()) {
+        offsetX = (width - pageWidth * zoom) / 2;
+        offsetY = (height - pageHeight * zoom) / 2;
+    } else {
+        offsetX = (width - layoutWidth() * zoom) / 2;
+        if (pageLayout.columnCount() > 1) {
+            offsetX = (width - sz.width * zoom) / 2 - pageLeft(page) * zoom;
+            offsetY = (height - sz.height * zoom) / 2 - pageTop(page) * zoom;
+        } else {
+            offsetY = (height - sz.height * zoom) / 2 - pageTop(page) * zoom;
+        }
+    }
+}
+
+void CanvasState::fitPresentation(double width, double height) {
+    cancel();
+    if (!pages.empty()) {
+        selectActivePage(std::clamp(page, 0, pageCount() - 1));
+    }
+    const auto size = pageSize(page);
+    const double fitWidth = std::max(1.0, width) / (size.width + 14.0);
+    const double fitHeight = std::max(1.0, height) / (size.height + 14.0);
+    zoom = std::clamp(std::min(fitWidth, fitHeight), 0.1, 8.0);
+    offsetX = (width - size.width * zoom) / 2.0 - pageLeft(page) * zoom;
+    offsetY = (height - size.height * zoom) / 2.0 - pageTop(page) * zoom;
+}
+
+void CanvasState::scrollBy(double dx, double dy, bool discrete) {
+    if (!std::isfinite(dx) || !std::isfinite(dy)) {
+        return;
+    }
+    offsetX -= behavior::scrollDeltaToPixels(dx, discrete);
+    offsetY -= behavior::scrollDeltaToPixels(dy, discrete);
+}
+
+bool CanvasState::hasHorizontalScrollRoom(double viewportWidth) const {
+    return std::isfinite(viewportWidth) && viewportWidth > 0 && std::isfinite(zoom) && zoom > 0 &&
+           layoutWidth() * zoom > viewportWidth;
+}
+
+void CanvasState::constrainScrollOffsets(double viewportWidth, double viewportHeight) {
+    if (!std::isfinite(viewportWidth) || !std::isfinite(viewportHeight) || viewportWidth <= 0 || viewportHeight <= 0 ||
+        !std::isfinite(zoom) || zoom <= 0) {
+        return;
+    }
+
+    const auto constrainAxis = [](double offset, double viewportLength, double contentLength) {
+        if (contentLength <= viewportLength) {
+            return (viewportLength - contentLength) / 2.0;
+        }
+        return std::clamp(offset, viewportLength - contentLength, 0.0);
+    };
+
+    offsetX = constrainAxis(offsetX, viewportWidth, layoutWidth() * zoom);
+    offsetY = constrainAxis(offsetY, viewportHeight, layoutHeight() * zoom);
+}
+
+void CanvasState::scrollToPage(int targetPage, double viewportWidth, double viewportHeight) {
+    if (targetPage < 0 || (!pages.empty() && targetPage >= pageCount())) {
+        return;
+    }
+    cancel();
+    selectActivePage(targetPage);
+    const auto sz = pageSize(page);
+    if (pages.empty()) {
+        offsetX = (viewportWidth - pageWidth * zoom) / 2;
+        offsetY = (viewportHeight - pageHeight * zoom) / 2;
+        return;
+    }
+    if (pageLayout.columnCount() > 1) {
+        const double left = pageLeft(page) * zoom;
+        const double top = pageTop(page) * zoom;
+        offsetX = sz.width * zoom + 64 <= viewportWidth ? (viewportWidth - sz.width * zoom) / 2 - left : 24.0 - left;
+        offsetY = sz.height * zoom + 48 <= viewportHeight ? (viewportHeight - sz.height * zoom) / 2 - top : 24.0 - top;
+        return;
+    }
+    if (sz.width * zoom + 64 <= viewportWidth) {
+        offsetX = (viewportWidth - layoutWidth() * zoom) / 2;
+    }
+    if (sz.height * zoom + 48 <= viewportHeight) {
+        offsetY = (viewportHeight - sz.height * zoom) / 2 - pageTop(page) * zoom;
+    } else {
+        offsetY = 24.0 - pageTop(page) * zoom;
+    }
+}
+
+void CanvasState::syncActivePage(double viewportWidth, double viewportHeight) {
+    if (pages.empty() || viewportWidth <= 0 || viewportHeight <= 0) {
+        return;
+    }
+    int bestPage = -1;
+    double bestArea = 0.0;
+    for (const int i: visiblePageIndices(viewportWidth, viewportHeight)) {
+        const auto& sz = pages[static_cast<size_t>(i)];
+        const double x0 = std::max(0.0, offsetX + pageLeft(i) * zoom);
+        const double y0 = std::max(0.0, offsetY + pageTop(i) * zoom);
+        const double x1 = std::min(viewportWidth, offsetX + (pageLeft(i) + sz.width) * zoom);
+        const double y1 = std::min(viewportHeight, offsetY + (pageTop(i) + sz.height) * zoom);
+        if (x1 > x0 && y1 > y0) {
+            const double area = (x1 - x0) * (y1 - y0);
+            if (area > bestArea || (area == bestArea && (bestPage < 0 || i < bestPage))) {
+                bestArea = area;
+                bestPage = i;
+            }
+        }
+    }
+    if (bestPage >= 0) {
+        selectActivePage(bestPage);
+    }
+}
+
 }  // namespace prototype
