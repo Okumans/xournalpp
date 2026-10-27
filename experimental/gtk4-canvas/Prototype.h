@@ -88,6 +88,13 @@ struct RecoveryInfo {
     std::string autosavePath;
 };
 
+struct PendingTextToolClick {
+    guint32 time = 0;
+    size_t textIndex = 0;
+    double x = 0;
+    double y = 0;
+};
+
 inline std::vector<prototype::bridge::PageSizePacket> currentPageSizes(const CanvasState& state) {
     std::vector<prototype::bridge::PageSizePacket> sizes;
     sizes.reserve(static_cast<size_t>(state.pageCount()));
@@ -728,6 +735,8 @@ private:
 
     void selectTextWordAt(double x, double y);
 
+    bool selectTextWordAtNow(double x, double y);
+
     void finishTextEditing();
 
     void updateTextEditorPosition();
@@ -1161,6 +1170,8 @@ private:
     GtkWidget* textFormatBox = nullptr;
     std::array<GtkWidget*, 6> textFormatButtons{};
     GtkGestureClick* textClick = nullptr;
+    GtkGestureClick* textEditorClick = nullptr;
+    std::optional<PendingTextToolClick> pendingTextToolClick;
     GtkGestureClick* stylusButtonClick = nullptr;
     GtkWidget* pageLabel = nullptr;
     GtkWidget* zoomLabel = nullptr;

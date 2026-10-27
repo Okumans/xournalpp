@@ -479,11 +479,13 @@ void Prototype::draw(cairo_t* cr, int width, int height) {
         }
         prototype::drawLaserPointer(cr, state, i);
         prototype::drawVerticalSpacePreview(cr, state, i);
-        prototype::drawSelection(cr, state, i);
-        if (state.brush.tool != Tool::Hand && selectedImageIndex && *selectedImageIndex < state.images.size() &&
-            state.images[*selectedImageIndex].page == i &&
-            state.layerVisible(i, state.images[*selectedImageIndex].layerId)) {
-            prototype::drawCanvasImageHandles(cr, displayedImage(*selectedImageIndex), state.zoom);
+        if (!textEditor || !textEditor->active()) {
+            prototype::drawSelection(cr, state, i);
+            if (state.brush.tool != Tool::Hand && selectedImageIndex && *selectedImageIndex < state.images.size() &&
+                state.images[*selectedImageIndex].page == i &&
+                state.layerVisible(i, state.images[*selectedImageIndex].layerId)) {
+                prototype::drawCanvasImageHandles(cr, displayedImage(*selectedImageIndex), state.zoom);
+            }
         }
         if (pdfTextSelection && pdfTextSelection->page == i && pdfTextSelection->region) {
             const int rectangleCount = cairo_region_num_rectangles(pdfTextSelection->region.get());

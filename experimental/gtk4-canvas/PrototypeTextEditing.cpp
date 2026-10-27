@@ -141,6 +141,8 @@ void Prototype::startTextEditing(double x, double y) {
     if (state.brush.tool == Tool::SmartSelect) {
         fitMode = false;
     }
+    pendingTextToolClick.reset();
+    selectedImageIndex.reset();
     finishTextEditing();
     resetInput();
     state.clearSelection();
@@ -170,16 +172,43 @@ void Prototype::startTextEditing(double x, double y) {
 }
 
 void Prototype::selectTextWordAt(double x, double y) {
-    if (!textEditor || !textEditor->active()) {
+    if (selectTextWordAtNow(x, y) || !window || !textEditor || !textEditor->active()) {
         return;
+    }
+
+    struct PendingWordPick {
+        Prototype* self;
+        double x;
+        double y;
+        std::optional<size_t> existingIndex;
+    };
+    auto* pending = new PendingWordPick{this, x, y, textEditor->existingItemIndex()};
+    gtk_widget_add_tick_callback(
+            window,
+            +[](GtkWidget*, GdkFrameClock*, gpointer data) -> gboolean {
+                auto* request = static_cast<PendingWordPick*>(data);
+                auto* self = request->self;
+                if (self->textEditor && self->textEditor->active() &&
+                    self->textEditor->existingItemIndex() == request->existingIndex) {
+                    self->selectTextWordAtNow(request->x, request->y);
+                    self->update();
+                }
+                return G_SOURCE_REMOVE;
+            },
+            pending, +[](gpointer data) { delete static_cast<PendingWordPick*>(data); });
+}
+
+bool Prototype::selectTextWordAtNow(double x, double y) {
+    if (!textEditor || !textEditor->active()) {
+        return false;
     }
     const auto* item = textEditor->item();
     if (!item) {
-        return;
+        return false;
     }
     const double determinant = item->xx * item->yy - item->xy * item->yx;
     if (!std::isfinite(determinant) || std::abs(determinant) < 1e-12) {
-        return;
+        return false;
     }
     const auto origin = state.pageScreenPoint(item->page, item->x, item->y);
     const double dx = x - origin.x;
@@ -187,15 +216,17 @@ void Prototype::selectTextWordAt(double x, double y) {
     const double localX = (item->yy * dx - item->xy * dy) / determinant;
     const double localY = (-item->yx * dx + item->xx * dy) / determinant;
     if (!std::isfinite(localX) || !std::isfinite(localY)) {
-        return;
+        return false;
     }
-    textEditor->selectWordAt(static_cast<int>(std::lround(localX)), static_cast<int>(std::lround(localY)));
+    return textEditor->selectWordAt(static_cast<int>(std::lround(localX)),
+                                    static_cast<int>(std::lround(localY)));
 }
 
 void Prototype::finishTextEditing() {
     if (!textEditor || !textEditor->active()) {
         return;
     }
+    pendingTextToolClick.reset();
     auto completed = textEditor->finish();
     if (completed) {
         const auto [layoutWidth, layoutHeight] = prototype::textNaturalSize(completed->item);
@@ -229,13 +260,22 @@ void Prototype::updateTextEditorPosition() {
     textEditor->setZoom(state.zoom);
     const auto layoutItem = textEditor->layoutItem();
     const auto screen = state.pageScreenPoint(layoutItem.page, layoutItem.x, layoutItem.y);
-    const auto [naturalWidth, naturalHeight] = prototype::textNaturalSize(layoutItem);
-    const double availableWidth = std::max(40.0, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - 8.0);
+    const auto [naturalWidth, measuredHeight] = prototype::textNaturalSize(layoutItem);
+    double naturalHeight = measuredHeight;
+    if (naturalHeight <= 0) {
+        auto line = layoutItem;
+        line.text = "M";
+        line.styleRuns.clear();
+        naturalHeight = prototype::textNaturalSize(line).second;
+    }
+    constexpr double frameInsets = prototype::TextEditorOverlay::frameInsets;
+    const double availableWidth =
+            std::max(frameInsets, gtk_widget_get_width(canvas) - std::max(0.0, screen.x) - frameInsets);
     const double contentWidth =
             layoutItem.wrapWidth >= 0 ? layoutItem.wrapWidth * state.zoom : naturalWidth * state.zoom;
-    const double requestedWidth = contentWidth + 8.0;
-    const int width = static_cast<int>(std::ceil(std::clamp(requestedWidth, 40.0, availableWidth)));
-    const int height = static_cast<int>(std::ceil(std::max(24.0, naturalHeight * state.zoom + 6.0)));
+    const double requestedWidth = contentWidth + frameInsets;
+    const int width = static_cast<int>(std::ceil(std::clamp(requestedWidth, frameInsets, availableWidth)));
+    const int height = static_cast<int>(std::ceil(std::max(frameInsets, naturalHeight * state.zoom + frameInsets)));
     textEditor->position(screen.x, screen.y, width, height, layoutItem.xx, layoutItem.yx, layoutItem.xy,
                          layoutItem.yy);
 }
