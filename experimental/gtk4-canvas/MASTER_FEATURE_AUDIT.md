@@ -224,6 +224,13 @@ state and history ownership remain unchanged. The full default build, 40
 CTests, and the private Cage canvas, text, clipboard, selection, document, and
 preferences smoke checks passed.
 
+Phase 133 moves page-structure snapshots, insert/delete/clone operations, and
+undo/redo application into `CanvasStateHistory.cpp` in that same model library.
+The 21 moved method bodies are token-identical to Phase 132, and `CanvasState`
+remains the sole document and history owner. The full default build, all 40
+CTests, and the private Cage canvas, text, clipboard, selection, document, and
+preferences smoke checks passed.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
