@@ -57,6 +57,7 @@
 #include "PageRasterRenderer.h"
 #include "PaletteImport.h"
 #include "PdfTextSelection.h"
+#include "PreferencesDialog.h"
 #include "PreferencesStore.h"
 #include "SettingsImport.h"
 #include "StrokeClipboard.h"
@@ -258,154 +259,15 @@ private:
 
     static std::uint32_t packArgbColor(const GdkRGBA& color);
 
-    enum class PreferenceKey : guint {
-        Theme = 1,
-        Sidebar,
-        FullscreenMenubar,
-        FullscreenToolbar,
-        FullscreenSidebar,
-        PresentationGoFullscreen,
-        PresentationMenubar,
-        PresentationToolbar,
-        PresentationSidebar,
-        LayoutFlow,
-        LayoutGridDimension,
-        LayoutGridCount,
-        LayoutPairedPages,
-        LayoutPairedPageOffset,
-        LayoutHorizontalDirection,
-        LayoutVerticalDirection,
-        MainToolRail,
-        PressureSensitivity,
-        MinimumPressure,
-        PressureMultiplier,
-        StylusButtonOne,
-        StylusButtonTwo,
-        AutosaveEnabled,
-        AutosaveTimeout,
-        ZoomStep,
-        ScrollZoomStep,
-        PreloadPagesBefore,
-        PreloadPagesAfter,
-        FullDetailCachePages,
-        MediumDetailCachePages,
-        MediumDetailCacheMegabytes,
-        LowDetailCachePages,
-        LowDetailCacheMegabytes,
-        OverviewZoomThreshold,
-        LowDetailZoomThreshold,
-        PreloadDetail,
-        EdgePanSpeed,
-        EdgePanMaxMultiplier,
-        RotationSnapTolerance,
-        SnapRotation,
-        SnapGrid,
-        SnapGridSize,
-        SnapGridTolerance,
-        FloatingToolboxRow1,
-        FloatingToolboxRow2,
-        FloatingToolboxRow3,
-        FloatingToolboxRow4,
-        PositionHighlight,
-        CursorHighlightColor,
-        CursorHighlightRadius,
-        CursorHighlightBorderColor,
-        CursorHighlightBorderWidth,
-        LatexAutoCheckDependencies,
-        LatexDefaultText,
-        LatexTemplatePath,
-        LatexGeneratorCommand,
-        LatexSourceViewTheme,
-        LatexSourceViewAutoIndent,
-        LatexSourceViewSyntaxHighlight,
-        LatexSourceViewShowLineNumbers,
-        LatexEditorFont,
-        LatexUseCustomEditorFont,
-        LatexEditorWordWrap,
-        LatexUseExternalEditor,
-        LatexExternalEditorAutoConfirm,
-        LatexExternalEditorCommand,
-        LatexTemporaryFileExtension,
-        Count,
-    };
-
-    struct PreferencesUiState {
-        AdwPreferencesDialog* dialog = nullptr;
-        GtkWidget* latexTemplatePathEntry = nullptr;
-        GtkWidget* latexSetupTestButton = nullptr;
-        GtkWidget* latexSetupTestStatus = nullptr;
-        GtkWidget* latexSettingsApplyButton = nullptr;
-        GtkWidget* latexSettingsApplyStatus = nullptr;
-        std::vector<std::string> latexSourceViewThemeIds;
-        std::array<GtkWidget*, static_cast<size_t>(PreferenceKey::Count)> controls{};
-        std::vector<prototype::MainToolAction> pendingMainToolRail;
-        bool syncingControls = false;
-
-        PreferencesUiState() = default;
-        PreferencesUiState(const PreferencesUiState&) = delete;
-        PreferencesUiState& operator=(const PreferencesUiState&) = delete;
-        ~PreferencesUiState() { clear(); }
-
-        void clear() {
-            g_clear_object(&dialog);
-            latexTemplatePathEntry = nullptr;
-            latexSetupTestButton = nullptr;
-            latexSetupTestStatus = nullptr;
-            latexSettingsApplyButton = nullptr;
-            latexSettingsApplyStatus = nullptr;
-            latexSourceViewThemeIds.clear();
-            controls.fill(nullptr);
-            pendingMainToolRail.clear();
-            syncingControls = false;
-        }
-    };
-
-    GtkWidget* preferenceCombo(AdwPreferencesGroup* group, const char* title, const char* subtitle,
-                               const char* const* options, guint selected, PreferenceKey key);
-
-    GtkWidget* preferenceSwitch(AdwPreferencesGroup* group, const char* title, const char* subtitle, bool active,
-                                PreferenceKey key);
-
-    GtkWidget* preferenceSpin(AdwPreferencesGroup* group, const char* title, const char* subtitle, double value,
-                              double minimum, double maximum, double step, guint digits, const char* suffix,
-                              PreferenceKey key);
-
-    GtkWidget* preferenceColor(AdwPreferencesGroup* group, const char* title, const char* subtitle, std::uint32_t color,
-                               PreferenceKey key);
-
-    GtkWidget* preferenceTextEntry(AdwPreferencesGroup* group, const char* title, const char* subtitle,
-                                   const std::string& value, PreferenceKey key);
-
-    GtkWidget* preferenceTemplatePath(AdwPreferencesGroup* group, const std::string& value);
-
-    GtkWidget* preferenceFont(AdwPreferencesGroup* group, const char* title, const char* subtitle,
-                              const std::string& value);
-
-    GtkWidget* preferenceLatexTheme(AdwPreferencesGroup* group, const std::string& selectedTheme);
-
     bool applyFloatingToolboxRows();
 
     bool applyMainToolRail();
-
-    GtkWidget* createMainToolRailEditorRow(prototype::MainToolAction action);
-
-    GtkWidget* createMainToolRailEditorList(bool visible);
-
-    void rebuildMainToolRailEditor();
-
-    bool applyMainToolRailDrop(std::string_view actionToken, bool toRail, std::size_t targetIndex);
-
-    bool emitMainToolRailDropForTest(GtkWidget* list, std::string_view actionToken, double y);
 
     void changePreference(PreferenceKey key, GtkWidget* control);
 
     void chooseLatexTemplate();
 
     bool applyLatexPreferences();
-
-    void markLatexTextPreferencesPending();
-
-    void updateLatexPreferenceSensitivity();
 
     void testLatexSetup();
 
@@ -624,8 +486,6 @@ private:
     void verifyImageActionsPlugin();
 
     void waitForPluginDocumentJob();
-
-    static guint settingsThemeIndex(prototype::ThemeVariant theme);
 
     void runDocumentJob(const char* status, std::function<void()> work, std::function<void()> success,
                         bool initial = false);
@@ -1253,10 +1113,6 @@ private:
     GtkWidget* floatingToolboxToolButton = nullptr;
     GtkWidget* floatingToolbox = nullptr;
     GtkWidget* floatingToolboxRowsContainer = nullptr;
-    GtkWidget* floatingToolboxApplyButton = nullptr;
-    GtkWidget* mainToolRailApplyButton = nullptr;
-    GtkWidget* mainToolRailVisibleList = nullptr;
-    GtkWidget* mainToolRailAvailableList = nullptr;
     size_t floatingToolboxStaticToolButtonCount = 0;
     std::vector<std::pair<Tool, GtkWidget*>> floatingToolboxToolButtons;
     std::vector<GtkWidget*> floatingZoomButtons;
@@ -1364,7 +1220,7 @@ private:
     GCancellable* clipboardCancellation = nullptr;
     guint clipboardTimer = 0;
     AdwOverlaySplitView* splitView = nullptr;
-    PreferencesUiState preferencesUi;
+    PreferencesDialog preferencesDialog;
     GtkWindow* pluginManagerWindow = nullptr;
     GtkWidget* pluginManagerList = nullptr;
     GtkWidget* pluginManagerApplyButton = nullptr;

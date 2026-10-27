@@ -289,6 +289,14 @@ behavior remain unchanged. The full build, all 40 CTests, and the private Cage
 canvas, selection, mixed-clipboard, document, and preferences checks passed;
 evidence is in `/tmp/phase141-canvas-clipboard-smoke`.
 
+Phase 142 moves the Preferences dialog, its controls, LaTeX status, main-tool
+rail editor, and pending rail draft into `PreferencesDialog`. `Prototype` keeps
+application settings changes and persistence behind explicit dialog callbacks;
+smoke and verification paths now use the component's accessors. The behavior
+and audit counts are unchanged. The GTK4 target built, all 40 CTests passed,
+and the private Cage Preferences edit/restart check passed; evidence is in
+`/tmp/phase142-preferences-dialog`.
+
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
   continuous Ctrl+touchpad zoom and reuses current page rasters while zoom
