@@ -130,7 +130,9 @@ each phase lands:
    horizontal travel only where the page grid provides it, and clamp movement
    to the grid bounds. Synthetic GTK controller signals do not establish
    physical-device sensitivity or momentum parity. The user reports momentum
-   feels missing or too short on the Phase 127 build.
+   feels missing or too short on the Phase 127 build. The user also reports
+   next-page scroll lag, especially on the touchpad, in
+   `/home/okumnas/Cedt/comp_security/slides/lecture_8.pdf`.
 3. Finish the other deferred user reports below, including real-document ink
    frame-time, sidebar latency on content-heavy PDFs, raster-worker failures,
    Smart Select drag performance, and any remaining tool parity. Phase 122
@@ -272,6 +274,13 @@ monolith into `LuaPluginHostApi.cpp`. Each moved definition is token-identical
 to Phase 138; Lua state, plugin ownership, and callback dispatch remain
 unchanged. The full default build, all 40 CTests, and the private Cage canvas,
 text, clipboard, selection, document, and preferences smoke checks passed.
+
+Phase 140 moves plugin object-reference assignment/selection and the grouped,
+individual, and no-undo ink/text/image insertion methods into
+`CanvasStatePluginObjects.cpp`. All 5 definitions are token-identical to
+Phase 139; the model and plugin reference ownership remain in `CanvasState`.
+The full default build, all 40 CTests, and the private Cage canvas, text,
+clipboard, selection, document, and preferences smoke checks passed.
 
 These user-requested follow-ups remain:
 - Keep scrolling and zooming responsive on large documents. Phase 96 adds
